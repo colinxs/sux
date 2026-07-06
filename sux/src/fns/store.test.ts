@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { store } from "./store";
 import { handleObservability } from "../observability";
 
@@ -71,6 +71,79 @@ describe("store", () => {
 		expect(got.base64).toBe(btoa("\x00\x01\x02"));
 	});
 
+	it("put with neither data nor base64 fails", async () => {
+		const r = await store.run(mkEnv(), { op: "put" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/put needs `data`/);
+	});
+
+	it("rejects an unknown op", async () => {
+		const r = await store.run(mkEnv(), { op: "zap" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/Unknown op 'zap'/);
+	});
+
+	it("get by raw key falls back to the object's stored content type (text branch)", async () => {
+		const env = mkEnv();
+		const put = j(await store.run(env, { data: '{"a":1}', content_type: "application/json" }));
+		const got = j(await store.run(env, { op: "get", key: put.key }));
+		expect(got.key).toBe(put.key);
+		expect(got.content_type).toBe("application/json");
+		expect(got.text).toBe('{"a":1}');
+		expect(got.base64).toBeUndefined();
+	});
+
+	it("get by raw key defaults to octet-stream (base64 branch) when the object has no content type", async () => {
+		const env = mkEnv();
+		env.R2._m.set("raw/no-ct", { bytes: new Uint8Array([0, 1, 2]) }); // no httpMetadata contentType
+		const got = j(await store.run(env, { op: "get", key: "raw/no-ct" }));
+		expect(got.content_type).toBe("application/octet-stream");
+		expect(got.base64).toBe(btoa("\x00\x01\x02"));
+		expect(got.text).toBeUndefined();
+	});
+
+	it("get by a missing raw key fails", async () => {
+		const r = await store.run(mkEnv(), { op: "get", key: "cas/nothing" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/No object at key 'cas\/nothing'/);
+	});
+
+	it("list filters by prefix over raw R2 keys", async () => {
+		const env = mkEnv();
+		await store.run(env, { data: "one" });
+		await store.run(env, { data: "two" });
+		env.R2._m.set("other/misc", { bytes: new Uint8Array([1]) });
+		const all = j(await store.run(env, { op: "list" }));
+		expect(all.objects).toHaveLength(3);
+		expect(all.truncated).toBe(false);
+		const cas = j(await store.run(env, { op: "list", prefix: "cas/" }));
+		expect(cas.objects).toHaveLength(2);
+		expect(cas.objects.every((o: any) => o.key.startsWith("cas/"))).toBe(true);
+	});
+
+	it("list clamps limit into [1, 1000] and defaults to 100", async () => {
+		const env = mkEnv();
+		await store.run(env, { data: "a" });
+		await store.run(env, { data: "b" });
+		const spy = vi.spyOn(env.R2, "list");
+		const one = j(await store.run(env, { op: "list", limit: -5 }));
+		expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({ limit: 1 }));
+		expect(one.objects).toHaveLength(1); // the clamp is observable, not just passed through
+		await store.run(env, { op: "list", limit: 5000 });
+		expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({ limit: 1000 }));
+		await store.run(env, { op: "list", limit: 0 });
+		expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({ limit: 100 })); // falsy -> default
+	});
+
+	it("list passes truncated and cursor through from R2", async () => {
+		const env = mkEnv();
+		env.R2.list = async () => ({ objects: [{ key: "cas/x", size: 1, uploaded: "2026-01-01T00:00:00Z" }], truncated: true, cursor: "next-page" });
+		const out = j(await store.run(env, { op: "list" }));
+		expect(out.objects).toEqual([{ key: "cas/x", size: 1, uploaded: "2026-01-01T00:00:00Z" }]);
+		expect(out.truncated).toBe(true);
+		expect(out.cursor).toBe("next-page");
+	});
+
 	it("delete removes the handle but keeps the blob", async () => {
 		const env = mkEnv();
 		const put = j(await store.run(env, { data: "x" }));
@@ -78,6 +151,50 @@ describe("store", () => {
 		expect(del.deleted).toBe(true);
 		expect((await store.run(env, { op: "get", id: put.uuid })).isError).toBe(true);
 		expect(env.R2._m.size).toBe(1); // blob retained
+	});
+
+	it("get by id of an over-4MB object returns the url ref and never inlines (texty branch)", async () => {
+		const env = mkEnv();
+		const put = j(await store.run(env, { data: "small", content_type: "text/plain" }));
+		const text = vi.fn(async () => "small");
+		const arrayBuffer = vi.fn(async () => new Uint8Array([1]).buffer);
+		env.R2.get = async () => ({ size: 5 * 1024 * 1024, httpMetadata: { contentType: "text/plain" }, customMetadata: {}, text, arrayBuffer });
+		const got = j(await store.run(env, { op: "get", id: put.uuid }));
+		expect(got.url).toBe(put.url);
+		expect(got.key).toBe(put.key);
+		expect(got.sha256).toBe(put.sha256);
+		expect(got.size).toBe(5 * 1024 * 1024);
+		expect(got.content_type).toBe("text/plain");
+		expect(got.note).toMatch(/too large|inline limit/);
+		expect(got.text).toBeUndefined();
+		expect(got.base64).toBeUndefined();
+		expect(text).not.toHaveBeenCalled();
+		expect(arrayBuffer).not.toHaveBeenCalled();
+	});
+
+	it("get by raw key of an over-4MB binary object mints a handle and returns the url ref", async () => {
+		const env = mkEnv();
+		const text = vi.fn(async () => "x");
+		const arrayBuffer = vi.fn(async () => new Uint8Array([1]).buffer);
+		env.R2.get = async () => ({ size: 4 * 1024 * 1024 + 1, httpMetadata: { contentType: "application/octet-stream" }, customMetadata: { sha256: "abc123" }, text, arrayBuffer });
+		const got = j(await store.run(env, { op: "get", key: "cas/abc123" }));
+		expect(got.url).toMatch(/\/s\/[0-9a-f-]{36}$/);
+		expect(got.sha256).toBe("abc123");
+		expect(got.base64).toBeUndefined();
+		expect(text).not.toHaveBeenCalled();
+		expect(arrayBuffer).not.toHaveBeenCalled();
+		// The minted handle resolves in KV.
+		const uuid = got.url.split("/s/")[1];
+		expect(JSON.parse(env.OAUTH_KV._m.get(`store:${uuid}`)!)).toMatchObject({ key: "cas/abc123", size: 4 * 1024 * 1024 + 1 });
+	});
+
+	it("get at exactly the 4MB threshold still inlines", async () => {
+		const env = mkEnv();
+		const text = vi.fn(async () => "body");
+		env.R2.get = async () => ({ size: 4 * 1024 * 1024, httpMetadata: { contentType: "text/plain" }, customMetadata: {}, text, arrayBuffer: async () => new Uint8Array([1]).buffer });
+		const got = j(await store.run(env, { op: "get", key: "cas/x" }));
+		expect(got.text).toBe("body");
+		expect(text).toHaveBeenCalled();
 	});
 
 	it("GET /s/<uuid> serves the stored bytes with its content type", async () => {

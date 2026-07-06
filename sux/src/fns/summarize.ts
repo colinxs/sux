@@ -29,24 +29,31 @@ export const summarize: Fn = {
 			try {
 				const r = await kagiTool(env, "kagi_summarizer", { url, summary_type: style === "tldr" ? "takeaway" : "summary" });
 				const text = r?.content?.[0]?.text?.trim();
-				if (text && !r?.isError) return ok(text);
-			} catch {
-				/* fall through to Workers AI */
+				if (text && !r?.isError) {
+					console.log(`summarize: backend=kagi url=${url}`);
+					return ok(text);
+				}
+				console.warn(`summarize: Kagi returned ${r?.isError ? `an error — ${text || "(no detail)"}` : "an empty summary"}, falling back to Workers AI — ${url}`);
+			} catch (e) {
+				console.warn(`summarize: Kagi failed, falling back to Workers AI — ${String((e as Error).message ?? e)}`);
 			}
 		}
 
 		if (!hasAI(env)) return fail('Workers AI binding not configured (add "ai" to wrangler).');
-		const input = await textFromUrlOr(env, String(args?.text ?? ""), url);
-		if (!input) return fail("Provide `text` or a fetchable `url`.");
 		const maxWords = Number(args?.max_words) || 150;
 		const shape = style === "tldr" ? "a single TL;DR sentence" : style === "paragraph" ? "one tight paragraph" : "concise bullet points";
 		try {
+			// textFromUrlOr throws on upstream 4xx/5xx — fail() (never cached) instead
+			// of summarizing a 403/404/consent wall and poisoning the cache for an hour.
+			const input = await textFromUrlOr(env, String(args?.text ?? ""), url);
+			if (!input) return fail("Provide `text` or a fetchable `url`.");
 			const out = await llm(
 				env,
 				`You are a precise summarizer. Produce ${shape}. Stay under ${maxWords} words. No preamble.`,
 				input.slice(0, 24_000),
 				Math.ceil(maxWords * 2),
 			);
+			console.log(`summarize: backend=workers-ai${url ? ` url=${url}` : ""}`);
 			return ok(out || "(empty summary)");
 		} catch (e) {
 			return fail(String((e as Error).message ?? e));

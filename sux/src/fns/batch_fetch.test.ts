@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("../proxy", () => ({
 	smartFetch: vi.fn(async (_env: unknown, url: string) => {
 		if (url.includes("boom")) throw new Error("network down");
+		if (url.includes("blocked")) return new Response("rate limited", { status: 429 });
 		return new Response(`body of ${url}`, { status: 200 });
 	}),
 }));
@@ -38,5 +39,18 @@ describe("batch_fetch", () => {
 		const r = await batch_fetch.run({} as any, { urls: [] });
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toMatch(/must not be empty/);
+	});
+
+	it("marks the batch noCache when any URL errors or comes back 4xx (must not poison the cache)", async () => {
+		const bad = await batch_fetch.run({} as any, { urls: ["https://blocked.com", "https://ok.com"] });
+		expect(bad.isError).toBeFalsy(); // per-url results are still returned
+		expect(JSON.parse(bad.content[0].text)[0].status).toBe(429);
+		expect(bad.noCache).toBe(true);
+		// Per-url fetch exceptions must not be cached either.
+		const thrown = await batch_fetch.run({} as any, { urls: ["https://boom.com", "https://ok.com"] });
+		expect(thrown.noCache).toBe(true);
+		// An all-2xx batch stays cacheable.
+		const good = await batch_fetch.run({} as any, { urls: ["https://a.com", "https://b.com"] });
+		expect(good.noCache).toBeUndefined();
 	});
 });

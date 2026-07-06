@@ -1,5 +1,6 @@
 import { type Fn, fail, ok } from "../registry";
 import { smartFetch } from "../proxy";
+import { isHttpUrl, noCacheOn4xx, toB64 } from "./_util";
 
 export const proxyFn: Fn = {
 	name: "proxy",
@@ -20,7 +21,7 @@ export const proxyFn: Fn = {
 	cacheable: true,
 	run: async (env, args) => {
 		const url = String(args?.url ?? "");
-		if (!/^https?:\/\//i.test(url)) return fail("url must be absolute http(s).");
+		if (!isHttpUrl(url)) return fail("url must be absolute http(s).");
 		const resp = await smartFetch(env, url, {
 			method: args?.method,
 			headers: args?.headers,
@@ -30,12 +31,10 @@ export const proxyFn: Fn = {
 		const hdrs = Object.fromEntries([...resp.headers]);
 		let body: string;
 		if (String(args?.as ?? "text") === "base64") {
-			let s = "";
-			for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode(...buf.subarray(i, i + 0x8000));
-			body = btoa(s);
+			body = toB64(buf);
 		} else {
 			body = new TextDecoder().decode(buf);
 		}
-		return ok(JSON.stringify({ status: resp.status, statusText: resp.statusText, bytes: buf.length, headers: hdrs, body }));
+		return noCacheOn4xx(ok(JSON.stringify({ status: resp.status, statusText: resp.statusText, bytes: buf.length, headers: hdrs, body })), resp.status);
 	},
 };

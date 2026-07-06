@@ -1,4 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
+import { fromB64, toB64 } from "./_util";
 
 export const encode: Fn = {
 	name: "encode",
@@ -22,8 +23,8 @@ export const encode: Fn = {
 		try {
 			if (codec === "url") return ok(decode ? decodeURIComponent(text) : encodeURIComponent(text));
 			if (codec === "base64") {
-				if (decode) return ok(new TextDecoder().decode(Uint8Array.from(atob(text), (c) => c.charCodeAt(0))));
-				return ok(btoa(String.fromCharCode(...new TextEncoder().encode(text))));
+				if (decode) return ok(new TextDecoder().decode(fromB64(text)));
+				return ok(toB64(new TextEncoder().encode(text)));
 			}
 			if (codec === "hex") {
 				if (decode) {

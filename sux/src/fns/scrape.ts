@@ -1,5 +1,6 @@
 import { type Fn, fail, ok } from "../registry";
 import { smartFetch } from "../proxy";
+import { isHttpUrl, noCacheOn4xx } from "./_util";
 
 export const scrape: Fn = {
 	name: "scrape",
@@ -17,13 +18,9 @@ export const scrape: Fn = {
 	cacheable: true,
 	run: async (env, args) => {
 		const url = String(args?.url ?? "");
-		if (!/^https?:\/\//.test(url)) return fail("Provide an absolute http(s) url.");
+		if (!isHttpUrl(url)) return fail("Provide an absolute http(s) url.");
 		const resp = await smartFetch(env, url, { method: args?.method });
 		const body = await resp.text();
-		const result = ok(`HTTP ${resp.status} — ${url}\n\n${body.slice(0, 100_000)}`);
-		// Raw transport faithfully returns error pages too — but never caches them,
-		// so a transient 403/429/consent wall can't poison repeat calls for an hour.
-		if (resp.status >= 400) result.noCache = true;
-		return result;
+		return noCacheOn4xx(ok(`HTTP ${resp.status} — ${url}\n\n${body.slice(0, 100_000)}`), resp.status);
 	},
 };

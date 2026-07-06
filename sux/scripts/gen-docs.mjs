@@ -10,18 +10,16 @@ const FNS = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "fns");
 
 // Category → ordered member tool names. Anything unlisted falls into "other".
 const CATEGORIES = [
-	["Net / transport", ["proxy", "protocol", "scrape", "geo_fetch", "latency", "dns", "headers", "redirects", "robots", "whois", "ip_geo", "tls_info", "crawl"]],
-	["Extract / parse", ["extract", "readability", "tables", "metadata", "feed", "sitemap", "gtin", "contacts", "select", "grep"]],
-	["Convert", ["html_markdown", "csv_json", "yaml_json", "xml_json", "subtitles", "html_to_pdf", "pdf_to_text", "pdf_to_images", "office_to_pdf", "image_convert"]],
-	["Compress / encode / data", ["compress", "encode", "hash", "archive", "optimize", "shrink", "qr", "jwt", "diff", "dedupe", "json_query", "flatten", "sample", "checksum", "base_convert"]],
-	["Token optimization", ["count_tokens", "truncate", "pack", "slugify", "case_convert", "humanize"]],
-	["Text / AI", ["summarize", "translate", "classify", "embed", "ocr", "entities"]],
-	["Privacy", ["redact", "strip_metadata", "anonymize", "scrub_headers", "mask"]],
-	["Batching", ["batch", "batch_fetch"]],
-	["Utilities", ["units", "datetime", "calc", "validate", "lint", "word_count", "sort", "frequency", "template", "regex_replace", "htmlentities", "querystring", "url_parse", "color_convert", "uuid", "random"]],
-	["Storage (KV)", ["kv_get", "kv_put", "kv_list", "kv_delete"]],
-	["Feedback / meta", ["issue", "suggest"]],
-	["Query / APIs", ["search", "pubmed", "clinical_trials", "local_shop", "wayback", "barcode_lookup", "youtube"]],
+	["Net / transport", ["proxy", "scrape", "geo_fetch", "redirects", "robots", "crawl"]],
+	["Extract / parse", ["extract", "readability", "tables", "metadata", "feed", "sitemap", "contacts", "select", "grep", "subtitles"]],
+	["Convert", ["markdown", "html", "csv", "json", "xml", "yaml", "image_convert", "pdf", "fillable"]],
+	["Compress / encode / data", ["compress", "encode", "hash", "archive"]],
+	["Token optimization", ["pack", "declutter"]],
+	["Text / AI", ["summarize", "translate", "classify", "ocr", "entities", "redact"]],
+	["Batching / composition", ["batch", "batch_fetch", "pipe"]],
+	["Storage (KV)", ["kv_get", "kv_put", "kv_list", "kv_delete", "store"]],
+	["Feedback / meta", ["issue"]],
+	["Query / APIs", ["search", "web_search", "shop", "wayback"]],
 ];
 
 const files = readdirSync(FNS).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && f !== "index.ts" && !f.startsWith("_"));
@@ -40,6 +38,14 @@ for (const f of files) {
 	const stub = PLANNED.has(name);
 	const tested = dir.includes(f.replace(/\.ts$/, ".test.ts"));
 	byName.set(name, { name, desc, stub, tested });
+}
+
+// Fail loudly when CATEGORIES references a function that no longer exists —
+// otherwise renames silently push functions into "Other" (doc drift).
+const missing = CATEGORIES.flatMap(([, names]) => names).filter((n) => !byName.has(n));
+if (missing.length) {
+	console.error(`gen-docs: CATEGORIES references unknown function(s): ${missing.join(", ")}`);
+	process.exit(1);
 }
 
 const one = (s) => {

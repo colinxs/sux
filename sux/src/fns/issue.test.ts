@@ -29,6 +29,16 @@ describe("issue", () => {
 		expect((await readFeedback(env))[0].text).toBe("second");
 	});
 
+	it("tags an issue with an optional tool and filters by it", async () => {
+		const env = fakeEnv();
+		await issue.run(env, { text: "dns returns 500", tool: "dns" });
+		await issue.run(env, { text: "untagged" });
+		expect((await readFeedback(env, "issue"))[1]).toMatchObject({ tool: "dns" });
+		expect((await readFeedback(env, "issue"))[0].tool).toBeUndefined();
+		expect(await readFeedback(env, "issue", 50, "dns")).toHaveLength(1);
+		expect(await readFeedback(env, "issue", 50, "whois")).toHaveLength(0);
+	});
+
 	it("does not surface under the suggest kind", async () => {
 		const env = fakeEnv();
 		await issue.run(env, { text: "bug" });

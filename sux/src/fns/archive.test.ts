@@ -46,4 +46,31 @@ describe("archive", () => {
 		const r = await archive.run({} as any, { op: "unpack", format: "zip", base64: "bm90YXppcA==" });
 		expect(r.isError).toBe(true);
 	});
+
+	it('pack as:"url" stores the archive in the CAS store and returns a compact ref', async () => {
+		const env = { R2: { put: async () => {} }, OAUTH_KV: { put: async () => {} } } as any;
+		const r = await archive.run(env, { op: "pack", format: "zip", as: "url", files: [{ name: "a.txt", content: "hello" }] });
+		expect(r.isError).toBeFalsy();
+		const ref = JSON.parse(r.content[0].text);
+		expect(ref.url).toMatch(/\/s\/[0-9a-f-]{36}$/);
+		expect(ref.content_type).toBe("application/zip");
+		expect(ref.size).toBeGreaterThan(0);
+	});
+
+	it('unpack as:"url" returns a consumable CAS ref per entry, including binary ones', async () => {
+		const env = { R2: { put: async () => {} }, OAUTH_KV: { put: async () => {} } } as any;
+		const bin = btoa("\x00\x01\x02binary\xff");
+		const packed = await archive.run({} as any, { op: "pack", format: "zip", files: [{ name: "t.txt", content: "text" }, { name: "b.bin", base64: bin }] });
+		const meta = JSON.parse(packed.content[0].text);
+		const un = await archive.run(env, { op: "unpack", format: "zip", base64: meta.base64, as: "url" });
+		expect(un.isError).toBeFalsy();
+		const out = JSON.parse(un.content[0].text);
+		for (const e of out.entries) {
+			expect(e.url).toMatch(/\/s\/[0-9a-f-]{36}$/);
+			expect(e.sha256).toMatch(/^[0-9a-f]{64}$/);
+		}
+		const raw = out.entries.find((e: any) => e.name === "b.bin");
+		expect(raw.text).toBeUndefined(); // binary still not inlined as text
+		expect(raw.bytes).toBeGreaterThan(0);
+	});
 });

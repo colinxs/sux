@@ -1,7 +1,7 @@
 // Public, unauthenticated observability endpoints for the sux engine:
 //   GET /metrics  — usage metrics as JSON (?format=prometheus for scraping)
 //   GET /logs     — rolling call log with metric fields (JSON; ?tool= / ?limit= )
-//   GET /feedback — server-side issue/suggest backlog (JSON; ?type= / ?limit= )
+//   GET /feedback — server-side issue/suggest backlog (JSON; ?type= / ?tool= / ?limit= )
 // No dashboard UI by design — logging + metrics only. `/health` is intentionally
 // NOT handled here: it falls through to the richer browsable page in
 // github-handler.ts (residential-egress stats). Returns null when the path isn't
@@ -35,7 +35,13 @@ export async function handleObservability(url: URL, request: Request, env: RtEnv
 		if (!obj) return new Response("object missing", { status: 404 });
 		return new Response(await obj.arrayBuffer(), {
 			status: 200,
-			headers: { "content-type": ref.content_type ?? obj.httpMetadata?.contentType ?? "application/octet-stream", "cache-control": "public, max-age=31536000, immutable" },
+			headers: {
+				"content-type": ref.content_type ?? obj.httpMetadata?.contentType ?? "application/octet-stream",
+				"cache-control": "public, max-age=31536000, immutable",
+				// Untrusted stored bytes: no MIME sniffing, and sandbox anything renderable.
+				"x-content-type-options": "nosniff",
+				"content-security-policy": "sandbox",
+			},
 		});
 	}
 
@@ -45,9 +51,17 @@ export async function handleObservability(url: URL, request: Request, env: RtEnv
 			return new Response(toPrometheus(m), { status: 200, headers: { "content-type": "text/plain; version=0.0.4", "cache-control": "no-store" } });
 		}
 		// Metrics view excludes the rolling log (see /logs) to stay compact, and
-		// adds the SLO/health view (latency percentiles + breaches vs targets).
+		// adds the SLO/health view (latency percentiles + breaches vs targets)
+		// plus derived per-tool rates so hot spots are readable at a glance.
 		const { recent, ...summary } = m;
-		return json({ ...summary, slo: sloReport(m) });
+		const r4 = (n: number) => Math.round(n * 10000) / 10000;
+		const tools = Object.fromEntries(
+			Object.entries(m.tools).map(([name, t]) => [
+				name,
+				{ ...t, error_rate: r4(t.calls ? t.errors / t.calls : 0), hit_rate: r4(t.calls ? t.cache_hits / t.calls : 0), avg_ms: t.calls ? Math.round(t.total_ms / t.calls) : 0 },
+			]),
+		);
+		return json({ ...summary, tools, slo: sloReport(m) });
 	}
 
 	if (url.pathname === "/logs") {
@@ -69,7 +83,7 @@ export async function handleObservability(url: URL, request: Request, env: RtEnv
 		const t = url.searchParams.get("type");
 		const kind: FeedbackKind | undefined = t === "issue" || t === "suggest" ? t : undefined;
 		const limit = Math.min(Number(url.searchParams.get("limit")) || 50, 500);
-		const items = await readFeedback(env, kind, limit);
+		const items = await readFeedback(env, kind, limit, url.searchParams.get("tool") ?? undefined);
 		return json({ count: items.length, items: items.map((e) => ({ ...e, at: new Date(e.at).toISOString() })) });
 	}
 

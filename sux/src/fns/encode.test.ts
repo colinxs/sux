@@ -22,6 +22,15 @@ describe("encode", () => {
 		expect(r.content[0].text).toBe("héllo");
 	});
 
+	it("base64 round-trips a large (>200KB) input without a stack overflow", async () => {
+		const text = "sûx-".repeat(60_000); // >200KB UTF-8
+		const enc = await encode.run({} as any, { text, codec: "base64" });
+		expect(enc.isError).toBeFalsy();
+		const dec = await encode.run({} as any, { text: enc.content[0].text, codec: "base64", direction: "decode" });
+		expect(dec.isError).toBeFalsy();
+		expect(dec.content[0].text).toBe(text);
+	});
+
 	it("surfaces a failed base64 decode", async () => {
 		const r = await encode.run({} as any, { text: "!!!not base64!!!", codec: "base64", direction: "decode" });
 		expect(r.isError).toBe(true);

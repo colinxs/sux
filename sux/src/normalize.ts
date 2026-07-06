@@ -40,17 +40,21 @@ const CONTROLS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g;
  * Alphanumeric block correctly) and only accepts a short pure-ASCII result, so
  * accents (é), symbols (½, µ), and non-Latin scripts are untouched. */
 function defont(s: string): string {
-	let out = "";
-	for (const ch of s) {
+	// Copy the ASCII prefix wholesale — most strings are mostly (or all) ASCII.
+	let i = 0;
+	while (i < s.length && s.charCodeAt(i) <= 0x7f) i++;
+	if (i === s.length) return s;
+	const out: string[] = [s.slice(0, i)];
+	for (const ch of s.slice(i)) {
 		// iterates by code point, so astral math chars (U+1D400+) stay intact
 		if (ch.codePointAt(0)! <= 0x7f) {
-			out += ch;
+			out.push(ch);
 			continue;
 		}
 		const k = ch.normalize("NFKC");
-		out += /^[A-Za-z0-9]{1,3}$/.test(k) ? k : ch;
+		out.push(/^[A-Za-z0-9]{1,3}$/.test(k) ? k : ch);
 	}
-	return out;
+	return out.join("");
 }
 
 export function normalizeText(input: string, opts: NormalizeOptions = SANE): string {
@@ -59,9 +63,13 @@ export function normalizeText(input: string, opts: NormalizeOptions = SANE): str
 	if (opts.normalizeNewlines) s = s.replace(/\r\n?/g, "\n").replace(/[\u2028\u2029]/g, "\n");
 	if (opts.stripControls) s = s.replace(CONTROLS, "");
 	if (opts.stripZeroWidth) s = s.replace(ZERO_WIDTH, "");
-	if (opts.form && opts.form !== "none") s = s.normalize(opts.form);
-	// NFKC/NFKD already fold compatibility (font) characters; skip the extra pass.
-	if (opts.defont && opts.form !== "NFKC" && opts.form !== "NFKD") s = defont(s);
+	// Pure-ASCII fast path: ASCII is invariant under all normalization forms and
+	// defont is the identity on it, so skip both passes entirely.
+	if (/[^\x00-\x7F]/.test(s)) {
+		if (opts.form && opts.form !== "none") s = s.normalize(opts.form);
+		// NFKC/NFKD already fold compatibility (font) characters; skip the extra pass.
+		if (opts.defont && opts.form !== "NFKC" && opts.form !== "NFKD") s = defont(s);
+	}
 	if (opts.collapseWhitespace) {
 		s = s
 			.split("\n")

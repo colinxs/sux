@@ -6,19 +6,13 @@
 import type { Fn } from "../registry";
 import { search } from "./search";
 import { scrape } from "./scrape";
-import { protocol } from "./protocol";
 import { proxyFn } from "./proxy";
 import { extract } from "./extract";
 import { readability } from "./readability";
 import { summarize } from "./summarize";
 import { grep } from "./grep";
-import { shrink } from "./shrink";
 import { select } from "./select";
-import { optimize } from "./optimize";
-import { json_query } from "./json_query";
 import { pack } from "./pack";
-import { truncate } from "./truncate";
-import { count_tokens } from "./count_tokens";
 import { compress } from "./compress";
 import { batch } from "./batch";
 import { batch_fetch } from "./batch_fetch";
@@ -27,91 +21,36 @@ import { tables } from "./tables";
 import { archive } from "./archive";
 import { encode } from "./encode";
 import { hash } from "./hash";
-import { diff } from "./diff";
-import { dedupe } from "./dedupe";
 import { feed } from "./feed";
 import { sitemap } from "./sitemap";
-import { gtin } from "./gtin";
 import { contacts } from "./contacts";
 import { entities } from "./entities";
 import { redact } from "./redact";
 import { translate } from "./translate";
 import { classify } from "./classify";
-import { embed } from "./embed";
 import { ocr } from "./ocr";
-import { pubmed } from "./pubmed";
-import { clinical_trials } from "./clinical_trials";
-import { youtube } from "./youtube";
-import { localShop } from "./local_shop";
 import { wayback } from "./wayback";
-import { barcodeLookup } from "./barcode_lookup";
 import { geo_fetch } from "./geo_fetch";
-import { latency } from "./latency";
-import { dns } from "./dns";
-import { headers } from "./headers";
 import { redirects } from "./redirects";
 import { robots } from "./robots";
-import { whois } from "./whois";
-import { ipGeo } from "./ip_geo";
-import { tlsInfo } from "./tls_info";
 import { crawl } from "./crawl";
 import { subtitles } from "./subtitles";
-import { jwt } from "./jwt";
-import { calc } from "./calc";
-import { units } from "./units";
-import { datetime } from "./datetime";
-import { validate } from "./validate";
-import { word_count } from "./word_count";
-import { sort } from "./sort";
-import { frequency } from "./frequency";
-import { template } from "./template";
-import { regex_replace } from "./regex_replace";
-import { htmlentities } from "./htmlentities";
-import { flattenFn } from "./flatten";
-import { sample } from "./sample";
-import { baseConvert } from "./base_convert";
-import { colorConvert } from "./color_convert";
-import { checksum } from "./checksum";
-import { querystring } from "./querystring";
-import { url_parse } from "./url_parse";
-import { slugify } from "./slugify";
-import { case_convert } from "./case_convert";
-import { humanize } from "./humanize";
-import { uuid } from "./uuid";
-import { random } from "./random";
-import { mask } from "./mask";
-import { anonymize } from "./anonymize";
-import { scrub_headers } from "./scrub_headers";
-import { strip_metadata } from "./strip_metadata";
-import { qr } from "./qr";
 import { kv_get } from "./kv_get";
 import { kv_put } from "./kv_put";
 import { kv_list } from "./kv_list";
 import { kv_delete } from "./kv_delete";
 import { issue } from "./issue";
-import { suggest } from "./suggest";
-import { lint } from "./lint";
-import { htmlToPdf } from "./html_to_pdf";
-import { pdfToText } from "./pdf_to_text";
-import { pdfToImages } from "./pdf_to_images";
-import { officeToPdf } from "./office_to_pdf";
 import { imageConvert } from "./image_convert";
 import { csv } from "./csv";
 import { declutter } from "./declutter";
-import { egress } from "./egress";
 import { fillable } from "./fillable";
-import { grammar } from "./grammar";
 import { html } from "./html";
-import { textIndex } from "./text_index";
 import { json } from "./json";
 import { markdown } from "./markdown";
 import { pdf } from "./pdf";
 import { pipe } from "./pipe";
-import { plaintext } from "./plaintext";
 import { shop } from "./shop";
 import { store } from "./store";
-import { tone } from "./tone";
-import { trim } from "./trim";
 import { webSearch } from "./web_search";
 import { xml } from "./xml";
 import { yaml } from "./yaml";
@@ -119,19 +58,13 @@ import { yaml } from "./yaml";
 export const FUNCTIONS: Fn[] = [
 	search,
 	scrape,
-	protocol,
 	proxyFn,
 	extract,
 	readability,
 	summarize,
 	grep,
-	shrink,
 	select,
-	optimize,
-	json_query,
 	pack,
-	truncate,
-	count_tokens,
 	compress,
 	batch,
 	batch_fetch,
@@ -140,91 +73,36 @@ export const FUNCTIONS: Fn[] = [
 	archive,
 	encode,
 	hash,
-	diff,
-	dedupe,
 	feed,
 	sitemap,
-	gtin,
 	contacts,
 	entities,
 	redact,
 	translate,
 	classify,
-	embed,
 	ocr,
-	pubmed,
-	clinical_trials,
-	youtube,
-	localShop,
 	wayback,
-	barcodeLookup,
 	geo_fetch,
-	latency,
-	dns,
-	headers,
 	redirects,
 	robots,
-	whois,
-	ipGeo,
-	tlsInfo,
 	crawl,
 	subtitles,
-	jwt,
-	calc,
-	units,
-	datetime,
-	validate,
-	word_count,
-	sort,
-	frequency,
-	template,
-	regex_replace,
-	htmlentities,
-	flattenFn,
-	sample,
-	baseConvert,
-	colorConvert,
-	checksum,
-	querystring,
-	url_parse,
-	slugify,
-	case_convert,
-	humanize,
-	uuid,
-	random,
-	mask,
-	anonymize,
-	scrub_headers,
-	strip_metadata,
-	qr,
 	kv_get,
 	kv_put,
 	kv_list,
 	kv_delete,
 	issue,
-	suggest,
-	lint,
-	htmlToPdf,
-	pdfToText,
-	pdfToImages,
-	officeToPdf,
 	imageConvert,
 	csv,
 	declutter,
-	egress,
 	fillable,
-	grammar,
 	html,
-	textIndex,
 	json,
 	markdown,
 	pdf,
 	pipe,
-	plaintext,
 	shop,
 	store,
-	tone,
-	trim,
 	webSearch,
 	xml,
 	yaml,

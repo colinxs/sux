@@ -1,5 +1,4 @@
 import { type Fn, fail, ok } from "../registry";
-import { smartFetch } from "../proxy";
 import { hasAI, llm } from "../ai";
 import { kagiTool } from "../kagi";
 import { stripHtml } from "./_util";
@@ -8,44 +7,6 @@ export type Hit = { title: string; url: string; snippet?: string };
 
 const fmt = (hits: Hit[]): string =>
 	hits.length ? hits.map((h, i) => `${i + 1}. ${h.title}\n   ${h.url}${h.snippet ? `\n   ${h.snippet}` : ""}`).join("\n\n") : "(no results)";
-
-/** DuckDuckGo HTML endpoint — keyless, scraped through the residential proxy. */
-async function ddg(env: any, q: string, limit: number): Promise<Hit[]> {
-	const resp = await smartFetch(env, `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`, {});
-	const html = await resp.text();
-	const hits: Hit[] = [];
-	const re = /<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
-	const snips = [...html.matchAll(/class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g)].map((m) => stripHtml(m[1]));
-	let m: RegExpExecArray | null;
-	let i = 0;
-	while ((m = re.exec(html)) && hits.length < limit) {
-		let url = m[1];
-		const uddg = /[?&]uddg=([^&]+)/.exec(url);
-		if (uddg) url = decodeURIComponent(uddg[1]);
-		else if (url.startsWith("//")) url = `https:${url}`;
-		hits.push({ title: stripHtml(m[2]), url, snippet: snips[i] });
-		i++;
-	}
-	return hits;
-}
-
-async function brave(env: any, q: string, limit: number): Promise<Hit[]> {
-	const resp = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(q)}&count=${limit}`, {
-		headers: { Accept: "application/json", "X-Subscription-Token": env.BRAVE_API_KEY },
-	});
-	if (!resp.ok) throw new Error(`Brave API HTTP ${resp.status}`);
-	const j = (await resp.json()) as any;
-	return (j?.web?.results ?? []).slice(0, limit).map((r: any) => ({ title: r.title, url: r.url, snippet: stripHtml(r.description ?? "") }));
-}
-
-async function bing(env: any, q: string, limit: number): Promise<Hit[]> {
-	const resp = await fetch(`https://api.bing.microsoft.com/v7.0/search?q=${encodeURIComponent(q)}&count=${limit}`, {
-		headers: { "Ocp-Apim-Subscription-Key": env.BING_API_KEY },
-	});
-	if (!resp.ok) throw new Error(`Bing API HTTP ${resp.status}`);
-	const j = (await resp.json()) as any;
-	return (j?.webPages?.value ?? []).slice(0, limit).map((r: any) => ({ title: r.name, url: r.url, snippet: r.snippet }));
-}
 
 async function serpapiGoogle(env: any, q: string, limit: number): Promise<Hit[]> {
 	const resp = await fetch(`https://serpapi.com/search.json?engine=google&q=${encodeURIComponent(q)}&num=${limit}&api_key=${env.SERPAPI_KEY}`);
@@ -71,13 +32,10 @@ async function kagi(env: any, q: string, limit: number): Promise<Hit[]> {
 
 const ENGINES: Record<string, { envKey?: string; envName?: string; run: (env: any, q: string, n: number) => Promise<Hit[]> }> = {
 	kagi: { envKey: "KAGI_API_KEY", envName: "KAGI_API_KEY", run: kagi },
-	ddg: { run: ddg },
-	brave: { envKey: "BRAVE_API_KEY", envName: "BRAVE_API_KEY", run: brave },
-	bing: { envKey: "BING_API_KEY", envName: "BING_API_KEY", run: bing },
 	google: { envKey: "SERPAPI_KEY", envName: "SERPAPI_KEY (SerpAPI, engine=google)", run: serpapiGoogle },
 };
 
-/** Engines usable right now: ddg always, keyed ones only when their secret is set. */
+/** Engines usable right now: keyed ones only when their secret is set. */
 function available(env: any): string[] {
 	return Object.entries(ENGINES)
 		.filter(([, spec]) => !spec.envKey || (env as any)[spec.envKey])
@@ -116,15 +74,15 @@ function merge(lists: Hit[][], limit: number): Hit[] {
 export const webSearch: Fn = {
 	name: "web_search",
 	description:
-		"Federated web search. `engine`: kagi, ddg (default, keyless), google (SerpAPI), bing, brave, or `all` — which fans out across every currently-available engine concurrently (MAP), merges/dedupes by URL with consensus ranking, and with `summarize: true` reduces the pooled results into one Workers-AI synthesis with citations (map-reduce). " +
-		"Key-gated engines (kagi, google, bing, brave) are used only when their secret is set; `all` silently skips unconfigured ones. Falls back to the plain merged list if AI isn't configured. Returns numbered results (title, url, snippet) — cite by number.",
+		"Web search over Kagi and native Google (SerpAPI). `engine`: kagi (default), google, or `all` — which fans out across every currently-available engine concurrently (MAP), merges/dedupes by URL with consensus ranking, and with `summarize: true` reduces the pooled results into one Workers-AI synthesis with citations (map-reduce). " +
+		"Both engines are key-gated (kagi → KAGI_API_KEY, google → SERPAPI_KEY) and used only when their secret is set; `all` silently skips unconfigured ones. Falls back to the plain merged list if AI isn't configured. Returns numbered results (title, url, snippet) — cite by number.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
 		required: ["query"],
 		properties: {
 			query: { type: "string", description: "Search query." },
-			engine: { type: "string", enum: ["kagi", "ddg", "google", "bing", "brave", "all"], default: "ddg" },
+			engine: { type: "string", enum: ["kagi", "google", "all"], default: "kagi" },
 			limit: { type: "integer", minimum: 1, maximum: 25, default: 10 },
 			summarize: { type: "boolean", description: "Summarize the merged results with Workers AI.", default: false },
 		},
@@ -133,7 +91,7 @@ export const webSearch: Fn = {
 	run: async (env, args) => {
 		const q = String(args?.query ?? "").trim();
 		if (!q) return fail("query is required.");
-		const engine = String(args?.engine ?? "ddg");
+		const engine = String(args?.engine ?? "kagi");
 		const limit = Math.min(25, Math.max(1, Number(args?.limit) || 10));
 		const wantSummary = args?.summarize === true;
 
@@ -141,10 +99,11 @@ export const webSearch: Fn = {
 		let engines: string[];
 		if (engine === "all") {
 			engines = available(env);
+			if (!engines.length) return fail("No search engine is configured. Set KAGI_API_KEY and/or SERPAPI_KEY.");
 		} else {
 			const spec = ENGINES[engine];
 			if (!spec) return fail(`Unknown engine '${engine}'. Options: ${Object.keys(ENGINES).join(", ")}, all.`);
-			if (spec.envKey && !(env as any)[spec.envKey]) return fail(`Engine '${engine}' needs the ${spec.envName} secret, which isn't configured. Use 'ddg' or 'all' (keyless), or set the key.`);
+			if (spec.envKey && !(env as any)[spec.envKey]) return fail(`Engine '${engine}' needs the ${spec.envName} secret, which isn't configured. Set the key or use 'all'.`);
 			engines = [engine];
 		}
 

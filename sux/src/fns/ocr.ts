@@ -1,6 +1,6 @@
 import { type Fn, fail, ok } from "../registry";
 import { hasAI, MODELS } from "../ai";
-import { smartFetch } from "../proxy";
+import { fromB64, loadBytes } from "./_util";
 
 export const ocr: Fn = {
 	name: "ocr",
@@ -17,12 +17,14 @@ export const ocr: Fn = {
 	cacheable: true,
 	run: async (env, args) => {
 		if (!hasAI(env)) return fail("Workers AI binding not configured (add \"ai\" to wrangler).");
+		// Workers AI vision wants a number[] — adapt from base64 (data-URI tolerated)
+		// or the shared _util.loadBytes URL path (binary-safe proxy, /s/ refs).
 		let bytes: number[];
 		try {
-			if (args?.image) bytes = Array.from(Uint8Array.from(atob(String(args.image).replace(/^data:[^,]+,/, "")), (c) => c.charCodeAt(0)));
+			if (args?.image) bytes = Array.from(fromB64(String(args.image).replace(/^data:[^,]+,/, "")));
 			else if (args?.url) {
 				if (!/^https?:\/\//i.test(String(args.url))) return fail("url must be absolute http(s).");
-				bytes = Array.from(new Uint8Array(await (await smartFetch(env, String(args.url), {})).arrayBuffer()));
+				bytes = Array.from((await loadBytes(env, { url: String(args.url) })).bytes);
 			} else return fail("Provide `url` or `image`.");
 		} catch (e) {
 			return fail(`Could not load image: ${String((e as Error).message ?? e)}`);

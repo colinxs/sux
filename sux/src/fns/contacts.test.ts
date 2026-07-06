@@ -10,6 +10,7 @@ vi.mock("../proxy", () => ({
 	),
 }));
 
+import { smartFetch } from "../proxy";
 import { contacts } from "./contacts";
 
 describe("contacts", () => {
@@ -59,5 +60,14 @@ describe("contacts", () => {
 	it("errors when nothing is provided", async () => {
 		const r = await contacts.run({} as any, {});
 		expect(r.isError).toBe(true);
+	});
+
+	it("fails on an upstream error page instead of scanning it", async () => {
+		vi.mocked(smartFetch).mockResolvedValueOnce(
+			new Response(`<html><body>Blocked — contact abuse@cdn-provider.com</body></html>`, { status: 502 }),
+		);
+		const r = await contacts.run({} as any, { url: "https://example.com" });
+		expect(r.isError).toBe(true); // errors never enter the KV cache
+		expect(r.content[0].text).toMatch(/HTTP 502/);
 	});
 });

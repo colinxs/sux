@@ -42,4 +42,18 @@ describe("batch", () => {
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toMatch(/`calls` must be an array/);
 	});
+
+	it("rejects more than 100 calls (amplification cap)", async () => {
+		const calls = Array.from({ length: 101 }, (_, i) => ({ text: String(i) }));
+		const r = await batch.run({} as any, { tool: "hash", calls });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/Too many calls: 101 \(max 100/);
+	});
+
+	it("accepts exactly 100 calls", async () => {
+		const calls = Array.from({ length: 100 }, (_, i) => ({ text: String(i) }));
+		const r = await batch.run({} as any, { tool: "hash", calls });
+		expect(r.isError).toBeFalsy();
+		expect(JSON.parse(r.content[0].text).results).toHaveLength(100);
+	});
 });

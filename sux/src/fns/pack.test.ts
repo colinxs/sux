@@ -21,6 +21,13 @@ describe("pack", () => {
 		expect(r.content[0].text).toMatch(/\[packed 2 records as tsv/);
 	});
 
+	it("omits the savings note when note:false", async () => {
+		const r = await run({ data: [{ a: 1, b: "x" }, { a: 2, b: "y" }], note: false });
+		expect(r.isError).toBeFalsy();
+		expect(r.content[0].text).toBe("a\tb\n1\tx\n2\ty");
+		expect(r.content[0].text).not.toMatch(/\[packed/);
+	});
+
 	it("handles a heterogeneous key union and csv/kv formats", async () => {
 		const csv = await run({ data: [{ a: 1 }, { b: "has,comma" }], format: "csv" });
 		const head = csv.content[0].text.split("\n")[0];

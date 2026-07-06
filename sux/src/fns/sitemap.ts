@@ -30,7 +30,9 @@ export const sitemap: Fn = {
 		if (!isHttpUrl(url)) return fail("url must be an absolute http(s) URL.");
 		const limit = Math.min(Number(args?.limit) || 1000, 1000);
 
-		const xml = (await fetchText(env, url)).text;
+		// Sitemaps run big (spec allows 50MB) — raise the byte cap well past the
+		// 2MB default so a full urlset isn't silently truncated mid-<loc>.
+		const xml = (await fetchText(env, url, { maxBytes: 10_000_000 })).text;
 		if (!xml.trim()) return fail(`Empty response from ${url}.`);
 
 		const isIndex = /<sitemapindex[\s>]/i.test(xml);

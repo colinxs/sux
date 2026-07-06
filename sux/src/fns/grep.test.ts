@@ -4,6 +4,7 @@ vi.mock("../proxy", () => ({
 	smartFetch: vi.fn(async () => new Response("alpha\nBETA\ngamma\n", { status: 200 })),
 }));
 
+import { smartFetch } from "../proxy";
 import { grep } from "./grep";
 
 const TEXT = "alpha\nBeta line\ngamma\nbeta again\ndelta";
@@ -37,5 +38,12 @@ describe("grep", () => {
 	it("errors without text or url", async () => {
 		const r = await grep.run({} as any, { pattern: "x" });
 		expect(r.isError).toBe(true);
+	});
+
+	it("fails on an upstream error page instead of grepping it", async () => {
+		vi.mocked(smartFetch).mockResolvedValueOnce(new Response("Too Many Requests", { status: 429 }));
+		const r = await grep.run({} as any, { pattern: "Requests", url: "https://example.com/big.log" });
+		expect(r.isError).toBe(true); // errors never enter the KV cache
+		expect(r.content[0].text).toMatch(/HTTP 429/);
 	});
 });

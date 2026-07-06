@@ -25,7 +25,7 @@ function needsQuote(s: string): boolean {
 	if (s === "") return true;
 	if (/^(true|false|null|~)$/i.test(s)) return true;
 	if (/^-?\d+(\.\d+)?$/.test(s)) return true;
-	return /[:#\[\]{}&*!|>'"%@`,]|^[\s?-]|\s$/.test(s);
+	return /[:#\[\]{}&*!|>'"%@`,\n\r\t]|^[\s?-]|\s$/.test(s);
 }
 
 function yamlScalar(v: unknown): string {
@@ -148,8 +148,13 @@ export function parseYaml(text: string): unknown {
 			if (!m) break;
 			i++;
 			const key = m[1].trim();
-			if (m[2].trim() === "") obj[key] = parseBlock(ind + 1);
-			else obj[key] = parseScalar(m[2]);
+			if (m[2].trim() === "") {
+				// Zero-relative-indent sequences (kubernetes/GitHub-Actions style):
+				// a `- ` item at the key's own indent belongs to the key.
+				const next = lines[i];
+				const seqAtKeyIndent = next !== undefined && indentOf(next) === ind && /^\s*-(\s|$)/.test(next);
+				obj[key] = parseBlock(seqAtKeyIndent ? ind : ind + 1);
+			} else obj[key] = parseScalar(m[2]);
 		}
 	}
 	return parseBlock(0);

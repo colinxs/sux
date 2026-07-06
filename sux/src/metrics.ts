@@ -3,26 +3,31 @@
 // dashboard at low/medium volume. NOT strongly consistent: concurrent writers
 // can lose an increment. If precise counts ever matter, move to a Durable Object.
 
+import { drainRouteTally } from "./proxy";
 import type { RtEnv } from "./registry";
 
 const KEY = "sux:metrics";
 const TTL = 60 * 60 * 24 * 30; // 30 days
 
-export type ToolStat = { calls: number; errors: number; cache_hits: number; total_ms: number };
-export type LogEntry = { at: number; tool: string; ms: number; cache: boolean; error: boolean };
+export type ToolStat = { calls: number; errors: number; cache_hits: number; total_ms: number; last_error?: string };
+export type LogEntry = { at: number; tool: string; ms: number; cache: boolean; error: boolean; err?: string; routes?: Record<string, number> };
 export type Metrics = {
 	since: number;
 	total: number;
 	cache_hits: number;
 	errors: number;
 	tools: Record<string, ToolStat>;
+	// Lifetime fetch-route tally (proxied / direct / proxy_fallback / binary_refetch)
+	// — answers "what fraction of fetches used the residential proxy".
+	routes: Record<string, number>;
 	recent: LogEntry[]; // rolling log (newest first), capped
 };
 
-const RECENT_CAP = 50;
+const RECENT_CAP = 500;
+const ERR_CAP = 200; // keep only the first ~200 chars of an error message
 
 export function emptyMetrics(now: number): Metrics {
-	return { since: now, total: 0, cache_hits: 0, errors: 0, tools: {}, recent: [] };
+	return { since: now, total: 0, cache_hits: 0, errors: 0, tools: {}, routes: {}, recent: [] };
 }
 
 export async function readMetrics(env: RtEnv): Promise<Metrics> {
@@ -31,6 +36,7 @@ export async function readMetrics(env: RtEnv): Promise<Metrics> {
 		try {
 			const m = JSON.parse(raw) as Metrics;
 			if (!Array.isArray(m.recent)) m.recent = []; // migrate older records
+			if (!m.routes) m.routes = {}; // migrate pre-route records
 			return m;
 		} catch {
 			/* fall through to fresh */
@@ -39,7 +45,13 @@ export async function readMetrics(env: RtEnv): Promise<Metrics> {
 	return emptyMetrics(Date.now());
 }
 
-export type CallEvent = { tool: string; ms: number; cache?: boolean; error?: boolean; at?: number };
+export type CallEvent = { tool: string; ms: number; cache?: boolean; error?: boolean; err?: string; at?: number; routes?: Record<string, number> };
+
+/** Truncate an error message to its first ~200 chars (undefined stays undefined/empty). */
+export function clipErr(err?: string): string | undefined {
+	if (!err) return undefined;
+	return err.length > ERR_CAP ? err.slice(0, ERR_CAP) : err;
+}
 
 /** Fold one tool call into the aggregate + rolling log. Pure — easy to unit-test. */
 export function applyEvent(m: Metrics, e: CallEvent): Metrics {
@@ -51,11 +63,18 @@ export function applyEvent(m: Metrics, e: CallEvent): Metrics {
 		m.cache_hits++;
 		t.cache_hits++;
 	}
+	const err = clipErr(e.err);
 	if (e.error) {
 		m.errors++;
 		t.errors++;
+		if (err) t.last_error = err;
 	}
-	m.recent.unshift({ at: e.at ?? 0, tool: e.tool, ms: e.ms || 0, cache: Boolean(e.cache), error: Boolean(e.error) });
+	const routes = e.routes && Object.keys(e.routes).length ? e.routes : undefined;
+	if (routes) {
+		m.routes ??= {}; // pre-route records read straight from KV
+		for (const [r, n] of Object.entries(routes)) m.routes[r] = (m.routes[r] ?? 0) + n;
+	}
+	m.recent.unshift({ at: e.at ?? 0, tool: e.tool, ms: e.ms || 0, cache: Boolean(e.cache), error: Boolean(e.error), ...(err ? { err } : {}), ...(routes ? { routes } : {}) });
 	if (m.recent.length > RECENT_CAP) m.recent.length = RECENT_CAP;
 	return m;
 }
@@ -66,11 +85,17 @@ export function applyEvent(m: Metrics, e: CallEvent): Metrics {
  */
 export function recordCall(env: RtEnv, ctx: { waitUntil(p: Promise<unknown>): void }, e: CallEvent): void {
 	const at = Date.now();
+	// Fetch-route tally accumulated by smartFetch since the last drain — attributes
+	// proxied/direct/fallback decisions to this call (best-effort under concurrency).
+	const routes = drainRouteTally();
+	const hasRoutes = Object.keys(routes).length > 0;
 	// The single structured log line (queryable in Workers Logs / wrangler tail).
-	console.log(`sux ${JSON.stringify({ tool: e.tool, ms: e.ms, cache: Boolean(e.cache), error: Boolean(e.error), at })}`);
+	console.log(
+		`sux ${JSON.stringify({ tool: e.tool, ms: e.ms, cache: Boolean(e.cache), error: Boolean(e.error), ...(e.err ? { err: clipErr(e.err) } : {}), ...(hasRoutes ? { routes } : {}), at })}`,
+	);
 	ctx.waitUntil(
 		(async () => {
-			const m = applyEvent(await readMetrics(env), { ...e, at });
+			const m = applyEvent(await readMetrics(env), { ...e, at, ...(hasRoutes ? { routes } : {}) });
 			await env.OAUTH_KV.put(KEY, JSON.stringify(m), { expirationTtl: TTL });
 		})().catch(() => {}),
 	);
@@ -94,26 +119,30 @@ export type Slo = {
 	breaches: string[];
 };
 
-// Health/SLO view over the north-star budgets. Latency percentiles come from the
-// rolling `recent` window (last ≤50 calls); rates are lifetime. Breaches are only
-// flagged once there's a meaningful sample (≥20) so we don't cry wolf at startup.
+// Health/SLO view over the north-star budgets. Latency percentiles AND
+// success/cache rates come from the rolling `recent` window (last ≤500 calls) so
+// the report reflects current behavior, not lifetime history; lifetime totals
+// remain in the counters. Breaches are only flagged once there's a meaningful
+// sample (≥20) so we don't cry wolf at startup.
 export function sloReport(m: Metrics): Slo {
 	const lats = m.recent.map((e) => e.ms);
 	const p50 = percentile(lats, 50);
 	const p95 = percentile(lats, 95);
 	const avg = lats.length ? Math.round(lats.reduce((a, b) => a + b, 0) / lats.length) : 0;
-	const total = m.total || 0;
-	const success_rate = total ? (total - m.errors) / total : 1;
-	const cache_hit_rate = total ? m.cache_hits / total : 0;
-	const error_rate = total ? m.errors / total : 0;
+	const window = m.recent.length;
+	const winErrors = m.recent.filter((e) => e.error).length;
+	const winHits = m.recent.filter((e) => e.cache).length;
+	const success_rate = window ? (window - winErrors) / window : 1;
+	const cache_hit_rate = window ? winHits / window : 0;
+	const error_rate = window ? winErrors / window : 0;
 	const targets = { success_rate: 0.98, cache_hit_rate: 0.4, p95_ms: 2000 };
 	const breaches: string[] = [];
-	const enough = total >= 20;
+	const enough = window >= 20;
 	if (enough && success_rate < targets.success_rate) breaches.push(`success_rate ${(success_rate * 100).toFixed(1)}% < ${targets.success_rate * 100}%`);
 	if (enough && cache_hit_rate < targets.cache_hit_rate) breaches.push(`cache_hit_rate ${(cache_hit_rate * 100).toFixed(1)}% < ${targets.cache_hit_rate * 100}%`);
 	if (m.recent.length >= 20 && p95 > targets.p95_ms) breaches.push(`p95 ${p95}ms > ${targets.p95_ms}ms`);
 	const r4 = (n: number) => Math.round(n * 10000) / 10000;
-	return { window_calls: m.recent.length, latency_ms: { p50, p95, avg }, success_rate: r4(success_rate), cache_hit_rate: r4(cache_hit_rate), error_rate: r4(error_rate), targets, breaches };
+	return { window_calls: window, latency_ms: { p50, p95, avg }, success_rate: r4(success_rate), cache_hit_rate: r4(cache_hit_rate), error_rate: r4(error_rate), targets, breaches };
 }
 
 /** Prometheus text exposition (text/plain; version=0.0.4). */
@@ -138,6 +167,10 @@ export function toPrometheus(m: Metrics): string {
 	for (const [name, t] of Object.entries(m.tools)) {
 		lines.push(`sux_tool_errors_total{tool="${name}"} ${t.errors}`);
 	}
+	lines.push("# HELP sux_fetch_route_total Per-route fetch count (proxied/direct/proxy_fallback/binary_refetch).", "# TYPE sux_fetch_route_total counter");
+	for (const [route, n] of Object.entries(m.routes ?? {})) {
+		lines.push(`sux_fetch_route_total{route="${route}"} ${n}`);
+	}
 	lines.push("# HELP sux_tool_latency_ms_avg Per-tool average latency (ms).", "# TYPE sux_tool_latency_ms_avg gauge");
 	for (const [name, t] of Object.entries(m.tools)) {
 		lines.push(`sux_tool_latency_ms_avg{tool="${name}"} ${t.calls ? Math.round(t.total_ms / t.calls) : 0}`);
@@ -149,10 +182,10 @@ export function toPrometheus(m: Metrics): string {
 		"# TYPE sux_latency_ms gauge",
 		`sux_latency_ms{quantile="0.5"} ${slo.latency_ms.p50}`,
 		`sux_latency_ms{quantile="0.95"} ${slo.latency_ms.p95}`,
-		"# HELP sux_success_rate Lifetime tool-call success rate.",
+		"# HELP sux_success_rate Recent-window tool-call success rate.",
 		"# TYPE sux_success_rate gauge",
 		`sux_success_rate ${slo.success_rate}`,
-		"# HELP sux_cache_hit_rate Lifetime cache hit rate.",
+		"# HELP sux_cache_hit_rate Recent-window cache hit rate.",
 		"# TYPE sux_cache_hit_rate gauge",
 		`sux_cache_hit_rate ${slo.cache_hit_rate}`,
 		"# HELP sux_slo_breaches Count of SLO targets currently breached.",

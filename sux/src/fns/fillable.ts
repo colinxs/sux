@@ -1,8 +1,6 @@
 import { PDFDocument } from "pdf-lib";
-import { type Fn, fail, ok } from "../registry";
-import { deliverBytes, fromB64, toB64 } from "./_util";
-import { smartFetch } from "../proxy";
-import { isHttpUrl } from "./_util";
+import { type Fn, fail } from "../registry";
+import { deliverBytes, inlineB64, isHttpUrl, loadBytes } from "./_util";
 
 type FieldSpec = {
 	name: string;
@@ -21,7 +19,7 @@ export const fillable: Fn = {
 	name: "fillable",
 	description:
 		"Make a PDF fillable by adding interactive AcroForm fields. Give `pdf` (base64) or a `url`, plus `fields[]` — each { name, type: text|checkbox, page (0-indexed), x, y, width, height, value?, fontSize?, multiline? } positioned in PDF points. " +
-		"Origin is bottom-left by default; set `origin: 'top'` to measure y from the top of the page. `flatten: true` bakes the values in and makes the form non-editable. Returns the new PDF as base64. " +
+		"Origin is bottom-left by default; set `origin: 'top'` to measure y from the top of the page. `flatten: true` bakes the values in and makes the form non-editable. Returns JSON { mime, size, base64 } (or a compact ref with `as: \"url\"`). " +
 		"(Positions are explicit — auto-detecting blank lines/underscores needs the WASM text-layout parser, see PLAN P5.)",
 	inputSchema: {
 		type: "object",
@@ -62,18 +60,12 @@ export const fillable: Fn = {
 		const fields = args?.fields as FieldSpec[] | undefined;
 		if (!Array.isArray(fields) || fields.length === 0) return fail("Provide a non-empty `fields` array.");
 
-		// Load the source bytes from base64 or a URL.
+		// Load the source bytes from base64 or a URL (shared _util.loadBytes:
+		// binary-safe proxy fetch, HTTP>=400 rejection, /s/<uuid> short-circuit).
+		if (!(typeof args?.pdf === "string" && args.pdf) && !isHttpUrl(args?.url)) return fail("Provide `pdf` (base64) or a fetchable `url`.");
 		let bytes: Uint8Array;
 		try {
-			if (typeof args?.pdf === "string" && args.pdf) {
-				bytes = fromB64(args.pdf);
-			} else if (isHttpUrl(args?.url)) {
-				const resp = await smartFetch(env, String(args.url), {});
-				if (!resp.ok) return fail(`Failed to fetch PDF: HTTP ${resp.status}`);
-				bytes = new Uint8Array(await resp.arrayBuffer());
-			} else {
-				return fail("Provide `pdf` (base64) or a fetchable `url`.");
-			}
+			({ bytes } = await loadBytes(env, { base64: args?.pdf, url: args?.url }));
 		} catch (e) {
 			return fail(`Could not read source PDF: ${String((e as Error).message ?? e)}`);
 		}
@@ -106,14 +98,16 @@ export const fillable: Fn = {
 					const tf = form.createTextField(f.name);
 					if (f.multiline) tf.enableMultiline();
 					if (typeof f.value === "string") tf.setText(f.value);
-					if (f.fontSize) tf.setFontSize(f.fontSize);
 					tf.addToPage(page, rect);
+					// After addToPage: pdf-lib only creates the field's /DA entry when the
+					// widget is added, and setFontSize throws without one.
+					if (f.fontSize) tf.setFontSize(f.fontSize);
 				}
 			}
 
 			if (args?.flatten === true) form.flatten();
 			const out = await doc.save();
-			return deliverBytes(env, out, "application/pdf", args?.as, () => ok(toB64(out)));
+			return deliverBytes(env, out, "application/pdf", args?.as, () => inlineB64(out, "application/pdf"));
 		} catch (e) {
 			return fail(`fillable failed: ${String((e as Error).message ?? e)}`);
 		}

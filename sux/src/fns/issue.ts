@@ -9,13 +9,17 @@ export const issue: Fn = {
 		type: "object",
 		additionalProperties: false,
 		required: ["text"],
-		properties: { text: { type: "string", description: "The problem, concisely — what tool, what happened, expected vs actual." } },
+		properties: {
+			text: { type: "string", description: "The problem, concisely — what tool, what happened, expected vs actual." },
+			tool: { type: "string", description: "Optional: the sux tool name the issue is about (enables GET /feedback?tool= filtering)." },
+		},
 	},
 	cacheable: false,
 	run: async (env, args) => {
 		const text = String(args?.text ?? "").trim();
 		if (!text) return fail("Provide `text` describing the issue.");
-		const { total, at } = await appendFeedback(env, "issue", text);
+		const tool = String(args?.tool ?? "").trim() || undefined;
+		const { total, at } = await appendFeedback(env, "issue", text, tool);
 		return ok(`Logged issue #${total} at ${new Date(at).toISOString()}. Read the backlog: GET /feedback?type=issue`);
 	},
 };

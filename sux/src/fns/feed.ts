@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { fetchText, isHttpUrl } from "./_util";
+import { fetchTextOk } from "./_util";
 
 /** Decode the handful of entities that turn up in feed text. */
 function decodeEntities(s: string): string {
@@ -38,8 +38,11 @@ export const feed: Fn = {
 	run: async (env, args) => {
 		let xml = String(args?.xml ?? "");
 		if (!xml && args?.url) {
-			if (!isHttpUrl(args.url)) return fail("url must be an absolute http(s) URL.");
-			xml = (await fetchText(env, String(args.url))).text;
+			// An error page is not a feed — fetchTextOk surfaces the status instead
+			// of letting an empty items list get cached for an hour.
+			const fetched = await fetchTextOk(env, args.url);
+			if ("error" in fetched) return fail(fetched.error);
+			xml = fetched.text;
 		}
 		if (!xml) return fail("Provide `xml` or `url`.");
 		const limit = Math.min(Number(args?.limit) || 50, 200);

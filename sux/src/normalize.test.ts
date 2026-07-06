@@ -30,6 +30,27 @@ describe("normalizeText (sane defaults)", () => {
 		expect(normalizeText("a    b\n\n\n\nc")).toBe("a    b\n\n\n\nc");
 	});
 
+	it("passes pure-ASCII strings through unchanged (fast path)", () => {
+		const s = "plain ASCII text with digits 0123456789 and symbols !@#$%^&*()";
+		expect(normalizeText(s)).toBe(s);
+	});
+
+	it("defonts correctly when styled chars follow a long ASCII prefix", () => {
+		expect(normalizeText("prefix that is all ASCII then 𝐛𝐨𝐥𝐝 and Ｗｉｄｅ")).toBe(
+			"prefix that is all ASCII then bold and Wide",
+		);
+	});
+
+	it("handles alternating ASCII and non-ASCII segments byte-identically", () => {
+		expect(normalizeText("a𝕓c𝔡e１f")).toBe("abcde1f");
+		expect(normalizeText("café 𝐇𝐢 日本語")).toBe("café Hi 日本語");
+	});
+
+	it("still applies NFC on strings that become ASCII only after defont", () => {
+		// decomposed é after an ASCII prefix — NFC must still run
+		expect(normalizeText("abc é")).toBe("abc é");
+	});
+
 	it("applies NFC composition", () => {
 		// decomposed e + combining acute -> composed é
 		expect(normalizeText("é")).toBe("é");

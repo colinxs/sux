@@ -1,7 +1,6 @@
 import { PDFDocument, PDFHexString, PDFName, PDFNull, PDFNumber, StandardFonts } from "pdf-lib";
-import { type Fn, fail, ok } from "../registry";
-import { deliverBytes, fromB64, isHttpUrl, stripHtml, toB64 } from "./_util";
-import { smartFetch } from "../proxy";
+import { type Fn, fail } from "../registry";
+import { deliverBytes, inlineB64, isHttpUrl, loadBytes, stripHtml, toB64 } from "./_util";
 import { ocr as ocrFn } from "./ocr";
 
 type Kind = "pdf" | "png" | "jpg" | "text" | "html" | "markdown" | "auto";
@@ -33,15 +32,10 @@ function parsePages(spec: string, n: number): number[] {
 	return out;
 }
 
-/** Fetch bytes for a source (base64 or URL). */
-async function loadBytes(env: any, src: Source): Promise<{ bytes: Uint8Array; kind: Kind }> {
-	let bytes: Uint8Array;
-	if (typeof src.data === "string" && src.data) bytes = fromB64(src.data);
-	else if (isHttpUrl(src.url)) {
-		const resp = await smartFetch(env, String(src.url), {});
-		if (!resp.ok) throw new Error(`fetch ${src.url} -> HTTP ${resp.status}`);
-		bytes = new Uint8Array(await resp.arrayBuffer());
-	} else throw new Error("each source needs `data` (base64) or `url`");
+/** Fetch bytes for a source (base64 or URL, via the shared _util.loadBytes). */
+async function loadSource(env: any, src: Source): Promise<{ bytes: Uint8Array; kind: Kind }> {
+	if (!(typeof src.data === "string" && src.data) && !isHttpUrl(src.url)) throw new Error("each source needs `data` (base64) or `url`");
+	const { bytes } = await loadBytes(env, { base64: src.data, url: src.url });
 	const declared = src.kind && src.kind !== "auto" ? src.kind : MAGIC(bytes);
 	return { bytes, kind: declared };
 }
@@ -173,7 +167,7 @@ export const pdf: Fn = {
 		"Kind is auto-detected from magic bytes. Options: `pages` (1-indexed range like '1-3,5,8-' applied to the merged doc), `toc` ([{title, page, level}] → nested bookmarks/outline), " +
 		"`fields` ([{name,type,page,x,y,width,height,value}] → interactive AcroForm, origin bottom-left unless `origin:'top'`), `flatten` (bake forms), " +
 		"`title`/`author`/`subject`/`keywords` (metadata), and `ocr: true` (transcribe image sources via Workers AI and append the text as searchable pages). " +
-		"`compress: true` re-saves with object streams and strips metadata for smaller size. Returns the PDF as base64. " +
+		"`compress: true` re-saves with object streams and strips metadata for smaller size. Returns JSON { mime, size, base64 } (or a compact ref with `as: \"url\"`). " +
 		"Note: text/HTML/markdown render as plain reflowed text (Helvetica); high-fidelity HTML/Office rendering and true OCR text overlays need the WASM renderer (PLAN P5).",
 	inputSchema: {
 		type: "object",
@@ -230,7 +224,7 @@ export const pdf: Fn = {
 					await drawText(out, item.text);
 					continue;
 				}
-				const { bytes, kind } = await loadBytes(env, item);
+				const { bytes, kind } = await loadSource(env, item);
 				if (kind === "pdf") {
 					const donor = await PDFDocument.load(bytes);
 					const copied = await out.copyPages(donor, donor.getPageIndices());
@@ -253,7 +247,8 @@ export const pdf: Fn = {
 			if (typeof args?.pages === "string" && args.pages.trim()) {
 				const keep = parsePages(args.pages, out.getPageCount());
 				if (!keep.length) return fail(`Page range '${args.pages}' selected no pages (document has ${out.getPageCount()}).`);
-				// Remove pages not kept, from the back so indices stay valid; reorder to match `keep`.
+				// Remove pages not kept, from the back so indices stay valid. The spec selects
+				// pages; kept pages stay in original document order (no reordering).
 				const wanted = new Set(keep);
 				for (let i = out.getPageCount() - 1; i >= 0; i--) if (!wanted.has(i)) out.removePage(i);
 			}
@@ -279,7 +274,7 @@ export const pdf: Fn = {
 			out.setProducer("sux/pdf");
 
 			const bytes = await out.save({ useObjectStreams: true });
-			return deliverBytes(env, bytes, "application/pdf", args?.as, () => ok(toB64(bytes)));
+			return deliverBytes(env, bytes, "application/pdf", args?.as, () => inlineB64(bytes, "application/pdf"));
 		} catch (e) {
 			return fail(`pdf failed: ${String((e as Error).message ?? e)}`);
 		}

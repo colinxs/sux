@@ -6,6 +6,8 @@
 // residential IP. Use it as a fetch-ladder rung for those hosts only; normal
 // fetch is fine everywhere else.
 
+import { githubAuthHeaders } from "./github-auth";
+
 export type TailscaleEnv = {
 	// Public Funnel URL of the proxy node, e.g. https://box.tailnet-name.ts.net
 	TAILSCALE_PROXY_URL?: string;
@@ -14,6 +16,9 @@ export type TailscaleEnv = {
 	// Escape hatch: set to "0" to force direct fetches even when the proxy is
 	// configured. Default (unset) = proxy everything when configured.
 	TAILSCALE_PROXY_ALL?: string;
+	// Optional GitHub PAT — attached to GitHub-host fetches to lift the 60/hr
+	// anonymous rate limit to 5000/hr. Never sent to non-GitHub hosts.
+	GITHUB_TOKEN?: string;
 };
 
 export type ProxiedResponse = {
@@ -23,6 +28,10 @@ export type ProxiedResponse = {
 	bytes: number;
 	truncated: boolean;
 	body: string;
+	// "base64": `body` is base64 of the raw response bytes (binary-safe).
+	// Absent/"utf8": `body` is plain text — legacy transport, lossy for binary
+	// (bytes that aren't valid UTF-8 became U+FFFD on the proxy node).
+	bodyEncoding?: "base64" | "utf8";
 };
 
 export function isTailscaleConfigured(env: TailscaleEnv): boolean {
@@ -67,6 +76,71 @@ export function isDirectHost(url: string): boolean {
 
 export type Route = "auto" | "proxy" | "direct";
 
+// Route accounting: smartFetch tallies which path each fetch actually took into
+// a small per-isolate buffer that recordCall (metrics.ts) drains into the
+// KV-backed metrics and the structured `sux` log line on every tool call — the
+// buffer is transport between fetch and log, NOT the source of truth.
+//   proxied         — served by the residential proxy
+//   direct          — never tried the proxy (disabled, direct host, or forced)
+//   proxy_fallback  — proxy errored, refetched direct
+//   binary_refetch  — legacy proxy mangled a binary body, refetched direct
+export type FetchRoute = "proxied" | "direct" | "proxy_fallback" | "binary_refetch";
+
+let routeTally: Partial<Record<FetchRoute, number>> = {};
+
+function tallyRoute(r: FetchRoute): void {
+	routeTally[r] = (routeTally[r] ?? 0) + 1;
+}
+
+/** Drain (return and reset) the pending per-isolate route tally. */
+export function drainRouteTally(): Partial<Record<FetchRoute, number>> {
+	const t = routeTally;
+	routeTally = {};
+	return t;
+}
+
+// Content types the legacy string transport carries faithfully. Anything else
+// (images, PDFs, archives, octet-stream…) needs bodyEncoding:"base64" or a
+// direct fetch — a JSON string cannot round-trip arbitrary bytes.
+const TEXTUAL_MIME = new Set([
+	"application/json",
+	"application/xml",
+	"application/javascript",
+	"application/ecmascript",
+	"application/x-www-form-urlencoded",
+	"application/x-ndjson",
+	"image/svg+xml",
+]);
+
+/** True when `ct` (a content-type header value) denotes text that survives the
+ * string transport. No content-type at all is treated as text — that matches
+ * the pre-binary-mode behavior and avoids refetching every headerless page. */
+export function isTextualContentType(ct: string | null): boolean {
+	const t = (ct ?? "").split(";")[0].trim().toLowerCase();
+	if (!t) return true;
+	return t.startsWith("text/") || t.endsWith("+json") || t.endsWith("+xml") || TEXTUAL_MIME.has(t);
+}
+
+/** Decode base64 to raw bytes (Workers/Node both provide atob). */
+function base64ToBytes(b64: string): Uint8Array {
+	const bin = atob(b64);
+	const bytes = new Uint8Array(bin.length);
+	for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+	return bytes;
+}
+
+/** Reconstruct a standard `Response` from the proxied payload, decoding
+ * base64-encoded bodies to raw bytes so binary survives byte-for-byte. */
+function proxiedToResponse(p: ProxiedResponse): Response {
+	const headers = new Headers(p.headers);
+	// The proxy runtime already decoded the body; drop stale framing headers.
+	headers.delete("content-encoding");
+	headers.delete("content-length");
+	const body = p.bodyEncoding === "base64" ? base64ToBytes(p.body) : p.body;
+	// Null-body statuses reject any body (even "") in the Response constructor.
+	return new Response([204, 205, 304].includes(p.status) ? null : body, { status: p.status, statusText: p.statusText, headers });
+}
+
 /** Decide whether a fetch should go through the residential proxy. `auto`
  * (default) proxies when enabled unless the host is a known direct host;
  * `proxy`/`direct` force it (e.g. egress forces `proxy` to probe the exit). */
@@ -81,7 +155,9 @@ export function willProxy(env: TailscaleEnv, url: string, route: Route = "auto")
  * Drop-in `fetch` that routes through the Tailscale residential proxy per the
  * smart-routing policy (see willProxy), and falls back to a DIRECT fetch if the
  * proxy errors — so enabling the proxy can never take the Worker down if the
- * tailnet box is offline. Bodies are strings (all the proxy transports).
+ * tailnet box is offline. Binary-safe: base64-encoded proxy bodies are decoded
+ * to raw bytes, and if a legacy proxy returns a binary content type as a plain
+ * string (already mangled — U+FFFD), the URL is refetched direct instead.
  */
 export async function smartFetch(
 	env: TailscaleEnv,
@@ -89,15 +165,31 @@ export async function smartFetch(
 	init: { method?: string; headers?: Headers | Record<string, string>; body?: string } = {},
 	route: Route = "auto",
 ): Promise<Response> {
+	// GitHub auth applies regardless of route; caller-supplied headers win.
+	const ghAuth = githubAuthHeaders(env, url);
+	let directRoute: FetchRoute = "direct";
 	if (willProxy(env, url, route)) {
 		try {
-			const headers = init.headers instanceof Headers ? Object.fromEntries(init.headers) : (init.headers ?? {});
-			return await fetchPageViaTailscale(env, url, { method: init.method, headers, body: init.body });
+			const callerHeaders = init.headers instanceof Headers ? Object.fromEntries(init.headers) : (init.headers ?? {});
+			const headers = { ...ghAuth, ...callerHeaders };
+			const p = await fetchViaTailscale(env, url, { method: init.method, headers, body: init.body });
+			if (p.bodyEncoding === "base64" || isTextualContentType(new Headers(p.headers).get("content-type"))) {
+				tallyRoute("proxied");
+				return proxiedToResponse(p);
+			}
+			// Corrupt bytes are worse than a datacenter-IP fetch: fall through.
+			directRoute = "binary_refetch";
+			console.warn(`smartFetch: proxy returned a stringly binary body for ${url} — refetching direct for byte fidelity`);
 		} catch (e) {
+			directRoute = "proxy_fallback";
 			console.warn(`smartFetch: proxy failed, falling back to direct — ${String((e as Error).message ?? e)}`);
 		}
 	}
-	return fetch(url, { method: init.method, headers: init.headers, body: init.body });
+	tallyRoute(directRoute);
+	const callerHeaders = init.headers instanceof Headers ? Object.fromEntries(init.headers) : (init.headers ?? {});
+	const headers = { ...ghAuth, ...callerHeaders };
+	// Same 30s bound as the proxy path — a hung origin must not hang the Worker.
+	return fetch(url, { method: init.method, headers, body: init.body, signal: AbortSignal.timeout(30_000) });
 }
 
 /**
@@ -114,7 +206,10 @@ export async function fetchViaTailscale(
 	}
 
 	const endpoint = new URL("/fetch", env.TAILSCALE_PROXY_URL).href;
-	const payload = JSON.stringify({ url, method: init?.method, headers: init?.headers, body: init?.body });
+	// acceptBodyEncoding tells an upgraded proxy it may base64-encode the
+	// response body (signaled back via bodyEncoding:"base64") so binary survives
+	// the JSON transport; legacy proxies ignore it and return plain strings.
+	const payload = JSON.stringify({ url, method: init?.method, headers: init?.headers, body: init?.body, acceptBodyEncoding: "base64" });
 	// HMAC-sign (timestamp + payload) so the secret never crosses the wire and
 	// requests can't be replayed outside a short window.
 	const ts = String(Date.now());
@@ -143,10 +238,5 @@ export async function fetchViaTailscale(
  * callers can treat it like a normal fetch result (`.text()`, `.status`, …).
  */
 export async function fetchPageViaTailscale(env: TailscaleEnv, url: string, init?: Parameters<typeof fetchViaTailscale>[2]): Promise<Response> {
-	const p = await fetchViaTailscale(env, url, init);
-	const headers = new Headers(p.headers);
-	// The runtime already decoded the body; drop stale framing headers.
-	headers.delete("content-encoding");
-	headers.delete("content-length");
-	return new Response(p.body, { status: p.status, statusText: p.statusText, headers });
+	return proxiedToResponse(await fetchViaTailscale(env, url, init));
 }

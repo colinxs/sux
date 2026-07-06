@@ -19,7 +19,8 @@ async function blankPdf(pages = 1): Promise<string> {
 const PNG_1x1 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
 const run = (args: any) => pdf.run({} as any, args);
-const load = async (r: any) => PDFDocument.load(unb64(r.content[0].text));
+// Inline delivery is the standard { mime, size, base64 } envelope.
+const load = async (r: any) => PDFDocument.load(unb64(JSON.parse(r.content[0].text).base64));
 
 describe("pdf", () => {
 	it("renders literal text into a PDF", async () => {
@@ -44,6 +45,20 @@ describe("pdf", () => {
 		const r = await run({ sources: [{ data: await blankPdf(5) }], pages: "2-4" });
 		expect(r.isError).toBeFalsy();
 		expect((await load(r)).getPageCount()).toBe(3);
+	});
+
+	it("keeps out-of-order page specs in original document order (spec selects, does not reorder)", async () => {
+		const doc = await PDFDocument.create();
+		doc.addPage([100, 100]);
+		doc.addPage([200, 200]);
+		doc.addPage([300, 300]);
+		const r = await run({ sources: [{ data: b64(await doc.save()) }], pages: "3,1" });
+		expect(r.isError).toBeFalsy();
+		const out = await load(r);
+		expect(out.getPageCount()).toBe(2);
+		// Pinned behavior: pages come back in original document order (1 then 3), not spec order (3 then 1).
+		expect(out.getPage(0).getWidth()).toBe(100);
+		expect(out.getPage(1).getWidth()).toBe(300);
 	});
 
 	it("adds a table-of-contents outline", async () => {
@@ -85,8 +100,28 @@ describe("pdf", () => {
 		expect((await load(r)).getPageCount()).toBe(1);
 	});
 
+	it("returns the standard { mime, size, base64 } inline envelope", async () => {
+		const r = await run({ text: "hello" });
+		expect(r.isError).toBeFalsy();
+		const j = JSON.parse(r.content[0].text);
+		expect(j.mime).toBe("application/pdf");
+		expect(j.size).toBe(unb64(j.base64).length);
+		expect(j.size).toBeGreaterThan(0);
+	});
+
 	it("errors with no usable source", async () => {
 		expect((await run({})).isError).toBe(true);
+	});
+
+	it('as:"url" stores the PDF in the CAS store and returns a compact ref', async () => {
+		const env = { R2: { put: async () => {} }, OAUTH_KV: { put: async () => {} } } as any;
+		const r = await pdf.run(env, { text: "hello", as: "url" });
+		expect(r.isError).toBeFalsy();
+		const ref = JSON.parse(r.content[0].text);
+		expect(ref.url).toMatch(/\/s\/[0-9a-f-]{36}$/);
+		expect(ref.content_type).toBe("application/pdf");
+		expect(ref.sha256).toMatch(/^[0-9a-f]{64}$/);
+		expect(ref.size).toBeGreaterThan(0);
 	});
 
 	it("is marked raw", () => {

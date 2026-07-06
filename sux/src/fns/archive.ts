@@ -1,12 +1,6 @@
 import { type Fn, fail, ok } from "../registry";
 import { gunzipSync, gzipSync, strFromU8, strToU8, unzipSync, zipSync } from "fflate";
-
-const b64 = (b: Uint8Array): string => {
-	let s = "";
-	for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode(...b.subarray(i, i + 0x8000));
-	return btoa(s);
-};
-const unb64 = (s: string): Uint8Array => Uint8Array.from(atob(s.trim()), (c) => c.charCodeAt(0));
+import { deliverBytes, fromB64, putBlob, toB64 } from "./_util";
 
 const MAX_TEXT = 100_000; // don't inline megabytes of decoded text per entry
 
@@ -26,13 +20,15 @@ function looksUtf8(bytes: Uint8Array): boolean {
 }
 
 function toBytes(f: { name?: unknown; content?: unknown; base64?: unknown }): Uint8Array {
-	if (typeof f?.base64 === "string" && f.base64) return unb64(f.base64);
+	if (typeof f?.base64 === "string" && f.base64) return fromB64(f.base64);
 	if (typeof f?.content === "string") return strToU8(f.content);
 	return new Uint8Array(0);
 }
 
-function decodeEntry(name: string, data: Uint8Array): { name: string; bytes: number; text?: string; truncated?: boolean } {
-	const e: { name: string; bytes: number; text?: string; truncated?: boolean } = { name, bytes: data.length };
+type Entry = { name: string; bytes: number; text?: string; truncated?: boolean; url?: string; sha256?: string };
+
+function decodeEntry(name: string, data: Uint8Array): Entry {
+	const e: Entry = { name, bytes: data.length };
 	if (looksUtf8(data)) {
 		const text = strFromU8(data);
 		if (text.length > MAX_TEXT) {
@@ -48,7 +44,7 @@ function decodeEntry(name: string, data: Uint8Array): { name: string; bytes: num
 export const archive: Fn = {
 	name: "archive",
 	description:
-		"Pack files into an archive or unpack one, using fflate (pure JS). op: pack | unpack (required). format: zip (default) | gzip. pack: give `files` as [{ name, content (text) | base64 }] — zip bundles them all, gzip compresses one file's bytes; returns { format, bytes, base64 }. unpack: give `base64` (+ format) — zip lists every entry, gzip yields one; returns { entries: [{ name, bytes, text? }] } with text decoded when it looks like UTF-8. Chain with `compress` for other codecs.",
+		"Pack files into an archive or unpack one, using fflate (pure JS). op: pack | unpack (required). format: zip (default) | gzip. pack: give `files` as [{ name, content (text) | base64 }] — zip bundles them all, gzip compresses one file's bytes; returns { format, bytes, base64 }, or a compact /s/<uuid> ref with `as: \"url\"`. unpack: give `base64` (+ format) — zip lists every entry, gzip yields one; returns { entries: [{ name, bytes, text? }] } with text decoded when it looks like UTF-8; with `as: \"url\"` every entry (including binary ones) also carries a consumable { url, sha256 } CAS ref. Chain with `compress` for other codecs.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -71,14 +67,16 @@ export const archive: Fn = {
 				},
 			},
 			base64: { type: "string", description: "For unpack. The archive bytes as base64." },
+			as: { type: "string", enum: ["base64", "url"], default: "base64", description: "Delivery: inline base64 (default) or content-addressed /s/<uuid> URLs (pack: the archive; unpack: each entry)." },
 		},
 	},
 	cacheable: true,
 	raw: true,
-	run: async (_env, args) => {
+	run: async (env, args) => {
 		const op = String(args?.op ?? "");
 		const format = String(args?.format ?? "zip");
 		if (format !== "zip" && format !== "gzip") return fail("format must be 'zip' or 'gzip'.");
+		const mime = format === "zip" ? "application/zip" : "application/gzip";
 		try {
 			if (op === "pack") {
 				const files = Array.isArray(args?.files) ? (args.files as any[]) : [];
@@ -93,17 +91,29 @@ export const archive: Fn = {
 					if (files.length !== 1) return fail(`gzip packs exactly one file — got ${files.length}. Use format='zip' for multiple.`);
 					out = gzipSync(toBytes(files[0]), { level: 6 });
 				}
-				return ok(JSON.stringify({ format, bytes: out.length, base64: b64(out) }, null, 2));
+				return deliverBytes(env, out, mime, args?.as, () => ok(JSON.stringify({ format, bytes: out.length, base64: toB64(out) }, null, 2)));
 			}
 			if (op === "unpack") {
 				if (typeof args?.base64 !== "string" || !args.base64) return fail("unpack needs `base64` (the archive bytes).");
-				const bytes = unb64(String(args.base64));
-				const entries: Array<{ name: string; bytes: number; text?: string; truncated?: boolean }> = [];
+				const bytes = fromB64(String(args.base64));
+				const raw: Array<{ name: string; data: Uint8Array }> = [];
 				if (format === "zip") {
 					const files = unzipSync(bytes);
-					for (const [name, data] of Object.entries(files)) entries.push(decodeEntry(name, data));
+					for (const [name, data] of Object.entries(files)) raw.push({ name, data });
 				} else {
-					entries.push(decodeEntry("data", gunzipSync(bytes)));
+					raw.push({ name: "data", data: gunzipSync(bytes) });
+				}
+				const entries: Entry[] = [];
+				for (const { name, data } of raw) {
+					const e = decodeEntry(name, data);
+					// as:"url" → each entry (crucially, binary ones that get no inline
+					// text) becomes a consumable /s/<uuid> CAS ref.
+					if (args?.as === "url") {
+						const ref = await putBlob(env, data, "application/octet-stream");
+						e.url = ref.url;
+						e.sha256 = ref.sha256;
+					}
+					entries.push(e);
 				}
 				return ok(JSON.stringify({ format, entries }, null, 2));
 			}

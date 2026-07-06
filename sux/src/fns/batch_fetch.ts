@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { fetchText, isHttpUrl } from "./_util";
+import { fetchText, isHttpUrl, noCacheOn4xx } from "./_util";
 
 // Fetch many URLs concurrently through the residential proxy (direct fallback).
 // Concurrency is capped; each URL is fetched inside its own try/catch so one
@@ -57,6 +57,9 @@ export const batch_fetch: Fn = {
 		const pool = Math.min(CONCURRENCY, urls.length);
 		await Promise.all(Array.from({ length: pool }, () => worker()));
 
-		return ok(JSON.stringify(results, null, 2));
+		// Worst status across the batch decides cacheability — a per-URL `error`
+		// (network blip) counts as a 5xx so one bad URL never poisons the cache.
+		const worst = results.reduce((m, r) => Math.max(m, r.error !== undefined ? 599 : r.status ?? 0), 0);
+		return noCacheOn4xx(ok(JSON.stringify(results, null, 2)), worst);
 	},
 };

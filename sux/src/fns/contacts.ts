@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { isHttpUrl, fetchText, stripHtml } from "./_util";
+import { fetchTextOk, stripHtml } from "./_util";
 
 const EMAIL = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi;
 // US-style (with optional country code) OR an E.164-ish international run.
@@ -56,8 +56,9 @@ export const contacts: Fn = {
 		} else if (typeof args?.html === "string" && args.html) {
 			raw = args.html;
 		} else if (args?.url) {
-			if (!isHttpUrl(args.url)) return fail("url must be an absolute http(s) URL.");
-			raw = (await fetchText(env, String(args.url))).text;
+			const fetched = await fetchTextOk(env, args.url);
+			if ("error" in fetched) return fail(fetched.error);
+			raw = fetched.text;
 		} else {
 			return fail("Provide `url`, `html`, or `text`.");
 		}

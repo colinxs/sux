@@ -1,4 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("../proxy", () => ({
+	smartFetch: vi.fn(async () => new Response("<html><body>Too Many Requests</body></html>", { status: 429 })),
+}));
+
 import { declutter } from "./declutter";
 
 const run = async (args: any) => (await declutter.run({} as any, args)).content[0].text;
@@ -37,5 +42,11 @@ describe("declutter", () => {
 
 	it("errors without html or url", async () => {
 		expect((await declutter.run({} as any, {})).isError).toBe(true);
+	});
+
+	it("fails on an upstream error page instead of cleaning it", async () => {
+		const r = await declutter.run({} as any, { url: "https://example.com" });
+		expect(r.isError).toBe(true); // errors never enter the KV cache
+		expect(r.content[0].text).toMatch(/HTTP 429/);
 	});
 });

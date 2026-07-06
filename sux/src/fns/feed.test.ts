@@ -15,6 +15,7 @@ vi.mock("../proxy", () => ({
 	smartFetch: vi.fn(async () => new Response(RSS, { status: 200 })),
 }));
 
+import { smartFetch } from "../proxy";
 import { feed } from "./feed";
 
 describe("feed", () => {
@@ -45,5 +46,12 @@ describe("feed", () => {
 	it("errors without xml or url", async () => {
 		const r = await feed.run({} as any, {});
 		expect(r.isError).toBe(true);
+	});
+
+	it("fails on an upstream error page instead of parsing an empty feed", async () => {
+		vi.mocked(smartFetch).mockResolvedValueOnce(new Response("<html>Too Many Requests</html>", { status: 429 }));
+		const r = await feed.run({} as any, { url: "https://ex.com/feed.xml" });
+		expect(r.isError).toBe(true); // errors never enter the KV cache
+		expect(r.content[0].text).toMatch(/HTTP 429/);
 	});
 });

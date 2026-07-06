@@ -64,3 +64,22 @@ export async function cacheKey(toolName: string, args: unknown): Promise<string>
 		.map((b) => b.toString(16).padStart(2, "0"))
 		.join("")}`;
 }
+
+// Write side of the KV cache used by index.ts tools/call. Three invariants:
+// - error and noCache results (e.g. upstream 4xx/5xx bodies) are returned to the
+//   caller but never cached — caching those poisons repeat calls for an hour;
+// - the internal noCache flag is always stripped so it never leaks into the MCP
+//   response (and never into the stored value, since the delete precedes the put);
+// - the write itself happens off the response path via ctx.waitUntil (same
+//   pattern as recordCall — a KV put costs tens of ms and the caller shouldn't
+//   wait for it), and a failed put is swallowed: caching is best-effort.
+export function deferCacheWrite(
+	kv: { put: (key: string, value: string, opts: { expirationTtl: number }) => Promise<unknown> },
+	ctx: { waitUntil: (promise: Promise<unknown>) => void },
+	key: string | null,
+	result: { isError?: boolean; noCache?: boolean; [k: string]: unknown },
+): void {
+	const cacheable = key && !result.isError && !result.noCache;
+	delete result.noCache;
+	if (cacheable) ctx.waitUntil(kv.put(key, JSON.stringify(result), { expirationTtl: CACHE_TTL_SECONDS }).catch(() => {}));
+}

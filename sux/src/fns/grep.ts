@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { fetchText, isHttpUrl } from "./_util";
+import { fetchTextOk } from "./_util";
 
 export const grep: Fn = {
 	name: "grep",
@@ -32,12 +32,9 @@ export const grep: Fn = {
 
 		let text = typeof args?.text === "string" ? args.text : "";
 		if (!text && args?.url) {
-			if (!isHttpUrl(args.url)) return fail("url must be an absolute http(s) URL.");
-			try {
-				text = (await fetchText(env, String(args.url))).text;
-			} catch (e) {
-				return fail(`Fetch failed: ${String((e as Error).message ?? e)}`);
-			}
+			const fetched = await fetchTextOk(env, args.url);
+			if ("error" in fetched) return fail(fetched.error);
+			text = fetched.text;
 		}
 		if (!text) return fail("Provide `text` or `url`.");
 

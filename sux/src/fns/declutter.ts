@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { fetchText, isHttpUrl, stripHtml } from "./_util";
+import { loadHtml, stripHtml } from "./_util";
 
 // uBlock-style HTML cleaning: strip scripts/styles/iframes/ads/tracking pixels
 // and inline event handlers so downstream tools (summarize, readability, markdown)
@@ -49,14 +49,10 @@ export const declutter: Fn = {
 	},
 	cacheable: true,
 	run: async (env, args) => {
-		let html = "";
-		if (typeof args?.html === "string" && args.html) html = args.html;
-		else if (args?.url) {
-			if (!isHttpUrl(args.url)) return fail("url must be an absolute http(s) URL.");
-			html = (await fetchText(env, String(args.url))).text;
-		} else return fail("Provide `html` or `url`.");
+		const loaded = await loadHtml(env, args);
+		if ("error" in loaded) return fail(loaded.error);
 		try {
-			const cleaned = clean(html);
+			const cleaned = clean(loaded.html);
 			return ok(args?.to === "text" ? stripHtml(cleaned) : cleaned);
 		} catch (e) {
 			return fail(`declutter failed: ${String((e as Error).message ?? e)}`);

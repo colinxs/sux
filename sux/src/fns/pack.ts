@@ -35,7 +35,7 @@ function packKv(headers: string[], rows: Row[]): string {
 export const pack: Fn = {
 	name: "pack",
 	description:
-		"Re-encode a JSON array of objects into a compact, token-cheap tabular form so keys aren't repeated per row. format: tsv (default) | csv | kv. Emits a header (tsv/csv) or key=value pairs (kv). Returns the packed string plus an estimated token-savings note. Fails if `data` is not an array of objects.",
+		"Re-encode a JSON array of objects into a compact, token-cheap tabular form so keys aren't repeated per row. format: tsv (default) | csv | kv. Emits a header (tsv/csv) or key=value pairs (kv). Returns the packed string plus an estimated token-savings note (set note:false for the bare packed data, e.g. when piping downstream). Fails if `data` is not an array of objects.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -43,6 +43,7 @@ export const pack: Fn = {
 		properties: {
 			data: { type: "array", description: "JSON array of flat objects (records)." },
 			format: { type: "string", enum: ["tsv", "csv", "kv"], default: "tsv" },
+			note: { type: "boolean", default: true, description: "Append the token-savings note. Set false to return only the packed data." },
 		},
 	},
 	cacheable: true,
@@ -61,6 +62,8 @@ export const pack: Fn = {
 		if (headers.length === 0) return fail("`data` objects have no keys to pack.");
 
 		const packed = format === "csv" ? packCsv(headers, rows) : format === "kv" ? packKv(headers, rows) : packTsv(headers, rows, "\t");
+
+		if (args?.note === false) return ok(packed);
 
 		// ~4 chars/token heuristic for the savings note.
 		const originalBytes = JSON.stringify(data).length;

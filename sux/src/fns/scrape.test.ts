@@ -14,6 +14,12 @@ describe("scrape", () => {
 		expect(r.content[0].text).toMatch(/absolute http\(s\) url/);
 	});
 
+	it("accepts an uppercase HTTPS:// scheme (shared isHttpUrl is case-insensitive)", async () => {
+		vi.mocked(smartFetch).mockResolvedValueOnce(new Response("ok", { status: 200 }));
+		const r = await scrape.run({} as any, { url: "HTTPS://EXAMPLE.COM/" });
+		expect(r.isError).toBeFalsy();
+	});
+
 	it("fetches a page through the proxy and returns its body", async () => {
 		vi.mocked(smartFetch).mockResolvedValueOnce(new Response("<h1>Hi</h1>", { status: 200 }));
 		const r = await scrape.run({} as any, { url: "https://example.com" });

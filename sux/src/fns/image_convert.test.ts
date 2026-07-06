@@ -30,7 +30,11 @@ describe("image_convert", () => {
 		expect(r.isError).toBeFalsy();
 		expect(cap.t).toMatchObject({ width: 100, fit: "cover" });
 		expect(cap.o).toMatchObject({ format: "image/webp", quality: 80 });
-		expect(atob(r.content[0].text)).toBe("\t\t\t"); // bytes 9,9,9
+		// Standard inline envelope: { mime, size, base64 }.
+		const j = JSON.parse(r.content[0].text);
+		expect(j.mime).toBe("image/webp");
+		expect(j.size).toBe(3);
+		expect(atob(j.base64)).toBe("\t\t\t"); // bytes 9,9,9
 	});
 
 	it("rejects an unsupported target format", async () => {

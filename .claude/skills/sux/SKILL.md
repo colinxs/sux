@@ -1,11 +1,11 @@
 ---
 name: sux
-description: Route a task to the right sux edge function — web search, scrape/fetch through a residential proxy (full/smart/geo), extract/parse HTML (links, tables, metadata, readability, feeds, sitemaps, contacts, barcodes), convert formats (html↔markdown, csv/yaml/xml↔json, subtitles), compress/archive/encode/hash, minify + token-shrink, Workers-AI text (summarize, translate, classify, embed, ocr), and utilities (dns, whois, ip_geo, tls, redirects, robots, wayback, jwt, diff, calc, units, datetime, redact). Use when the user wants any web fetch, data transform, extraction, or lightweight compute done at the edge via the sux MCP connector.
+description: Route a task to the right sux edge function — web search (Kagi + native Google), scrape/fetch through a residential proxy (smart/full/geo), crawl a site, extract/parse HTML (links, tables, metadata, readability, feeds, sitemaps, contacts, entities), convert formats (markdown, html, csv, json, xml, yaml, subtitles), build/fill PDFs, convert images, compress/archive/encode/hash, declutter + token-pack, Workers-AI text (summarize, translate, classify, ocr, redact), archived snapshots (wayback), product search (shop), and storage (R2 store + KV). Use when the user wants any web fetch, data transform, extraction, or lightweight compute done at the edge via the sux MCP connector.
 ---
 
 # sux — the edge function engine
 
-sux is one Cloudflare Worker exposing ~58 composable functions as MCP tools
+sux is one Cloudflare Worker exposing 50 composable functions as MCP tools
 (Julia-style generic verbs + multiple dispatch). **Kagi is just one function (`search`).**
 Full inventory + status: **`sux/FUNCTIONS.md`** (run `npm run docs` to regenerate).
 
@@ -16,43 +16,53 @@ to keep token cost down (e.g. `grep`/`select`/`readability` before dumping a who
 
 | The user wants… | function |
 |---|---|
-| web search / news / videos | `search` (Kagi) |
-| local shopping / prices near me | `local_shop` |
-| fetch a page that blocks datacenter IPs | `scrape` / `protocol` |
-| raw HTTP with full control | `protocol` (smart) · `proxy` (full residential) |
+| web search / news | `search` (Kagi) · `web_search` (kagi + native Google via SerpAPI; `engine:"all"` fans out + can `summarize`) |
+| product search across retailers | `shop` (gshop/amazon/walmart/home_depot via SerpAPI) |
+| fetch a page that blocks datacenter IPs | `scrape` |
+| force every request through a residential exit | `proxy` (full residential) |
+| pick the exit region for geo-priced / geo-gated data | `geo_fetch` |
+| crawl a whole site / follow links | `crawl` |
 | main article text (strip nav/ads) | `readability` |
 | links / JSON-LD / plain text from HTML | `extract` |
 | tables · metadata · feeds · sitemaps | `tables` · `metadata` · `feed` · `sitemap` |
 | CSS-select / regex-grep a page | `select` · `grep` |
-| emails & phones · barcodes | `contacts` · `gtin` / `barcode_lookup` |
-| convert formats | `html_markdown` · `csv_json` · `yaml_json` · `xml_json` · `subtitles` |
+| emails & phones · named entities | `contacts` · `entities` |
+| subtitles / transcript track from a video page | `subtitles` |
+| redirect chain · robots rules | `redirects` · `robots` |
+| convert formats (verb = target) | `markdown` · `html` · `csv` · `json` · `xml` · `yaml` · `subtitles` |
+| strip ads/nav/tracking from HTML | `declutter` (compose before summarize/readability/markdown) |
+| build / merge / paginate a PDF | `pdf` (anything→PDF: merge, TOC, forms, metadata, OCR) |
+| add fillable form fields to a PDF | `fillable` |
+| convert an image format | `image_convert` |
 | compress / archive / encode / hash | `compress` · `archive` · `encode` · `hash` |
-| minify an asset · shrink tokens | `optimize` · `shrink` (`kind:"token"`) |
-| summarize / translate / classify / embed / OCR | `summarize` · `translate` · `classify` · `embed` · `ocr` |
+| pack / shrink tokens of a payload | `pack` |
+| summarize / translate / classify / OCR | `summarize` · `translate` · `classify` · `ocr` |
 | PII redaction | `redact` |
-| dns · whois · ip geo · tls · redirects · robots | `dns` · `whois` · `ip_geo` · `tls_info` · `redirects` · `robots` |
 | archived snapshot / page history | `wayback` |
-| jwt · diff · calc · units · datetime · validate | `jwt` · `diff` · `calc` · `units` · `datetime` · `validate` |
-| query a JSON blob by path | `json_query` |
-| YouTube transcript | `youtube` |
+| chain tools server-side (COMPOSE) | `pipe` (`{{prev}}` feeds each step) |
+| run one tool over many inputs (MAP) | `batch` · `batch_fetch` (many URLs) |
+| stash / fetch content by handle or URL | `store` (R2, content-addressed) · `kv_get`/`kv_put`/`kv_list`/`kv_delete` |
+| report a bug | `issue` |
 
 ## Fetch routing modes (keep all three)
 
 - **smart** (default) — cheapest rung first; residential only when a datacenter IP is
-  blocked; direct fallback so it never hard-fails. (`scrape`, `protocol`.)
+  blocked; direct fallback so it never hard-fails. (`scrape`.)
 - **full proxy** — force everything through the residential exit, no fallback. (`proxy`.)
-- **geo** — pick the exit locale for region-priced / geo-gated data.
+- **geo** — pick the exit locale for region-priced / geo-gated data. (`geo_fetch`.)
 
 ## Conventions
 
-- Every result is MCP text; structured data is JSON, binary is base64 inside JSON.
+- Every result is MCP text; structured data is JSON, binary is base64 inside JSON
+  (or `as:"url"` for a CAS-backed download link on binary outputs).
 - Cacheable functions are memoized in KV by a hash of their arguments — repeat calls are free.
-- Bidirectional verbs take a `direction` arg (e.g. `csv_to_json` ↔ `json_to_csv`).
-- Planned stubs (`html_to_pdf`, `pdf_to_text`, `pdf_to_images`, `office_to_pdf`,
-  `image_convert`) return an honest error — they need Browser Rendering / WASM not yet wired.
+- Converters are named for their **target** format (`markdown`, `html`, `csv`, `json`,
+  `xml`, `yaml`) and auto-detect the input — e.g. call `json` with CSV or YAML in, `csv`
+  with JSON in.
+- `image_convert` runs via the Images binding; `pdf`/`fillable`/`ocr` handle document I/O.
 
 ## Token discipline
 
 sux does the heavy work server-side and returns only the distilled result. Prefer
-projecting first: `grep`/`select`/`readability`/`json_query` to slice, `optimize` to
-minify, `shrink(kind:"token")` to squeeze — then hand the small result to the model.
+projecting first: `grep`/`select`/`readability` to slice, `declutter` to strip chrome,
+`pack` to squeeze — then hand the small result to the model.

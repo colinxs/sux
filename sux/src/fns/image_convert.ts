@@ -1,6 +1,5 @@
-import { type Fn, fail, ok } from "../registry";
-import { deliverBytes, fromB64, isHttpUrl, toB64 } from "./_util";
-import { smartFetch } from "../proxy";
+import { type Fn, fail } from "../registry";
+import { deliverBytes, inlineB64, isHttpUrl, loadBytes } from "./_util";
 
 const MIME: Record<string, string> = { png: "image/png", jpeg: "image/jpeg", webp: "image/webp", avif: "image/avif" };
 
@@ -17,7 +16,7 @@ export const imageConvert: Fn = {
 	description:
 		"Transform an image: convert format (png, jpeg, webp, avif), resize, and apply light adjustments via the Cloudflare Images binding. " +
 		"Give `image` (base64) or `url`, and `to` (target format). Options: width, height, fit (scale-down|contain|cover|crop|pad), rotate (90|180|270), quality (1-100), blur (1-250), sharpen (0-10), brightness, contrast, gamma. " +
-		"Returns the transformed image as base64. Best-effort: needs the Cloudflare Images binding (IMAGES) at runtime; video is not supported here (use Cloudflare Media Transformations) and is rejected with a clear message.",
+		"Returns JSON { mime, size, base64 } (or a compact ref with `as: \"url\"`). Best-effort: needs the Cloudflare Images binding (IMAGES) at runtime; video is not supported here (use Cloudflare Media Transformations) and is rejected with a clear message.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -45,15 +44,12 @@ export const imageConvert: Fn = {
 		const to = String(args?.to ?? "");
 		if (!MIME[to]) return fail("`to` must be one of: png, jpeg, webp, avif.");
 
-		// Load source bytes.
+		// Load source bytes (shared _util.loadBytes: binary-safe proxy fetch,
+		// HTTP>=400 rejection, /s/<uuid> short-circuit).
+		if (!(typeof args?.image === "string" && args.image) && !isHttpUrl(args?.url)) return fail("Provide `image` (base64) or a fetchable `url`.");
 		let bytes: Uint8Array;
 		try {
-			if (typeof args?.image === "string" && args.image) bytes = fromB64(args.image);
-			else if (isHttpUrl(args?.url)) {
-				const resp = await smartFetch(env, String(args.url), {});
-				if (!resp.ok) return fail(`Failed to fetch image: HTTP ${resp.status}`);
-				bytes = new Uint8Array(await resp.arrayBuffer());
-			} else return fail("Provide `image` (base64) or a fetchable `url`.");
+			({ bytes } = await loadBytes(env, { base64: args?.image, url: args?.url }));
 		} catch (e) {
 			return fail(`Could not read source image: ${String((e as Error).message ?? e)}`);
 		}
@@ -77,7 +73,7 @@ export const imageConvert: Fn = {
 			if (typeof args?.quality === "number") out.quality = args.quality;
 			const result = await env.IMAGES.input(bytes).transform(t).output(out);
 			const resultBytes = new Uint8Array(await result.response().arrayBuffer());
-			return deliverBytes(env, resultBytes, MIME[to], args?.as, () => ok(toB64(resultBytes)));
+			return deliverBytes(env, resultBytes, MIME[to], args?.as, () => inlineB64(resultBytes, MIME[to]));
 		} catch (e) {
 			return fail(`image_convert failed: ${String((e as Error).message ?? e)}`);
 		}

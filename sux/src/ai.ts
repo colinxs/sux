@@ -33,7 +33,11 @@ export async function llm(env: AiEnv, system: string, user: string, maxTokens = 
 export async function textFromUrlOr(env: TailscaleEnv, text: string, url?: string): Promise<string> {
 	if (text) return text;
 	if (url && /^https?:\/\//i.test(url)) {
-		const html = await (await smartFetch(env, url, {})).text();
+		const resp = await smartFetch(env, url, {});
+		// Surface upstream 4xx/5xx instead of returning the error page's markup —
+		// otherwise callers confidently summarize (and cache) a 403/404/consent wall.
+		if (resp.status >= 400) throw new Error(`Upstream fetch failed: HTTP ${resp.status} — ${url}`);
+		const html = await resp.text();
 		return html
 			.replace(/<script[\s\S]*?<\/script>/gi, " ")
 			.replace(/<style[\s\S]*?<\/style>/gi, " ")

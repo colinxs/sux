@@ -44,4 +44,15 @@ describe("geo_fetch", () => {
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toMatch(/Fetch failed/);
 	});
+
+	it("marks upstream error pages noCache (they must not poison the cache)", async () => {
+		vi.mocked(smartFetch).mockResolvedValueOnce(new Response("consent wall", { status: 403 }));
+		const r = await geo_fetch.run({} as any, { url: "https://x.com/hot" });
+		expect(r.isError).toBeFalsy(); // raw transport still returns the body
+		expect(r.noCache).toBe(true);
+		expect(JSON.parse(r.content[0].text).status).toBe(403);
+		// 2xx responses stay cacheable.
+		const good = await geo_fetch.run({} as any, { url: "https://x.com" });
+		expect(good.noCache).toBeUndefined();
+	});
 });

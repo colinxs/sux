@@ -1,5 +1,6 @@
 import { type Fn, fail, ok } from "../registry";
 import { smartFetch } from "../proxy";
+import { isHttpUrl, noCacheOn4xx } from "./_util";
 
 export const geo_fetch: Fn = {
 	name: "geo_fetch",
@@ -18,7 +19,7 @@ export const geo_fetch: Fn = {
 	cacheable: true,
 	run: async (env, args) => {
 		const url = String(args?.url ?? "");
-		if (!/^https?:\/\//i.test(url)) return fail("url must be absolute http(s).");
+		if (!isHttpUrl(url)) return fail("url must be absolute http(s).");
 		const geo = args?.geo != null ? String(args.geo).trim() : "";
 		const maxBytes = Number.isFinite(args?.max_bytes) ? Math.max(0, Number(args.max_bytes)) : 100_000;
 		const headers: Record<string, string> = {};
@@ -32,6 +33,6 @@ export const geo_fetch: Fn = {
 		}
 		const full = await resp.text();
 		const text = full.slice(0, maxBytes);
-		return ok(JSON.stringify({ url, geo: geo || null, status: resp.status, bytes: full.length, text }, null, 2));
+		return noCacheOn4xx(ok(JSON.stringify({ url, geo: geo || null, status: resp.status, bytes: full.length, text }, null, 2)), resp.status);
 	},
 };

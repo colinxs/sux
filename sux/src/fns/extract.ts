@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { smartFetch } from "../proxy";
+import { loadHtml } from "./_util";
 
 export const extract: Fn = {
 	name: "extract",
@@ -15,12 +15,9 @@ export const extract: Fn = {
 	},
 	cacheable: true,
 	run: async (env, args) => {
-		let html = String(args?.html ?? "");
-		if (!html && args?.url) {
-			if (!/^https?:\/\//.test(String(args.url))) return fail("url must be absolute http(s).");
-			html = await (await smartFetch(env, String(args.url), {})).text();
-		}
-		if (!html) return fail("Provide `html` or `url`.");
+		const loaded = await loadHtml(env, args);
+		if ("error" in loaded) return fail(loaded.error);
+		const html = loaded.html;
 		const what = String(args?.what ?? "text");
 
 		if (what === "links") {
