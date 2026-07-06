@@ -1,0 +1,26 @@
+version: 2
+updates:
+  # npm dependencies (wrangler, hono, octokit, zod, vitest, ...)
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # One PR for all non-major bumps to keep noise down.
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: "deps"
+
+  # GitHub Actions used by the CI/Deploy workflows.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "ci"

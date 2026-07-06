@@ -31,6 +31,9 @@ jobs:
       - name: Type-check
         run: npm run type-check
 
+      - name: Test
+        run: npm test
+
       # Validates the Worker bundles & config are deployable without deploying.
       - name: Build (dry-run deploy)
         run: npx wrangler deploy --dry-run
