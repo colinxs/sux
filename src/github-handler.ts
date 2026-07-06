@@ -39,9 +39,10 @@ app.get("/authorize", async (c) => {
 		client: await c.env.OAUTH_PROVIDER.lookupClient(clientId),
 		csrfToken,
 		server: {
-			description: "This is a demo MCP Remote Server using GitHub for authentication.",
-			logo: "https://avatars.githubusercontent.com/u/314135?s=200&v=4",
-			name: "Cloudflare GitHub MCP Server",
+			description:
+				"Private bridge that lets your Claude connector reach the Kagi MCP server. Sign in with the authorized GitHub account to continue.",
+			logo: "https://assets.kagi.com/v2/assets/img/logo_dark.png",
+			name: "Kagi MCP (private bridge)",
 		},
 		setCookie,
 		state: { oauthReqInfo },

@@ -43,6 +43,12 @@ const kagiProxy = {
 		const login = ctx.props?.login?.toLowerCase();
 		const allowed = (env.ALLOWED_GITHUB_LOGIN ?? "").toLowerCase();
 		if (!login || login !== allowed) {
+			// Log the rejection so a misconfigured ALLOWED_GITHUB_LOGIN (or an
+			// unexpected visitor) is diagnosable from `wrangler tail`. Note that an
+			// empty ALLOWED_GITHUB_LOGIN fails closed here — every request 403s.
+			console.warn(
+				`gate: rejected login=${JSON.stringify(ctx.props?.login ?? null)} (allowed set: ${allowed ? "yes" : "no"})`,
+			);
 			return new Response(
 				JSON.stringify({
 					error: "forbidden",
@@ -73,13 +79,41 @@ const kagiProxy = {
 			duplex: "half",
 		};
 
-		const upstream = await fetch(target, init);
+		let upstream: Response;
+		try {
+			upstream = await fetch(target, init);
+		} catch (err) {
+			// Network-level failure reaching Kagi (DNS, TLS, timeout). The tool
+			// error path in Kagi returns 200 with an in-band JSON-RPC error, so
+			// reaching here means the request never completed at all.
+			console.error(`upstream: fetch to ${target} threw:`, err);
+			return new Response(
+				JSON.stringify({
+					error: "bad_gateway",
+					detail: "Failed to reach the Kagi MCP upstream.",
+				}),
+				{ status: 502, headers: { "content-type": "application/json" } },
+			);
+		}
+
+		if (upstream.status >= 400) {
+			console.error(`upstream: Kagi returned HTTP ${upstream.status} for ${request.method} ${incoming.pathname}`);
+		}
 
 		// Stream Kagi's response (JSON or text/event-stream) straight back.
+		//
+		// Copy the headers but drop content-encoding / content-length: the Workers
+		// runtime already decoded the body when it read `upstream.body`, so leaving
+		// a stale `content-encoding: gzip` would make the client try to gunzip
+		// plaintext, and a stale content-length would truncate/desync the stream.
+		const respHeaders = new Headers(upstream.headers);
+		respHeaders.delete("content-encoding");
+		respHeaders.delete("content-length");
+
 		return new Response(upstream.body, {
 			status: upstream.status,
 			statusText: upstream.statusText,
-			headers: upstream.headers,
+			headers: respHeaders,
 		});
 	},
 };
