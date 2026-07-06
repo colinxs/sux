@@ -68,15 +68,29 @@ const kagiProxy = {
 		headers.set("Authorization", `Bearer ${env.KAGI_API_KEY}`);
 		headers.delete("host");
 
+		// DIAGNOSTIC: log the authenticated MCP method in, and Kagi's answer out.
+		// MCP JSON-RPC bodies are tiny, so we read the body fully and forward it as
+		// a string (streaming only matters on the response/SSE side).
+		console.log(`gate: allowed login=${JSON.stringify(ctx.props?.login)}`);
+		const isBodyless = request.method === "GET" || request.method === "HEAD";
+		const bodyText = isBodyless ? undefined : await request.text();
+		if (bodyText !== undefined) {
+			try {
+				const j = JSON.parse(bodyText);
+				console.log(
+					`mcp -> ${request.method} method=${j.method ?? "?"} id=${JSON.stringify(j.id)} accept=${request.headers.get("accept")} sid=${request.headers.get("mcp-session-id") ?? "-"}`,
+				);
+			} catch {
+				console.log(`mcp -> ${request.method} (non-JSON body, ${bodyText.length}b)`);
+			}
+		} else {
+			console.log(`mcp -> ${request.method} accept=${request.headers.get("accept")} sid=${request.headers.get("mcp-session-id") ?? "-"}`);
+		}
+
 		const init: RequestInit = {
 			method: request.method,
 			headers,
-			body:
-				request.method === "GET" || request.method === "HEAD"
-					? undefined
-					: request.body,
-			// @ts-expect-error - `duplex` is required for streaming request bodies on Workers
-			duplex: "half",
+			body: bodyText,
 		};
 
 		let upstream: Response;
@@ -96,6 +110,10 @@ const kagiProxy = {
 			);
 		}
 
+		// DIAGNOSTIC: what did Kagi answer?
+		console.log(
+			`mcp <- ${upstream.status} ct=${upstream.headers.get("content-type")} sid=${upstream.headers.get("mcp-session-id") ?? "-"} enc=${upstream.headers.get("content-encoding") ?? "-"}`,
+		);
 		if (upstream.status >= 400) {
 			console.error(`upstream: Kagi returned HTTP ${upstream.status} for ${request.method} ${incoming.pathname}`);
 		}
