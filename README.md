@@ -41,26 +41,45 @@ Claude connector ──Bearer <oauth token>──▶ Worker /mcp
 Only `/mcp` is proxied (MCP Streamable HTTP transport). There is no `/sse`
 endpoint.
 
+## GitHub auth: device flow
+
+This Worker authenticates you with GitHub's **device authorization flow**, not the
+web/callback flow. The Worker asks GitHub for a short code, you enter it at
+`github.com/login/device`, and the Worker polls GitHub for the token. There is
+**no redirect_uri**, so:
+
+- The **same** GitHub OAuth App works for localhost *and* production — no
+  per-environment callback URLs, no second app.
+- `GITHUB_CLIENT_SECRET` is **not used** (device flow is a public-client grant).
+
+You must tick **"Enable Device Flow"** in the OAuth App settings, otherwise
+GitHub returns `404` on the device-code endpoint (the `/authorize` page will say
+so).
+
 ## Required secrets
 
 | Secret | Purpose |
 |---|---|
-| `GITHUB_CLIENT_ID` | GitHub OAuth app client ID |
-| `GITHUB_CLIENT_SECRET` | GitHub OAuth app client secret |
-| `COOKIE_ENCRYPTION_KEY` | Random 32-byte hex, e.g. `openssl rand -hex 32` — signs the approval/session cookies |
+| `GITHUB_CLIENT_ID` | GitHub OAuth app client ID (device flow enabled) |
 | `KAGI_API_KEY` | Your Kagi API token (from the Kagi dashboard) — injected server-side |
 | `ALLOWED_GITHUB_LOGIN` | The **one** GitHub username allowed through (case-insensitive) |
 
-If `ALLOWED_GITHUB_LOGIN` is unset or empty, the gate fails closed and **every**
-request returns `403`. If `KAGI_API_KEY` is wrong, Kagi returns tool errors
-in-band (HTTP 200 with `"isError": true`) rather than a clean 401 — see
-Troubleshooting.
+`GITHUB_CLIENT_SECRET` and `COOKIE_ENCRYPTION_KEY` are no longer required by the
+device flow (they were used by the old callback flow); leaving them set is
+harmless.
+
+If `ALLOWED_GITHUB_LOGIN` is unset or empty, auth fails closed — login is
+rejected, and any stray token also `403`s at the proxy. If `KAGI_API_KEY` is
+wrong, Kagi returns tool errors in-band (HTTP 200 with `"isError": true`) rather
+than a clean 401 — see Troubleshooting.
 
 ## Deploy
 
 1. Create a [GitHub OAuth App](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app):
    - Homepage URL: `https://kagi-mcp.<your-subdomain>.workers.dev`
-   - Authorization callback URL: `https://kagi-mcp.<your-subdomain>.workers.dev/callback`
+   - Authorization callback URL: anything (unused by device flow) — e.g. the
+     homepage URL
+   - **Check "Enable Device Flow"**, then save.
 2. Create the KV namespace and put its id in `wrangler.jsonc` under `OAUTH_KV`:
    ```bash
    wrangler kv namespace create "OAUTH_KV"
@@ -68,8 +87,6 @@ Troubleshooting.
 3. Set the secrets:
    ```bash
    wrangler secret put GITHUB_CLIENT_ID
-   wrangler secret put GITHUB_CLIENT_SECRET
-   wrangler secret put COOKIE_ENCRYPTION_KEY   # openssl rand -hex 32
    wrangler secret put KAGI_API_KEY
    wrangler secret put ALLOWED_GITHUB_LOGIN
    ```
@@ -78,22 +95,17 @@ Troubleshooting.
    wrangler deploy
    ```
 5. In Claude → **Settings → Connectors → Add custom connector**, enter
-   `https://kagi-mcp.<your-subdomain>.workers.dev/mcp` and complete the GitHub
-   login. Once connected, Kagi's tools appear.
+   `https://kagi-mcp.<your-subdomain>.workers.dev/mcp`. Complete the GitHub device
+   login (enter the shown code at `github.com/login/device`). Once connected,
+   Kagi's tools appear.
 
 ## Local development
 
-Use a **separate** GitHub OAuth app pointing at localhost:
-
-- Homepage URL: `http://localhost:8788`
-- Authorization callback URL: `http://localhost:8788/callback`
-
-Create `.dev.vars` (git-ignored) with all five secrets:
+The same GitHub OAuth App works locally — no separate app needed. Create
+`.dev.vars` (git-ignored):
 
 ```
 GITHUB_CLIENT_ID=...
-GITHUB_CLIENT_SECRET=...
-COOKIE_ENCRYPTION_KEY=...
 KAGI_API_KEY=...
 ALLOWED_GITHUB_LOGIN=...
 ```
@@ -114,18 +126,19 @@ Run `wrangler tail` (or watch `wrangler dev` output) and match the symptom:
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `403 forbidden` on every call; log shows `gate: rejected login=...` | Logged-in GitHub user ≠ `ALLOWED_GITHUB_LOGIN`, or that secret is empty | Set `ALLOWED_GITHUB_LOGIN` to your exact GitHub username |
+| `/authorize` page says "Failed to start… Enable Device Flow"; log shows `device/code failed: HTTP 404` | Device Flow not enabled on the OAuth App | Tick **Enable Device Flow** in the GitHub OAuth App settings |
+| Device page shows `GitHub user "x" is not authorized` | Logged-in GitHub user ≠ `ALLOWED_GITHUB_LOGIN`, or that secret is empty | Set `ALLOWED_GITHUB_LOGIN` to your exact GitHub username |
 | Connector adds fine, but every search returns an error like `Token signature failed to verify` | Wrong/empty `KAGI_API_KEY` (Kagi validates only on tool calls, in-band) | Re-copy the key from the Kagi dashboard; no spaces/newlines |
 | `502 bad_gateway`; log shows `upstream: fetch ... threw` | Worker couldn't reach `mcp.kagi.com` | Transient network / Kagi outage — retry |
-| OAuth login loops or `Invalid state` | Stale/mismatched cookies or `COOKIE_ENCRYPTION_KEY` changed | Clear cookies; keep `COOKIE_ENCRYPTION_KEY` stable |
+| Device code never completes | Code expired (~15 min) or entered on a different GitHub account | Reload `/authorize` for a fresh code; sign into the allowed account |
 
 ## Security notes
 
 - The Kagi API key lives only in Worker secrets and is injected server-side; it is
   never sent to the client.
-- The gate is enforced at the `/mcp` proxy. Any GitHub user can *complete* the
-  OAuth flow and receive a token, but a non-allowed token only ever gets a `403` —
-  it can never reach Kagi.
+- The gate is enforced twice: at **login** (a non-allowed GitHub user is rejected
+  before any token is issued) and again at the `/mcp` **proxy** (defense in depth —
+  a non-allowed token only ever gets a `403` and can never reach Kagi).
 - This is a single-user bridge. Review Cloudflare's
   [Securing MCP Servers](https://github.com/cloudflare/agents/blob/main/docs/securing-mcp-servers.md)
   before broadening access.
