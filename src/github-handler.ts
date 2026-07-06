@@ -1,234 +1,205 @@
-// GitHub OAuth via the *device authorization* flow.
-//
-// The web (authorization-code) flow requires GitHub to redirect back to a
-// registered callback URL, so a single OAuth App can serve exactly one host —
-// localhost OR the deployed Worker, not both. Device flow has no redirect_uri at
-// all: we ask GitHub for a short user code, the user enters it at
-// github.com/login/device, and we poll GitHub for the token. The same GitHub
-// OAuth App then works for local dev and production alike (just tick
-// "Enable Device Flow" in the app settings).
-//
-// This handler still terminates Claude's OAuth: once GitHub authorizes the
-// device, we call completeAuthorization() to mint the token Claude gets back.
-
 import { env } from "cloudflare:workers";
 import type { AuthRequest, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { Hono } from "hono";
 import { Octokit } from "octokit";
-import type { Props } from "./utils";
+import { fetchUpstreamAuthToken, getUpstreamAuthorizeUrl, type Props } from "./utils";
+import {
+	addApprovedClient,
+	bindStateToSession,
+	createOAuthState,
+	generateCSRFProtection,
+	isClientApproved,
+	OAuthError,
+	renderApprovalDialog,
+	validateCSRFToken,
+	validateOAuthState,
+} from "./workers-oauth-utils";
 
 const app = new Hono<{ Bindings: Env & { OAUTH_PROVIDER: OAuthHelpers } }>();
 
-const GITHUB_DEVICE_CODE_URL = "https://github.com/login/device/code";
-const GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token";
-const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
-const SCOPE = "read:user";
-const KV_PREFIX = "device:";
-
-type PendingAuth = {
-	oauthReqInfo: AuthRequest;
-	deviceCode: string;
-	interval: number;
-};
-
-/**
- * GET /authorize — entry point for Claude's OAuth flow.
- *
- * We start a GitHub device authorization, stash the request under a random poll
- * key, and render a page that shows the user code and polls for completion.
- */
 app.get("/authorize", async (c) => {
 	const oauthReqInfo = await c.env.OAUTH_PROVIDER.parseAuthRequest(c.req.raw);
-	if (!oauthReqInfo.clientId) {
+	const { clientId } = oauthReqInfo;
+	if (!clientId) {
 		return c.text("Invalid request", 400);
 	}
 
-	const resp = await fetch(GITHUB_DEVICE_CODE_URL, {
-		method: "POST",
-		headers: {
-			Accept: "application/json",
-			"Content-Type": "application/x-www-form-urlencoded",
-		},
-		body: new URLSearchParams({ client_id: env.GITHUB_CLIENT_ID, scope: SCOPE }).toString(),
-	});
-	if (!resp.ok) {
-		console.error(`device/code failed: HTTP ${resp.status}`, await resp.text());
-		return c.text(
-			"Failed to start GitHub device authorization. Is 'Enable Device Flow' turned on for the GitHub OAuth App?",
-			502,
-		);
+	// Check if client is already approved
+	if (await isClientApproved(c.req.raw, clientId, env.COOKIE_ENCRYPTION_KEY)) {
+		// Skip approval dialog but still create secure state and bind to session
+		const { stateToken } = await createOAuthState(oauthReqInfo, c.env.OAUTH_KV);
+		const { setCookie: sessionBindingCookie } = await bindStateToSession(stateToken);
+		return redirectToGithub(c.req.raw, stateToken, { "Set-Cookie": sessionBindingCookie });
 	}
 
-	const dc = (await resp.json()) as {
-		device_code: string;
-		user_code: string;
-		verification_uri: string;
-		verification_uri_complete?: string;
-		expires_in: number;
-		interval: number;
-	};
+	// Generate CSRF protection for the approval form
+	const { token: csrfToken, setCookie } = generateCSRFProtection();
 
-	const pollKey = crypto.randomUUID();
-	const pending: PendingAuth = {
-		oauthReqInfo,
-		deviceCode: dc.device_code,
-		interval: dc.interval,
-	};
-	await c.env.OAUTH_KV.put(KV_PREFIX + pollKey, JSON.stringify(pending), {
-		expirationTtl: Math.max(60, dc.expires_in),
+	return renderApprovalDialog(c.req.raw, {
+		client: await c.env.OAUTH_PROVIDER.lookupClient(clientId),
+		csrfToken,
+		server: {
+			description:
+				"Private bridge that lets your Claude connector reach the Kagi MCP server. Sign in with the authorized GitHub account to continue.",
+			logo: "https://assets.kagi.com/v2/assets/img/logo_dark.png",
+			name: "Kagi MCP (private bridge)",
+		},
+		setCookie,
+		state: { oauthReqInfo },
 	});
-
-	return c.html(
-		renderDevicePage({
-			userCode: dc.user_code,
-			verificationUri: dc.verification_uri,
-			verificationUriComplete: dc.verification_uri_complete ?? dc.verification_uri,
-			pollKey,
-			intervalMs: Math.max(1, dc.interval) * 1000,
-		}),
-	);
 });
 
-/**
- * GET /authorize/poll?key=... — polled by the device page.
- *
- * Falls through to this handler (the OAuth provider only intercepts
- * metadata/token/register/api routes). Returns JSON:
- *   { status: "pending" }                      — keep polling
- *   { status: "complete", redirectTo }         — navigate back to Claude
- *   { status: "error", error }                 — stop, show message
- */
-app.get("/authorize/poll", async (c) => {
-	const pollKey = c.req.query("key");
-	if (!pollKey) {
-		return c.json({ status: "error", error: "Missing key" }, 400);
-	}
+app.post("/authorize", async (c) => {
+	try {
+		// Read form data once
+		const formData = await c.req.raw.formData();
 
-	const raw = await c.env.OAUTH_KV.get(KV_PREFIX + pollKey);
-	if (!raw) {
-		return c.json({ status: "error", error: "Authorization expired. Reload to try again." });
-	}
-	const { oauthReqInfo, deviceCode } = JSON.parse(raw) as PendingAuth;
+		// Validate CSRF token
+		validateCSRFToken(formData, c.req.raw);
 
-	const resp = await fetch(GITHUB_TOKEN_URL, {
-		method: "POST",
+		// Extract state from form data
+		const encodedState = formData.get("state");
+		if (!encodedState || typeof encodedState !== "string") {
+			return c.text("Missing state in form data", 400);
+		}
+
+		let state: { oauthReqInfo?: AuthRequest };
+		try {
+			state = JSON.parse(atob(encodedState));
+		} catch (_e) {
+			return c.text("Invalid state data", 400);
+		}
+
+		if (!state.oauthReqInfo || !state.oauthReqInfo.clientId) {
+			return c.text("Invalid request", 400);
+		}
+
+		// Add client to approved list
+		const approvedClientCookie = await addApprovedClient(
+			c.req.raw,
+			state.oauthReqInfo.clientId,
+			c.env.COOKIE_ENCRYPTION_KEY,
+		);
+
+		// Create OAuth state and bind it to this user's session
+		const { stateToken } = await createOAuthState(state.oauthReqInfo, c.env.OAUTH_KV);
+		const { setCookie: sessionBindingCookie } = await bindStateToSession(stateToken);
+
+		// Set both cookies: approved client list + session binding
+		const headers = new Headers();
+		headers.append("Set-Cookie", approvedClientCookie);
+		headers.append("Set-Cookie", sessionBindingCookie);
+
+		return redirectToGithub(c.req.raw, stateToken, Object.fromEntries(headers));
+	} catch (error: any) {
+		console.error("POST /authorize error:", error);
+		if (error instanceof OAuthError) {
+			return error.toResponse();
+		}
+		// Unexpected non-OAuth error
+		return c.text(`Internal server error: ${error.message}`, 500);
+	}
+});
+
+async function redirectToGithub(
+	request: Request,
+	stateToken: string,
+	headers: Record<string, string> = {},
+) {
+	return new Response(null, {
 		headers: {
-			Accept: "application/json",
-			"Content-Type": "application/x-www-form-urlencoded",
+			...headers,
+			location: getUpstreamAuthorizeUrl({
+				client_id: env.GITHUB_CLIENT_ID,
+				redirect_uri: new URL("/callback", request.url).href,
+				scope: "read:user",
+				state: stateToken,
+				upstream_url: "https://github.com/login/oauth/authorize",
+			}),
 		},
-		body: new URLSearchParams({
-			client_id: env.GITHUB_CLIENT_ID,
-			device_code: deviceCode,
-			grant_type: DEVICE_GRANT,
-		}).toString(),
+		status: 302,
 	});
-	const data = (await resp.json()) as { access_token?: string; error?: string };
+}
 
-	// Still waiting for the user to enter the code.
-	if (data.error === "authorization_pending" || data.error === "slow_down") {
-		return c.json({ status: "pending" });
+/**
+ * OAuth Callback Endpoint
+ *
+ * This route handles the callback from GitHub after user authentication.
+ * It exchanges the temporary code for an access token, then stores some
+ * user metadata & the auth token as part of the 'props' on the token passed
+ * down to the client. It ends by redirecting the client back to _its_ callback URL
+ *
+ * SECURITY: This endpoint validates that the state parameter from GitHub
+ * matches both:
+ * 1. A valid state token in KV (proves it was created by our server)
+ * 2. The __Host-CONSENTED_STATE cookie (proves THIS browser consented to it)
+ *
+ * This prevents CSRF attacks where an attacker's state token is injected
+ * into a victim's OAuth flow.
+ */
+app.get("/callback", async (c) => {
+	// Validate OAuth state with session binding
+	// This checks both KV storage AND the session cookie
+	let oauthReqInfo: AuthRequest;
+	let clearSessionCookie: string;
+
+	try {
+		const result = await validateOAuthState(c.req.raw, c.env.OAUTH_KV);
+		oauthReqInfo = result.oauthReqInfo;
+		clearSessionCookie = result.clearCookie;
+	} catch (error: any) {
+		if (error instanceof OAuthError) {
+			return error.toResponse();
+		}
+		// Unexpected non-OAuth error
+		return c.text("Internal server error", 500);
 	}
 
-	if (!data.access_token) {
-		// expired_token, access_denied, incorrect_device_code, etc.
-		console.warn(`device token error: ${data.error}`);
-		await c.env.OAUTH_KV.delete(KV_PREFIX + pollKey);
-		return c.json({ status: "error", error: `GitHub authorization failed (${data.error ?? "unknown"}).` });
+	if (!oauthReqInfo.clientId) {
+		return c.text("Invalid OAuth request data", 400);
 	}
 
-	const accessToken = data.access_token;
+	// Exchange the code for an access token
+	const [accessToken, errResponse] = await fetchUpstreamAuthToken({
+		client_id: c.env.GITHUB_CLIENT_ID,
+		client_secret: c.env.GITHUB_CLIENT_SECRET,
+		code: c.req.query("code"),
+		redirect_uri: new URL("/callback", c.req.url).href,
+		upstream_url: "https://github.com/login/oauth/access_token",
+	});
+	if (errResponse) return errResponse;
+
+	// Fetch the user info from GitHub
 	const user = await new Octokit({ auth: accessToken }).rest.users.getAuthenticated();
 	const { login, name, email } = user.data;
 
-	// Gate at auth time too — defense in depth, and a clearer failure than the
-	// silent 403 the proxy would otherwise return on every later request.
-	const allowed = ((c.env as unknown as { ALLOWED_GITHUB_LOGIN?: string }).ALLOWED_GITHUB_LOGIN ?? "").toLowerCase();
-	if (!allowed || login.toLowerCase() !== allowed) {
-		await c.env.OAUTH_KV.delete(KV_PREFIX + pollKey);
-		console.warn(`auth gate: rejected login=${JSON.stringify(login)} (allowed set: ${allowed ? "yes" : "no"})`);
-		return c.json({
-			status: "error",
-			error: `GitHub user "${login}" is not authorized for this connector.`,
-		});
-	}
-
+	// Return back to the MCP client a new token
 	const { redirectTo } = await c.env.OAUTH_PROVIDER.completeAuthorization({
-		metadata: { label: name ?? login },
-		props: { accessToken, email, login, name } as Props,
+		metadata: {
+			label: name,
+		},
+		// This will be available on this.props inside MyMCP
+		props: {
+			accessToken,
+			email,
+			login,
+			name,
+		} as Props,
 		request: oauthReqInfo,
 		scope: oauthReqInfo.scope,
 		userId: login,
 	});
 
-	await c.env.OAUTH_KV.delete(KV_PREFIX + pollKey);
-	return c.json({ status: "complete", redirectTo });
+	// Clear the session binding cookie (one-time use) by creating response with headers
+	const headers = new Headers({ Location: redirectTo });
+	if (clearSessionCookie) {
+		headers.set("Set-Cookie", clearSessionCookie);
+	}
+
+	return new Response(null, {
+		status: 302,
+		headers,
+	});
 });
-
-function renderDevicePage(opts: {
-	userCode: string;
-	verificationUri: string;
-	verificationUriComplete: string;
-	pollKey: string;
-	intervalMs: number;
-}): string {
-	// user_code / URLs come from GitHub; escape before interpolating into HTML.
-	const esc = (s: string) =>
-		s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-	const userCode = esc(opts.userCode);
-	const verifyUri = esc(opts.verificationUri);
-	const verifyComplete = esc(opts.verificationUriComplete);
-	const pollKey = esc(opts.pollKey);
-
-	return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Kagi MCP — authorize with GitHub</title>
-<style>
-  :root { color-scheme: light dark; }
-  body { font-family: -apple-system, system-ui, sans-serif; max-width: 30rem; margin: 4rem auto; padding: 0 1.25rem; line-height: 1.5; }
-  h1 { font-size: 1.3rem; }
-  .code { font-size: 2rem; font-weight: 700; letter-spacing: 0.15em; margin: 1rem 0; padding: 0.75rem 1rem; border: 1px solid currentColor; border-radius: 0.5rem; text-align: center; user-select: all; }
-  a.btn { display: inline-block; margin-top: 0.5rem; padding: 0.6rem 1rem; border-radius: 0.5rem; background: #ffb319; color: #000; text-decoration: none; font-weight: 600; }
-  #status { margin-top: 1.5rem; font-weight: 600; }
-  .muted { opacity: 0.7; font-size: 0.9rem; }
-</style>
-</head>
-<body>
-  <h1>Kagi MCP — private bridge</h1>
-  <p>To authorize this connector, sign in with the allowed GitHub account:</p>
-  <ol>
-    <li>Open <a href="${verifyUri}" target="_blank" rel="noopener">${verifyUri}</a></li>
-    <li>Enter this code:</li>
-  </ol>
-  <div class="code">${userCode}</div>
-  <a class="btn" href="${verifyComplete}" target="_blank" rel="noopener">Open GitHub &amp; prefill code</a>
-  <p id="status" class="muted">Waiting for you to authorize on GitHub…</p>
-<script>
-  const key = ${JSON.stringify(pollKey)};
-  const intervalMs = ${opts.intervalMs};
-  const statusEl = document.getElementById("status");
-  async function poll() {
-    try {
-      const r = await fetch("/authorize/poll?key=" + encodeURIComponent(key), { headers: { Accept: "application/json" } });
-      const d = await r.json();
-      if (d.status === "complete") {
-        statusEl.textContent = "Authorized — redirecting…";
-        window.location.href = d.redirectTo;
-        return;
-      }
-      if (d.status === "error") {
-        statusEl.textContent = "⚠ " + d.error;
-        return;
-      }
-    } catch (_e) { /* transient — keep polling */ }
-    setTimeout(poll, intervalMs);
-  }
-  setTimeout(poll, intervalMs);
-</script>
-</body>
-</html>`;
-}
 
 export { app as GitHubHandler };
