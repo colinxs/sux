@@ -18,6 +18,7 @@ export const uuid: Fn = {
 		},
 	},
 	cacheable: false,
+	raw: true,
 	run: async (_env, args) => {
 		const kind = String(args?.kind ?? "v4");
 		if (!["v4", "nanoid", "hex"].includes(kind)) return fail("kind must be v4 | nanoid | hex.");

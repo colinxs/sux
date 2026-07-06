@@ -34,6 +34,7 @@ export const random: Fn = {
 		},
 	},
 	cacheable: false,
+	raw: true,
 	run: async (_env, args) => {
 		const kind = String(args?.kind ?? "");
 

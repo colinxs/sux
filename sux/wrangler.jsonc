@@ -8,6 +8,12 @@
 	"kv_namespaces": [{ "binding": "OAUTH_KV", "id": "d0dadc11fdd64598992f4a84a958bafb" }],
 	// Workers AI — edge inference for summarize/translate/classify/embed/ocr (~300× cheaper).
 	"ai": { "binding": "AI" },
+	// Cloudflare Images — format convert/resize/adjust for image_convert.
+	"images": { "binding": "IMAGES" },
+	// R2 object storage for `store` (content-addressed blobs; KV maps uuid→object).
+	// Bucket `sux` exists, but the Worker R2 BINDING is still blocked (code 10136)
+	// until R2 is FULLY enabled in the dashboard (accept the R2 plan). Uncomment then.
+	// "r2_buckets": [{ "binding": "R2", "bucket_name": "sux" }],
 	// QUIC/HTTP-3 is automatic at the edge; observability = persistent logs (both services).
 	"observability": { "enabled": true, "head_sampling_rate": 1 },
 	"vars": { "DEBUG_MCP": "0" },

@@ -14,5 +14,6 @@ export const pdfToImages: Fn = {
 		},
 	},
 	cacheable: true,
+	raw: true,
 	run: async () => fail("pdf_to_images needs a WASM PDF renderer (mupdf/pdfium) or Browser Rendering, not wired yet — see PLAN P5."),
 };

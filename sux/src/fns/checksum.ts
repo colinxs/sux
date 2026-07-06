@@ -44,6 +44,7 @@ export const checksum: Fn = {
 		},
 	},
 	cacheable: true,
+	raw: true,
 	run: async (_env, args) => {
 		const algo = String(args?.algo ?? "crc32");
 		const fn = ALGOS[algo];

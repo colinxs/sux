@@ -6,6 +6,7 @@ import { findFn, type RtEnv, toolList } from "./registry";
 import { FUNCTIONS } from "./fns";
 import { recordCall } from "./metrics";
 import { handleObservability } from "./observability";
+import { normalizeArgs, normalizeText } from "./normalize";
 
 type Props = { login: string; name: string; email: string; accessToken: string };
 
@@ -45,9 +46,13 @@ const rtServer = {
 		}
 		if (method === "tools/call") {
 			const name = rpc?.params?.name ?? "";
-			const args = rpc?.params?.arguments;
 			const fn = findFn(FUNCTIONS, name);
 			if (!fn) return sseResponse({ jsonrpc: "2.0", id, error: { code: -32601, message: `unknown tool: ${name}` } });
+
+			// Sane normalization on open: fold styled/fullwidth "font" unicode to ASCII
+			// and strip BOM/zero-width/control chars from string inputs. Byte-exact fns
+			// (hash/encode/compress/qr/kv/…) opt out via `raw` so their bytes are untouched.
+			const args = fn.raw ? rpc?.params?.arguments : normalizeArgs(rpc?.params?.arguments);
 
 			const started = Date.now();
 			const key = fn.cacheable ? await cacheKey(name, args) : null;
@@ -63,6 +68,12 @@ const rtServer = {
 				result = await fn.run(env, args);
 			} catch (e) {
 				result = { content: [{ type: "text" as const, text: `Tool '${name}' failed: ${String((e as Error).message ?? e)}` }], isError: true };
+			}
+			// Sane normalization on close: same folding/cleanup over text output.
+			if (!fn.raw && !result.isError && Array.isArray(result.content)) {
+				for (const part of result.content) {
+					if (part?.type === "text" && typeof part.text === "string") part.text = normalizeText(part.text);
+				}
 			}
 			recordCall(env, ctx, { tool: name, ms: Date.now() - started, error: Boolean(result.isError) });
 			if (key && !result.isError) await env.OAUTH_KV.put(key, JSON.stringify(result), { expirationTtl: CACHE_TTL_SECONDS });

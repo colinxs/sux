@@ -14,5 +14,6 @@ export const htmlToPdf: Fn = {
 		},
 	},
 	cacheable: true,
+	raw: true,
 	run: async () => fail("html_to_pdf needs Cloudflare Browser Rendering (headless Chromium), not wired yet — see PLAN P5. Add the browser binding to enable."),
 };

@@ -74,6 +74,7 @@ export const archive: Fn = {
 		},
 	},
 	cacheable: true,
+	raw: true,
 	run: async (_env, args) => {
 		const op = String(args?.op ?? "");
 		const format = String(args?.format ?? "zip");

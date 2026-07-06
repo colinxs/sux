@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "deploy": "wrangler deploy",
+    "deploy:sux": "wrangler deploy --config sux/wrangler.jsonc",
     "dev": "wrangler dev",
     "start": "wrangler dev",
     "cf-typegen": "wrangler types",
@@ -17,7 +18,8 @@
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "^0.8.1",
-    "fflate": "^0.8.3"
+    "fflate": "^0.8.3",
+    "pdf-lib": "^1.17.1"
   },
   "devDependencies": {
     "typescript": "6.0.3",

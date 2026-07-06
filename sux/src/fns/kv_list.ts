@@ -17,6 +17,7 @@ export const kv_list: Fn = {
 		},
 	},
 	cacheable: false,
+	raw: true,
 	run: async (env, args) => {
 		const userPrefix = typeof args?.prefix === "string" ? args.prefix.trim() : "";
 		const fullPrefix = NS + userPrefix;

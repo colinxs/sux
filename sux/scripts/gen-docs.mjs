@@ -29,7 +29,7 @@ const files = readdirSync(FNS).filter((f) => f.endsWith(".ts") && !f.endsWith(".
 // Functions that need infra not yet wired (Browser Rendering / PDF-WASM /
 // image transcode). They ship as honest fail() stubs. Explicit list beats
 // fragile keyword-sniffing (which mis-flagged compress/office_to_pdf).
-const PLANNED = new Set(["html_to_pdf", "pdf_to_text", "pdf_to_images", "office_to_pdf", "image_convert"]);
+const PLANNED = new Set(["html_to_pdf", "pdf_to_text", "pdf_to_images", "office_to_pdf"]);
 const dir = readdirSync(FNS);
 
 const byName = new Map();

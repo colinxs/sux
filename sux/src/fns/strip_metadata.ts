@@ -136,6 +136,7 @@ export const strip_metadata: Fn = {
 		},
 	},
 	cacheable: true,
+	raw: true,
 	run: async (env, args) => {
 		const image = typeof args?.image === "string" ? args.image.trim() : "";
 		if (!image) return fail("Provide an `image` (base64 bytes or an http(s) URL).");

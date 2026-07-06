@@ -22,6 +22,7 @@ export const jwt: Fn = {
 		},
 	},
 	cacheable: false,
+	raw: true,
 	run: async (_env, args) => {
 		const token = String(args?.token ?? "").trim();
 		const parts = token.split(".");

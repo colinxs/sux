@@ -14,6 +14,7 @@ export const qr: Fn = {
 		},
 	},
 	cacheable: true,
+	raw: true,
 	run: async (_env, args) => {
 		if (String(args?.direction ?? "encode") === "decode") {
 			const image = String(args?.image ?? "");

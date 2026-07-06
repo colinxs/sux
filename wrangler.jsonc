@@ -29,6 +29,13 @@
 			"id": "2dc5422d32e042cc8010893818a2f0aa"
 		}
 	],
+	// Cloudflare Images — format convert/resize/adjust for image_convert.
+	"images": {
+		"binding": "IMAGES"
+	},
+	// NOTE: this is Service 1 (the lean Kagi OAuth proxy) — it uses none of the
+	// sux bindings. R2 for `store` lives on the sux worker (sux/wrangler.jsonc),
+	// and is blocked until R2 is fully enabled (code 10136).
 	// Persist logs (Workers Logs) so requests are traceable in the dashboard
 	// beyond a live `wrangler tail`. head_sampling_rate=1 keeps everything;
 	// lower it if volume grows.

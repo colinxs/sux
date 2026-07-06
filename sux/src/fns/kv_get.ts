@@ -29,6 +29,7 @@ export const kv_get: Fn = {
 		},
 	},
 	cacheable: false,
+	raw: true,
 	run: async (env, args) => {
 		const r = resolveKey(args?.key);
 		if ("error" in r) return fail(r.error);

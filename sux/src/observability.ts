@@ -17,6 +17,28 @@ const json = (obj: unknown, status = 200): Response =>
 export async function handleObservability(url: URL, request: Request, env: RtEnv): Promise<Response | null> {
 	if (request.method !== "GET") return null;
 
+	// Public content handle: GET /s/<uuid> resolves the KV mapping to its R2
+	// object and streams it back (the URL `store` returns on put).
+	if (url.pathname.startsWith("/s/")) {
+		const uuid = url.pathname.slice(3).split("/")[0];
+		if (!uuid) return new Response("not found", { status: 404 });
+		if (!env.R2) return new Response("R2 not enabled", { status: 503 });
+		const raw = await env.OAUTH_KV.get(`store:${uuid}`);
+		if (!raw) return new Response("not found", { status: 404 });
+		let ref: { key: string; content_type?: string };
+		try {
+			ref = JSON.parse(raw);
+		} catch {
+			return new Response("bad handle", { status: 500 });
+		}
+		const obj = await env.R2.get(ref.key);
+		if (!obj) return new Response("object missing", { status: 404 });
+		return new Response(await obj.arrayBuffer(), {
+			status: 200,
+			headers: { "content-type": ref.content_type ?? obj.httpMetadata?.contentType ?? "application/octet-stream", "cache-control": "public, max-age=31536000, immutable" },
+		});
+	}
+
 	if (url.pathname === "/metrics") {
 		const m = await readMetrics(env);
 		if (url.searchParams.get("format") === "prometheus") {

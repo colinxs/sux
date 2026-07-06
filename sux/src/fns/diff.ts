@@ -74,6 +74,7 @@ export const diff: Fn = {
 		},
 	},
 	cacheable: true,
+	raw: true,
 	run: async (_env, args) => {
 		if (typeof args?.a !== "string") return fail("`a` must be a string.");
 		if (typeof args?.b !== "string") return fail("`b` must be a string.");

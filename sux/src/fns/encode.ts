@@ -14,6 +14,7 @@ export const encode: Fn = {
 		},
 	},
 	cacheable: true,
+	raw: true,
 	run: async (_env, args) => {
 		const text = String(args?.text ?? "");
 		const codec = String(args?.codec ?? "");

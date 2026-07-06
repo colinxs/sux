@@ -13,5 +13,6 @@ export const officeToPdf: Fn = {
 		},
 	},
 	cacheable: true,
+	raw: true,
 	run: async () => fail("office_to_pdf needs a headless converter (LibreOffice/WASM), not wired yet — see PLAN P5."),
 };

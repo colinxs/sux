@@ -15,6 +15,7 @@ export const hash: Fn = {
 		},
 	},
 	cacheable: true,
+	raw: true,
 	run: async (_env, args) => {
 		const algo = ALGOS[String(args?.algo ?? "sha256")];
 		if (!algo) return fail(`Unknown algo. Use: ${Object.keys(ALGOS).join(", ")}`);

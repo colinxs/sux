@@ -23,6 +23,7 @@ export const baseConvert: Fn = {
 		},
 	},
 	cacheable: true,
+	raw: true,
 	run: async (_env, args) => {
 		const raw = String(args?.value ?? "").trim();
 		const fromBase = Number(args?.from_base);

@@ -13,6 +13,7 @@ export const embed: Fn = {
 		},
 	},
 	cacheable: true,
+	raw: true,
 	run: async (env, args) => {
 		if (!hasAI(env)) return fail("Workers AI binding not configured (add \"ai\" to wrangler).");
 		const list = Array.isArray(args?.texts) ? args.texts.map(String) : args?.text ? [String(args.text)] : [];

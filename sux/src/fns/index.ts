@@ -100,7 +100,17 @@ import { pdfToText } from "./pdf_to_text";
 import { pdfToImages } from "./pdf_to_images";
 import { officeToPdf } from "./office_to_pdf";
 import { imageConvert } from "./image_convert";
+import { egress } from "./egress";
+import { fillable } from "./fillable";
+import { grammar } from "./grammar";
+import { textIndex } from "./text_index";
+import { pdf } from "./pdf";
 import { plaintext } from "./plaintext";
+import { shop } from "./shop";
+import { store } from "./store";
+import { tone } from "./tone";
+import { trim } from "./trim";
+import { webSearch } from "./web_search";
 
 export const FUNCTIONS: Fn[] = [
 	search,
@@ -199,5 +209,15 @@ export const FUNCTIONS: Fn[] = [
 	pdfToImages,
 	officeToPdf,
 	imageConvert,
+	egress,
+	fillable,
+	grammar,
+	textIndex,
+	pdf,
 	plaintext,
+	shop,
+	store,
+	tone,
+	trim,
+	webSearch,
 ];

@@ -57,6 +57,7 @@ export const compress: Fn = {
 		},
 	},
 	cacheable: true,
+	raw: true,
 	run: async (_env, args) => {
 		const codec = String(args?.codec ?? "brotli") as Codec;
 		if (!CODECS.includes(codec)) return fail(`Unknown codec '${codec}'. Use: ${CODECS.join(", ")}.`);
