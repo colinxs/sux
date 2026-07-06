@@ -45,15 +45,33 @@ function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
 	return Promise.race([p, new Promise<T>((r) => setTimeout(() => r(fallback), ms))]);
 }
 
-/** IP + geo of whoever makes the request — used to show residential (via proxy) vs datacenter (direct) egress. */
+/** IP + geo of whoever makes the request — residential (via proxy) vs datacenter (direct) egress.
+ * Uses Cloudflare's cdn-cgi/trace (reliable from Workers) for the IP, enriched best-effort with geo. */
 async function ipInfo(fetcher: (u: string) => Promise<Response>): Promise<Record<string, unknown> | null> {
+	let ip: string | undefined, country: string | undefined, colo: string | undefined;
 	try {
-		const j = (await (await fetcher("https://ipwho.is/")).json()) as any;
-		if (j?.success === false) return null;
-		return { ip: j.ip, city: j.city, region: j.region, country: j.country, org: j.connection?.org ?? j.connection?.isp, asn: j.connection?.asn };
+		const t = await (await fetcher("https://cloudflare.com/cdn-cgi/trace")).text();
+		const m: Record<string, string> = Object.fromEntries(t.trim().split("\n").map((l) => l.split("=") as [string, string]));
+		ip = m.ip;
+		country = m.loc;
+		colo = m.colo;
 	} catch {
 		return null;
 	}
+	if (!ip) return null;
+	let city: string | undefined, region: string | undefined, org: string | undefined;
+	try {
+		const g = (await (await fetcher(`https://ipwho.is/${ip}`)).json()) as any;
+		if (g?.success !== false) {
+			city = g.city;
+			region = g.region;
+			org = g.connection?.org ?? g.connection?.isp;
+			country = g.country ?? country;
+		}
+	} catch {
+		// geo enrichment is optional — IP + country + colo already came from trace
+	}
+	return { ip, city, region, country, colo, org };
 }
 
 /** Best-effort `tailscale status --json` from the node's /status endpoint (HMAC-signed, same secret as /fetch). */
@@ -100,10 +118,17 @@ async function gatherHealth(env: HandlerEnv): Promise<Record<string, unknown>> {
 	const tunnelMs = Date.now() - t0;
 
 	const configured = isTailscaleConfigured(env);
+	let proxyUrlValid = false;
+	try {
+		proxyUrlValid = Boolean(env.TAILSCALE_PROXY_URL && /^https?:/i.test(env.TAILSCALE_PROXY_URL) && new URL(env.TAILSCALE_PROXY_URL));
+	} catch {
+		proxyUrlValid = false;
+	}
 	const routing = configured && proxyEnabled(env) && proxied && direct && proxied.ip !== direct.ip;
 
 	const tailscale = {
 		configured,
+		proxy_url_valid: proxyUrlValid, // false = TAILSCALE_PROXY_URL is malformed (needs an absolute https:// URL)
 		routing, // true = requests are actually exiting via the residential IP (not falling back to direct)
 		tunnel_ms: tunnelMs,
 		residential: proxied,
@@ -138,7 +163,7 @@ function renderHealthHtml(h: any): string {
 	const res = ts.residential;
 	const dc = ts.datacenter;
 	const node = ts.node ?? {};
-	const loc = (o: any) => (o ? `${[o.city, o.region, o.country].filter(Boolean).join(", ")}` : "—");
+	const loc = (o: any) => (o ? `${[o.city, o.region, o.country].filter(Boolean).join(", ") || "?"}${o.colo ? " · " + o.colo : ""}` : "—");
 	return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>sux · health</title>
 <style>
@@ -166,6 +191,7 @@ function renderHealthHtml(h: any): string {
 
 <div class="card"><h2>tailscale · residential egress</h2>
  <div class="row"><span class="k">Proxy configured</span><span class="v">${dot(ts.configured)}</span></div>
+ <div class="row"><span class="k">Proxy URL valid</span><span class="v">${dot(ts.proxy_url_valid)}${ts.configured && !ts.proxy_url_valid ? ' <span class="k">needs https:// scheme</span>' : ""}</span></div>
  <div class="row"><span class="k">Routing residentially</span><span class="v">${dot(ts.routing)} ${ts.routing ? "live" : "falling back to direct"}</span></div>
  <div class="row"><span class="k">Tunnel round-trip</span><span class="v">${ts.tunnel_ms} ms</span></div>
  <div class="row"><span class="k">Residential exit (wrapped)</span><span class="v big">${res ? res.ip : "—"}<br><span class="k">${loc(res)}${res?.org ? " · " + res.org : ""}</span></span></div>
