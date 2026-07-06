@@ -69,6 +69,15 @@ back to a verbatim passthrough, so this can't break the connection:
 - **`tools/list` curation** — edit `HIDDEN_TOOLS` / `TOOL_DESCRIPTION_OVERRIDES`
   in `src/mcp.ts` to hide tools or sharpen their descriptions. Empty by default
   (Kagi's tools shown verbatim).
+- **Custom lenses on the fly** — an injected `kagi_lens_search` tool lets Claude
+  scope a search by a **preset** (`academic`, `forums`, `programming`, `news360`,
+  `recipes`, `smallweb` → Kagi lens IDs) and/or **ad-hoc filters**
+  (`include_domains`, `exclude_domains`, `time_relative`, `after`/`before`,
+  `file_type`). Nothing is persisted — the lens is composed per call and
+  translated server-side into a `kagi_search_fetch` (so it's cached like any
+  search). Presets are mutually exclusive with the domain/time/file filters; if
+  both are given, the explicit filters win. Add your own named presets in
+  `LENS_PRESETS` (`src/mcp.ts`).
 
 ## Required secrets
 

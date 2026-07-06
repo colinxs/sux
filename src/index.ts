@@ -21,7 +21,10 @@ import {
 	CACHEABLE_TOOLS,
 	curateToolsResult,
 	extractRpcFromText,
+	injectLensTool,
 	isCacheableResult,
+	LENS_TOOL,
+	lensToSearchArgs,
 	parseJsonRpc,
 	sseResponse,
 } from "./mcp";
@@ -113,8 +116,8 @@ const kagiProxy = {
 			);
 		}
 
-		const callKagi = (): Promise<Response> =>
-			fetch(target, { method: request.method, headers, body: bodyText });
+		const callKagi = (body: string | undefined = bodyText): Promise<Response> =>
+			fetch(target, { method: request.method, headers, body });
 
 		// Hardened streaming passthrough — the default for anything we don't
 		// compose. Strips content-encoding/content-length (Workers already decoded
@@ -167,27 +170,46 @@ const kagiProxy = {
 			const text = await upstream.text();
 			const obj = extractRpcFromText(text, upstream.headers.get("content-type"));
 			if (!obj || !obj.result) return rawResponse(text, upstream); // unrecognized — pass through
-			return sseResponse({ ...obj, result: curateToolsResult(obj.result) }, upstream.status);
+			// Inject our on-the-fly lens tool, then apply curation.
+			return sseResponse({ ...obj, result: curateToolsResult(injectLensTool(obj.result)) }, upstream.status);
 		}
 
 		// --- tools/call: cache read-only tools + audit -----------------------
 		if (method === "tools/call") {
-			const toolName = rpc?.params?.name ?? "";
-			const args = rpc?.params?.arguments;
+			const requestedTool = rpc?.params?.name ?? "";
 			const started = Date.now();
+
+			// Our on-the-fly lens tool is translated into a kagi_search_fetch call
+			// server-side; from here on it behaves like a normal (cacheable) search.
+			let toolName = requestedTool;
+			let args = rpc?.params?.arguments;
+			let forwardBody = bodyText;
+			let via: string | undefined;
+			if (requestedTool === LENS_TOOL.name) {
+				via = LENS_TOOL.name;
+				args = lensToSearchArgs(args);
+				toolName = "kagi_search_fetch";
+				forwardBody = JSON.stringify({
+					jsonrpc: "2.0",
+					id: rpc?.id,
+					method: "tools/call",
+					params: { name: toolName, arguments: args },
+				});
+			}
+
 			const key = CACHEABLE_TOOLS.has(toolName) ? await cacheKey(toolName, args) : null;
 
 			if (key) {
 				const cached = await env.OAUTH_KV.get(key);
 				if (cached) {
-					audit({ login, tool: toolName, cache: "hit", ms: Date.now() - started, ray });
+					audit({ login, tool: toolName, via, cache: "hit", ms: Date.now() - started, ray });
 					return sseResponse({ jsonrpc: "2.0", id: rpc?.id, result: JSON.parse(cached) });
 				}
 			}
 
 			let upstream: Response;
 			try {
-				upstream = await callKagi();
+				upstream = await callKagi(forwardBody);
 			} catch (err) {
 				console.error(`[${ray}] upstream: tools/call threw:`, err);
 				return new Response(
@@ -200,6 +222,7 @@ const kagiProxy = {
 			audit({
 				login,
 				tool: toolName,
+				via,
 				cache: key ? "miss" : "skip",
 				ms: Date.now() - started,
 				status: upstream.status,
