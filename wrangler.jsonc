@@ -23,7 +23,6 @@
 	 * npx wrangler secret put GITHUB_CLIENT_SECRET
 	 * npx wrangler secret put COOKIE_ENCRYPTION_KEY
 	 */
-
 	"kv_namespaces": [
 		{
 			"binding": "OAUTH_KV",
@@ -31,7 +30,10 @@
 		}
 	],
 	"observability": {
-		"enabled": true
+		"enabled": false,
+		"traces": {
+			"enabled": true
+		}
 	},
 	"dev": {
 		"port": 8788
