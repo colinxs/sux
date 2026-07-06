@@ -38,4 +38,22 @@ describe("dns", () => {
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toMatch(/HTTP 502/);
 	});
+
+	it("filter routes through Control D and flags a blocked (null-routed) domain", async () => {
+		const fetchMock = vi.fn(async (url: string) => {
+			expect(url).toContain("freedns.controld.com/p2");
+			return new Response(JSON.stringify({ Status: 0, Answer: [{ name: "ads.example", type: 1, TTL: 60, data: "0.0.0.0" }] }), { status: 200 });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		const j = JSON.parse((await dns.run({} as any, { name: "ads.example", filter: "ads" })).content[0].text);
+		expect(j.blocked).toBe(true);
+		expect(j.filter).toBe("ads");
+	});
+
+	it("filter reports an allowed domain as not blocked", async () => {
+		vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ Status: 0, Answer: [{ name: "example.com", type: 1, TTL: 300, data: "93.184.216.34" }] }), { status: 200 })));
+		const j = JSON.parse((await dns.run({} as any, { name: "example.com", filter: "ads" })).content[0].text);
+		expect(j.blocked).toBe(false);
+		expect(j.records[0].data).toBe("93.184.216.34");
+	});
 });

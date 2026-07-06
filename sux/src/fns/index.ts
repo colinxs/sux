@@ -97,6 +97,7 @@ import { pdfToImages } from "./pdf_to_images";
 import { officeToPdf } from "./office_to_pdf";
 import { imageConvert } from "./image_convert";
 import { csv } from "./csv";
+import { declutter } from "./declutter";
 import { egress } from "./egress";
 import { fillable } from "./fillable";
 import { grammar } from "./grammar";
@@ -208,6 +209,7 @@ export const FUNCTIONS: Fn[] = [
 	officeToPdf,
 	imageConvert,
 	csv,
+	declutter,
 	egress,
 	fillable,
 	grammar,
