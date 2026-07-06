@@ -45,5 +45,10 @@ fi
 [ "$code" = "000" ] && { emit 502 '{"error":"upstream_failed"}'; exit 0; }
 ct=$(grep -i '^content-type:' "$hdr" | tail -n1 | sed 's/^[Cc]ontent-[Tt]ype:[[:space:]]*//; s/[[:space:]]*$//')
 
-emit 200 "$(jq -n --arg status "$code" --arg ct "$ct" --rawfile body "$resp" \
-	'{status:($status|tonumber? // 0), statusText:"", headers:{"content-type":$ct}, bytes:($body|length), truncated:false, body:$body}')"
+# Always base64 the body + flag bodyEncoding:"base64" so binary (images/pdf)
+# survives the JSON transport and reaches the Worker's residential path instead
+# of being refetched direct. The Worker decodes base64 for text and binary alike.
+rbytes=$(wc -c < "$resp" | tr -d ' ')
+b64=$(base64 < "$resp" | tr -d '\n')
+emit 200 "$(jq -n --arg status "$code" --arg ct "$ct" --arg body "$b64" --arg bytes "$rbytes" \
+	'{status:($status|tonumber? // 0), statusText:"", headers:{"content-type":$ct}, bytes:($bytes|tonumber? // 0), truncated:false, bodyEncoding:"base64", body:$body}')"

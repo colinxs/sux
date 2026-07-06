@@ -77,6 +77,18 @@ describe("binary safety through the proxied path", () => {
 		expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).acceptBodyEncoding).toBe("base64");
 	});
 
+	it("decodes a base64-encoded TEXT body (proxy now base64s everything, incl. text)", async () => {
+		const text = "fl=abc\nip=2601:601:a484:1500::1\nloc=US\n";
+		const fetchMock = vi.fn(async () =>
+			proxyEnvelope({ headers: { "content-type": "text/plain" }, bytes: text.length, body: btoa(text), bodyEncoding: "base64" }),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		const resp = await smartFetch(ON, "https://cloudflare.com/cdn-cgi/trace");
+		expect(await resp.text()).toBe(text);
+		// Served by the proxy — no direct refetch (stays residential).
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
 	it("fetchPageViaTailscale preserves a PNG header exactly", async () => {
 		vi.stubGlobal(
 			"fetch",
