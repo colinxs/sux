@@ -66,18 +66,16 @@ back to a verbatim passthrough, so this can't break the connection:
 - **Query audit log** — every `tools/call` logs a structured `audit {...}` line
   (login, tool, cache hit/miss, latency, status) to Workers Logs. Metadata only,
   never the result payload.
-- **`tools/list` curation** — edit `HIDDEN_TOOLS` / `TOOL_DESCRIPTION_OVERRIDES`
-  in `src/mcp.ts` to hide tools or sharpen their descriptions. Empty by default
-  (Kagi's tools shown verbatim).
-- **Custom lenses on the fly** — an injected `kagi_lens_search` tool lets Claude
-  scope a search by a **preset** (`academic`, `forums`, `programming`, `news360`,
-  `recipes`, `smallweb` → Kagi lens IDs) and/or **ad-hoc filters**
-  (`include_domains`, `exclude_domains`, `time_relative`, `after`/`before`,
-  `file_type`). Nothing is persisted — the lens is composed per call and
-  translated server-side into a `kagi_search_fetch` (so it's cached like any
-  search). Presets are mutually exclusive with the domain/time/file filters; if
-  both are given, the explicit filters win. Add your own named presets in
-  `LENS_PRESETS` (`src/mcp.ts`).
+- **`tools/list` curation** — `HIDDEN_TOOLS` / `TOOL_DESCRIPTION_OVERRIDES` in
+  `src/mcp.ts` hide tools or rewrite their descriptions. By default the
+  `kagi_search_fetch` description is enriched with scoping guidance and the Kagi
+  **lens name→ID map** (Academic=2, Forums=1, Programming=15, News360=29,
+  Recipes=120, Small Web=107), so the model can scope/"lens" a search using the
+  existing tool's `lens_id`/`include_domains`/`time_relative`/… args — no extra
+  tool needed.
+
+> **Note:** MCP clients cache `tools/list`, so after changing a tool or its
+> description, start a fresh chat or toggle the connector to pick it up.
 
 ## Required secrets
 
