@@ -7,8 +7,10 @@ describe("smart routing", () => {
 	it("classifies infra/API hosts as direct hosts", () => {
 		expect(isDirectHost("https://mcp.kagi.com/mcp")).toBe(true);
 		expect(isDirectHost("https://ipwho.is/8.8.8.8")).toBe(true);
-		expect(isDirectHost("https://rdap.org/domain/x.com")).toBe(true);
 		expect(isDirectHost("https://www.homedepot.com/p/123")).toBe(false);
+		// rdap.org/crt.sh are NOT direct — they 403/502 datacenter IPs, so they route residential.
+		expect(isDirectHost("https://rdap.org/domain/x.com")).toBe(false);
+		expect(isDirectHost("https://crt.sh/?q=x")).toBe(false);
 		expect(isDirectHost("not a url")).toBe(false);
 	});
 
