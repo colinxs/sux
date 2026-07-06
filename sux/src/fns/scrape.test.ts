@@ -36,4 +36,15 @@ describe("scrape", () => {
 		expect(r.content[0].text).toContain("HTTP 404 — https://example.com/missing");
 		expect(r.content[0].text).toContain("Not Found");
 	});
+
+	it("marks upstream error pages noCache (they must not poison the cache)", async () => {
+		vi.mocked(smartFetch).mockResolvedValueOnce(new Response("rate limited", { status: 429 }));
+		const r = await scrape.run({} as any, { url: "https://example.com/hot" });
+		expect(r.isError).toBeFalsy(); // raw transport still returns the body
+		expect(r.noCache).toBe(true);
+		// 2xx responses stay cacheable.
+		vi.mocked(smartFetch).mockResolvedValueOnce(new Response("ok", { status: 200 }));
+		const good = await scrape.run({} as any, { url: "https://example.com" });
+		expect(good.noCache).toBeUndefined();
+	});
 });

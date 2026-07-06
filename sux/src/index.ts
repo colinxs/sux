@@ -76,7 +76,10 @@ const rtServer = {
 				}
 			}
 			recordCall(env, ctx, { tool: name, ms: Date.now() - started, error: Boolean(result.isError) });
-			if (key && !result.isError) await env.OAUTH_KV.put(key, JSON.stringify(result), { expirationTtl: CACHE_TTL_SECONDS });
+			// noCache results (e.g. upstream 4xx/5xx bodies) are returned but never cached.
+			const cacheable = key && !result.isError && !result.noCache;
+			delete result.noCache; // internal flag — not part of the MCP response
+			if (cacheable) await env.OAUTH_KV.put(key, JSON.stringify(result), { expirationTtl: CACHE_TTL_SECONDS });
 			return sseResponse({ jsonrpc: "2.0", id, result });
 		}
 		return sseResponse({ jsonrpc: "2.0", id, error: { code: -32601, message: `unknown method: ${method}` } });

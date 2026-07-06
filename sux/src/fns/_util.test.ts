@@ -1,5 +1,30 @@
-import { describe, expect, it } from "vitest";
-import { clamp, fromB64, isHttpUrl, stripHtml, toB64 } from "./_util";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("../proxy", () => ({
+	smartFetch: vi.fn(async (_env: any, url: string) =>
+		String(url).includes("blocked") ? new Response("Access denied", { status: 403 }) : new Response("<p>content</p>", { status: 200 }),
+	),
+}));
+
+import { clamp, fromB64, isHttpUrl, loadHtml, stripHtml, toB64 } from "./_util";
+
+describe("loadHtml", () => {
+	it("returns html for a 2xx fetch", async () => {
+		const r = await loadHtml({} as any, { url: "https://ok.example" });
+		expect("html" in r && r.html).toBe("<p>content</p>");
+	});
+
+	it("returns an error (not the body) for a 4xx/5xx page", async () => {
+		const r = await loadHtml({} as any, { url: "https://blocked.example" });
+		expect("error" in r && r.error).toMatch(/HTTP 403/);
+	});
+
+	it("prefers inline html and validates the url", async () => {
+		expect(await loadHtml({} as any, { html: "<i>x</i>" })).toEqual({ html: "<i>x</i>" });
+		expect("error" in (await loadHtml({} as any, { url: "ftp://x" }))).toBe(true);
+		expect("error" in (await loadHtml({} as any, {}))).toBe(true);
+	});
+});
 
 describe("_util", () => {
 	it("isHttpUrl", () => {

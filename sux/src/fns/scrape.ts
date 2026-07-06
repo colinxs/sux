@@ -20,6 +20,10 @@ export const scrape: Fn = {
 		if (!/^https?:\/\//.test(url)) return fail("Provide an absolute http(s) url.");
 		const resp = await smartFetch(env, url, { method: args?.method });
 		const body = await resp.text();
-		return ok(`HTTP ${resp.status} — ${url}\n\n${body.slice(0, 100_000)}`);
+		const result = ok(`HTTP ${resp.status} — ${url}\n\n${body.slice(0, 100_000)}`);
+		// Raw transport faithfully returns error pages too — but never caches them,
+		// so a transient 403/429/consent wall can't poison repeat calls for an hour.
+		if (resp.status >= 400) result.noCache = true;
+		return result;
 	},
 };

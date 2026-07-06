@@ -52,7 +52,11 @@ export async function loadHtml(env: RtEnv, args: any): Promise<{ html: string } 
 	if (typeof args?.html === "string" && args.html) return { html: args.html };
 	if (args?.url) {
 		if (!isHttpUrl(args.url)) return { error: "url must be an absolute http(s) URL." };
-		return { html: (await fetchText(env, String(args.url))).text };
+		const fetched = await fetchText(env, String(args.url));
+		// An error page is not content — extracting from it would silently succeed
+		// with garbage (and get cached). Surface the status instead.
+		if (fetched.status >= 400) return { error: `Fetch failed: HTTP ${fetched.status} for ${args.url}` };
+		return { html: fetched.text };
 	}
 	return { error: "Provide `html` or `url`." };
 }

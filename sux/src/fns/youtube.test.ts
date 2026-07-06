@@ -42,4 +42,21 @@ describe("youtube", () => {
 		const r = await youtube.run({} as any, { video: "not a video" });
 		expect(r.isError).toBe(true);
 	});
+
+	it("fails (uncached) when the watch page is rate-limited", async () => {
+		smartFetch.mockResolvedValueOnce(new Response("Too Many Requests", { status: 429 }));
+		const r = await youtube.run({} as any, { video: "abcdefghijk" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/HTTP 429/);
+	});
+
+	it("marks a transient caption-endpoint failure noCache", async () => {
+		smartFetch
+			.mockResolvedValueOnce(new Response(PAGE_WITH_CAPTIONS, { status: 200 }))
+			.mockResolvedValueOnce(new Response("boom", { status: 503 }));
+		const r = await youtube.run({} as any, { video: "abcdefghijk" });
+		expect(r.isError).toBeFalsy();
+		expect(r.noCache).toBe(true);
+		expect(JSON.parse(r.content[0].text).transcript).toMatch(/HTTP 503/);
+	});
 });

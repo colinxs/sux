@@ -44,7 +44,10 @@ export type RtEnv = Env &
 		MCP_RATE_LIMITER?: { limit: (opts: { key: string }) => Promise<{ success: boolean }> };
 	};
 
-export type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
+// noCache: set on results that must NOT enter the KV cache even though they are
+// not errors (e.g. scrape faithfully returning an upstream 4xx/5xx page) — caching
+// those poisons repeat calls for an hour.
+export type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean; noCache?: boolean };
 export const ok = (text: string): ToolResult => ({ content: [{ type: "text", text }] });
 export const fail = (text: string): ToolResult => ({ content: [{ type: "text", text }], isError: true });
 

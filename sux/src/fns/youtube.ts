@@ -69,28 +69,41 @@ export const youtube: Fn = {
 		const id = extractId(String(args?.video ?? ""));
 		if (!id) return fail("Could not parse a YouTube video id from `video`.");
 
-		const page = (await fetchText(env, `https://www.youtube.com/watch?v=${id}`)).text;
+		const pageResp = await fetchText(env, `https://www.youtube.com/watch?v=${id}`);
+		// A rate-limited/blocked watch page must fail (uncached) — otherwise
+		// "Captions unavailable" gets cached as a success for an hour.
+		if (pageResp.status >= 400) return fail(`YouTube watch page returned HTTP ${pageResp.status} — likely rate-limited or blocked; retry later.`);
+		const page = pageResp.text;
 		const title = page.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']*)["']/i)?.[1];
 		const cleanTitle = title ? decodeEntities(title) : null;
 
 		// The player response embeds a captionTracks array; grab the first baseUrl.
 		const tracks = page.match(/"captionTracks":(\[[\s\S]*?\])/);
 		let transcript = "Captions unavailable for this video.";
+		let transient = false; // caption endpoint hiccup — return it, don't cache it
 		if (tracks) {
 			const baseUrlRaw = tracks[1].match(/"baseUrl":"([^"]+)"/)?.[1];
 			if (baseUrlRaw) {
 				const baseUrl = unescapeJson(baseUrlRaw);
 				const url = baseUrl.includes("fmt=") ? baseUrl : `${baseUrl}&fmt=json3`;
 				try {
-					const body = (await fetchText(env, url)).text;
-					const assembled = parseCaptions(body);
-					if (assembled) transcript = assembled;
+					const capResp = await fetchText(env, url);
+					if (capResp.status >= 400) {
+						transcript = `Caption fetch failed: HTTP ${capResp.status}`;
+						transient = true;
+					} else {
+						const assembled = parseCaptions(capResp.text);
+						if (assembled) transcript = assembled;
+					}
 				} catch (e) {
 					transcript = `Caption fetch failed: ${String((e as Error).message ?? e)}`;
+					transient = true;
 				}
 			}
 		}
 
-		return ok(JSON.stringify({ id, title: cleanTitle, transcript }, null, 2));
+		const result = ok(JSON.stringify({ id, title: cleanTitle, transcript }, null, 2));
+		if (transient) result.noCache = true;
+		return result;
 	},
 };
