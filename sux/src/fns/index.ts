@@ -25,7 +25,6 @@ import { batch_fetch } from "./batch_fetch";
 import { metadata } from "./metadata";
 import { tables } from "./tables";
 import { htmlMarkdown } from "./html_markdown";
-import { csvJson } from "./csv_json";
 import { archive } from "./archive";
 import { encode } from "./encode";
 import { hash } from "./hash";
@@ -57,7 +56,6 @@ import { whois } from "./whois";
 import { ipGeo } from "./ip_geo";
 import { tlsInfo } from "./tls_info";
 import { crawl } from "./crawl";
-import { xmlJson } from "./xml_json";
 import { subtitles } from "./subtitles";
 import { jwt } from "./jwt";
 import { calc } from "./calc";
@@ -99,6 +97,7 @@ import { pdfToText } from "./pdf_to_text";
 import { pdfToImages } from "./pdf_to_images";
 import { officeToPdf } from "./office_to_pdf";
 import { imageConvert } from "./image_convert";
+import { csv } from "./csv";
 import { egress } from "./egress";
 import { fillable } from "./fillable";
 import { grammar } from "./grammar";
@@ -111,6 +110,7 @@ import { store } from "./store";
 import { tone } from "./tone";
 import { trim } from "./trim";
 import { webSearch } from "./web_search";
+import { xml } from "./xml";
 import { yaml } from "./yaml";
 
 export const FUNCTIONS: Fn[] = [
@@ -135,7 +135,6 @@ export const FUNCTIONS: Fn[] = [
 	metadata,
 	tables,
 	htmlMarkdown,
-	csvJson,
 	archive,
 	encode,
 	hash,
@@ -167,7 +166,6 @@ export const FUNCTIONS: Fn[] = [
 	ipGeo,
 	tlsInfo,
 	crawl,
-	xmlJson,
 	subtitles,
 	jwt,
 	calc,
@@ -209,6 +207,7 @@ export const FUNCTIONS: Fn[] = [
 	pdfToImages,
 	officeToPdf,
 	imageConvert,
+	csv,
 	egress,
 	fillable,
 	grammar,
@@ -221,5 +220,6 @@ export const FUNCTIONS: Fn[] = [
 	tone,
 	trim,
 	webSearch,
+	xml,
 	yaml,
 ];

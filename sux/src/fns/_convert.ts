@@ -155,15 +155,187 @@ export function parseYaml(text: string): unknown {
 	return parseBlock(0);
 }
 
-/** Parse any supported source string into a JS value. csv/xml are wired as the
- * matching directional converters land; unsupported sources say so clearly. */
-export function parseSource(data: string, from: Format): unknown {
+// ---------- JSON <-> CSV (RFC4180-ish) ----------
+
+export function parseCsv(text: string, delim: string): string[][] {
+	const rows: string[][] = [];
+	let row: string[] = [];
+	let field = "";
+	let inQ = false;
+	let started = false;
+	const pushField = () => {
+		row.push(field);
+		field = "";
+	};
+	const pushRow = () => {
+		pushField();
+		rows.push(row);
+		row = [];
+		started = false;
+	};
+	for (let i = 0; i < text.length; i++) {
+		const c = text[i];
+		if (inQ) {
+			if (c === '"') {
+				if (text[i + 1] === '"') {
+					field += '"';
+					i++;
+				} else inQ = false;
+			} else field += c;
+			continue;
+		}
+		if (c === '"') {
+			inQ = true;
+			started = true;
+		} else if (c === delim) {
+			pushField();
+			started = true;
+		} else if (c === "\n") {
+			pushRow();
+		} else if (c === "\r") {
+			if (text[i + 1] !== "\n") pushRow();
+		} else {
+			field += c;
+			started = true;
+		}
+	}
+	if (started || field.length || row.length) pushRow();
+	return rows.filter((r) => !(r.length === 1 && r[0] === ""));
+}
+
+/** CSV text -> array of row objects (first row = headers). */
+export function csvToRows(text: string, delim: string): Record<string, string>[] {
+	const rows = parseCsv(text, delim);
+	if (!rows.length) return [];
+	const headers = rows[0];
+	return rows.slice(1).map((r) => Object.fromEntries(headers.map((h, i) => [h, r[i] ?? ""])));
+}
+
+export function toCsv(arr: unknown[], delim: string): string {
+	if (!arr.length) return "";
+	const headers = [...new Set(arr.flatMap((o) => (o && typeof o === "object" ? Object.keys(o as object) : [])))];
+	const esc = (v: unknown): string => {
+		const s = v == null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v);
+		return new RegExp(`["${delim.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\r\\n]`).test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+	};
+	const lines = [headers.join(delim)];
+	for (const o of arr) lines.push(headers.map((h) => esc((o as Record<string, unknown>)?.[h])).join(delim));
+	return lines.join("\n");
+}
+
+// ---------- JSON <-> XML ----------
+
+function decodeEntities(s: string): string {
+	return s
+		.replace(/&lt;/g, "<")
+		.replace(/&gt;/g, ">")
+		.replace(/&quot;/g, '"')
+		.replace(/&apos;/g, "'")
+		.replace(/&#x([0-9a-f]+);/gi, (_m, h) => String.fromCodePoint(parseInt(h, 16)))
+		.replace(/&#(\d+);/g, (_m, d) => String.fromCodePoint(parseInt(d, 10)))
+		.replace(/&amp;/g, "&");
+}
+function encodeEntities(s: string): string {
+	return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function attach(node: Record<string, unknown>, name: string, child: unknown) {
+	if (name in node) {
+		const cur = node[name];
+		if (Array.isArray(cur)) cur.push(child);
+		else node[name] = [cur, child];
+	} else node[name] = child;
+}
+function collapse(node: Record<string, unknown>): unknown {
+	const keys = Object.keys(node);
+	if (keys.length === 1 && keys[0] === "#text") return node["#text"];
+	return node;
+}
+
+export function parseXml(xml: string): unknown {
+	const src = xml
+		.replace(/<\?[\s\S]*?\?>/g, "")
+		.replace(/<!--[\s\S]*?-->/g, "")
+		.replace(/<!DOCTYPE[^>]*>/gi, "")
+		.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, (_m, c) => encodeEntities(c));
+	const root: Record<string, unknown> = {};
+	const nodes: Record<string, unknown>[] = [root];
+	const names: string[] = [""];
+	let pos = 0;
+	while (pos < src.length) {
+		const lt = src.indexOf("<", pos);
+		if (lt === -1) break;
+		const text = src.slice(pos, lt);
+		if (text.trim()) {
+			const top = nodes[nodes.length - 1];
+			top["#text"] = ((top["#text"] as string) ?? "") + decodeEntities(text).trim();
+		}
+		const gt = src.indexOf(">", lt);
+		if (gt === -1) throw new Error("unterminated tag");
+		let tag = src.slice(lt + 1, gt).trim();
+		if (tag.startsWith("/")) {
+			const closing = tag.slice(1).trim();
+			if (nodes.length < 2) throw new Error(`unexpected closing tag </${closing}>`);
+			const expected = names[names.length - 1];
+			if (closing !== expected) throw new Error(`mismatched tag: expected </${expected}>, got </${closing}>`);
+			const finished = nodes.pop()!;
+			names.pop();
+			attach(nodes[nodes.length - 1], expected, collapse(finished));
+			pos = gt + 1;
+			continue;
+		}
+		const selfClose = tag.endsWith("/");
+		if (selfClose) tag = tag.slice(0, -1).trim();
+		const name = tag.match(/^([\w:.-]+)/)?.[1];
+		if (!name) throw new Error("malformed tag");
+		const node: Record<string, unknown> = {};
+		for (const a of tag.matchAll(/([\w:.-]+)\s*=\s*"([^"]*)"|([\w:.-]+)\s*=\s*'([^']*)'/g)) {
+			const key = a[1] ?? a[3];
+			const val = a[2] ?? a[4] ?? "";
+			node["@" + key] = decodeEntities(val);
+		}
+		if (selfClose) {
+			attach(nodes[nodes.length - 1], name, Object.keys(node).length ? node : "");
+		} else {
+			nodes.push(node);
+			names.push(name);
+		}
+		pos = gt + 1;
+	}
+	if (nodes.length !== 1) throw new Error("unclosed tag(s)");
+	return collapse(root);
+}
+
+export function toXml(obj: unknown, name?: string): string {
+	if (obj === null || obj === undefined) return name ? `<${name}/>` : "";
+	if (Array.isArray(obj)) return obj.map((v) => toXml(v, name)).join("");
+	if (typeof obj === "object") {
+		const entries = Object.entries(obj as Record<string, unknown>);
+		const attrs = entries
+			.filter(([k]) => k.startsWith("@"))
+			.map(([k, v]) => ` ${k.slice(1)}="${encodeEntities(String(v))}"`)
+			.join("");
+		const inner = entries
+			.filter(([k]) => !k.startsWith("@"))
+			.map(([k, v]) => (k === "#text" ? encodeEntities(String(v)) : toXml(v, k)))
+			.join("");
+		if (!name) return inner;
+		return inner === "" && attrs !== "" ? `<${name}${attrs}/>` : `<${name}${attrs}>${inner}</${name}>`;
+	}
+	const esc = encodeEntities(String(obj));
+	return name ? `<${name}>${esc}</${name}>` : esc;
+}
+
+/** Parse any supported source string into a JS value (Julia-style: json() calls
+ * this dispatching on the detected/declared source format). */
+export function parseSource(data: string, from: Format, opts?: { delimiter?: string }): unknown {
 	switch (from) {
 		case "json":
 			return JSON.parse(data);
 		case "yaml":
 			return parseYaml(data);
-		default:
-			throw new Error(`parsing '${from}' isn't wired here yet — use the ${from}_json converter`);
+		case "csv":
+			return csvToRows(data, (opts?.delimiter ?? ",").slice(0, 1) || ",");
+		case "xml":
+			return parseXml(data);
 	}
 }

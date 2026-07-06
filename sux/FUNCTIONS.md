@@ -39,13 +39,11 @@ Status: ✅ working · 🟡 planned (needs a binding/WASM not yet wired).
 | `gtin` | ✅ | ✓ | Find and validate product barcodes (GTIN-8/12/13/14, i.e |
 | `contacts` | ✅ | ✓ | Extract contact info — email addresses and phone numbers (US and E.164-style international) — from a… |
 
-### Convert (9)
+### Convert (7)
 
 | function | status | test | summary |
 |---|---|---|---|
 | `html_markdown` | ✅ | ✓ | Convert between HTML and Markdown for a common subset: headings (h1-h6), links, bold/strong, italic/… |
-| `csv_json` | ✅ | ✓ | Convert between CSV and JSON |
-| `xml_json` | ✅ | ✓ | Convert between XML and JSON |
 | `subtitles` | ✅ | ✓ | Convert between SRT and WebVTT subtitles |
 | `html_to_pdf` | 🟡 planned | — | Render HTML or a URL to a PDF (base64) |
 | `pdf_to_text` | 🟡 planned | — | Extract text (and optionally page layout) from a PDF |
@@ -161,15 +159,16 @@ Status: ✅ working · 🟡 planned (needs a binding/WASM not yet wired).
 | `wayback` | ✅ | ✓ | Internet Archive lookups |
 | `barcode_lookup` | ✅ | ✓ | Look up a product by barcode (GTIN/UPC/EAN) via Open Food Facts (free) |
 
-### Other (13)
+### Other (15)
 
 | function | status | test | summary |
 |---|---|---|---|
+| `csv` | ✅ | ✓ | Convert a JSON array of objects to CSV |
 | `egress` | ✅ | ✓ | Verify that traffic is routing through the Tailscale residential exit |
 | `fillable` | ✅ | ✓ | Make a PDF fillable by adding interactive AcroForm fields |
 | `grammar` | ✅ | ✓ | Correct grammar, spelling, and punctuation in text without changing its meaning, tone, or style |
 | `index` | ✅ | ✓ | Build a full-text search index over documents and query it with BM25 ranking |
-| `json` | ✅ | ✓ | Convert a document to JSON |
+| `json` | ✅ | ✓ | Convert a document to JSON, dispatching on the source format |
 | `pdf` | ✅ | ✓ | Best-effort 'anything to PDF' |
 | `plaintext` | ✅ | ✓ | Normalize text to clean plaintext |
 | `shop` | ✅ | ✓ | Product search across retailers |
@@ -177,6 +176,7 @@ Status: ✅ working · 🟡 planned (needs a binding/WASM not yet wired).
 | `tone` | ✅ | ✓ | Rewrite text in a given tone while preserving its meaning |
 | `trim` | ✅ | ✓ | Trim or shorten text |
 | `web_search` | ✅ | ✓ | Web search across engines, in parallel when asked |
+| `xml` | ✅ | ✓ | Convert JSON to XML |
 | `yaml` | ✅ | ✓ | Convert JSON to YAML (a practical common subset: scalars, nested maps, block sequences) |
 
 ---
