@@ -23,7 +23,11 @@ export async function llm(env: AiEnv, system: string, user: string, maxTokens = 
 		],
 		max_tokens: maxTokens,
 	});
-	return String(r?.response ?? "").trim();
+	// Some Workers-AI models return `response` as an already-parsed object; String()
+	// would yield "[object Object]", so JSON-encode non-strings.
+	const resp = r?.response;
+	if (resp == null) return "";
+	return (typeof resp === "string" ? resp : JSON.stringify(resp)).trim();
 }
 
 export async function textFromUrlOr(env: TailscaleEnv, text: string, url?: string): Promise<string> {
