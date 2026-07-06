@@ -1,11 +1,28 @@
-import { type Fn, fail, ok } from "../registry";
+// Shared conversion core for the directional, output-named converters
+// (json/yaml/csv/xml/markdown). Each converter fn dispatches on the SOURCE type
+// (Julia-style multiple dispatch: `json(x)` parses whatever x is; `yaml(x)`
+// serialises x to YAML), and bidirectionality falls out of composing them
+// (`yaml(json(x))`). Pure, dependency-free.
 
-// --- JSON -> YAML ---
+export type Format = "json" | "yaml" | "csv" | "xml";
+
+/** Best-effort source-format detection for `from: auto`. */
+export function detectFormat(s: string): Format {
+	const t = s.trim();
+	if (!t) return "json";
+	if (t.startsWith("<")) return "xml";
+	if (t.startsWith("{") || t.startsWith("[")) return "json";
+	// A YAML document usually has `key:` lines or `- ` sequences early on.
+	if (/^\s*[\w.-]+\s*:(\s|$)/m.test(t) || /^\s*-\s/m.test(t)) return "yaml";
+	// Otherwise, comma-separated columns across lines looks like CSV.
+	if (/^[^\n]*,[^\n]*\n/.test(t)) return "csv";
+	return "yaml";
+}
+
+// ---------- JSON <-> YAML (practical common subset) ----------
 
 function needsQuote(s: string): boolean {
 	if (s === "") return true;
-	// Quote when the value would otherwise be parsed as a non-string scalar,
-	// or contains YAML-significant leading/trailing/structural characters.
 	if (/^(true|false|null|~)$/i.test(s)) return true;
 	if (/^-?\d+(\.\d+)?$/.test(s)) return true;
 	return /[:#\[\]{}&*!|>'"%@`,]|^[\s?-]|\s$/.test(s);
@@ -14,21 +31,20 @@ function needsQuote(s: string): boolean {
 function yamlScalar(v: unknown): string {
 	if (v === null || v === undefined) return "null";
 	if (typeof v === "boolean" || typeof v === "number") return String(v);
-	if (Array.isArray(v)) return "[]"; // only reached for the empty case
-	if (typeof v === "object") return "{}"; // only reached for the empty case
+	if (Array.isArray(v)) return "[]";
+	if (typeof v === "object") return "{}";
 	const s = String(v);
 	return needsQuote(s) ? JSON.stringify(s) : s;
 }
 
-function jsonToYaml(v: unknown, indent = 0): string {
+export function toYaml(v: unknown, indent = 0): string {
 	const pad = "  ".repeat(indent);
 	if (Array.isArray(v)) {
 		if (!v.length) return `${pad}[]`;
 		return v
 			.map((item) => {
 				if (item !== null && typeof item === "object" && Object.keys(item as object).length) {
-					// Render the child, then splice the dash in front of its first line.
-					const block = jsonToYaml(item, indent + 1);
+					const block = toYaml(item, indent + 1);
 					return `${pad}-${block.slice(pad.length + 1)}`;
 				}
 				return `${pad}- ${yamlScalar(item)}`;
@@ -42,7 +58,7 @@ function jsonToYaml(v: unknown, indent = 0): string {
 			.map((k) => {
 				const val = (v as Record<string, unknown>)[k];
 				if (val !== null && typeof val === "object" && Object.keys(val as object).length) {
-					return `${pad}${k}:\n${jsonToYaml(val, indent + 1)}`;
+					return `${pad}${k}:\n${toYaml(val, indent + 1)}`;
 				}
 				return `${pad}${k}: ${yamlScalar(val)}`;
 			})
@@ -50,8 +66,6 @@ function jsonToYaml(v: unknown, indent = 0): string {
 	}
 	return `${pad}${yamlScalar(v)}`;
 }
-
-// --- YAML (common subset) -> JSON ---
 
 function parseScalar(raw: string): unknown {
 	const s = raw.trim();
@@ -74,14 +88,13 @@ function parseScalar(raw: string): unknown {
 		try {
 			return JSON.parse(s);
 		} catch {
-			/* fall through to plain string */
+			/* fall through */
 		}
 	}
 	return s;
 }
 
-function yamlToJson(text: string): unknown {
-	// Drop blank lines and full-line comments; strip trailing inline comments on unquoted content.
+export function parseYaml(text: string): unknown {
 	const lines = text
 		.split(/\r?\n/)
 		.filter((l) => l.trim() !== "" && !/^\s*#/.test(l))
@@ -97,7 +110,6 @@ function yamlToJson(text: string): unknown {
 		if (/^\s*-(\s|$)/.test(first)) return parseSeq(minIndent);
 		return parseMap(minIndent);
 	}
-
 	function parseSeq(minIndent: number): unknown[] {
 		const arr: unknown[] = [];
 		while (i < lines.length) {
@@ -109,7 +121,6 @@ function yamlToJson(text: string): unknown {
 			if (rest === "") {
 				arr.push(parseBlock(ind + 1));
 			} else if (/^[^"'\[{][^:]*:(\s|$)/.test(rest)) {
-				// "- key: value" — a map whose first key sits on the dash line.
 				const m = rest.match(/^([^:]+):\s*(.*)$/)!;
 				const obj: Record<string, unknown> = {};
 				const childIndent = ind + 2;
@@ -123,13 +134,11 @@ function yamlToJson(text: string): unknown {
 		}
 		return arr;
 	}
-
 	function parseMap(minIndent: number): Record<string, unknown> {
 		const obj: Record<string, unknown> = {};
 		mergeMap(obj, minIndent);
 		return obj;
 	}
-
 	function mergeMap(obj: Record<string, unknown>, minIndent: number) {
 		while (i < lines.length) {
 			const line = lines[i];
@@ -143,36 +152,18 @@ function yamlToJson(text: string): unknown {
 			else obj[key] = parseScalar(m[2]);
 		}
 	}
-
 	return parseBlock(0);
 }
 
-export const yamlJson: Fn = {
-	name: "yaml_json",
-	description:
-		"Convert between a practical YAML subset and JSON. direction: yaml_to_json (default) | json_to_yaml. Supported subset: scalars (string/number/bool/null), nested maps by indentation, block sequences (- item), single/double-quoted strings, and # comments. NOT supported: anchors/aliases, block/multiline scalars (| >), complex flow collections, or multi-document streams — provide those forms differently. Returns pretty JSON (yaml_to_json) or YAML text (json_to_yaml).",
-	inputSchema: {
-		type: "object",
-		additionalProperties: false,
-		required: ["data"],
-		properties: {
-			data: { type: "string", description: "YAML text (yaml_to_json) or JSON (json_to_yaml)." },
-			direction: { type: "string", enum: ["yaml_to_json", "json_to_yaml"], default: "yaml_to_json" },
-		},
-	},
-	cacheable: true,
-	run: async (_env, args) => {
-		const data = String(args?.data ?? "");
-		if (!data.trim()) return fail("data is required.");
-		const direction = args?.direction === "json_to_yaml" ? "json_to_yaml" : "yaml_to_json";
-		try {
-			if (direction === "json_to_yaml") {
-				const obj = JSON.parse(data);
-				return ok(jsonToYaml(obj));
-			}
-			return ok(JSON.stringify(yamlToJson(data), null, 2));
-		} catch (e) {
-			return fail(`${direction} failed: ${String((e as Error).message ?? e)}`);
-		}
-	},
-};
+/** Parse any supported source string into a JS value. csv/xml are wired as the
+ * matching directional converters land; unsupported sources say so clearly. */
+export function parseSource(data: string, from: Format): unknown {
+	switch (from) {
+		case "json":
+			return JSON.parse(data);
+		case "yaml":
+			return parseYaml(data);
+		default:
+			throw new Error(`parsing '${from}' isn't wired here yet — use the ${from}_json converter`);
+	}
+}

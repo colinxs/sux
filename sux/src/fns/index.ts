@@ -57,7 +57,6 @@ import { whois } from "./whois";
 import { ipGeo } from "./ip_geo";
 import { tlsInfo } from "./tls_info";
 import { crawl } from "./crawl";
-import { yamlJson } from "./yaml_json";
 import { xmlJson } from "./xml_json";
 import { subtitles } from "./subtitles";
 import { jwt } from "./jwt";
@@ -104,6 +103,7 @@ import { egress } from "./egress";
 import { fillable } from "./fillable";
 import { grammar } from "./grammar";
 import { textIndex } from "./text_index";
+import { json } from "./json";
 import { pdf } from "./pdf";
 import { plaintext } from "./plaintext";
 import { shop } from "./shop";
@@ -111,6 +111,7 @@ import { store } from "./store";
 import { tone } from "./tone";
 import { trim } from "./trim";
 import { webSearch } from "./web_search";
+import { yaml } from "./yaml";
 
 export const FUNCTIONS: Fn[] = [
 	search,
@@ -166,7 +167,6 @@ export const FUNCTIONS: Fn[] = [
 	ipGeo,
 	tlsInfo,
 	crawl,
-	yamlJson,
 	xmlJson,
 	subtitles,
 	jwt,
@@ -213,6 +213,7 @@ export const FUNCTIONS: Fn[] = [
 	fillable,
 	grammar,
 	textIndex,
+	json,
 	pdf,
 	plaintext,
 	shop,
@@ -220,4 +221,5 @@ export const FUNCTIONS: Fn[] = [
 	tone,
 	trim,
 	webSearch,
+	yaml,
 ];
