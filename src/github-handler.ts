@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import type { AuthRequest, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { Hono } from "hono";
 import { Octokit } from "octokit";
-import { fetchUpstreamAuthToken, getUpstreamAuthorizeUrl, type Props } from "./utils";
+import { fetchUpstreamAuthToken, getUpstreamAuthorizeUrl, isAllowedLogin, type Props } from "./utils";
 import {
 	addApprovedClient,
 	createOAuthState,
@@ -14,6 +14,50 @@ import {
 } from "./workers-oauth-utils";
 
 const app = new Hono<{ Bindings: Env & { OAUTH_PROVIDER: OAuthHelpers } }>();
+
+/**
+ * GET /health — unauthenticated liveness + config sanity for uptime monitors.
+ *
+ * Reports only booleans about whether required config is present (never the
+ * values). `?deep=1` additionally pings Kagi's MCP to confirm reachability
+ * (costs nothing on Kagi's side — `initialize` isn't metered).
+ */
+app.get("/health", async (c) => {
+	const e = c.env as unknown as { KAGI_API_KEY?: string; ALLOWED_GITHUB_LOGIN?: string; GITHUB_CLIENT_ID?: string };
+	const body: Record<string, unknown> = {
+		status: "ok",
+		config: {
+			kagiKey: Boolean(e.KAGI_API_KEY),
+			allowlist: Boolean(e.ALLOWED_GITHUB_LOGIN?.trim()),
+			githubClient: Boolean(e.GITHUB_CLIENT_ID),
+		},
+	};
+
+	if (c.req.query("deep") === "1") {
+		try {
+			const r = await fetch("https://mcp.kagi.com/mcp", {
+				method: "POST",
+				headers: {
+					Accept: "application/json, text/event-stream",
+					"Content-Type": "application/json",
+					Authorization: `Bearer ${e.KAGI_API_KEY ?? ""}`,
+				},
+				body: JSON.stringify({
+					jsonrpc: "2.0",
+					id: 1,
+					method: "initialize",
+					params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "health", version: "1" } },
+				}),
+			});
+			body.upstream = { reachable: r.ok, status: r.status };
+		} catch (_err) {
+			body.upstream = { reachable: false, status: 0 };
+			return c.json({ ...body, status: "degraded" }, 503);
+		}
+	}
+
+	return c.json(body);
+});
 
 // NOTE ON CSRF: we protect the GitHub round-trip with the OAuth `state` token —
 // an unguessable value stored one-time in KV with a TTL (see createOAuthState /
@@ -159,9 +203,9 @@ app.get("/callback", async (c) => {
 	const { login, name, email } = user.data;
 
 	// Gate at login time (defense in depth; clearer than a later silent 403).
-	const allowed = ((c.env as unknown as { ALLOWED_GITHUB_LOGIN?: string }).ALLOWED_GITHUB_LOGIN ?? "").toLowerCase();
-	if (!allowed || login.toLowerCase() !== allowed) {
-		console.warn(`auth gate: rejected login=${JSON.stringify(login)} (allowed set: ${allowed ? "yes" : "no"})`);
+	const allowedRaw = (c.env as unknown as { ALLOWED_GITHUB_LOGIN?: string }).ALLOWED_GITHUB_LOGIN;
+	if (!isAllowedLogin(login, allowedRaw)) {
+		console.warn(`auth gate: rejected login=${JSON.stringify(login)}`);
 		return c.text(`GitHub user "${login}" is not authorized for this connector.`, 403);
 	}
 

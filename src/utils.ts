@@ -87,3 +87,23 @@ export type Props = {
 	email: string;
 	accessToken: string;
 };
+
+/**
+ * Parse ALLOWED_GITHUB_LOGIN (a comma-separated list of GitHub usernames) into a
+ * lower-cased Set. Empty/unset → empty set, which makes the gate fail closed
+ * (nobody is allowed).
+ */
+export function parseAllowedLogins(raw: string | undefined): Set<string> {
+	return new Set(
+		(raw ?? "")
+			.split(",")
+			.map((s) => s.trim().toLowerCase())
+			.filter(Boolean),
+	);
+}
+
+/** Case-insensitive membership check against the allowlist. */
+export function isAllowedLogin(login: string | undefined, raw: string | undefined): boolean {
+	if (!login) return false;
+	return parseAllowedLogins(raw).has(login.toLowerCase());
+}

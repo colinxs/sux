@@ -41,6 +41,18 @@ Claude connector ──Bearer <oauth token>──▶ Worker /mcp
 Only `/mcp` is proxied (MCP Streamable HTTP transport). There is no `/sse`
 endpoint.
 
+## Endpoints & guards
+
+- **`/mcp`** — the OAuth-gated proxy. After token validation it checks the login
+  against `ALLOWED_GITHUB_LOGIN` (comma-separated allowlist) and applies a
+  per-user rate limit (`MCP_RATE_LIMITER`, 120 req/60s — tune in `wrangler.jsonc`)
+  before forwarding to Kagi.
+- **`/health`** — unauthenticated liveness for uptime monitors. Returns booleans
+  for whether each required secret is configured (never the values).
+  `GET /health?deep=1` also pings Kagi and reports `upstream.reachable`
+  (`503`/`"degraded"` if unreachable).
+- **`/authorize`, `/callback`, `/token`, `/register`** — the OAuth flow.
+
 ## Required secrets
 
 | Secret | Purpose |
@@ -49,7 +61,7 @@ endpoint.
 | `GITHUB_CLIENT_SECRET` | GitHub OAuth app client secret |
 | `COOKIE_ENCRYPTION_KEY` | Random 32-byte hex, e.g. `openssl rand -hex 32` — signs the approval/session cookies |
 | `KAGI_API_KEY` | Your Kagi API token (from the Kagi dashboard) — injected server-side |
-| `ALLOWED_GITHUB_LOGIN` | The **one** GitHub username allowed through (case-insensitive) |
+| `ALLOWED_GITHUB_LOGIN` | Comma-separated GitHub usernames allowed through (case-insensitive), e.g. `alice` or `alice,bob` |
 
 If `ALLOWED_GITHUB_LOGIN` is unset or empty, the gate fails closed and **every**
 request returns `403`. If `KAGI_API_KEY` is wrong, Kagi returns tool errors

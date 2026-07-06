@@ -13,14 +13,21 @@
 
 import OAuthProvider from "@cloudflare/workers-oauth-provider";
 import { GitHubHandler } from "./github-handler";
+import { isAllowedLogin } from "./utils";
+
+// Cloudflare Rate Limiting binding (configured under `unsafe` in wrangler.jsonc).
+type RateLimiter = { limit: (opts: { key: string }) => Promise<{ success: boolean }> };
 
 // KAGI_API_KEY and ALLOWED_GITHUB_LOGIN are set via `wrangler secret put` and are
 // not yet in the generated Env type; intersect them in here.
 type KagiEnv = Env & {
 	KAGI_API_KEY: string;
+	// Comma-separated list of allowed GitHub usernames (case-insensitive).
 	ALLOWED_GITHUB_LOGIN: string;
 	// "1" enables verbose per-request proxy logging (see wrangler.jsonc vars).
 	DEBUG_MCP?: string;
+	// Present only if the ratelimit binding is configured; guarded before use.
+	MCP_RATE_LIMITER?: RateLimiter;
 };
 
 // Props stamped onto the token by github-handler.ts (see completeAuthorization).
@@ -42,22 +49,32 @@ const kagiProxy = {
 		// --- Single-user gate ------------------------------------------------
 		// workers-oauth-provider has already validated the OAuth token and put the
 		// GitHub identity on ctx.props. Fail closed if it isn't the owner.
-		const login = ctx.props?.login?.toLowerCase();
-		const allowed = (env.ALLOWED_GITHUB_LOGIN ?? "").toLowerCase();
-		if (!login || login !== allowed) {
+		const login = ctx.props?.login;
+		if (!isAllowedLogin(login, env.ALLOWED_GITHUB_LOGIN)) {
 			// Log the rejection so a misconfigured ALLOWED_GITHUB_LOGIN (or an
-			// unexpected visitor) is diagnosable from `wrangler tail`. Note that an
-			// empty ALLOWED_GITHUB_LOGIN fails closed here — every request 403s.
-			console.warn(
-				`gate: rejected login=${JSON.stringify(ctx.props?.login ?? null)} (allowed set: ${allowed ? "yes" : "no"})`,
-			);
+			// unexpected visitor) is diagnosable from logs. An empty allowlist fails
+			// closed here — every request 403s.
+			console.warn(`gate: rejected login=${JSON.stringify(login ?? null)}`);
 			return new Response(
 				JSON.stringify({
 					error: "forbidden",
-					detail: `GitHub user "${ctx.props?.login ?? "unknown"}" is not authorized for this connector.`,
+					detail: `GitHub user "${login ?? "unknown"}" is not authorized for this connector.`,
 				}),
 				{ status: 403, headers: { "content-type": "application/json" } },
 			);
+		}
+
+		// --- Per-user rate limit (abuse guard if a token ever leaks) ---------
+		// Keyed by GitHub login so one user can't exhaust another's budget.
+		if (env.MCP_RATE_LIMITER) {
+			const { success } = await env.MCP_RATE_LIMITER.limit({ key: login! });
+			if (!success) {
+				console.warn(`ratelimit: throttled login=${JSON.stringify(login)}`);
+				return new Response(
+					JSON.stringify({ error: "rate_limited", detail: "Too many requests. Slow down and retry." }),
+					{ status: 429, headers: { "content-type": "application/json", "retry-after": "10" } },
+				);
+			}
 		}
 
 		// --- Reverse proxy to Kagi's hosted MCP ------------------------------
