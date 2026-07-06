@@ -92,11 +92,15 @@ import { kv_get } from "./kv_get";
 import { kv_put } from "./kv_put";
 import { kv_list } from "./kv_list";
 import { kv_delete } from "./kv_delete";
+import { issue } from "./issue";
+import { suggest } from "./suggest";
+import { lint } from "./lint";
 import { htmlToPdf } from "./html_to_pdf";
 import { pdfToText } from "./pdf_to_text";
 import { pdfToImages } from "./pdf_to_images";
 import { officeToPdf } from "./office_to_pdf";
 import { imageConvert } from "./image_convert";
+import { plaintext } from "./plaintext";
 
 export const FUNCTIONS: Fn[] = [
 	search,
@@ -187,9 +191,13 @@ export const FUNCTIONS: Fn[] = [
 	kv_put,
 	kv_list,
 	kv_delete,
+	issue,
+	suggest,
+	lint,
 	htmlToPdf,
 	pdfToText,
 	pdfToImages,
 	officeToPdf,
 	imageConvert,
+	plaintext,
 ];

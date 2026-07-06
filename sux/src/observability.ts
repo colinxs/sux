@@ -1,11 +1,13 @@
 // Public, unauthenticated observability endpoints for the sux engine:
 //   GET /metrics  — usage metrics as JSON (?format=prometheus for scraping)
 //   GET /logs     — rolling call log with metric fields (JSON; ?tool= / ?limit= )
+//   GET /feedback — server-side issue/suggest backlog (JSON; ?type= / ?limit= )
 // No dashboard UI by design — logging + metrics only. `/health` is intentionally
 // NOT handled here: it falls through to the richer browsable page in
 // github-handler.ts (residential-egress stats). Returns null when the path isn't
 // ours so index.ts can fall through to OAuth.
 
+import { type FeedbackKind, readFeedback } from "./fns/_feedback";
 import { readMetrics, toPrometheus } from "./metrics";
 import type { RtEnv } from "./registry";
 
@@ -38,6 +40,14 @@ export async function handleObservability(url: URL, request: Request, env: RtEnv
 			errors: m.errors,
 			recent: recent.slice(0, limit).map((e) => ({ ...e, at: new Date(e.at).toISOString() })),
 		});
+	}
+
+	if (url.pathname === "/feedback") {
+		const t = url.searchParams.get("type");
+		const kind: FeedbackKind | undefined = t === "issue" || t === "suggest" ? t : undefined;
+		const limit = Math.min(Number(url.searchParams.get("limit")) || 50, 500);
+		const items = await readFeedback(env, kind, limit);
+		return json({ count: items.length, items: items.map((e) => ({ ...e, at: new Date(e.at).toISOString() })) });
 	}
 
 	return null;

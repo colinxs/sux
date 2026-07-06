@@ -18,8 +18,9 @@ const CATEGORIES = [
 	["Text / AI", ["summarize", "translate", "classify", "embed", "ocr", "entities"]],
 	["Privacy", ["redact", "strip_metadata", "anonymize", "scrub_headers", "mask"]],
 	["Batching", ["batch", "batch_fetch"]],
-	["Utilities", ["units", "datetime", "calc", "validate", "word_count", "sort", "frequency", "template", "regex_replace", "htmlentities", "querystring", "url_parse", "color_convert", "uuid", "random"]],
+	["Utilities", ["units", "datetime", "calc", "validate", "lint", "word_count", "sort", "frequency", "template", "regex_replace", "htmlentities", "querystring", "url_parse", "color_convert", "uuid", "random"]],
 	["Storage (KV)", ["kv_get", "kv_put", "kv_list", "kv_delete"]],
+	["Feedback / meta", ["issue", "suggest"]],
 	["Query / APIs", ["search", "pubmed", "clinical_trials", "local_shop", "wayback", "barcode_lookup", "youtube"]],
 ];
 

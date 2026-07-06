@@ -20,8 +20,8 @@ export const IMPORTANCE = [
 	"template", "regex_replace", "htmlentities", "flatten", "sample", "base_convert",
 	"color_convert", "checksum", "querystring", "url_parse", "slugify", "case_convert",
 	"humanize", "uuid", "random", "mask", "anonymize", "scrub_headers", "strip_metadata", "qr",
-	// Tier 6 — storage primitives
-	"kv_get", "kv_put", "kv_list", "kv_delete",
+	// Tier 6 — storage primitives + meta/feedback
+	"kv_get", "kv_put", "kv_list", "kv_delete", "issue", "suggest", "lint",
 	// Tier 7 — planned stubs (need Browser Rendering / WASM)
 	"html_to_pdf", "pdf_to_text", "pdf_to_images", "office_to_pdf", "image_convert",
 ];
