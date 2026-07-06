@@ -1,4 +1,7 @@
 import { type Fn, fail, ok } from "../registry";
+import { smartFetch } from "../proxy";
+
+const UA = "sux/1.0 (+https://sux.colinxs.workers.dev)";
 
 export const tlsInfo: Fn = {
 	name: "tls_info",
@@ -13,10 +16,11 @@ export const tlsInfo: Fn = {
 		},
 	},
 	cacheable: true,
-	run: async (_env, args) => {
+	run: async (env, args) => {
 		const host = String(args?.host ?? "").trim().replace(/^https?:\/\//, "").split("/")[0];
 		if (!host) return fail("Provide a `host`.");
-		const resp = await fetch(`https://crt.sh/?q=${encodeURIComponent(host)}&output=json`, { headers: { accept: "application/json" } });
+		// Route via the residential exit (crt.sh 403/502s datacenter IPs) with a UA.
+		const resp = await smartFetch(env, `https://crt.sh/?q=${encodeURIComponent(host)}&output=json`, { headers: { accept: "application/json", "user-agent": UA } });
 		if (!resp.ok) return fail(`crt.sh query failed: HTTP ${resp.status}`);
 		let rows: any[];
 		try {

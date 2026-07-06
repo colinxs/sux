@@ -53,7 +53,9 @@ export function proxyEnabled(env: TailscaleEnv): boolean {
 // APIs, DoH resolvers, RDAP/CT/IP-geo lookups) go DIRECT even when the proxy is
 // on — direct is a hop faster and these never block datacenter IPs. Web pages
 // (the reason the residential exit exists) still proxy.
-const DIRECT_HOST_RE = /(^|\.)(?:kagi\.com|cloudflare-dns\.com|dns\.google|rdap\.org|crt\.sh|ipwho\.is|ip-api\.com)$/i;
+// Note: RDAP (rdap.org) and CT logs (crt.sh) are intentionally NOT here — they
+// often 403/blocks datacenter IPs, so they benefit from the residential exit.
+const DIRECT_HOST_RE = /(^|\.)(?:kagi\.com|cloudflare-dns\.com|dns\.google|ipwho\.is|ip-api\.com)$/i;
 
 export function isDirectHost(url: string): boolean {
 	try {

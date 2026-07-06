@@ -1,4 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
+import { smartFetch } from "../proxy";
 
 export const whois: Fn = {
 	name: "whois",
@@ -10,10 +11,11 @@ export const whois: Fn = {
 		properties: { domain: { type: "string", description: "Registrable domain, e.g. example.com." } },
 	},
 	cacheable: true,
-	run: async (_env, args) => {
+	run: async (env, args) => {
 		const domain = String(args?.domain ?? "").trim().toLowerCase().replace(/^https?:\/\//, "").split("/")[0];
 		if (!domain) return fail("Provide a `domain`.");
-		const resp = await fetch(`https://rdap.org/domain/${encodeURIComponent(domain)}`, { headers: { accept: "application/rdap+json" } });
+		// Route via the residential exit (rdap.org 403s some datacenter IPs) with a UA.
+		const resp = await smartFetch(env, `https://rdap.org/domain/${encodeURIComponent(domain)}`, { headers: { accept: "application/rdap+json", "user-agent": "sux/1.0 (+https://sux.colinxs.workers.dev)" } });
 		if (resp.status === 404) return ok(`(no RDAP record for ${domain})`);
 		if (!resp.ok) return fail(`RDAP query failed: HTTP ${resp.status}`);
 		const j = (await resp.json()) as any;
