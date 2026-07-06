@@ -6,7 +6,54 @@ vi.mock("../proxy", () => ({
 	),
 }));
 
-import { clamp, fromB64, isHttpUrl, loadHtml, stripHtml, toB64 } from "./_util";
+import { clamp, deliverBytes, fromB64, isHttpUrl, loadHtml, putBlob, stripHtml, toB64 } from "./_util";
+
+function blobEnv() {
+	const r2 = new Map<string, Uint8Array>();
+	const kv = new Map<string, string>();
+	return {
+		_r2: r2,
+		_kv: kv,
+		R2: { put: async (k: string, v: any) => void r2.set(k, new Uint8Array(v)) },
+		OAUTH_KV: { put: async (k: string, v: string) => void kv.set(k, v) },
+	} as any;
+}
+
+describe("putBlob / deliverBytes (shared CAS store)", () => {
+	it("content-addresses bytes and mints a /s/<uuid> handle", async () => {
+		const env = blobEnv();
+		const ref = await putBlob(env, new TextEncoder().encode("hello"), "text/plain");
+		expect(ref.key).toBe(`cas/${ref.sha256}`);
+		expect(ref.url).toBe(`https://sux.colinxs.workers.dev/s/${ref.uuid}`);
+		expect(env._r2.has(ref.key)).toBe(true);
+		expect(env._kv.has(`store:${ref.uuid}`)).toBe(true);
+	});
+
+	it("dedupes identical bytes to one blob (distinct handles)", async () => {
+		const env = blobEnv();
+		const a = await putBlob(env, new TextEncoder().encode("same"), "text/plain");
+		const b = await putBlob(env, new TextEncoder().encode("same"), "text/plain");
+		expect(a.key).toBe(b.key);
+		expect(env._r2.size).toBe(1);
+	});
+
+	it("deliverBytes as:url returns a compact ref; default stays inline", async () => {
+		const env = blobEnv();
+		const bytes = new Uint8Array([1, 2, 3]);
+		const inline = () => ({ content: [{ type: "text" as const, text: "INLINE" }] });
+		const urlMode = await deliverBytes(env, bytes, "image/png", "url", inline);
+		const parsed = JSON.parse(urlMode.content[0].text);
+		expect(parsed.url).toMatch(/\/s\/[0-9a-f-]{36}$/);
+		expect(parsed.content_type).toBe("image/png");
+		expect((await deliverBytes(env, bytes, "image/png", undefined, inline)).content[0].text).toBe("INLINE");
+	});
+
+	it("deliverBytes as:url degrades clearly without R2", async () => {
+		const r = await deliverBytes({ OAUTH_KV: { put: async () => {} } } as any, new Uint8Array([1]), "image/png", "url", () => ({ content: [{ type: "text" as const, text: "x" }] }));
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/R2/);
+	});
+});
 
 describe("loadHtml", () => {
 	it("returns html for a 2xx fetch", async () => {

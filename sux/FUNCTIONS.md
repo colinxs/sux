@@ -68,7 +68,7 @@ Status: ✅ working · 🟡 planned (needs a binding/WASM not yet wired).
 | `sample` | ✅ | ✓ | Take a random sample of `n` items |
 | `base_convert` | ✅ | ✓ | Convert an integer between numeric bases |
 | `checksum` | ✅ | ✓ | Compute a non-cryptographic checksum of UTF-8 text |
-| `qr` | ✅ | ✓ | Encode text into a QR code PNG (base64) or decode a QR image back to text |
+| `qr` | ✅ | ✓ | Encode text into a QR code PNG or decode a QR image back to text |
 
 ### Token optimization (6)
 

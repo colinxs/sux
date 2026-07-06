@@ -56,4 +56,16 @@ describe("image_convert", () => {
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toMatch(/Provide `image`/);
 	});
+
+	it('as:"url" stores the output in the CAS store and returns a compact ref', async () => {
+		const env = mockImagesEnv({});
+		env.R2 = { put: async () => {} };
+		env.OAUTH_KV = { put: async () => {} };
+		const r = await imageConvert.run(env, { image: PNG_1x1, to: "webp", as: "url" });
+		expect(r.isError).toBeFalsy();
+		const ref = JSON.parse(r.content[0].text);
+		expect(ref.url).toMatch(/\/s\/[0-9a-f-]{36}$/);
+		expect(ref.content_type).toBe("image/webp");
+		expect(ref.size).toBe(3); // the mocked 9,9,9 bytes
+	});
 });

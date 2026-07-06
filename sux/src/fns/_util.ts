@@ -76,3 +76,56 @@ export function stripHtml(html: string): string {
 		.replace(/\s+/g, " ")
 		.trim();
 }
+
+// ---------- Content-addressed blob store (shared with the `store` fn) ----------
+
+export const STORE_BASE = "https://sux.colinxs.workers.dev";
+export const STORE_KV_PREFIX = "store:";
+
+export type BlobRef = { uuid: string; url: string; key: string; sha256: string; size: number; content_type: string };
+
+export async function sha256Hex(bytes: Uint8Array): Promise<string> {
+	const buf = await crypto.subtle.digest("SHA-256", bytes);
+	return Array.from(new Uint8Array(buf))
+		.map((b) => b.toString(16).padStart(2, "0"))
+		.join("");
+}
+
+/**
+ * Content-address bytes into R2 (cas/<sha256> — identical bytes dedupe), mint a
+ * uuid handle in KV, and return the public /s/<uuid> URL. The Nix-store move:
+ * any fn's binary output becomes a ~100-token reference every other fn can take
+ * as a `url` input. Throws when R2 is unbound.
+ */
+export async function putBlob(env: RtEnv, bytes: Uint8Array, contentType: string): Promise<BlobRef> {
+	if (!env.R2) throw new Error("R2 is not available (bucket binding missing).");
+	const sha256 = await sha256Hex(bytes);
+	const key = `cas/${sha256}`;
+	await env.R2.put(key, bytes, { httpMetadata: { contentType }, customMetadata: { sha256 } });
+	const uuid = crypto.randomUUID();
+	await env.OAUTH_KV.put(`${STORE_KV_PREFIX}${uuid}`, JSON.stringify({ key, content_type: contentType, size: bytes.length, sha256 }));
+	return { uuid, url: `${STORE_BASE}/s/${uuid}`, key, sha256, size: bytes.length, content_type: contentType };
+}
+
+/**
+ * Deliver binary output either inline (base64, the default — token-expensive but
+ * self-contained) or `as: "url"` via the content-addressed store (~100 tokens,
+ * consumable as any other fn's `url` input). Callers pass their own inline shape.
+ */
+export async function deliverBytes(
+	env: RtEnv,
+	bytes: Uint8Array,
+	contentType: string,
+	as: string | undefined,
+	inline: () => { content: Array<{ type: "text"; text: string }> },
+): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
+	if (as === "url") {
+		try {
+			const ref = await putBlob(env, bytes, contentType);
+			return { content: [{ type: "text", text: JSON.stringify({ url: ref.url, sha256: ref.sha256, size: ref.size, content_type: contentType }, null, 2) }] };
+		} catch (e) {
+			return { content: [{ type: "text", text: `as:"url" needs the R2 store: ${String((e as Error).message ?? e)}` }], isError: true };
+		}
+	}
+	return inline();
+}

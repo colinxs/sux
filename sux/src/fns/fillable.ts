@@ -1,6 +1,6 @@
 import { PDFDocument } from "pdf-lib";
 import { type Fn, fail, ok } from "../registry";
-import { fromB64, toB64 } from "./_util";
+import { deliverBytes, fromB64, toB64 } from "./_util";
 import { smartFetch } from "../proxy";
 import { isHttpUrl } from "./_util";
 
@@ -32,6 +32,7 @@ export const fillable: Fn = {
 			url: { type: "string", description: "URL of the source PDF (fetched via the residential proxy)." },
 			origin: { type: "string", enum: ["bottom", "top"], description: "Y-axis origin for field coordinates. Default 'bottom' (PDF-native).", default: "bottom" },
 			flatten: { type: "boolean", description: "Bake field values into the page and make them non-editable.", default: false },
+			as: { type: "string", enum: ["base64", "url"], default: "base64", description: "Delivery: inline base64 (default) or a content-addressed /s/<uuid> URL (~100 tokens)." },
 			fields: {
 				type: "array",
 				description: "Fields to add.",
@@ -112,7 +113,7 @@ export const fillable: Fn = {
 
 			if (args?.flatten === true) form.flatten();
 			const out = await doc.save();
-			return ok(toB64(out));
+			return deliverBytes(env, out, "application/pdf", args?.as, () => ok(toB64(out)));
 		} catch (e) {
 			return fail(`fillable failed: ${String((e as Error).message ?? e)}`);
 		}

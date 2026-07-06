@@ -1,6 +1,6 @@
 import { PDFDocument, PDFHexString, PDFName, PDFNull, PDFNumber, StandardFonts } from "pdf-lib";
 import { type Fn, fail, ok } from "../registry";
-import { fromB64, isHttpUrl, stripHtml, toB64 } from "./_util";
+import { deliverBytes, fromB64, isHttpUrl, stripHtml, toB64 } from "./_util";
 import { smartFetch } from "../proxy";
 import { ocr as ocrFn } from "./ocr";
 
@@ -200,6 +200,7 @@ export const pdf: Fn = {
 			fields: { type: "array", description: "Form fields to add.", items: { type: "object" } },
 			origin: { type: "string", enum: ["bottom", "top"], default: "bottom" },
 			flatten: { type: "boolean", default: false },
+			as: { type: "string", enum: ["base64", "url"], default: "base64", description: "Delivery: inline base64 (default) or a content-addressed /s/<uuid> URL (~100 tokens)." },
 			ocr: { type: "boolean", description: "Transcribe image sources with Workers AI and append the recognized text.", default: false },
 			compress: { type: "boolean", description: "Re-save with object streams and strip metadata for smaller size.", default: false },
 			title: { type: "string" },
@@ -278,7 +279,7 @@ export const pdf: Fn = {
 			out.setProducer("sux/pdf");
 
 			const bytes = await out.save({ useObjectStreams: true });
-			return ok(toB64(bytes));
+			return deliverBytes(env, bytes, "application/pdf", args?.as, () => ok(toB64(bytes)));
 		} catch (e) {
 			return fail(`pdf failed: ${String((e as Error).message ?? e)}`);
 		}

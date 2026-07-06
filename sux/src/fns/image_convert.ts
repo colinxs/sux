@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { fromB64, isHttpUrl, toB64 } from "./_util";
+import { deliverBytes, fromB64, isHttpUrl, toB64 } from "./_util";
 import { smartFetch } from "../proxy";
 
 const MIME: Record<string, string> = { png: "image/png", jpeg: "image/jpeg", webp: "image/webp", avif: "image/avif" };
@@ -36,6 +36,7 @@ export const imageConvert: Fn = {
 			brightness: { type: "number", minimum: 0 },
 			contrast: { type: "number", minimum: 0 },
 			gamma: { type: "number", minimum: 0 },
+			as: { type: "string", enum: ["base64", "url"], default: "base64", description: "Delivery: inline base64 (default) or a content-addressed /s/<uuid> URL (~100 tokens)." },
 		},
 	},
 	cacheable: true,
@@ -76,7 +77,7 @@ export const imageConvert: Fn = {
 			if (typeof args?.quality === "number") out.quality = args.quality;
 			const result = await env.IMAGES.input(bytes).transform(t).output(out);
 			const resultBytes = new Uint8Array(await result.response().arrayBuffer());
-			return ok(toB64(resultBytes));
+			return deliverBytes(env, resultBytes, MIME[to], args?.as, () => ok(toB64(resultBytes)));
 		} catch (e) {
 			return fail(`image_convert failed: ${String((e as Error).message ?? e)}`);
 		}

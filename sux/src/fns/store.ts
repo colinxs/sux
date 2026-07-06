@@ -1,22 +1,13 @@
 import { type Fn, fail, ok } from "../registry";
-import { fromB64, toB64 } from "./_util";
+import { fromB64, putBlob, STORE_KV_PREFIX, toB64 } from "./_util";
 
 // Object storage in sux's R2. Bytes are content-addressed (key = sha256, so
 // identical content dedupes to one immutable object — Nix-store style). Each put
 // also mints a short uuid handle stored in KV (uuid → { r2 key, type, size }),
 // and returns a resolvable URL ending in that uuid: GET /s/<uuid> streams it back.
-
-const BASE = "https://sux.colinxs.workers.dev";
-export const STORE_KV_PREFIX = "store:";
+// The put path itself lives in _util.putBlob, shared with every binary-output fn.
 
 export type StoreRef = { key: string; content_type: string; size: number; sha256: string };
-
-async function sha256Hex(bytes: Uint8Array): Promise<string> {
-	const buf = await crypto.subtle.digest("SHA-256", bytes);
-	return Array.from(new Uint8Array(buf))
-		.map((b) => b.toString(16).padStart(2, "0"))
-		.join("");
-}
 
 const isTexty = (ct: string): boolean => /^(text\/|application\/(json|xml|javascript|yaml|x-yaml)|application\/[a-z.+-]*\+(json|xml))/i.test(ct);
 
@@ -64,13 +55,8 @@ export const store: Fn = {
 				} else {
 					return fail("put needs `data` (text) or `base64` (binary).");
 				}
-				const hex = await sha256Hex(bytes);
-				const r2key = `cas/${hex}`;
-				await env.R2.put(r2key, bytes, { httpMetadata: { contentType: ct }, customMetadata: { sha256: hex } });
-				const uuid = crypto.randomUUID();
-				const ref: StoreRef = { key: r2key, content_type: ct, size: bytes.length, sha256: hex };
-				await env.OAUTH_KV.put(`${STORE_KV_PREFIX}${uuid}`, JSON.stringify(ref));
-				return ok(JSON.stringify({ uuid, url: `${BASE}/s/${uuid}`, key: r2key, sha256: hex, size: bytes.length, content_type: ct }, null, 2));
+				const ref = await putBlob(env, bytes, ct);
+				return ok(JSON.stringify(ref, null, 2));
 			}
 
 			if (op === "get") {
