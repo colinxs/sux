@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RtEnv } from "./registry";
-import { extractRpcFromText, type JsonRpc } from "./mcp-util";
+import { cacheKey, extractRpcFromText, type JsonRpc } from "./mcp-util";
 import { handleRpc } from "./index";
 
 // End-to-end coverage of the REAL tools/call dispatch chain in index.ts
@@ -109,6 +109,65 @@ describe("handleRpc (index.ts dispatch)", () => {
 
 		const second = await callRpc(env, ctx, rpc);
 		expect(second.result.content[0].text).toBe("FROM_CACHE"); // served from KV, run() not re-executed
+	});
+
+	it("fresh:true bypasses the cache READ but still rewrites the same entry", async () => {
+		const { kv, store } = makeKv();
+		const { ctx, deferred } = makeCtx();
+		const env = makeEnv(kv);
+		const args = { data: '{"a":1}', from: "json" };
+		const base: JsonRpc = { jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "json", arguments: { ...args } } };
+
+		// (a) First call caches, then overwrite the entry with a sentinel and prove
+		// a plain (no-fresh) call is served from that sentinel — the baseline.
+		const first = await callRpc(env, ctx, base);
+		expect(JSON.parse(first.result.content[0].text)).toEqual({ a: 1 });
+		await Promise.all(deferred.splice(0));
+
+		const cacheKeys = [...store.keys()].filter((k) => k.startsWith("cache:"));
+		expect(cacheKeys.length).toBe(1);
+		const key = cacheKeys[0];
+		const sentinel = JSON.stringify({ content: [{ type: "text", text: "STALE_SENTINEL" }] });
+		store.set(key, sentinel);
+
+		const cached = await callRpc(env, ctx, { ...base, params: { name: "json", arguments: { ...args } } });
+		expect(cached.result.content[0].text).toBe("STALE_SENTINEL"); // served from KV
+
+		// (b) Now call with fresh:true — the read is bypassed so run() executes and
+		// returns the real result, NOT the sentinel; the fn never sees `fresh`.
+		const fresh = await callRpc(env, ctx, { ...base, params: { name: "json", arguments: { ...args, fresh: true } } });
+		expect(JSON.parse(fresh.result.content[0].text)).toEqual({ a: 1 });
+		expect(fresh.result.content[0].text).not.toContain("STALE_SENTINEL");
+
+		// The fresh result overwrote the SAME cache entry (identical key, no divergent
+		// second entry), replacing the sentinel with the freshly-computed value.
+		await Promise.all(deferred.splice(0));
+		expect([...store.keys()].filter((k) => k.startsWith("cache:"))).toEqual([key]);
+		expect(JSON.parse(JSON.parse(store.get(key)!).content[0].text)).toEqual({ a: 1 });
+		expect(store.get(key)).not.toBe(sentinel);
+	});
+
+	it("fresh is stripped before the fn runs, so the cache key is identical to a plain call", async () => {
+		const { kv, store } = makeKv();
+		const { ctx, deferred } = makeCtx();
+		const env = makeEnv(kv);
+		const args = { data: '{"b":2}', from: "json" };
+		// The key a plain (no-fresh) call would hash — computed from the stripped args.
+		const plainKey = await cacheKey("json", args);
+
+		// A fresh:true call: succeeds normally (fn ignored no unknown key) and writes
+		// under exactly plainKey — proving `fresh` was removed before cacheKey and
+		// before run() (a leaked `fresh` would change the hashed args → a different key).
+		const out = await callRpc(env, ctx, {
+			jsonrpc: "2.0",
+			id: 8,
+			method: "tools/call",
+			params: { name: "json", arguments: { ...args, fresh: true } },
+		});
+		expect(out.result.isError).toBeFalsy();
+		expect(JSON.parse(out.result.content[0].text)).toEqual({ b: 2 });
+		await Promise.all(deferred.splice(0));
+		expect([...store.keys()].filter((k) => k.startsWith("cache:"))).toEqual([plainKey]);
 	});
 
 	it("an isError result is not written to KV", async () => {

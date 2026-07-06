@@ -38,14 +38,28 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 		const fn = findFn(FUNCTIONS, name);
 		if (!fn) return sseResponse({ jsonrpc: "2.0", id, error: { code: -32601, message: `unknown tool: ${name}` } });
 
+		// Universal cache-bypass: a truthy `fresh` in the arguments forces a cache
+		// miss (skip the READ so the fn runs on live data) while leaving the WRITE
+		// path untouched (the fresh result repopulates the same entry). Detect and
+		// strip it up front — before cacheKey/normalize/run — so the fn never sees
+		// `fresh` (schemas are additionalProperties:false) and the key is computed
+		// from the same args a normal call uses, so a fresh call overwrites rather
+		// than diverging. Harmless no-op for non-cacheable fns.
+		const rawArgs = rpc?.params?.arguments;
+		let fresh = false;
+		if (rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs) && (rawArgs as Record<string, unknown>).fresh) {
+			fresh = true;
+			delete (rawArgs as Record<string, unknown>).fresh;
+		}
+
 		// Sane normalization on open: fold styled/fullwidth "font" unicode to ASCII
 		// and strip BOM/zero-width/control chars from string inputs. Byte-exact fns
 		// (hash/encode/compress/qr/kv/…) opt out via `raw` so their bytes are untouched.
-		const args = fn.raw ? rpc?.params?.arguments : normalizeArgs(rpc?.params?.arguments);
+		const args = fn.raw ? rawArgs : normalizeArgs(rawArgs);
 
 		const started = Date.now();
 		const key = fn.cacheable ? await cacheKey(name, args) : null;
-		if (key) {
+		if (key && !fresh) {
 			const cached = await env.OAUTH_KV.get(key);
 			if (cached) {
 				recordCall(env, ctx, { tool: name, ms: Date.now() - started, cache: true });
