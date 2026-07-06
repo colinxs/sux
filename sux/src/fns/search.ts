@@ -6,7 +6,7 @@ const SCOPE_ARGS = ["include_domains", "exclude_domains", "time_relative", "afte
 export const search: Fn = {
 	name: "search",
 	description:
-		"Web search via Kagi. Returns numbered results with titles, URLs, and snippets — cite by number. workflow: search (default) | news | videos | podcasts | images. Scope with include_domains / exclude_domains / time_relative (day|week|month) / after / before / file_type / lens_id (Academic=2, Forums=1, Programming=15, News360=29, Recipes=120, Small Web=107).",
+		"Web search via Kagi (routed through the residential proxy, direct fallback — same smartFetch path as scrape). Returns numbered results with titles, URLs, and snippets — cite by number. workflow: search (default) | news | videos | podcasts | images. Scope with include_domains / exclude_domains / time_relative (day|week|month) / after / before / file_type / lens_id (Academic=2, Forums=1, Programming=15, News360=29, Recipes=120, Small Web=107).",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
