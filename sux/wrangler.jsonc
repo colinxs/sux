@@ -1,0 +1,18 @@
+{
+	"$schema": "../node_modules/wrangler/config-schema.json",
+	"name": "sux",
+	"main": "src/index.ts",
+	"compatibility_date": "2025-03-10",
+	"compatibility_flags": ["nodejs_compat"],
+	// KV: OAuth state + tool-result cache (same scheme as the core Worker).
+	"kv_namespaces": [{ "binding": "OAUTH_KV", "id": "d0dadc11fdd64598992f4a84a958bafb" }],
+	// QUIC/HTTP-3 is automatic at the edge; observability = persistent logs (both services).
+	"observability": { "enabled": true, "head_sampling_rate": 1 },
+	"vars": { "DEBUG_MCP": "0" },
+	// Per-user rate limit (same as core).
+	"unsafe": {
+		"bindings": [{ "name": "MCP_RATE_LIMITER", "type": "ratelimit", "namespace_id": "2001", "simple": { "limit": 120, "period": 60 } }]
+	},
+	"dev": { "port": 8789 },
+	"upload_source_maps": true
+}

@@ -40,5 +40,7 @@
 
 		/* Skip type checking all .d.ts files. */
 		"skipLibCheck": true
-	}
+	},
+	/* research-tools is a separate Worker (Service 2) with its own build. */
+	"exclude": ["research-tools"]
 }

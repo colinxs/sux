@@ -15,3 +15,11 @@ KAGI_API_KEY=
 
 # Comma-separated GitHub usernames allowed through (case-insensitive), e.g. alice,bob
 ALLOWED_GITHUB_LOGIN=
+
+# Optional: route the Worker's outbound fetches through a Tailscale residential
+# proxy (see tailscale-proxy/). Unset = direct fetches. Auth is HMAC over the
+# shared secret; requests fall back to direct if the proxy is unreachable.
+TAILSCALE_PROXY_URL=
+TAILSCALE_PROXY_SECRET=
+# Set to "0" to force direct fetches even when the above are set.
+TAILSCALE_PROXY_ALL=
