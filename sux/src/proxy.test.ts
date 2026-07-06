@@ -72,7 +72,7 @@ describe("binary safety through the proxied path", () => {
 		expect(new Uint8Array(await resp.arrayBuffer())).toEqual(allBytes);
 		// Served entirely by the proxy — no direct refetch needed.
 		expect(fetchMock).toHaveBeenCalledTimes(1);
-		expect(String(fetchMock.mock.calls[0]?.[0])).toBe("https://x.ts.net/fetch");
+		expect(String(fetchMock.mock.calls[0]?.[0])).toMatch(/^https:\/\/x\.ts\.net\/fetch\?ts=\d+&sig=[a-f0-9]+$/);
 		// The request advertises that this client accepts base64 bodies.
 		expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).acceptBodyEncoding).toBe("base64");
 	});

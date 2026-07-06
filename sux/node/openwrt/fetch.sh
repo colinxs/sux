@@ -1,31 +1,29 @@
 #!/bin/sh
 # CGI residential-fetch proxy for OpenWRT (uhttpd + curl + openssl + jq).
-# Node-free port of node/server.mjs, speaking the same wire contract the
-# Cloudflare Worker uses: POST /fetch, HMAC(x-timestamp "\n" body), JSON reply.
+# Node-free port of node/server.mjs speaking the Worker's wire contract.
+# NOTE: uhttpd drops custom request headers on POST, so the Worker sends the
+# HMAC ts+sig in the QUERY_STRING (header fallback kept). See _util loadBytes.
 set -u
 
-SECRET_FILE=/etc/sux-proxy.secret
-SECRET=$(cat "$SECRET_FILE" 2>/dev/null)
-
-emit() {
-	printf 'Status: %s\r\n' "$1"
-	printf 'Content-Type: application/json\r\n\r\n'
-	shift
-	printf '%s' "$*"
-}
+SECRET=$(cat /etc/sux-proxy.secret 2>/dev/null)
+emit() { printf 'Status: %s\r\n' "$1"; printf 'Content-Type: application/json\r\n\r\n'; shift; printf '%s' "$*"; }
 
 [ -n "$SECRET" ] || { emit 500 '{"error":"no_secret"}'; exit 0; }
 [ "${REQUEST_METHOD:-}" = "POST" ] || { emit 404 '{"error":"not_found"}'; exit 0; }
 
+qts=$(printf '%s' "${QUERY_STRING:-}" | tr '&' '\n' | sed -n 's/^ts=//p')
+qsig=$(printf '%s' "${QUERY_STRING:-}" | tr '&' '\n' | sed -n 's/^sig=//p')
+TS="${qts:-${HTTP_X_TIMESTAMP:-}}"; SIG="${qsig:-${HTTP_X_SIGNATURE:-}}"
+
 req=$(mktemp); resp=$(mktemp); hdr=$(mktemp); cfg=$(mktemp); bodyf=$(mktemp)
 trap 'rm -f "$req" "$resp" "$hdr" "$cfg" "$bodyf"' EXIT
 
-len=${CONTENT_LENGTH:-0}
-[ "$len" -gt 0 ] && head -c "$len" > "$req" || : > "$req"
+cat > "$req"
+len=$(wc -c < "$req" | tr -d ' ')
 [ "$len" -gt 1000000 ] && { emit 413 '{"error":"body_too_large"}'; exit 0; }
 
-calc=$( { printf '%s\n' "${HTTP_X_TIMESTAMP:-}"; cat "$req"; } | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.*=[[:space:]]*//' )
-[ -n "${HTTP_X_SIGNATURE:-}" ] && [ "$calc" = "$HTTP_X_SIGNATURE" ] || { emit 401 '{"error":"unauthorized"}'; exit 0; }
+calc=$( { printf '%s\n' "$TS"; cat "$req"; } | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.*=[[:space:]]*//' )
+[ -n "$SIG" ] && [ "$calc" = "$SIG" ] || { emit 401 '{"error":"unauthorized"}'; exit 0; }
 
 url=$(jq -r '.url // empty' "$req")
 [ -n "$url" ] || { emit 400 '{"error":"missing_url"}'; exit 0; }

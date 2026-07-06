@@ -80,7 +80,7 @@ async function nodeStatus(env: HandlerEnv): Promise<Record<string, unknown>> {
 	try {
 		const ts = String(Date.now());
 		const sig = await hmacHex(env.TAILSCALE_PROXY_SECRET!, `${ts}\n/status`);
-		const endpoint = new URL("/status", env.TAILSCALE_PROXY_URL).href;
+		const endpoint = `${new URL("/status", env.TAILSCALE_PROXY_URL).href}?ts=${ts}&sig=${sig}`;
 		const r = await fetch(endpoint, { headers: { "x-timestamp": ts, "x-signature": sig }, signal: AbortSignal.timeout(8000) });
 		if (!r.ok) return { available: false, reason: `node /status returned HTTP ${r.status} (add the /status endpoint to the node)` };
 		const j = (await r.json()) as any;

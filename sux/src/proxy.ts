@@ -215,7 +215,10 @@ export async function fetchViaTailscale(
 	const ts = String(Date.now());
 	const signature = await hmacHex(env.TAILSCALE_PROXY_SECRET!, `${ts}\n${payload}`);
 
-	const resp = await fetch(endpoint, {
+	// ts+sig also ride the query string: some CGI hosts (uhttpd) drop custom
+	// request headers on POST, but QUERY_STRING is always delivered.
+	const signedEndpoint = `${endpoint}?ts=${ts}&sig=${signature}`;
+	const resp = await fetch(signedEndpoint, {
 		method: "POST",
 		headers: {
 			"content-type": "application/json",
