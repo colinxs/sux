@@ -106,6 +106,7 @@ import { textIndex } from "./text_index";
 import { json } from "./json";
 import { markdown } from "./markdown";
 import { pdf } from "./pdf";
+import { pipe } from "./pipe";
 import { plaintext } from "./plaintext";
 import { shop } from "./shop";
 import { store } from "./store";
@@ -218,6 +219,7 @@ export const FUNCTIONS: Fn[] = [
 	json,
 	markdown,
 	pdf,
+	pipe,
 	plaintext,
 	shop,
 	store,
