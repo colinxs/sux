@@ -177,7 +177,7 @@ Status: ✅ working · 🟡 planned (needs a binding/WASM not yet wired).
 | `store` | ✅ | ✓ | Store and retrieve arbitrary content in sux's R2 |
 | `tone` | ✅ | ✓ | Rewrite text in a given tone while preserving its meaning |
 | `trim` | ✅ | ✓ | Trim or shorten text |
-| `web_search` | ✅ | ✓ | Web search across engines, in parallel when asked |
+| `web_search` | ✅ | ✓ | Federated web search |
 | `xml` | ✅ | ✓ | Convert JSON to XML |
 | `yaml` | ✅ | ✓ | Convert JSON to YAML (a practical common subset: scalars, nested maps, block sequences) |
 

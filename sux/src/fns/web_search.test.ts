@@ -10,6 +10,10 @@ vi.mock("../proxy", () => ({
 	})),
 }));
 
+vi.mock("../kagi", () => ({
+	kagiTool: vi.fn(async () => ({ content: [{ type: "text", text: "### [Kagi Result](https://example.com/a)\n**URL:** https://example.com/a\nA kagi snippet." }] })),
+}));
+
 import { webSearch } from "./web_search";
 
 afterEach(() => vi.clearAllMocks());
@@ -48,6 +52,19 @@ describe("web_search", () => {
 
 	it("rejects an unknown engine", async () => {
 		expect((await webSearch.run({} as any, { query: "x", engine: "yahoo" })).isError).toBe(true);
+	});
+
+	it("federates Kagi via engine:kagi (with the key)", async () => {
+		const r = await webSearch.run({ KAGI_API_KEY: "k" } as any, { query: "x", engine: "kagi" });
+		expect(r.isError).toBeFalsy();
+		expect(r.content[0].text).toContain("Kagi Result");
+		expect(r.content[0].text).toContain("https://example.com/a");
+	});
+
+	it("engine:all includes Kagi in the federation when keyed", async () => {
+		const r = await webSearch.run({ KAGI_API_KEY: "k" } as any, { query: "hello", engine: "all" });
+		expect(r.isError).toBeFalsy();
+		expect(r.content[0].text).toMatch(/from: kagi, ddg/);
 	});
 
 	it("engine 'all' fans out over available engines and merges by consensus", async () => {

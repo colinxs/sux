@@ -1,6 +1,7 @@
 import { type Fn, fail, ok } from "../registry";
 import { smartFetch } from "../proxy";
 import { hasAI, llm } from "../ai";
+import { kagiTool } from "../kagi";
 import { stripHtml } from "./_util";
 
 export type Hit = { title: string; url: string; snippet?: string };
@@ -53,7 +54,23 @@ async function serpapiGoogle(env: any, q: string, limit: number): Promise<Hit[]>
 	return (j?.organic_results ?? []).slice(0, limit).map((r: any) => ({ title: r.title, url: r.link, snippet: r.snippet }));
 }
 
+// Kagi (the flagship) — its hosted MCP returns markdown `### [title](url)` blocks.
+async function kagi(env: any, q: string, limit: number): Promise<Hit[]> {
+	const r = await kagiTool(env, "kagi_search_fetch", { query: q, limit });
+	const md = r?.content?.[0]?.text ?? "";
+	const hits: Hit[] = [];
+	for (const block of md.split(/\n(?=###\s*\[)/)) {
+		const m = block.match(/###\s*\[([^\]]+)\]\((https?:\/\/[^)]+)\)/);
+		if (!m) continue;
+		const snippet = stripHtml(block.replace(/###\s*\[[^\]]+\]\([^)]+\)/, "").replace(/\*\*[^*]+:\*\*[^\n]*/g, "")).slice(0, 300);
+		hits.push({ title: m[1], url: m[2], snippet });
+		if (hits.length >= limit) break;
+	}
+	return hits;
+}
+
 const ENGINES: Record<string, { envKey?: string; envName?: string; run: (env: any, q: string, n: number) => Promise<Hit[]> }> = {
+	kagi: { envKey: "KAGI_API_KEY", envName: "KAGI_API_KEY", run: kagi },
 	ddg: { run: ddg },
 	brave: { envKey: "BRAVE_API_KEY", envName: "BRAVE_API_KEY", run: brave },
 	bing: { envKey: "BING_API_KEY", envName: "BING_API_KEY", run: bing },
@@ -99,15 +116,15 @@ function merge(lists: Hit[][], limit: number): Hit[] {
 export const webSearch: Fn = {
 	name: "web_search",
 	description:
-		"Web search across engines, in parallel when asked. `engine`: ddg (default, keyless — scraped via the residential proxy), google (SerpAPI), bing, brave, or `all` (fan out across every currently-available engine concurrently and merge by consensus). " +
-		"Key-gated engines are used only when their secret is set; `all` silently skips the unconfigured ones. Set `summarize: true` to return a short Workers-AI synthesis of the merged results (falls back to the plain list if AI isn't configured). Returns numbered results (title, url, snippet) — cite by number.",
+		"Federated web search. `engine`: kagi, ddg (default, keyless), google (SerpAPI), bing, brave, or `all` — which fans out across every currently-available engine concurrently (MAP), merges/dedupes by URL with consensus ranking, and with `summarize: true` reduces the pooled results into one Workers-AI synthesis with citations (map-reduce). " +
+		"Key-gated engines (kagi, google, bing, brave) are used only when their secret is set; `all` silently skips unconfigured ones. Falls back to the plain merged list if AI isn't configured. Returns numbered results (title, url, snippet) — cite by number.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
 		required: ["query"],
 		properties: {
 			query: { type: "string", description: "Search query." },
-			engine: { type: "string", enum: ["ddg", "google", "bing", "brave", "all"], default: "ddg" },
+			engine: { type: "string", enum: ["kagi", "ddg", "google", "bing", "brave", "all"], default: "ddg" },
 			limit: { type: "integer", minimum: 1, maximum: 25, default: 10 },
 			summarize: { type: "boolean", description: "Summarize the merged results with Workers AI.", default: false },
 		},
