@@ -8,7 +8,7 @@
 // ours so index.ts can fall through to OAuth.
 
 import { type FeedbackKind, readFeedback } from "./fns/_feedback";
-import { readMetrics, toPrometheus } from "./metrics";
+import { readMetrics, sloReport, toPrometheus } from "./metrics";
 import type { RtEnv } from "./registry";
 
 const json = (obj: unknown, status = 200): Response =>
@@ -44,9 +44,10 @@ export async function handleObservability(url: URL, request: Request, env: RtEnv
 		if (url.searchParams.get("format") === "prometheus") {
 			return new Response(toPrometheus(m), { status: 200, headers: { "content-type": "text/plain; version=0.0.4", "cache-control": "no-store" } });
 		}
-		// Metrics view excludes the rolling log (see /logs) to stay compact.
+		// Metrics view excludes the rolling log (see /logs) to stay compact, and
+		// adds the SLO/health view (latency percentiles + breaches vs targets).
 		const { recent, ...summary } = m;
-		return json(summary);
+		return json({ ...summary, slo: sloReport(m) });
 	}
 
 	if (url.pathname === "/logs") {
