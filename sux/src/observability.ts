@@ -1,35 +1,19 @@
 // Public, unauthenticated observability endpoints for the sux engine:
-//   GET /health   — liveness + config sanity (for uptime monitors)
 //   GET /metrics  — usage metrics as JSON (?format=prometheus for scraping)
 //   GET /logs     — rolling call log with metric fields (JSON; ?tool= / ?limit= )
-// No dashboard UI by design — logging + metrics only. Returns null when the path
-// isn't ours so index.ts can fall through to OAuth.
+// No dashboard UI by design — logging + metrics only. `/health` is intentionally
+// NOT handled here: it falls through to the richer browsable page in
+// github-handler.ts (residential-egress stats). Returns null when the path isn't
+// ours so index.ts can fall through to OAuth.
 
-import { FUNCTIONS } from "./fns";
 import { readMetrics, toPrometheus } from "./metrics";
 import type { RtEnv } from "./registry";
-import { isTailscaleConfigured } from "./proxy";
 
 const json = (obj: unknown, status = 200): Response =>
 	new Response(JSON.stringify(obj, null, 2), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 
 export async function handleObservability(url: URL, request: Request, env: RtEnv): Promise<Response | null> {
 	if (request.method !== "GET") return null;
-
-	if (url.pathname === "/health") {
-		return json({
-			status: "ok",
-			service: "sux",
-			time: new Date().toISOString(),
-			functions: FUNCTIONS.length,
-			bindings: {
-				kv: Boolean(env.OAUTH_KV),
-				ai: Boolean(env.AI),
-				rate_limiter: Boolean(env.MCP_RATE_LIMITER),
-				residential_proxy: isTailscaleConfigured(env),
-			},
-		});
-	}
 
 	if (url.pathname === "/metrics") {
 		const m = await readMetrics(env);
