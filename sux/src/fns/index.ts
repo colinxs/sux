@@ -44,6 +44,7 @@ import { imageConvert } from "./image_convert";
 import { csv } from "./csv";
 import { declutter } from "./declutter";
 import { fillable } from "./fillable";
+import { fontcase } from "./fontcase";
 import { html } from "./html";
 import { json } from "./json";
 import { markdown } from "./markdown";
@@ -96,6 +97,7 @@ export const FUNCTIONS: Fn[] = [
 	csv,
 	declutter,
 	fillable,
+	fontcase,
 	html,
 	json,
 	markdown,

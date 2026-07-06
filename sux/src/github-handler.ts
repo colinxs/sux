@@ -163,6 +163,20 @@ function renderHealthHtml(h: any): string {
 	const res = ts.residential;
 	const dc = ts.datacenter;
 	const node = ts.node ?? {};
+	const esc = (s: any) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+	const check = (ok: boolean, label: string, reason?: string) =>
+		`<div class="chk"><span class="mark ${ok ? "ok" : "bad"}">${ok ? "✓" : "✗"}</span><div class="chk-body"><span class="chk-label">${label}</span>${!ok && reason ? `<span class="chk-why">${esc(reason)}</span>` : ""}</div></div>`;
+
+	const secretsOk = Boolean(ts.configured);
+	const proxyOk = Boolean(ts.proxy_url_valid);
+	const nodeOk = Boolean(node.available);
+	const routingOk = Boolean(ts.routing);
+	const pipeline = [
+		check(secretsOk, "Secrets configured", "TAILSCALE_PROXY_URL + TAILSCALE_PROXY_SECRET not both set"),
+		check(proxyOk, "Proxy URL valid", ts.configured ? "TAILSCALE_PROXY_URL needs an absolute https:// URL" : "proxy not configured"),
+		check(nodeOk, "Funnel / node reachable", node.reason ?? "node /status unreachable"),
+		check(routingOk, "Routing live", res && dc && res.ip === dc.ip ? "residential IP == datacenter — falling back to direct" : "requests not exiting via the residential IP"),
+	].join("");
 	const loc = (o: any) => (o ? `${[o.city, o.region, o.country].filter(Boolean).join(", ") || "?"}${o.colo ? " · " + o.colo : ""}` : "—");
 	return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>sux · health</title>
@@ -178,6 +192,12 @@ function renderHealthHtml(h: any): string {
  .dot.on{background:#3fb950;box-shadow:0 0 6px #3fb95088} .dot.off{background:#f85149}
  .pill{font-size:.7rem;padding:.1rem .5rem;border-radius:99px;border:1px solid #30363d;color:#8b949e}
  .big{font-size:1.1rem} a{color:#58a6ff}
+ .chk{display:flex;gap:.6rem;align-items:flex-start;padding:.4rem 0;border-bottom:1px solid #1b212b}
+ .chk:last-child{border:0}
+ .mark{font-weight:700;line-height:1.4;width:1.1em;text-align:center;flex:none}
+ .mark.ok{color:#3fb950} .mark.bad{color:#f85149}
+ .chk-body{display:flex;flex-direction:column;gap:.15rem}
+ .chk-label{color:#c9d1d9} .chk-why{color:#f85149;font-size:.8rem}
 </style>
 <h1>${dot(h.status === "ok")} sux · <span class="pill">${h.status}</span></h1>
 <div class="sub">residential-proxied edge engine · <a href="?format=json">json</a></div>
@@ -187,6 +207,10 @@ function renderHealthHtml(h: any): string {
  <div class="row"><span class="k">GitHub OAuth</span><span class="v">${dot(h.config.githubClient)}</span></div>
  <div class="row"><span class="k">Login allowlist</span><span class="v">${dot(h.config.allowlist)}</span></div>
  <div class="row"><span class="k">Kagi upstream</span><span class="v">${dot(h.upstream.reachable)} ${h.upstream.status}</span></div>
+</div>
+
+<div class="card"><h2>tailscale · routing pipeline</h2>
+ ${pipeline}
 </div>
 
 <div class="card"><h2>tailscale · residential egress</h2>

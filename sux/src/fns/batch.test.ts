@@ -56,4 +56,92 @@ describe("batch", () => {
 		expect(r.isError).toBeFalsy();
 		expect(JSON.parse(r.content[0].text).results).toHaveLength(100);
 	});
+
+	it("reduce defaults to none — output is unchanged", async () => {
+		const base = await batch.run({} as any, { tool: "hash", calls: [{ text: "a" }, { text: "b" }] });
+		const explicit = await batch.run({} as any, { tool: "hash", calls: [{ text: "a" }, { text: "b" }], reduce: "none" });
+		const outBase = JSON.parse(base.content[0].text);
+		const outExplicit = JSON.parse(explicit.content[0].text);
+		expect(outBase).toEqual(outExplicit);
+		expect(outBase).not.toHaveProperty("reduced");
+		expect(outBase.results).toHaveLength(2);
+	});
+
+	it("rejects an unknown reduce mode", async () => {
+		const r = await batch.run({} as any, { tool: "hash", calls: [{ text: "a" }], reduce: "bogus" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/Unknown reduce 'bogus'/);
+	});
+
+	it("reduce:concat joins the ok results' text", async () => {
+		const r = await batch.run({} as any, {
+			tool: "hash",
+			calls: [{ text: "a" }, { text: "b" }],
+			reduce: "concat",
+		});
+		const out = JSON.parse(r.content[0].text);
+		expect(out.results).toHaveLength(2);
+		expect(out.reduced).toBe(`${out.results[0].text}\n\n---\n\n${out.results[1].text}`);
+	});
+
+	it("reduce:concat skips failed items but keeps them in results", async () => {
+		const r = await batch.run({} as any, {
+			tool: "hash",
+			calls: [{ text: "ok" }, { algo: "bogus" }],
+			reduce: "concat",
+		});
+		const out = JSON.parse(r.content[0].text);
+		expect(out.results).toHaveLength(2);
+		expect(out.results[1].ok).toBe(false);
+		// Only the one ok result is in the reduction (no separator, no failed text).
+		expect(out.reduced).toBe(out.results[0].text);
+	});
+
+	it("include_results:false drops the per-item array on a pure reduce", async () => {
+		const r = await batch.run({} as any, {
+			tool: "hash",
+			calls: [{ text: "a" }, { text: "b" }],
+			reduce: "concat",
+			include_results: false,
+		});
+		const out = JSON.parse(r.content[0].text);
+		expect(out).not.toHaveProperty("results");
+		expect(out.tool).toBe("hash");
+		expect(typeof out.reduced).toBe("string");
+	});
+
+	it("reduce:summarize feeds ok results to Workers AI", async () => {
+		const seen: string[] = [];
+		const env = {
+			AI: {
+				run: async (_model: string, inputs: any) => {
+					seen.push(String(inputs?.messages?.[1]?.content ?? ""));
+					return { response: "SYNTHESIZED" };
+				},
+			},
+		};
+		const r = await batch.run(env as any, {
+			tool: "hash",
+			calls: [{ text: "a" }, { text: "b" }],
+			reduce: "summarize",
+		});
+		const out = JSON.parse(r.content[0].text);
+		expect(out.reduced).toBe("SYNTHESIZED");
+		expect(out.results).toHaveLength(2);
+		// The joined ok text was handed to the model.
+		expect(seen[0]).toContain(out.results[0].text);
+		expect(seen[0]).toContain(out.results[1].text);
+	});
+
+	it("reduce:summarize falls back to concat when AI isn't configured", async () => {
+		const r = await batch.run({} as any, {
+			tool: "hash",
+			calls: [{ text: "a" }, { text: "b" }],
+			reduce: "summarize",
+		});
+		const out = JSON.parse(r.content[0].text);
+		expect(out.reduced).toContain(out.results[0].text);
+		expect(out.reduced).toContain(out.results[1].text);
+		expect(out.reduced).toMatch(/summarize skipped/);
+	});
 });

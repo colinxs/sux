@@ -39,7 +39,7 @@ const CONTROLS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g;
  * Uses per-codepoint NFKC (handles the reserved holes in the Mathematical
  * Alphanumeric block correctly) and only accepts a short pure-ASCII result, so
  * accents (é), symbols (½, µ), and non-Latin scripts are untouched. */
-function defont(s: string): string {
+export function defont(s: string): string {
 	// Copy the ASCII prefix wholesale — most strings are mostly (or all) ASCII.
 	let i = 0;
 	while (i < s.length && s.charCodeAt(i) <= 0x7f) i++;
