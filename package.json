@@ -12,11 +12,9 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@cloudflare/workers-oauth-provider": "^0.8.1",
-    "hono": "^4.12.27"
+    "@cloudflare/workers-oauth-provider": "^0.8.1"
   },
   "devDependencies": {
-    "@types/node": "^26.1.0",
     "typescript": "6.0.3",
     "vitest": "^3.2.7",
     "wrangler": "^4.107.0"
