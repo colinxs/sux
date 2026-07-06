@@ -10,9 +10,6 @@ import {
 	validateCSRFToken,
 } from "./workers-oauth-utils";
 
-// The OAuth provider injects OAUTH_PROVIDER onto env and passes it to this
-// default handler. Secrets (GITHUB_*, COOKIE_ENCRYPTION_KEY, ALLOWED_GITHUB_LOGIN,
-// KAGI_API_KEY) come from wrangler secrets / .dev.vars.
 type HandlerEnv = Env & { OAUTH_PROVIDER: OAuthHelpers } & {
 	GITHUB_CLIENT_ID: string;
 	GITHUB_CLIENT_SECRET: string;
@@ -26,10 +23,6 @@ const text = (body: string, status = 200) =>
 const json = (body: unknown, status = 200) =>
 	new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-/**
- * Default handler for everything the OAuth provider doesn't intercept:
- * /authorize, /callback, /health. Plain routing — no framework.
- */
 export const GitHubHandler = {
 	async fetch(request: Request, env: HandlerEnv): Promise<Response> {
 		const url = new URL(request.url);
@@ -43,11 +36,6 @@ export const GitHubHandler = {
 	},
 };
 
-/**
- * GET /health — unauthenticated liveness + config sanity for uptime monitors.
- * Reports only whether required config is present (never the values). `?deep=1`
- * also pings Kagi to confirm reachability.
- */
 async function handleHealth(url: URL, env: HandlerEnv): Promise<Response> {
 	const body: Record<string, unknown> = {
 		status: "ok",
@@ -83,20 +71,11 @@ async function handleHealth(url: URL, env: HandlerEnv): Promise<Response> {
 	return json(body);
 }
 
-// CSRF: we protect the GitHub round-trip with the OAuth `state` token — an
-// unguessable value stored one-time in KV with a TTL (createOAuthState / the
-// /callback lookup). The upstream template also bound state to a
-// `__Host-CONSENTED_STATE` cookie, but Claude's connector OAuth doesn't carry
-// that cookie through the GitHub redirect (it made /callback fail and Claude
-// re-prompt forever), so we dropped it. The KV state token is the standard,
-// sufficient CSRF defense.
-
 async function handleAuthorizeGet(request: Request, env: HandlerEnv): Promise<Response> {
 	const oauthReqInfo = await env.OAUTH_PROVIDER.parseAuthRequest(request);
 	const { clientId } = oauthReqInfo;
 	if (!clientId) return text("Invalid request", 400);
 
-	// If this client was already approved on this browser, skip the dialog.
 	if (await isClientApproved(request, clientId, env.COOKIE_ENCRYPTION_KEY)) {
 		const { stateToken } = await createOAuthState(oauthReqInfo, env.OAUTH_KV);
 		return redirectToGithub(request, env, stateToken);
@@ -122,7 +101,6 @@ async function handleAuthorizePost(request: Request, env: HandlerEnv): Promise<R
 	try {
 		const formData = await request.formData();
 
-		// CSRF on the approval form itself (double-submit cookie).
 		validateCSRFToken(formData, request);
 
 		const encodedState = formData.get("state");
@@ -141,7 +119,6 @@ async function handleAuthorizePost(request: Request, env: HandlerEnv): Promise<R
 			return text("Invalid request", 400);
 		}
 
-		// Remember this client so future authorizations skip the dialog.
 		const approvedClientCookie = await addApprovedClient(
 			request,
 			state.oauthReqInfo.clientId,
@@ -179,18 +156,13 @@ function redirectToGithub(
 	});
 }
 
-/**
- * GET /callback — GitHub redirects here after authorization. The `state` must
- * exist in KV (one-time, TTL). We exchange the code for a GitHub token, gate on
- * the allowed login, then completeAuthorization() to mint Claude's token.
- */
 async function handleCallback(request: Request, url: URL, env: HandlerEnv): Promise<Response> {
 	const stateFromQuery = url.searchParams.get("state");
 	if (!stateFromQuery) return text("Missing state parameter", 400);
 
 	const storedDataJson = await env.OAUTH_KV.get(`oauth:state:${stateFromQuery}`);
 	if (!storedDataJson) return text("Invalid or expired state", 400);
-	await env.OAUTH_KV.delete(`oauth:state:${stateFromQuery}`); // one-time use
+	await env.OAUTH_KV.delete(`oauth:state:${stateFromQuery}`);
 
 	let oauthReqInfo: AuthRequest;
 	try {
@@ -200,7 +172,6 @@ async function handleCallback(request: Request, url: URL, env: HandlerEnv): Prom
 	}
 	if (!oauthReqInfo.clientId) return text("Invalid OAuth request data", 400);
 
-	// Exchange the code for a GitHub access token.
 	const [accessToken, errResponse] = await fetchUpstreamAuthToken({
 		client_id: env.GITHUB_CLIENT_ID,
 		client_secret: env.GITHUB_CLIENT_SECRET,
@@ -212,7 +183,6 @@ async function handleCallback(request: Request, url: URL, env: HandlerEnv): Prom
 
 	const { login, name, email } = await fetchGitHubUser(accessToken);
 
-	// Gate at login time (defense in depth; clearer than a later silent 403).
 	if (!isAllowedLogin(login, env.ALLOWED_GITHUB_LOGIN)) {
 		console.warn(`auth gate: rejected login=${JSON.stringify(login)}`);
 		return text(`GitHub user "${login}" is not authorized for this connector.`, 403);

@@ -2,7 +2,6 @@ import { type Fn, fail, ok } from "../registry";
 
 const ALGOS: Record<string, string> = { sha256: "SHA-256", sha384: "SHA-384", sha512: "SHA-512", sha1: "SHA-1" };
 
-// hash — content digest. Web Crypto only (no md5). One method per algo via `algo`.
 export const hash: Fn = {
 	name: "hash",
 	description: "Compute a cryptographic hash of text. algo: sha256 (default) | sha384 | sha512 | sha1.",

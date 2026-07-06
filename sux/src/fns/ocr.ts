@@ -1,0 +1,37 @@
+import { type Fn, fail, ok } from "../registry";
+import { hasAI, MODELS } from "../ai";
+import { smartFetch } from "../proxy";
+
+export const ocr: Fn = {
+	name: "ocr",
+	description: "Extract text from an image with Workers AI vision. Give `url` (fetched via proxy) or `image` (base64). prompt customizes the instruction (default: transcribe all text).",
+	inputSchema: {
+		type: "object",
+		additionalProperties: false,
+		properties: {
+			url: { type: "string", description: "Image URL." },
+			image: { type: "string", description: "Base64-encoded image." },
+			prompt: { type: "string", default: "Transcribe all text in this image exactly." },
+		},
+	},
+	cacheable: true,
+	run: async (env, args) => {
+		if (!hasAI(env)) return fail("Workers AI binding not configured (add \"ai\" to wrangler).");
+		let bytes: number[];
+		try {
+			if (args?.image) bytes = Array.from(Uint8Array.from(atob(String(args.image).replace(/^data:[^,]+,/, "")), (c) => c.charCodeAt(0)));
+			else if (args?.url) {
+				if (!/^https?:\/\//i.test(String(args.url))) return fail("url must be absolute http(s).");
+				bytes = Array.from(new Uint8Array(await (await smartFetch(env, String(args.url), {})).arrayBuffer()));
+			} else return fail("Provide `url` or `image`.");
+		} catch (e) {
+			return fail(`Could not load image: ${String((e as Error).message ?? e)}`);
+		}
+		try {
+			const r = await (env as any).AI.run(MODELS.vision, { image: bytes, prompt: String(args?.prompt ?? "Transcribe all text in this image exactly."), max_tokens: 1024 });
+			return ok(String(r?.description ?? r?.response ?? "").trim() || "(no text found)");
+		} catch (e) {
+			return fail(`ocr failed: ${String((e as Error).message ?? e)}`);
+		}
+	},
+};

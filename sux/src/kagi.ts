@@ -1,5 +1,3 @@
-// Shared Kagi caller — POSTs a tools/call to Kagi's hosted MCP through the
-// residential proxy (direct fallback) and returns the result object.
 import { extractRpcFromText } from "./mcp-util";
 import { smartFetch, type TailscaleEnv } from "./proxy";
 

@@ -1,8 +1,6 @@
 import { type Fn, fail, ok } from "../registry";
 import { smartFetch } from "../proxy";
 
-// extract — pull structure out of a page. `what`: links | jsonld | text.
-// Dispatches on `what` (Julia-style method selection). Fetches via proxy if given a url.
 export const extract: Fn = {
 	name: "extract",
 	description: "Extract structure from HTML (or a URL). what: links | jsonld | text. Fetches via residential proxy when given a url.",
@@ -33,7 +31,7 @@ export const extract: Fn = {
 			const blocks = [...html.matchAll(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)].map((m) => m[1].trim());
 			return ok(blocks.length ? blocks.join("\n\n") : "(no JSON-LD found)");
 		}
-		// text: strip tags + collapse whitespace (readability-lite).
+
 		const text = html
 			.replace(/<script[\s\S]*?<\/script>/gi, " ")
 			.replace(/<style[\s\S]*?<\/style>/gi, " ")

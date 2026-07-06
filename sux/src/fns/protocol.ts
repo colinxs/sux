@@ -1,10 +1,6 @@
 import { type Fn, fail, ok } from "../registry";
 import { smartFetch } from "../proxy";
 
-// protocol — a full HTTP request with control over method/headers/body, routed
-// through the residential proxy (direct fallback). Returns status + headers + body.
-// `as` dispatches the response view: text | json | headers. Everything else that
-// talks HTTP (scrape, query, youtube adapters) composes on this.
 export const protocol: Fn = {
 	name: "protocol",
 	description:

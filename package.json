@@ -8,7 +8,9 @@
     "start": "wrangler dev",
     "cf-typegen": "wrangler types",
     "type-check": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run && vitest run --config sux/vitest.config.ts",
+    "test:core": "vitest run",
+    "test:sux": "vitest run --config sux/vitest.config.ts",
     "test:watch": "vitest"
   },
   "dependencies": {

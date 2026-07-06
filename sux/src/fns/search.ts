@@ -3,9 +3,6 @@ import { kagiTool } from "../kagi";
 
 const SCOPE_ARGS = ["include_domains", "exclude_domains", "time_relative", "after", "before", "file_type", "lens_id"] as const;
 
-// search — web search via Kagi (through the residential proxy). Returns numbered
-// results (title, URL, snippet) so an agent can cite by number. Scoping args map
-// straight to Kagi's kagi_search_fetch. The flagship query verb.
 export const search: Fn = {
 	name: "search",
 	description:

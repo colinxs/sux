@@ -1,7 +1,6 @@
 import { type Fn, fail, ok } from "../registry";
 import { smartFetch } from "../proxy";
 
-// scrape — fetch any URL through the residential proxy (direct fallback), return raw content.
 export const scrape: Fn = {
 	name: "scrape",
 	description:

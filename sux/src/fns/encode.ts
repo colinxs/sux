@@ -1,7 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
 
-// encode — bidirectional codec (encode ↔ decode) over base64 / hex / url.
-// Demonstrates the Bidirectional invariant as a single symmetric method.
 export const encode: Fn = {
 	name: "encode",
 	description: "Encode or decode text. codec: base64 | hex | url. direction: encode (default) | decode.",

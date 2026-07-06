@@ -134,7 +134,8 @@ Binary I/O is base64 in/out. Status legend: ✅ done · 🔨 building · ⬜ que
 - ⬜ `scrape(url, what?="auto", site?)` → structured extraction; dispatch on host → site adapter, fallback generic.
 - ⬜ `compress(data, codec, direction="compress"|"decompress", level?)` — bidir. `codec ∈ {gzip, deflate, brotli, zstd, 7z}` (gzip/deflate native; zstd/7z via WASM). base64 for binary.
 - ⬜ `ocr(source, kind?="image"|"pdf", lang?)` → text. `source` = url|base64; Workers AI vision.
-- ⬜ `shrink(source, kind="pdf"|"image", lossless?=true, target_kb?)` → optimized bytes (base64) + size delta. Lossless default; lossy opt-in.
+- ⬜ `shrink(source, kind="token"|"pdf"|"image", target?, ratio?, strategy?)` → reduced output + delta. **`kind="token"`** (top priority) shrinks the *LLM token count* of text (collapse whitespace, strip boilerplate/nav/markup, dedupe lines, optional AI distill) — reports `{in_tokens, out_tokens, saved_pct, text}`. `kind="pdf"|"image"` reduces *file bytes* (lossless default; lossy opt-in). Distinct from `compress` (byte-level codecs) — this makes context cheaper, not disk.
+- ⬜ `grep(source, pattern, flags?="i", context?=0, invert?=false, count?=false, max?=200)` → matching lines w/ line numbers (top priority). `source` = text | url (fetched via `protocol`/`scrape` first). The token-efficient filter primitive: fetch big, return only the lines that match. Composes in front of every other verb.
 
 ## Greenlit method catalog (ALL obvious = pre-approved)
 Scope is open-ended: **any useful transformation, query, scrape, or proxy** is in
@@ -174,8 +175,10 @@ zillow/redfin · flights/hotels · jobs · social · reviews.
 > real $ (paid APIs, Browser-Run volume), legal/ToS gray areas (bulk download,
 > auth-walled data), or destructive/irreversible actions.
 
-## Build priority (user-set): **1) search  2) filesize reduction  3) archive**
-Then the rest of the queue. (`search` #47 → `optimize`/`compress`/`shrink` #31-34 → `archive` #32.)
+## Build priority (user-set): **1) grep  2) shrink(token)  3) search  4) filesize reduction  5) archive**
+`grep` + `shrink(token)` jump the queue — both are context-cost primitives (return
+fewer tokens to the agent) and compose in front of every other verb. Then `search`
+#47 → `compress`/`shrink(bytes)`/`optimize` #31-34 → `archive` #32 → rest.
 
 ## 50 functions (build queue) — ✅ done · 🔨 next · ⬜ queued
 Each is one `Fn` file under `sux/src/fns/`. Bidirectional verbs marked ↔.
@@ -194,6 +197,7 @@ Each is one `Fn` file under `sux/src/fns/`. Bidirectional verbs marked ↔.
 
 **Extract / parse**
 11. ✅ `extract(url,what)` — links | jsonld | text
+11a. 🔨 `grep(source,pattern,flags,context)` — regex filter over text|url → matching lines **(priority #1)**
 12. ⬜ `readability(url)` — main article content
 13. ⬜ `tables(url)` — HTML tables → json/csv
 14. ⬜ `metadata(url)` — og/meta/title/favicon
@@ -217,10 +221,10 @@ Each is one `Fn` file under `sux/src/fns/`. Bidirectional verbs marked ↔.
 30. ⬜ `subtitles` — srt ↔ vtt
 
 **Compress / optimize / encode** ↔
-31. 🔨 `compress(data,codec,dir)` — gzip/deflate/brotli/zstd ↔ **(next)**
+31. ✅ `compress(data,codec,dir)` — gzip/deflate/deflate-raw ↔ (zstd/brotli/7z via WASM later)
 32. ⬜ `archive(op,files)` — zip/tar pack ↔ unpack
 33. ⬜ `optimize(bytes)` — lossless image/pdf/minify (F1)
-34. ⬜ `shrink(bytes,kind)` — pdf/image size reduction (lossy opt-in)
+34. 🔨 `shrink(source,kind)` — **`kind=token`** LLM-token reduction of text **(priority #2)**; `kind=pdf|image` byte reduction (lossy opt-in)
 35. ✅ `encode(text,codec,dir)` — base64/hex/url ↔
 36. ✅ `hash(text,algo)` — sha256/384/512/1
 37. ⬜ `qr(data,dir)` — text ↔ QR ↔

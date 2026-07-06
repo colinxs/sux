@@ -1,5 +1,3 @@
-// Shared JSON-RPC / SSE helpers (mirrors the core Worker's mcp.ts).
-
 export type JsonRpc = {
 	jsonrpc?: string;
 	id?: unknown;
@@ -9,7 +7,6 @@ export type JsonRpc = {
 	error?: any;
 };
 
-/** Read a Kagi SSE frame (`event: message\ndata: {json}`) or plain JSON into an object. */
 export function extractRpcFromText(text: string, contentType: string | null): JsonRpc | null {
 	if ((contentType ?? "").includes("text/event-stream")) {
 		const dataLine = text
@@ -32,7 +29,6 @@ export function extractRpcFromText(text: string, contentType: string | null): Js
 	}
 }
 
-/** Emit an object as a single SSE message frame. */
 export function sseResponse(obj: unknown, status = 200): Response {
 	return new Response(`event: message\ndata: ${JSON.stringify(obj)}\n\n`, {
 		status,
@@ -49,7 +45,6 @@ export function parseJsonRpc(bodyText: string | undefined): JsonRpc | undefined 
 	}
 }
 
-// ---- KV caching (same scheme as the core Worker) ---------------------------
 export const CACHE_TTL_SECONDS = 3600;
 
 function stableStringify(v: unknown): string {
@@ -62,7 +57,6 @@ function stableStringify(v: unknown): string {
 		.join(",")}}`;
 }
 
-/** Order-independent cache key for a tool call. */
 export async function cacheKey(toolName: string, args: unknown): Promise<string> {
 	const data = new TextEncoder().encode(`${toolName}:${stableStringify(args ?? {})}`);
 	const buf = await crypto.subtle.digest("SHA-256", data);

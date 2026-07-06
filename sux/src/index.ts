@@ -1,11 +1,3 @@
-// research-tools (Service 2) — the rich engine.
-//
-// Julia-style: capabilities live one-per-file under fns/, collected in fns/index.ts,
-// projected into MCP tools by the registry. All work runs here in the cloud; the
-// residential Tailscale node (node/server.mjs) is a dumb IP pass-through. Every
-// outbound query goes through smartFetch (residential when configured, direct
-// fallback otherwise — the simple option is always available).
-
 import OAuthProvider from "@cloudflare/workers-oauth-provider";
 import { GitHubHandler } from "./github-handler";
 import { isAllowedLogin } from "./utils";
@@ -17,7 +9,7 @@ type Props = { login: string; name: string; email: string; accessToken: string }
 
 const rtServer = {
 	async fetch(request: Request, env: RtEnv, ctx: ExecutionContext & { props?: Props }): Promise<Response> {
-		// --- gate + rate limit (same as core) ---
+
 		const login = ctx.props?.login;
 		if (!isAllowedLogin(login, env.ALLOWED_GITHUB_LOGIN)) {
 			console.warn(`gate: rejected login=${JSON.stringify(login ?? null)}`);
