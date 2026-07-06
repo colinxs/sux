@@ -14,6 +14,17 @@
 import OAuthProvider from "@cloudflare/workers-oauth-provider";
 import { GitHubHandler } from "./github-handler";
 import { isAllowedLogin } from "./utils";
+import {
+	audit,
+	cacheKey,
+	CACHE_TTL_SECONDS,
+	CACHEABLE_TOOLS,
+	curateToolsResult,
+	extractRpcFromText,
+	isCacheableResult,
+	parseJsonRpc,
+	sseResponse,
+} from "./mcp";
 
 // Cloudflare Rate Limiting binding (configured under `unsafe` in wrangler.jsonc).
 type RateLimiter = { limit: (opts: { key: string }) => Promise<{ success: boolean }> };
@@ -80,6 +91,8 @@ const kagiProxy = {
 		// --- Reverse proxy to Kagi's hosted MCP ------------------------------
 		const incoming = new URL(request.url);
 		const target = KAGI_MCP_URL + incoming.search;
+		const debug = env.DEBUG_MCP === "1";
+		const ray = request.headers.get("cf-ray") ?? "-";
 
 		// Preserve client headers (keeps Accept: application/json, text/event-stream
 		// so streamable-HTTP / SSE works), swap in the Kagi key, drop Host.
@@ -87,78 +100,120 @@ const kagiProxy = {
 		headers.set("Authorization", `Bearer ${env.KAGI_API_KEY}`);
 		headers.delete("host");
 
-		// Diagnostics are opt-in via DEBUG_MCP. When off, the request body is
-		// streamed straight through (no buffering); when on, we read the tiny
-		// JSON-RPC body to log its method/id, correlated by cf-ray.
-		const debug = env.DEBUG_MCP === "1";
-		const ray = request.headers.get("cf-ray") ?? "-";
+		// We read the (tiny) JSON-RPC request body to route on its method. GET
+		// stream opens have no body and always pass through.
 		const isBodyless = request.method === "GET" || request.method === "HEAD";
-
-		let init: RequestInit;
-		if (isBodyless) {
-			init = { method: request.method, headers };
-		} else if (debug) {
-			const bodyText = await request.text();
-			try {
-				const j = JSON.parse(bodyText);
-				console.log(
-					`[${ray}] mcp -> ${request.method} method=${j.method ?? "?"} id=${JSON.stringify(j.id)} login=${JSON.stringify(ctx.props?.login)} sid=${request.headers.get("mcp-session-id") ?? "-"}`,
-				);
-			} catch {
-				console.log(`[${ray}] mcp -> ${request.method} (non-JSON body, ${bodyText.length}b)`);
-			}
-			init = { method: request.method, headers, body: bodyText };
-		} else {
-			init = {
-				method: request.method,
-				headers,
-				body: request.body,
-				// @ts-expect-error - `duplex` is required for streaming request bodies on Workers
-				duplex: "half",
-			};
-		}
-
-		let upstream: Response;
-		try {
-			upstream = await fetch(target, init);
-		} catch (err) {
-			// Network-level failure reaching Kagi (DNS, TLS, timeout). The tool
-			// error path in Kagi returns 200 with an in-band JSON-RPC error, so
-			// reaching here means the request never completed at all.
-			console.error(`[${ray}] upstream: fetch to ${target} threw:`, err);
-			return new Response(
-				JSON.stringify({
-					error: "bad_gateway",
-					detail: "Failed to reach the Kagi MCP upstream.",
-				}),
-				{ status: 502, headers: { "content-type": "application/json" } },
-			);
-		}
+		const bodyText = isBodyless ? undefined : await request.text();
+		const rpc = parseJsonRpc(bodyText);
+		const method = rpc?.method;
 
 		if (debug) {
 			console.log(
-				`[${ray}] mcp <- ${upstream.status} ct=${upstream.headers.get("content-type")} sid=${upstream.headers.get("mcp-session-id") ?? "-"} enc=${upstream.headers.get("content-encoding") ?? "-"}`,
+				`[${ray}] mcp -> ${request.method} method=${method ?? "?"} id=${JSON.stringify(rpc?.id)} login=${JSON.stringify(login)}`,
 			);
 		}
-		if (upstream.status >= 400) {
-			console.error(`[${ray}] upstream: Kagi returned HTTP ${upstream.status} for ${request.method} ${incoming.pathname}`);
+
+		const callKagi = (): Promise<Response> =>
+			fetch(target, { method: request.method, headers, body: bodyText });
+
+		// Hardened streaming passthrough — the default for anything we don't
+		// compose. Strips content-encoding/content-length (Workers already decoded
+		// the body) so the client never tries to gunzip plaintext.
+		const passthrough = async (): Promise<Response> => {
+			let upstream: Response;
+			try {
+				upstream = await callKagi();
+			} catch (err) {
+				console.error(`[${ray}] upstream: fetch to ${target} threw:`, err);
+				return new Response(
+					JSON.stringify({ error: "bad_gateway", detail: "Failed to reach the Kagi MCP upstream." }),
+					{ status: 502, headers: { "content-type": "application/json" } },
+				);
+			}
+			if (upstream.status >= 400) {
+				console.error(`[${ray}] upstream: Kagi HTTP ${upstream.status} for ${method ?? request.method}`);
+			}
+			const respHeaders = new Headers(upstream.headers);
+			respHeaders.delete("content-encoding");
+			respHeaders.delete("content-length");
+			return new Response(upstream.body, {
+				status: upstream.status,
+				statusText: upstream.statusText,
+				headers: respHeaders,
+			});
+		};
+
+		// Return upstream's raw bytes verbatim (used when an intercept branch read
+		// the body but chose not to modify it).
+		const rawResponse = (text: string, upstream: Response): Response => {
+			const h = new Headers(upstream.headers);
+			h.delete("content-encoding");
+			h.delete("content-length");
+			return new Response(text, { status: upstream.status, statusText: upstream.statusText, headers: h });
+		};
+
+		// --- tools/list: curate (hide / re-describe tools) -------------------
+		if (method === "tools/list") {
+			let upstream: Response;
+			try {
+				upstream = await callKagi();
+			} catch (err) {
+				console.error(`[${ray}] upstream: tools/list threw:`, err);
+				return new Response(
+					JSON.stringify({ error: "bad_gateway", detail: "Failed to reach the Kagi MCP upstream." }),
+					{ status: 502, headers: { "content-type": "application/json" } },
+				);
+			}
+			const text = await upstream.text();
+			const obj = extractRpcFromText(text, upstream.headers.get("content-type"));
+			if (!obj || !obj.result) return rawResponse(text, upstream); // unrecognized — pass through
+			return sseResponse({ ...obj, result: curateToolsResult(obj.result) }, upstream.status);
 		}
 
-		// Stream Kagi's response (JSON or text/event-stream) straight back.
-		//
-		// Copy the headers but drop content-encoding / content-length: the Workers
-		// runtime already decoded the body when it read `upstream.body`, so leaving
-		// a stale `content-encoding: gzip` would make the client try to gunzip
-		// plaintext, and a stale content-length would truncate/desync the stream.
-		const respHeaders = new Headers(upstream.headers);
-		respHeaders.delete("content-encoding");
-		respHeaders.delete("content-length");
+		// --- tools/call: cache read-only tools + audit -----------------------
+		if (method === "tools/call") {
+			const toolName = rpc?.params?.name ?? "";
+			const args = rpc?.params?.arguments;
+			const started = Date.now();
+			const key = CACHEABLE_TOOLS.has(toolName) ? await cacheKey(toolName, args) : null;
 
-		return new Response(upstream.body, {
-			status: upstream.status,
-			statusText: upstream.statusText,
-			headers: respHeaders,
-		});
+			if (key) {
+				const cached = await env.OAUTH_KV.get(key);
+				if (cached) {
+					audit({ login, tool: toolName, cache: "hit", ms: Date.now() - started, ray });
+					return sseResponse({ jsonrpc: "2.0", id: rpc?.id, result: JSON.parse(cached) });
+				}
+			}
+
+			let upstream: Response;
+			try {
+				upstream = await callKagi();
+			} catch (err) {
+				console.error(`[${ray}] upstream: tools/call threw:`, err);
+				return new Response(
+					JSON.stringify({ error: "bad_gateway", detail: "Failed to reach the Kagi MCP upstream." }),
+					{ status: 502, headers: { "content-type": "application/json" } },
+				);
+			}
+			const text = await upstream.text();
+			const obj = extractRpcFromText(text, upstream.headers.get("content-type"));
+			audit({
+				login,
+				tool: toolName,
+				cache: key ? "miss" : "skip",
+				ms: Date.now() - started,
+				status: upstream.status,
+				error: obj?.result?.isError === true || undefined,
+				ray,
+			});
+			if (key && isCacheableResult(obj)) {
+				await env.OAUTH_KV.put(key, JSON.stringify(obj!.result), { expirationTtl: CACHE_TTL_SECONDS });
+			}
+			return rawResponse(text, upstream);
+		}
+
+		// --- everything else: transparent passthrough ------------------------
+		return passthrough();
 	},
 };
 

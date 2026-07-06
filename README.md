@@ -53,6 +53,23 @@ endpoint.
   (`503`/`"degraded"` if unreachable).
 - **`/authorize`, `/callback`, `/token`, `/register`** — the OAuth flow.
 
+## Composing layer (mostly transparent)
+
+`initialize`, notifications, and GET streams pass straight through. Only two
+methods are intercepted (`src/mcp.ts`); any unrecognized response shape falls
+back to a verbatim passthrough, so this can't break the connection:
+
+- **`tools/call` caching** — results of read-only tools (`CACHEABLE_TOOLS`:
+  `kagi_search_fetch`, `kagi_extract`) are cached in KV keyed by tool + args for
+  `CACHE_TTL_SECONDS` (1h). Cuts repeat latency ~40× and saves Kagi quota. Errors
+  (`result.isError`) are never cached.
+- **Query audit log** — every `tools/call` logs a structured `audit {...}` line
+  (login, tool, cache hit/miss, latency, status) to Workers Logs. Metadata only,
+  never the result payload.
+- **`tools/list` curation** — edit `HIDDEN_TOOLS` / `TOOL_DESCRIPTION_OVERRIDES`
+  in `src/mcp.ts` to hide tools or sharpen their descriptions. Empty by default
+  (Kagi's tools shown verbatim).
+
 ## Required secrets
 
 | Secret | Purpose |
