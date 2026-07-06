@@ -85,7 +85,7 @@ Status: ✅ working · 🟡 planned (needs a binding/WASM not yet wired).
 
 | function | status | test | summary |
 |---|---|---|---|
-| `summarize` | ✅ | ✓ | Summarize text or a web page with Workers AI |
+| `summarize` | ✅ | ✓ | Summarize text or a web page |
 | `entities` | ✅ | ✓ | Lightweight entity extraction (regex NER, no model/network) |
 | `translate` | ✅ | ✓ | Translate text with Workers AI (m2m100) |
 | `classify` | ✅ | ✓ | Zero-shot classify text into one of the provided `labels` using Workers AI |
