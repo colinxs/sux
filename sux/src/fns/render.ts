@@ -123,6 +123,7 @@ type MacRenderPayload = {
 	block_resources: boolean;
 	full_page: boolean;
 	timeout_ms: number;
+	solve?: boolean;
 };
 
 type MacRenderResponse = {
@@ -213,6 +214,12 @@ export const render: Fn = {
 					"Apply a realistic desktop UA/viewport/accept-language and mask navigator.webdriver to reduce headless-browser fingerprinting (bot managers like Akamai flag the default HeadlessChrome signals). Default true — pairs with residential routing. Best-effort (CF Browser Rendering limits deeper stealth); set false to keep default headless signals.",
 			},
 			delivery: { type: "string", enum: ["base64", "url"], default: "url", description: "Screenshot only: content-addressed /s/<uuid> URL (default, ~100 tokens) or inline base64." },
+			solve: {
+				type: "boolean",
+				default: false,
+				description:
+					"backend:mac only. Force the CapSolver-equipped headed browser tier that auto-solves captchas (DataDome/reCAPTCHA/hCaptcha/Turnstile in-page). The mac backend already auto-escalates to this tier when a page looks blocked; set true to force it (slower). No-op if the Mac has no CapSolver key configured.",
+			},
 			backend: {
 				type: "string",
 				enum: ["cf", "mac"],
@@ -249,7 +256,7 @@ export const render: Fn = {
 		if (backend === "mac") {
 			return renderViaMac(
 				env,
-				{ url, as, wait_until: waitUntil, wait_ms: waitMs, block_resources: blockResources, full_page: fullPage, timeout_ms: timeout },
+				{ url, as, wait_until: waitUntil, wait_ms: waitMs, block_resources: blockResources, full_page: fullPage, timeout_ms: timeout, solve: args?.solve === true },
 				args?.delivery,
 			);
 		}
