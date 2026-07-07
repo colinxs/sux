@@ -216,6 +216,49 @@ describe("handleRpc (index.ts dispatch)", () => {
 		expect([...store.keys()].filter((k) => k.startsWith("cache:"))).toEqual([plainKey]);
 	});
 
+	it("fresh:false is stripped too, so it doesn't fragment the cache key or leak into the fn", async () => {
+		const { kv, store } = makeKv();
+		const { ctx, deferred } = makeCtx();
+		const env = makeEnv(kv);
+		const args = { data: '{"c":3}', from: "json" };
+		// The key a plain (no-meta-arg) call hashes.
+		const plainKey = await cacheKey("json", args);
+
+		// An explicit fresh:false must behave exactly like a plain call: stripped
+		// before cacheKey + run. A leaked falsy `fresh` would both change the hashed
+		// args → a divergent key AND reach the fn as an unknown argument.
+		const out = await callRpc(env, ctx, {
+			jsonrpc: "2.0",
+			id: 10,
+			method: "tools/call",
+			params: { name: "json", arguments: { ...args, fresh: false } },
+		});
+		expect(out.result.isError).toBeFalsy();
+		expect(JSON.parse(out.result.content[0].text)).toEqual({ c: 3 });
+		await Promise.all(deferred.splice(0));
+		expect([...store.keys()].filter((k) => k.startsWith("cache:"))).toEqual([plainKey]);
+	});
+
+	it("summarize:false is stripped, caching under the plain key (no ::summarize namespace)", async () => {
+		const { kv, store } = makeKv();
+		const { ctx, deferred } = makeCtx();
+		const env = makeEnv(kv);
+		const args = { data: '{"d":4}', from: "json" };
+		const plainKey = await cacheKey("json", args);
+
+		// summarize:false must NOT namespace the key (::summarize) nor reach the fn —
+		// it caches under exactly the plain key, identical to a call with no meta-arg.
+		const out = await callRpc(env, ctx, {
+			jsonrpc: "2.0",
+			id: 11,
+			method: "tools/call",
+			params: { name: "json", arguments: { ...args, summarize: false } },
+		});
+		expect(JSON.parse(out.result.content[0].text)).toEqual({ d: 4 });
+		await Promise.all(deferred.splice(0));
+		expect([...store.keys()].filter((k) => k.startsWith("cache:"))).toEqual([plainKey]);
+	});
+
 	it("an isError result is not written to KV", async () => {
 		const { kv, store } = makeKv();
 		const { ctx, deferred } = makeCtx();

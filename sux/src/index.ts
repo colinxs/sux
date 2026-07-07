@@ -66,9 +66,14 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 		// from the same args a normal call uses, so a fresh call overwrites rather
 		// than diverging. Harmless no-op for non-cacheable fns.
 		const rawArgs = rpc?.params?.arguments;
+		const isArgObject = Boolean(rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs));
+		// Strip whenever the KEY is present — even an explicit `fresh:false` must be
+		// removed. A truthiness-only check left a falsy flag in place: it then leaked
+		// into the fn (schemas are additionalProperties:false) and fragmented the
+		// cache key away from an otherwise-identical plain call.
 		let fresh = false;
-		if (rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs) && (rawArgs as Record<string, unknown>).fresh) {
-			fresh = true;
+		if (isArgObject && "fresh" in (rawArgs as Record<string, unknown>)) {
+			fresh = Boolean((rawArgs as Record<string, unknown>).fresh);
 			delete (rawArgs as Record<string, unknown>).fresh;
 		}
 
@@ -77,8 +82,8 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 		// the agent). Detected+stripped up front like `fresh`, but it CHANGES the
 		// result, so it namespaces the cache key (summarized and raw cache apart).
 		let summarize = false;
-		if (rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs) && (rawArgs as Record<string, unknown>).summarize) {
-			summarize = true;
+		if (isArgObject && "summarize" in (rawArgs as Record<string, unknown>)) {
+			summarize = Boolean((rawArgs as Record<string, unknown>).summarize);
 			delete (rawArgs as Record<string, unknown>).summarize;
 		}
 
