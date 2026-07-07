@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyEvent, clipErr, emptyMetrics, percentile, sloReport, toPrometheus } from "./metrics";
+import { applyEvent, clipErr, emptyMetrics, mergeMetrics, percentile, readMetrics, recordCall, sloReport, toPrometheus } from "./metrics";
 
 describe("metrics", () => {
 	it("folds events into per-tool + global aggregates", () => {
@@ -120,5 +120,52 @@ describe("metrics", () => {
 		const m = emptyMetrics(0);
 		applyEvent(m, { tool: "t", ms: 5, error: true }); // 1 call, 100% error but < 20 sample
 		expect(sloReport(m).breaches).toHaveLength(0);
+	});
+
+	it("merges shard + legacy metrics into one aggregate (counters, tools, routes, newest-first log)", () => {
+		const a = emptyMetrics(100);
+		applyEvent(a, { tool: "search", ms: 100, at: 5 });
+		applyEvent(a, { tool: "search", ms: 200, cache: true, at: 6, routes: { proxied: 1 } });
+		const b = emptyMetrics(50);
+		applyEvent(b, { tool: "dns", ms: 50, error: true, err: "boom", at: 7 });
+		applyEvent(b, { tool: "search", ms: 10, at: 8, routes: { direct: 2 } });
+
+		const m = mergeMetrics([a, b]);
+		expect(m.total).toBe(4);
+		expect(m.cache_hits).toBe(1);
+		expect(m.errors).toBe(1);
+		expect(m.tools.search).toMatchObject({ calls: 3, cache_hits: 1, total_ms: 310 });
+		expect(m.tools.dns).toMatchObject({ calls: 1, errors: 1, last_error: "boom" });
+		expect(m.routes).toEqual({ proxied: 1, direct: 2 });
+		expect(m.since).toBe(50); // earliest wins
+		expect(m.recent.map((r) => r.at)).toEqual([8, 7, 6, 5]); // global newest-first
+	});
+
+	it("readMetrics merges across shard keys AND the legacy key", async () => {
+		const store = new Map<string, string>();
+		for (const [k, at] of [["sux:metrics:0", 1], ["sux:metrics:3", 2], ["sux:metrics", 3]] as const) {
+			const m = emptyMetrics(0);
+			applyEvent(m, { tool: "t", ms: 1, at });
+			store.set(k, JSON.stringify(m));
+		}
+		const env = { OAUTH_KV: { get: async (k: string) => store.get(k) ?? null } } as any;
+		const merged = await readMetrics(env);
+		expect(merged.total).toBe(3);
+		expect(merged.tools.t.calls).toBe(3);
+	});
+
+	it("recordCall fans writes across shards; readMetrics reads them all back without loss", async () => {
+		const store = new Map<string, string>();
+		const env = { OAUTH_KV: { get: async (k: string) => store.get(k) ?? null, put: async (k: string, v: string) => void store.set(k, v) } } as any;
+		// Serial: await each write before the next so the round-trip is deterministic.
+		for (let i = 0; i < 20; i++) {
+			const tasks: Promise<unknown>[] = [];
+			recordCall(env, { waitUntil: (p) => tasks.push(p) }, { tool: "t", ms: 1 });
+			await Promise.all(tasks);
+		}
+		const m = await readMetrics(env);
+		expect(m.total).toBe(20);
+		expect([...store.keys()].filter((k) => k.startsWith("sux:metrics:")).length).toBeGreaterThan(1); // used >1 shard
+		expect(store.has("sux:metrics")).toBe(false); // legacy key no longer written
 	});
 });

@@ -6,7 +6,16 @@
 import { drainRouteTally } from "./proxy";
 import type { RtEnv } from "./registry";
 
+// Legacy single-key aggregate — still READ (and merged) for back-compat, but no
+// longer written. New writes fan out across SHARDS keys to cut the read-modify-
+// write contention that lost increments under concurrency (a single hot key had
+// every writer clobbering every other). Each writer touches one shard; readers
+// merge all shards (+ the legacy key). Contention drops ~SHARDS×; a shard is
+// still RMW, so this reduces — not eliminates — loss (a Durable Object would).
 const KEY = "sux:metrics";
+const SHARDS = 8;
+const shardKey = (i: number): string => `sux:metrics:${i}`;
+let writeSeq = 0;
 const TTL = 60 * 60 * 24 * 30; // 30 days
 
 export type ToolStat = { calls: number; errors: number; cache_hits: number; total_ms: number; last_error?: string };
@@ -30,19 +39,47 @@ export function emptyMetrics(now: number): Metrics {
 	return { since: now, total: 0, cache_hits: 0, errors: 0, tools: {}, routes: {}, recent: [] };
 }
 
-export async function readMetrics(env: RtEnv): Promise<Metrics> {
-	const raw = await env.OAUTH_KV.get(KEY);
-	if (raw) {
-		try {
-			const m = JSON.parse(raw) as Metrics;
-			if (!Array.isArray(m.recent)) m.recent = []; // migrate older records
-			if (!m.routes) m.routes = {}; // migrate pre-route records
-			return m;
-		} catch {
-			/* fall through to fresh */
-		}
+/** Parse one KV metrics value, tolerating older records; null on absent/corrupt. */
+function parseMetrics(raw: string | null): Metrics | null {
+	if (!raw) return null;
+	try {
+		const m = JSON.parse(raw) as Metrics;
+		if (!Array.isArray(m.recent)) m.recent = []; // migrate older records
+		if (!m.routes) m.routes = {}; // migrate pre-route records
+		return m;
+	} catch {
+		return null;
 	}
-	return emptyMetrics(Date.now());
+}
+
+/** Merge shard/legacy Metrics into one aggregate. Pure — easy to unit-test. */
+export function mergeMetrics(parts: Metrics[]): Metrics {
+	const out = emptyMetrics(Math.min(...parts.map((p) => p.since || Date.now())));
+	for (const p of parts) {
+		out.total += p.total || 0;
+		out.cache_hits += p.cache_hits || 0;
+		out.errors += p.errors || 0;
+		for (const [name, t] of Object.entries(p.tools || {})) {
+			const a = (out.tools[name] ??= { calls: 0, errors: 0, cache_hits: 0, total_ms: 0 });
+			a.calls += t.calls || 0;
+			a.errors += t.errors || 0;
+			a.cache_hits += t.cache_hits || 0;
+			a.total_ms += t.total_ms || 0;
+			if (t.last_error) a.last_error = t.last_error;
+		}
+		for (const [r, n] of Object.entries(p.routes || {})) out.routes[r] = (out.routes[r] ?? 0) + n;
+		out.recent.push(...(p.recent || []));
+	}
+	// Rolling log is global-newest-first across shards, capped to the same size.
+	out.recent.sort((a, b) => b.at - a.at);
+	if (out.recent.length > RECENT_CAP) out.recent.length = RECENT_CAP;
+	return out;
+}
+
+export async function readMetrics(env: RtEnv): Promise<Metrics> {
+	const keys = [KEY, ...Array.from({ length: SHARDS }, (_, i) => shardKey(i))];
+	const parts = (await Promise.all(keys.map((k) => env.OAUTH_KV.get(k)))).map(parseMetrics).filter((m): m is Metrics => m !== null);
+	return parts.length ? mergeMetrics(parts) : emptyMetrics(Date.now());
 }
 
 export type CallEvent = { tool: string; ms: number; cache?: boolean; error?: boolean; err?: string; at?: number; routes?: Record<string, number> };
@@ -93,10 +130,16 @@ export function recordCall(env: RtEnv, ctx: { waitUntil(p: Promise<unknown>): vo
 	console.log(
 		`sux ${JSON.stringify({ tool: e.tool, ms: e.ms, cache: Boolean(e.cache), error: Boolean(e.error), ...(e.err ? { err: clipErr(e.err) } : {}), ...(hasRoutes ? { routes } : {}), at })}`,
 	);
+	// Fan out across shards to spread contention: mix the wall-clock with a
+	// per-isolate sequence so concurrent writers (same or different isolates) land
+	// on different shards rather than all clobbering one key. Read-modify-write of
+	// the CHOSEN shard only — never the merged view (that would re-collapse every
+	// shard into one).
+	const key = shardKey((at + writeSeq++) % SHARDS);
 	ctx.waitUntil(
 		(async () => {
-			const m = applyEvent(await readMetrics(env), { ...e, at, ...(hasRoutes ? { routes } : {}) });
-			await env.OAUTH_KV.put(KEY, JSON.stringify(m), { expirationTtl: TTL });
+			const m = applyEvent(parseMetrics(await env.OAUTH_KV.get(key)) ?? emptyMetrics(at), { ...e, at, ...(hasRoutes ? { routes } : {}) });
+			await env.OAUTH_KV.put(key, JSON.stringify(m), { expirationTtl: TTL });
 		})().catch(() => {}),
 	);
 }
