@@ -84,6 +84,23 @@ function normProduct(d: any): RetailProduct {
 	};
 }
 
+/**
+ * Normalize an API product array, guarding each record so one malformed entry
+ * (unexpected shape that makes normProduct throw) is skipped rather than
+ * discarding the whole result set — mirrors the per-tile guard in the HTML parsers.
+ */
+function normProducts(data: any): RetailProduct[] {
+	return (Array.isArray(data) ? data : [])
+		.map((d) => {
+			try {
+				return normProduct(d);
+			} catch {
+				return null;
+			}
+		})
+		.filter((p): p is RetailProduct => p !== null);
+}
+
 /** Resolve the first matching store's locationId for a zip (chain-filtered). */
 async function resolveLocationId(env: RtEnv, zip: string, chain?: string): Promise<string | undefined> {
 	const j = await api(env, locationsPath(zip, 1, chain));
@@ -148,7 +165,7 @@ export const kroger: Fn = {
 			const p = new URLSearchParams({ "filter.term": term, "filter.limit": String(limit) });
 			if (locationId) p.set("filter.locationId", locationId);
 			const j = await api(env, `/products?${p}`);
-			const products = (j?.data ?? []).map(normProduct);
+			const products = normProducts(j?.data);
 			return ok(JSON.stringify({ retailer: "kroger", action, location_id: locationId || undefined, count: products.length, products }, null, 2));
 		} catch (e) {
 			return fail(`kroger (${action}) failed: ${errMsg(e)}`);

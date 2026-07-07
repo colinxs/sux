@@ -85,6 +85,24 @@ describe("kroger", () => {
 		expect(j.products[0].fulfillment).toEqual(["curbside", "inStore"]);
 	});
 
+	it("search skips a malformed product record instead of dropping the whole result set", async () => {
+		// A record whose image `sizes` is a truthy non-array — `sizes.find(...)` throws inside normProduct.
+		const bad = { productId: "BAD", description: "Boom", images: [{ sizes: "not-an-array" }] };
+		const mixed = { data: [bad, PRODUCTS.data[0]] };
+		global.fetch = vi.fn(async (input: any) => {
+			const url = String(input);
+			if (url.includes("/connect/oauth2/token")) return json({ access_token: "TOK", expires_in: 1800 });
+			if (url.includes("/v1/products")) return json(mixed);
+			return json({}, 404);
+		}) as any;
+		const r = await kroger.run(keyedEnv(), { action: "search", term: "milk", location_id: "70100123" });
+		expect(r.isError).toBeFalsy();
+		const j = JSON.parse(r.content[0].text);
+		// The good product survives; the throwing one is dropped, not the whole call.
+		expect(j.count).toBe(1);
+		expect(j.products[0].id).toBe("0001111041700");
+	});
+
 	it("mints the token once and reuses it across searches (KV-cached)", async () => {
 		const { calls } = installFetch();
 		const env = keyedEnv();
