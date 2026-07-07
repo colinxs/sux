@@ -151,7 +151,10 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 	return sseResponse({ jsonrpc: "2.0", id, error: { code: -32601, message: `unknown method: ${method}` } });
 }
 
-const rtServer = {
+// Exported so the authorization/rate-limit gate can be driven directly in tests
+// (index.test.ts covers handleRpc, which is downstream of this gate). Importing
+// this module does not eval the OAuth provider — see getOAuthProvider below.
+export const rtServer = {
 	async fetch(request: Request, env: RtEnv, ctx: ExecutionContext & { props?: Props }): Promise<Response> {
 		const login = ctx.props?.login;
 		if (!isAllowedLogin(login, env.ALLOWED_GITHUB_LOGIN)) {
