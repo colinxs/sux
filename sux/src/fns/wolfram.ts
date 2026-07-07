@@ -9,6 +9,16 @@ const LLM_URL = "https://www.wolframalpha.com/api/v1/llm-api";
 
 const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);
 
+// The full LLM API — richer, section-structured text. Used directly for mode:full,
+// and as the fallback when the short API can't produce a one-line result.
+async function fullAnswer(appid: string, query: string): Promise<string> {
+	const p = new URLSearchParams({ appid, input: query });
+	const resp = await fetch(`${LLM_URL}?${p}`, { headers: { Accept: "text/plain" } });
+	const text = await resp.text().catch(() => "");
+	if (!resp.ok) throw new Error(`Wolfram LLM API HTTP ${resp.status}: ${text.slice(0, 300)}`);
+	return text.trim();
+}
+
 export const wolfram: Fn = {
 	name: "wolfram",
 	description:
@@ -34,19 +44,26 @@ export const wolfram: Fn = {
 		const mode = args?.mode === "full" ? "full" : "short";
 
 		try {
-			const p = new URLSearchParams({ appid: env.WOLFRAM_APP_ID });
 			if (mode === "full") {
-				p.set("input", query);
-				const resp = await fetch(`${LLM_URL}?${p}`, { headers: { Accept: "text/plain" } });
-				const text = await resp.text().catch(() => "");
-				if (!resp.ok) throw new Error(`Wolfram LLM API HTTP ${resp.status}: ${text.slice(0, 300)}`);
-				return ok(text.trim() || `No Wolfram Alpha answer for '${query}'.`);
+				return ok((await fullAnswer(env.WOLFRAM_APP_ID, query)) || `No Wolfram Alpha answer for '${query}'.`);
 			}
-			p.set("i", query);
+			// Short mode: the result API answers with 501 ("did not understand your
+			// input") whenever there is no one-line result — that's a normal outcome,
+			// not a failure, so fall back to the full LLM API rather than erroring.
+			const p = new URLSearchParams({ appid: env.WOLFRAM_APP_ID, i: query });
 			const resp = await fetch(`${SHORT_URL}?${p}`, { headers: { Accept: "text/plain" } });
-			const text = await resp.text().catch(() => "");
-			if (!resp.ok) throw new Error(`Wolfram result API HTTP ${resp.status}: ${text.slice(0, 300)}`);
-			return ok(text.trim() || `No Wolfram Alpha answer for '${query}'.`);
+			const text = (await resp.text().catch(() => "")).trim();
+			if (resp.ok && text) return ok(text);
+			if (resp.status === 501 || !text) {
+				try {
+					const full = await fullAnswer(env.WOLFRAM_APP_ID, query);
+					if (full) return ok(full);
+				} catch {
+					// Full fallback also failed — degrade to a soft "no answer" below.
+				}
+				return ok(`No short Wolfram Alpha answer for '${query}'.`);
+			}
+			throw new Error(`Wolfram result API HTTP ${resp.status}: ${text.slice(0, 300)}`);
 		} catch (e) {
 			return fail(`wolfram (${mode}) failed: ${errMsg(e)}`);
 		}
