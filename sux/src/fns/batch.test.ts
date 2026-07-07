@@ -37,10 +37,10 @@ describe("batch", () => {
 		expect(out.results[1].error).toMatch(/Unknown algo/);
 	});
 
-	it("rejects a non-array calls value", async () => {
+	it("rejects when neither a valid calls array nor over+args is given", async () => {
 		const r = await batch.run({} as any, { tool: "hash", calls: "nope" });
 		expect(r.isError).toBe(true);
-		expect(r.content[0].text).toMatch(/`calls` must be an array/);
+		expect(r.content[0].text).toMatch(/Provide `calls`.*or `over`/);
 	});
 
 	it("rejects more than 100 calls (amplification cap)", async () => {
@@ -158,5 +158,64 @@ describe("batch", () => {
 		expect(out.reduced).toContain(out.results[0].text);
 		expect(out.reduced).toContain(out.results[1].text);
 		expect(out.reduced).toMatch(/summarize skipped/);
+	});
+});
+
+import { fillItemsTokens, fillToken, pluckItems } from "./batch";
+
+describe("batch map/reduce templating", () => {
+	it("fillToken injects {{item}} whole (keeps type) and {{item.path}} inline", () => {
+		expect(fillToken({ url: "{{item}}" }, "item", "https://x")).toEqual({ url: "https://x" });
+		expect(fillToken({ v: "{{item}}" }, "item", { a: 1 })).toEqual({ v: { a: 1 } }); // whole-value keeps object
+		expect(fillToken({ s: "id-{{item.id}}" }, "item", { id: 7 })).toEqual({ s: "id-7" });
+		expect(fillToken({ nested: [{ u: "{{item}}" }] }, "item", "z")).toEqual({ nested: [{ u: "z" }] });
+	});
+
+	it("pluckItems collects a field across JSON outputs, or the whole array", () => {
+		const items = ['{"url":"/s/a","n":1}', '{"url":"/s/b","n":2}', "not-json"];
+		expect(pluckItems(items, "url")).toEqual(["/s/a", "/s/b"]); // non-JSON dropped
+		expect(pluckItems(items)).toBe(items); // no path → whole array
+	});
+
+	it("fillItemsTokens replaces {{items.path}} with the plucked array (whole-value)", () => {
+		const items = ['{"url":"/s/a"}', '{"url":"/s/b"}'];
+		expect(fillItemsTokens({ sources: "{{items.url}}" }, items)).toEqual({ sources: ["/s/a", "/s/b"] });
+		expect(fillItemsTokens({ all: "{{items}}" }, items)).toEqual({ all: items });
+	});
+});
+
+describe("batch over + reduce_with (map-reduce composition)", () => {
+	it("maps an args template over `over` (equivalent to explicit calls)", async () => {
+		const viaOver = await batch.run({} as any, { tool: "hash", over: ["a", "b"], args: { text: "{{item}}" } });
+		const viaCalls = await batch.run({} as any, { tool: "hash", calls: [{ text: "a" }, { text: "b" }] });
+		expect(JSON.parse(viaOver.content[0].text).results).toEqual(JSON.parse(viaCalls.content[0].text).results);
+	});
+
+	it("requires an args template when `over` is given", async () => {
+		const r = await batch.run({} as any, { tool: "hash", over: ["a"] });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/requires an `args` template/);
+	});
+
+	it("reduce_with runs a reducer once over the mapped outputs", async () => {
+		// Map hash over two items, then hash the joined array of results → one hash.
+		const r = await batch.run({} as any, {
+			tool: "hash",
+			over: ["a", "b"],
+			args: { text: "{{item}}" },
+			reduce_with: { tool: "hash", args: { text: "joined:{{items}}" } },
+		});
+		const out = JSON.parse(r.content[0].text);
+		expect(out.reduced_with).toBe("hash");
+		expect(out.reduced).toMatch(/^[0-9a-f]{64}$/);
+		// The reduce hashed the array of the two item hashes → differs from either.
+		expect(out.reduced).not.toBe(out.results[0].text);
+		expect(out.results).toHaveLength(2);
+	});
+
+	it("reports an unknown reduce_with tool", async () => {
+		const r = await batch.run({} as any, { tool: "hash", calls: [{ text: "a" }], reduce_with: { tool: "nope" } });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/reduce_with: unknown tool/);
 	});
 });

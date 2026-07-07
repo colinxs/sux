@@ -28,21 +28,107 @@ const SEP = "\n\n---\n\n";
 
 type ItemResult = { ok: boolean; text?: string; error?: string };
 
+/** Resolve a dotted path against a value (best-effort; undefined on miss). */
+function dig(value: unknown, path: string): unknown {
+	return path.split(".").reduce<unknown>((v, k) => (v != null && typeof v === "object" ? (v as any)[k] : undefined), value);
+}
+
+/**
+ * Deep-substitute a `{{token}}` across a template's strings. A whole-value
+ * `"{{token}}"` is replaced by the raw replacement (preserving objects/arrays);
+ * `{{token.path}}` digs a field; inline occurrences stringify. Used to expand a
+ * map template over each `over` item ({{item}}) and to inject the collected
+ * mapped outputs into a reducer ({{items}}).
+ */
+export function fillToken(value: unknown, token: string, replacement: unknown): unknown {
+	if (typeof value === "string") {
+		if (!value.includes(`{{${token}`)) return value;
+		if (value.trim() === `{{${token}}}`) return replacement; // whole-value → raw (keeps arrays/objects)
+		const re = new RegExp(`\\{\\{${token}(?:\\.([\\w.]+))?\\}\\}`, "g");
+		return value.replace(re, (_m, path) => {
+			const got = path ? dig(replacement, path) : replacement;
+			return got == null ? "" : typeof got === "string" ? got : JSON.stringify(got);
+		});
+	}
+	if (Array.isArray(value)) return value.map((v) => fillToken(v, token, replacement));
+	if (value && typeof value === "object") {
+		const out: Record<string, unknown> = {};
+		for (const [k, v] of Object.entries(value)) out[k] = fillToken(v, token, replacement);
+		return out;
+	}
+	return value;
+}
+
+/** Collect a field from each mapped output (JSON-parsing string items), or the
+ * whole array when no path — powers reduce_with's {{items}} / {{items.path}}. */
+export function pluckItems(items: string[], path?: string): unknown {
+	if (!path) return items;
+	return items
+		.map((t) => {
+			try {
+				return dig(JSON.parse(t), path);
+			} catch {
+				return undefined;
+			}
+		})
+		.filter((v) => v !== undefined);
+}
+
+/** Deep-fill {{items}} / {{items.path}} in a reducer's args. A whole-value token
+ * becomes the raw array (so sources:'{{items.url}}' → [url1, url2]); inline uses
+ * stringify. */
+export function fillItemsTokens(value: unknown, items: string[]): unknown {
+	if (typeof value === "string") {
+		const whole = value.trim().match(/^\{\{items(?:\.([\w.]+))?\}\}$/);
+		if (whole) return pluckItems(items, whole[1]);
+		if (!value.includes("{{items")) return value;
+		return value.replace(/\{\{items(?:\.([\w.]+))?\}\}/g, (_m, p) => JSON.stringify(pluckItems(items, p)));
+	}
+	if (Array.isArray(value)) return value.map((v) => fillItemsTokens(v, items));
+	if (value && typeof value === "object") {
+		const out: Record<string, unknown> = {};
+		for (const [k, v] of Object.entries(value)) out[k] = fillItemsTokens(v, items);
+		return out;
+	}
+	return value;
+}
+
 export const batch: Fn = {
 	name: "batch",
 	description:
-		"Map-reduce one sux tool over many argument sets. MAP: tool is the tool name to invoke; calls is an array of argument objects (one per invocation), run with capped concurrency (~8), tolerating per-item failure. REDUCE (optional): reduce combines the successful results server-side so you don't pull every mapped result back into context — none (default) returns the per-item results as-is; concat joins the ok results' text; summarize feeds the joined ok text to Workers AI for one combined answer (falls back to concat if AI isn't configured). include_results (default true) can be set false on a pure reduce to drop the per-item array. Returns JSON { tool, results } (and reduced when reducing). Fails if the tool is unknown.",
+		"Map-reduce one sux tool over many inputs. MAP two ways: `calls` (array of full arg objects, tool runs once each) OR `over` + `args` (map a template over a list — for each item in `over`, run `tool` with `args` where {{item}} / {{item.path}} is filled in, e.g. tool:pdf, over:[url1,url2], args:{url:'{{item}}'}). Map tool:pipe with {{item}}-templated steps to run a per-item PIPELINE — map(shrink(pdf()), URLs). Capped concurrency (~8), per-item failure tolerated. REDUCE the successful results server-side so you don't pull them all back into context: reduce = none (default) | concat (join text) | summarize (Workers-AI synthesis, falls back to concat). OR reduce_with = {tool, args} for a TOOL-based reduce — run a reducer once over the mapped outputs with {{items}} (JSON array of ok texts) or {{items.path}} (pluck a field from each) injected, e.g. reduce_with:{tool:'pdf',args:{operation:'merge',sources:'{{items.url}}'}} to merge mapped PDFs — shrink(reduce(pdf, URLs)). include_results (default true) → false drops the per-item array. Returns JSON { tool, results?, reduced? }.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
-		required: ["tool", "calls"],
+		required: ["tool"],
 		properties: {
 			tool: { type: "string", description: "Name of the sux tool to run for each call." },
 			calls: {
 				type: "array",
 				items: { type: "object", additionalProperties: true },
 				maxItems: 100,
-				description: "Array of argument objects; the tool runs once per entry (max 100).",
+				description: "Array of argument objects; the tool runs once per entry (max 100). Provide this OR over+args.",
+			},
+			over: {
+				type: "array",
+				items: {},
+				maxItems: 100,
+				description: "Items to map `args` over — each fills {{item}} / {{item.path}}. Lighter alternative to `calls` (e.g. over:[url1,url2], args:{url:'{{item}}'}).",
+			},
+			args: {
+				type: "object",
+				additionalProperties: true,
+				description: "Per-item argument TEMPLATE used with `over`; {{item}} (whole) or {{item.path}} is substituted per item. Map tool:pipe with {{item}}-templated steps for a per-item pipeline.",
+			},
+			reduce_with: {
+				type: "object",
+				additionalProperties: false,
+				required: ["tool"],
+				properties: {
+					tool: { type: "string", description: "Reducer tool, run once over the mapped outputs." },
+					args: { type: "object", additionalProperties: true, description: "Reducer args; {{items}} = JSON array of the ok mapped texts (whole-value keeps it an array)." },
+				},
+				description: "TOOL-based reduce (overrides `reduce`): run a reducer once over the mapped outputs, e.g. reduce_with:{tool:'pdf',args:{operation:'merge',sources:'{{items}}'}}.",
 			},
 			reduce: {
 				type: "string",
@@ -62,8 +148,18 @@ export const batch: Fn = {
 	run: async (env, args) => {
 		const toolName = typeof args?.tool === "string" ? args.tool.trim() : "";
 		if (!toolName) return fail("Provide a `tool` name.");
-		if (!Array.isArray(args?.calls)) return fail("`calls` must be an array of argument objects.");
-		const calls: unknown[] = args.calls;
+		// MAP inputs two ways: explicit `calls`, or map an `args` template over `over`
+		// (each item fills {{item}} / {{item.path}}). over+args is the lighter form.
+		let calls: unknown[];
+		if (Array.isArray(args?.over)) {
+			const tmpl = args?.args;
+			if (tmpl == null || typeof tmpl !== "object" || Array.isArray(tmpl)) return fail("`over` requires an `args` template object (e.g. args:{url:'{{item}}'}).");
+			calls = (args.over as unknown[]).map((item) => fillToken(tmpl, "item", item));
+		} else if (Array.isArray(args?.calls)) {
+			calls = args.calls;
+		} else {
+			return fail("Provide `calls` (array of arg objects) or `over` + `args` (template to map over).");
+		}
 		if (calls.length > MAX_CALLS) return fail(`Too many calls: ${calls.length} (max ${MAX_CALLS} per batch).`);
 		// A fan-out tool mapped over many calls multiplies the work product; keep it bounded.
 		if (NESTED_FANOUT_TOOLS.has(toolName) && calls.length > MAX_NESTED_CALLS) {
@@ -71,6 +167,8 @@ export const batch: Fn = {
 		}
 		const reduce = String(args?.reduce ?? "none");
 		if (reduce !== "none" && reduce !== "concat" && reduce !== "summarize") return fail(`Unknown reduce '${reduce}'. Options: none, concat, summarize.`);
+		const reduceWith = args?.reduce_with as { tool?: unknown; args?: unknown } | undefined;
+		const hasReduceWith = reduceWith != null && typeof reduceWith === "object" && typeof reduceWith.tool === "string";
 		const includeResults = args?.include_results !== false;
 
 		// Dynamic import breaks the static cycle (index.ts -> batch.ts -> index.ts).
@@ -108,6 +206,29 @@ export const batch: Fn = {
 
 		const pool = Math.min(CONCURRENCY, Math.max(1, calls.length));
 		await Promise.all(Array.from({ length: pool }, () => worker()));
+
+		// TOOL-based reduce (overrides the text reduces): run a reducer once over the
+		// mapped ok outputs, with {{items}} = their texts (and {{items.path}} plucking
+		// a field from each). This is the general reduce — merge PDFs, join a table,
+		// pack, etc. — that completes shrink(reduce(pdf, URLs)).
+		if (hasReduceWith) {
+			const rTool = String(reduceWith!.tool);
+			if (rTool === "batch") return fail("reduce_with tool cannot be `batch`.");
+			const rFound = FUNCTIONS.find((f) => f.name === rTool);
+			if (!rFound) return fail(`reduce_with: unknown tool '${rTool}'.`);
+			const items = results.filter((r) => r?.ok && r.text).map((r) => r.text as string);
+			const filled = fillItemsTokens((reduceWith!.args as Record<string, unknown>) ?? {}, items) as Record<string, unknown>;
+			try {
+				const rr = await rFound.run(env, rFound.raw ? filled : normalizeArgs(filled));
+				const text = rr.content?.[0]?.text ?? "";
+				if (rr.isError) return fail(`reduce_with '${rTool}' failed: ${text}`);
+				const reduced = rFound.raw ? text : normalizeText(text);
+				const payload = includeResults ? { tool: toolName, results, reduced, reduced_with: rTool } : { tool: toolName, reduced, reduced_with: rTool };
+				return ok(JSON.stringify(payload, null, 2));
+			} catch (e) {
+				return fail(`reduce_with '${rTool}' failed: ${String((e as Error)?.message ?? e)}`);
+			}
+		}
 
 		// Reduce operates only over ok results; failed items stay in `results`
 		// but are skipped here.
