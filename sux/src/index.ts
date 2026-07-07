@@ -5,6 +5,11 @@ import { unpackFromCache } from "./cache-codec";
 import { findFn, type RtEnv, type ToolResult, toolList } from "./registry";
 import { singleFlight } from "./single-flight";
 import { weightedRateLimit } from "./rate-limit";
+import { hasAI, llm } from "./ai";
+
+// Below this length a result isn't worth an AI round-trip to summarize (the call
+// would cost more than the tokens it saves, and may even grow the text).
+const SUMMARIZE_MIN_CHARS = 400;
 import { FUNCTIONS } from "./fns";
 import { recordCall } from "./metrics";
 import { handleObservability } from "./observability";
@@ -59,13 +64,23 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 			delete (rawArgs as Record<string, unknown>).fresh;
 		}
 
+		// Universal token-saver: a truthy `summarize` runs the fn's text output
+		// through Workers AI to compress it before returning (fewer tokens back to
+		// the agent). Detected+stripped up front like `fresh`, but it CHANGES the
+		// result, so it namespaces the cache key (summarized and raw cache apart).
+		let summarize = false;
+		if (rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs) && (rawArgs as Record<string, unknown>).summarize) {
+			summarize = true;
+			delete (rawArgs as Record<string, unknown>).summarize;
+		}
+
 		// Sane normalization on open: fold styled/fullwidth "font" unicode to ASCII
 		// and strip BOM/zero-width/control chars from string inputs. Byte-exact fns
 		// (hash/encode/compress/qr/kv/…) opt out via `raw` so their bytes are untouched.
 		const args = fn.raw ? rawArgs : normalizeArgs(rawArgs);
 
 		const started = Date.now();
-		const key = fn.cacheable ? await cacheKey(name, args) : null;
+		const key = fn.cacheable ? await cacheKey(summarize ? `${name}::summarize` : name, args) : null;
 		if (key && !fresh) {
 			// Read as bytes so compressed frames (cache-codec) round-trip; unpack
 			// reverses packForCache (plain string, or zstd/brotli frame). Any unpack
@@ -96,6 +111,21 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 		if (!fn.raw && !result.isError && Array.isArray(result.content)) {
 			for (const part of result.content) {
 				if (part?.type === "text" && typeof part.text === "string") part.text = normalizeText(part.text);
+			}
+		}
+		// Summarize-before-return: compress the (normalized) text output with Workers
+		// AI when the caller asked and the result is worth it. Best-effort — on AI
+		// failure or when unavailable, the raw result is returned unchanged. The
+		// summarized result is what gets cached (under the ::summarize key namespace).
+		if (summarize && !fn.raw && !result.isError && Array.isArray(result.content) && hasAI(env)) {
+			const joined = result.content.filter((p) => p?.type === "text" && typeof p.text === "string").map((p) => p.text).join("\n");
+			if (joined.length >= SUMMARIZE_MIN_CHARS) {
+				try {
+					const s = await llm(env, "Summarize this tool result as concisely as possible while preserving key facts, names, numbers, dates, and URLs. Output only the summary — no preamble.", joined.slice(0, 24_000), 512);
+					if (s.trim()) result = { content: [{ type: "text", text: s.trim() }], ...(result.noCache ? { noCache: true } : {}) };
+				} catch (e) {
+					console.warn(`sux summarize failed for '${name}', returning raw: ${String((e as Error).message ?? e)}`);
+				}
 			}
 		}
 		// Record WHY a call failed: from the caught exception, or the isError

@@ -212,3 +212,36 @@ describe("handleRpc (index.ts dispatch)", () => {
 		expect(hZwsp).not.toBe(hStripped); // and it materially changed the output
 	});
 });
+
+describe("summarize-before-return meta-arg", () => {
+	it("replaces the output with an AI summary, caches it apart from raw, skips raw fns", async () => {
+		const { kv, store } = makeKv();
+		const { ctx, deferred } = makeCtx();
+		const env = { ...makeEnv(kv), AI: { run: async () => ({ response: "AI SUMMARY" }) } } as any;
+		const bigData = JSON.stringify({ note: "x".repeat(600) });
+		const base = { jsonrpc: "2.0", id: 1, method: "tools/call" } as const;
+
+		// summarize:true → the AI summary is returned instead of the full conversion
+		const summ = await callRpc(env, ctx, { ...base, params: { name: "json", arguments: { data: bigData, to: "yaml", summarize: true } } });
+		expect(summ.result.content[0].text).toBe("AI SUMMARY");
+		await Promise.all(deferred);
+
+		// same call without summarize → the real (long) conversion, not the summary
+		const raw = await callRpc(env, ctx, { ...base, params: { name: "json", arguments: { data: bigData, to: "yaml" } } });
+		expect(raw.result.content[0].text).not.toBe("AI SUMMARY");
+		expect(raw.result.content[0].text).toContain("xxxx");
+		await Promise.all(deferred);
+
+		// summarized and raw results cache under distinct keys (::summarize namespace)
+		expect([...store.keys()].filter((k) => k.startsWith("cache:")).length).toBe(2);
+	});
+
+	it("returns the raw result when AI isn't configured (best-effort)", async () => {
+		const { kv } = makeKv();
+		const { ctx } = makeCtx();
+		const env = makeEnv(kv); // no AI binding
+		const bigData = JSON.stringify({ note: "y".repeat(600) });
+		const out = await callRpc(env, ctx, { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "json", arguments: { data: bigData, to: "yaml", summarize: true } } });
+		expect(out.result.content[0].text).toContain("yyyy"); // unchanged
+	});
+});
