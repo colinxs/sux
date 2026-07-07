@@ -137,6 +137,36 @@ describe("kroger", () => {
 		expect(prodUrl).toContain("filter.locationId=70100123");
 	});
 
+	it("self-heals a rejected token by minting fresh, even when KV serves the just-deleted value (eventual consistency)", async () => {
+		// KV stub whose delete() is a no-op for reads — models Cloudflare KV serving the
+		// just-deleted token for up to ~60s, so a getToken round-trip would return it again.
+		const staleKv = () => {
+			const map = new Map<string, string>([["sux:kroger:token", "STALE"]]);
+			return {
+				map,
+				get: vi.fn(async (k: string) => (map.has(k) ? map.get(k)! : null)),
+				put: vi.fn(async (k: string, v: string) => {
+					map.set(k, v);
+				}),
+				delete: vi.fn(async (_k: string) => {}),
+			};
+		};
+		const env = { KROGER_CLIENT_ID: "id", KROGER_CLIENT_SECRET: "sec", OAUTH_KV: staleKv() } as any;
+		// Product calls 401 for the rejected STALE token, 200 only for a freshly minted one.
+		global.fetch = vi.fn(async (input: any, init: any) => {
+			const url = String(input);
+			if (url.includes("/connect/oauth2/token")) return json({ access_token: "FRESH", expires_in: 1800 });
+			const auth = init?.headers?.Authorization ?? "";
+			if (url.includes("/v1/products")) return auth === "Bearer FRESH" ? json(PRODUCTS) : json({ errors: { reason: "revoked" } }, 401);
+			return json({}, 404);
+		}) as any;
+		const r = await kroger.run(env, { action: "search", term: "milk", location_id: "70100123" });
+		expect(r.isError).toBeFalsy();
+		const j = JSON.parse(r.content[0].text);
+		expect(j.count).toBe(1);
+		expect(j.products[0].id).toBe("0001111041700");
+	});
+
 	it("carries the upstream HTTP status into the failure message", async () => {
 		installFetch();
 		global.fetch = vi.fn(async (input: any) => {

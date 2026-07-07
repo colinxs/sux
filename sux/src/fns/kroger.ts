@@ -13,10 +13,8 @@ const TOKEN_KEY = "sux:kroger:token";
 
 const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);
 
-/** Get a valid bearer token — from KV if present, else mint one and cache it. */
-async function getToken(env: RtEnv): Promise<string> {
-	const cached = await env.OAUTH_KV.get(TOKEN_KEY);
-	if (cached) return cached;
+/** Mint a fresh bearer token from the OAuth endpoint and cache it in KV. */
+async function mintToken(env: RtEnv): Promise<string> {
 	const basic = btoa(`${env.KROGER_CLIENT_ID}:${env.KROGER_CLIENT_SECRET}`);
 	const resp = await fetch(TOKEN_URL, {
 		method: "POST",
@@ -34,18 +32,26 @@ async function getToken(env: RtEnv): Promise<string> {
 	return token;
 }
 
+/** Get a valid bearer token — from KV if present, else mint one and cache it. */
+async function getToken(env: RtEnv): Promise<string> {
+	const cached = await env.OAUTH_KV.get(TOKEN_KEY);
+	if (cached) return cached;
+	return mintToken(env);
+}
+
 /**
  * GET an authed Kroger endpoint, throwing a status-carrying error on failure.
  * Self-heals a revoked/rejected token: on a 401/403 it drops the cached token,
  * re-mints once, and retries — so a token invalidated before its TTL recovers
- * without waiting out the cache.
+ * without waiting out the cache. The retry mints directly (not via getToken) so
+ * KV read-after-delete eventual consistency can't hand back the rejected token.
  */
 async function api(env: RtEnv, path: string): Promise<any> {
 	const get = (token: string) => fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } });
 	let resp = await get(await getToken(env));
 	if (resp.status === 401 || resp.status === 403) {
 		await env.OAUTH_KV.delete(TOKEN_KEY);
-		resp = await get(await getToken(env));
+		resp = await get(await mintToken(env));
 	}
 	if (!resp.ok) throw new Error(`Kroger API HTTP ${resp.status}: ${(await resp.text().catch(() => "")).slice(0, 300)}`);
 	return resp.json();
