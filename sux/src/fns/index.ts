@@ -69,6 +69,7 @@ import { nyt } from "./nyt";
 import { obsidian } from "./obsidian";
 import { openalex } from "./openalex";
 import { pdf } from "./pdf";
+import { people } from "./people";
 import { pipe } from "./pipe";
 import { places } from "./places";
 import { render } from "./render";
@@ -150,6 +151,7 @@ export const FUNCTIONS: Fn[] = [
 	obsidian,
 	openalex,
 	pdf,
+	people,
 	pipe,
 	places,
 	render,
