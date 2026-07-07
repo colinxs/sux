@@ -12,6 +12,7 @@ import { hasAI, llm } from "./ai";
 const SUMMARIZE_MIN_CHARS = 400;
 import { FUNCTIONS } from "./fns";
 import { recordCall } from "./metrics";
+import { shipToLoki } from "./grafana";
 import { handleObservability } from "./observability";
 import { normalizeArgs, normalizeText } from "./normalize";
 
@@ -88,7 +89,9 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 			try {
 				const raw = await env.OAUTH_KV.get(key, "arrayBuffer");
 				if (raw) {
-					recordCall(env, ctx, { tool: name, ms: Date.now() - started, cache: true });
+					const hitEvent = { tool: name, ms: Date.now() - started, cache: true };
+					recordCall(env, ctx, hitEvent);
+					shipToLoki(env, ctx, hitEvent);
 					return sseResponse({ jsonrpc: "2.0", id, result: JSON.parse(unpackFromCache(raw)) });
 				}
 			} catch (e) {
@@ -134,7 +137,9 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 			const first = result.content.find((p: { type?: string; text?: unknown }) => p?.type === "text" && typeof p.text === "string");
 			if (first) err = (first as { text: string }).text;
 		}
-		recordCall(env, ctx, { tool: name, ms: Date.now() - started, error: Boolean(result.isError), err });
+		const callEvent = { tool: name, ms: Date.now() - started, error: Boolean(result.isError), err };
+		recordCall(env, ctx, callEvent);
+		shipToLoki(env, ctx, callEvent);
 		// noCache/isError results are returned but never cached; the noCache flag is
 		// stripped and the KV write happens off the response path via ctx.waitUntil.
 		// fn.ttl (when set) overrides the global cache lifetime for this fn.
@@ -190,10 +195,48 @@ async function getOAuthProvider(): Promise<OAuthProvider> {
 	return oauthProvider;
 }
 
+// Best-effort maintenance run for the daily Cron Trigger (wrangler.jsonc crons).
+// Keeps the Kroger client-credentials OAuth token warm in KV so the first `shop`
+// call of the day doesn't pay the mint latency. Entirely optional: does nothing
+// unless KROGER_CLIENT_ID/SECRET are configured, and is wrapped so it can NEVER
+// throw — a failed tick must not surface as a Worker error. Mirrors the token
+// cache scheme in fns/kroger.ts (same key, same expires_in - 60 TTL clamped to
+// KV's 60s floor) so the value it writes is a drop-in for the read path there.
+const KROGER_TOKEN_KEY = "sux:kroger:token";
+
+async function refreshKrogerToken(env: RtEnv): Promise<void> {
+	if (!env.KROGER_CLIENT_ID || !env.KROGER_CLIENT_SECRET) return;
+	const basic = btoa(`${env.KROGER_CLIENT_ID}:${env.KROGER_CLIENT_SECRET}`);
+	const resp = await fetch("https://api.kroger.com/v1/connect/oauth2/token", {
+		method: "POST",
+		headers: { Authorization: `Basic ${basic}`, "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+		body: "grant_type=client_credentials&scope=product.compact",
+	});
+	if (!resp.ok) throw new Error(`Kroger OAuth HTTP ${resp.status}`);
+	const j: any = await resp.json();
+	const token = String(j?.access_token ?? "");
+	if (!token) throw new Error("Kroger OAuth response had no access_token.");
+	const ttl = Math.max(60, (Number(j?.expires_in) || 1800) - 60);
+	await env.OAUTH_KV.put(KROGER_TOKEN_KEY, token, { expirationTtl: ttl });
+}
+
+async function maintenanceTick(env: RtEnv): Promise<void> {
+	try {
+		await refreshKrogerToken(env);
+	} catch (e) {
+		console.warn(`sux scheduled maintenance: kroger token refresh skipped: ${String((e as Error)?.message ?? e)}`);
+	}
+}
+
 // The OAuth library throws on malformed requests (e.g. an unregistered
 // redirect_uri), which Cloudflare surfaces as a raw 1101 error page. Wrap it so
 // those become clean JSON errors: 400 for client mistakes, 500 otherwise.
 export default {
+	// Cron Trigger entrypoint. Best-effort only: the whole tick is deferred via
+	// ctx.waitUntil and self-contained in try/catch so it never throws.
+	async scheduled(_event: ScheduledController, env: RtEnv, ctx: ExecutionContext): Promise<void> {
+		ctx.waitUntil(maintenanceTick(env));
+	},
 	async fetch(request: Request, env: RtEnv, ctx: ExecutionContext): Promise<Response> {
 		// Public, unauthenticated observability routes (health/metrics/dashboard)
 		// are served before the OAuth provider claims every path.

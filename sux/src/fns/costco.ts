@@ -177,7 +177,7 @@ export const costco: Fn = {
 
 		const products = extractProducts(html).slice(0, limit);
 		if (!products.length) {
-			const blocked = /Access Denied|sec-if-cpt/i.test(html) || html.trim().length < 1000;
+			const blocked = /Access Denied|sec-cpt/i.test(html) || html.trim().length < 1000;
 			return fail(blocked ? "costco: blocked by Akamai (try render:mac) — no products" : "costco: no products extracted (layout change)");
 		}
 

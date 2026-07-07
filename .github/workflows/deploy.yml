@@ -1,8 +1,22 @@
+# Deploy the sux Cloudflare Worker after tests pass.
+#
+# Required GitHub secrets (Settings → Secrets and variables → Actions):
+#   CLOUDFLARE_API_TOKEN   — Cloudflare API token used by wrangler to deploy.
+#   CLOUDFLARE_ACCOUNT_ID  — the Cloudflare account ID that owns the Worker.
+#
+# Creating the CLOUDFLARE_API_TOKEN:
+#   1. Cloudflare dashboard → My Profile → API Tokens → Create Token.
+#   2. Use the "Edit Cloudflare Workers" template, OR a Custom token with the
+#      permission: Account → Workers Scripts → Edit  (Workers Scripts:Edit).
+#      Add Account → Workers KV Storage → Edit if you also manage KV from CI.
+#   3. Scope it to the account that owns the Worker, create, and copy the token
+#      into the CLOUDFLARE_API_TOKEN secret. Find the account ID on the dashboard
+#      Workers & Pages overview (or `wrangler whoami`) → CLOUDFLARE_ACCOUNT_ID.
 name: Deploy
 
 on:
   push:
-    branches: [main]
+    branches: [main, sux-engine]
   workflow_dispatch: # allow manual "Run workflow" from the Actions tab
 
 permissions:
@@ -22,20 +36,27 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
         run: npm ci
 
+      # Gate the deploy on a green build: type-check + full test suite must pass
+      # before wrangler ships anything.
       - name: Type-check
         run: npm run type-check
 
-      # Deploys code + wrangler.jsonc vars. Does NOT touch secrets
-      # (KAGI_API_KEY, GITHUB_CLIENT_ID/SECRET, COOKIE_ENCRYPTION_KEY,
-      # ALLOWED_GITHUB_LOGIN) — manage those with `wrangler secret put`.
+      - name: Test
+        run: npm test
+
+      # Deploys code + wrangler.jsonc vars (including the Cron Trigger). Does NOT
+      # touch secrets (KAGI_API_KEY, GITHUB_CLIENT_ID/SECRET, COOKIE_ENCRYPTION_KEY,
+      # ALLOWED_GITHUB_LOGIN, KROGER_CLIENT_ID/SECRET) — manage those with
+      # `wrangler secret put`.
       - name: Deploy
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy --config sux/wrangler.jsonc

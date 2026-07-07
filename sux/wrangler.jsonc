@@ -17,6 +17,9 @@
 	"browser": { "binding": "BROWSER" },
 	// QUIC/HTTP-3 is automatic at the edge; observability = persistent logs (both services).
 	"observability": { "enabled": true, "head_sampling_rate": 1 },
+	// Daily Cron Trigger (13:00 UTC) → the scheduled() handler in src/index.ts runs
+	// a safe, best-effort maintenance tick (keeps the Kroger OAuth token warm in KV).
+	"triggers": { "crons": ["0 13 * * *"] },
 	"vars": { "DEBUG_MCP": "0" },
 	// Per-user rate limit (same as core).
 	"unsafe": {

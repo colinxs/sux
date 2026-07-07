@@ -39,20 +39,29 @@ function isAsin(s: string | undefined): s is string {
 
 /**
  * Parse the search-results grid. Amazon renders each result as a container
- * `<div data-component-type="s-search-result" data-asin="B0XXXXXXXX" ...>`, so we
- * split the HTML on that marker (like homedepot's split on product-pod) — each
- * chunk is roughly one tile and the fields we want live within it. Resilient to
- * attribute reordering; dedups by asin. Returns whatever parses.
+ * `<div data-asin="B0XXXXXXXX" data-index="…" data-component-type="s-search-result" …>`,
+ * where `data-asin` precedes `data-component-type` on the SAME tag. We anchor on
+ * each result div's opening tag (from `<div` through its closing `>`) and take the
+ * slice up to the next tile as one chunk — so a tile's OWN `data-asin` travels with
+ * its title/price/image. (A plain split on the `data-component-type` marker would
+ * shift each tile's content onto the NEXT tile's asin and drop the last product.)
+ * Resilient to attribute order; dedups by asin. Returns whatever parses.
  */
 function fromSearch(html: string): RetailProduct[] {
 	const out: RetailProduct[] = [];
 	const seen = new Set<string>();
-	const chunks = html.split(/data-component-type="s-search-result"/i).slice(1);
-	for (const chunk of chunks) {
+	// Locate each result container's opening tag and its start offset.
+	const tileRe = /<div\b[^>]*\bdata-component-type="s-search-result"[^>]*>/gi;
+	const tiles: Array<{ tag: string; start: number }> = [];
+	for (let m = tileRe.exec(html); m; m = tileRe.exec(html)) tiles.push({ tag: m[0], start: m.index });
+	for (let i = 0; i < tiles.length; i++) {
 		try {
-			// The `data-asin` attribute may sit before or after the split marker on the
-			// same tag; grab the first ASIN-shaped value in this chunk's opening region.
-			const asinMatch = chunk.match(/data-asin="([A-Z0-9]{10})"/i);
+			// One tile = its opening tag through the next tile's opening tag (or EOF).
+			const end = i + 1 < tiles.length ? tiles[i + 1].start : html.length;
+			const chunk = html.slice(tiles[i].start, end);
+			// `data-asin` lives on this tile's opening tag; fall back to a scan of the
+			// chunk for markup variants that carry it on a nested element.
+			const asinMatch = tiles[i].tag.match(/data-asin="([A-Z0-9]{10})"/i) ?? chunk.match(/data-asin="([A-Z0-9]{10})"/i);
 			const asin = asinMatch?.[1]?.toUpperCase();
 			if (!isAsin(asin)) continue; // Skip empty/placeholder data-asin tiles.
 			if (seen.has(asin)) continue;

@@ -34,9 +34,19 @@ async function getToken(env: RtEnv): Promise<string> {
 	return token;
 }
 
-/** GET an authed Kroger endpoint, throwing a status-carrying error on failure. */
-async function api(token: string, path: string): Promise<any> {
-	const resp = await fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } });
+/**
+ * GET an authed Kroger endpoint, throwing a status-carrying error on failure.
+ * Self-heals a revoked/rejected token: on a 401/403 it drops the cached token,
+ * re-mints once, and retries — so a token invalidated before its TTL recovers
+ * without waiting out the cache.
+ */
+async function api(env: RtEnv, path: string): Promise<any> {
+	const get = (token: string) => fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } });
+	let resp = await get(await getToken(env));
+	if (resp.status === 401 || resp.status === 403) {
+		await env.OAUTH_KV.delete(TOKEN_KEY);
+		resp = await get(await getToken(env));
+	}
 	if (!resp.ok) throw new Error(`Kroger API HTTP ${resp.status}: ${(await resp.text().catch(() => "")).slice(0, 300)}`);
 	return resp.json();
 }
@@ -75,8 +85,8 @@ function normProduct(d: any): RetailProduct {
 }
 
 /** Resolve the first matching store's locationId for a zip (chain-filtered). */
-async function resolveLocationId(token: string, zip: string, chain?: string): Promise<string | undefined> {
-	const j = await api(token, locationsPath(zip, 1, chain));
+async function resolveLocationId(env: RtEnv, zip: string, chain?: string): Promise<string | undefined> {
+	const j = await api(env, locationsPath(zip, 1, chain));
 	return (j?.data ?? [])[0]?.locationId;
 }
 
@@ -111,11 +121,9 @@ export const kroger: Fn = {
 		const zip = args?.zip ? String(args.zip).trim() : "";
 
 		try {
-			const token = await getToken(env);
-
 			if (action === "locations") {
 				if (!zip) return fail("action=locations requires a `zip`.");
-				const j = await api(token, locationsPath(zip, limit, chain));
+				const j = await api(env, locationsPath(zip, limit, chain));
 				const locations = (j?.data ?? []).map(normLocation);
 				return ok(JSON.stringify({ retailer: "kroger", action, count: locations.length, locations }, null, 2));
 			}
@@ -124,9 +132,9 @@ export const kroger: Fn = {
 				const id = String(args?.product_id ?? "").trim();
 				if (!id) return fail("action=product requires a `product_id`.");
 				let locationId = args?.location_id ? String(args.location_id).trim() : "";
-				if (!locationId && zip) locationId = (await resolveLocationId(token, zip, chain)) ?? "";
+				if (!locationId && zip) locationId = (await resolveLocationId(env, zip, chain)) ?? "";
 				const q = locationId ? `?filter.locationId=${encodeURIComponent(locationId)}` : "";
-				const j = await api(token, `/products/${encodeURIComponent(id)}${q}`);
+				const j = await api(env, `/products/${encodeURIComponent(id)}${q}`);
 				const d = Array.isArray(j?.data) ? j.data[0] : j?.data;
 				if (!d) return fail(`No Kroger product found for '${id}'.`);
 				return ok(JSON.stringify({ retailer: "kroger", action, count: 1, products: [normProduct(d)] }, null, 2));
@@ -136,10 +144,10 @@ export const kroger: Fn = {
 			const term = String(args?.term ?? "").trim();
 			if (!term) return fail("action=search requires a `term`.");
 			let locationId = args?.location_id ? String(args.location_id).trim() : "";
-			if (!locationId && zip) locationId = (await resolveLocationId(token, zip, chain)) ?? "";
+			if (!locationId && zip) locationId = (await resolveLocationId(env, zip, chain)) ?? "";
 			const p = new URLSearchParams({ "filter.term": term, "filter.limit": String(limit) });
 			if (locationId) p.set("filter.locationId", locationId);
-			const j = await api(token, `/products?${p}`);
+			const j = await api(env, `/products?${p}`);
 			const products = (j?.data ?? []).map(normProduct);
 			return ok(JSON.stringify({ retailer: "kroger", action, location_id: locationId || undefined, count: products.length, products }, null, 2));
 		} catch (e) {

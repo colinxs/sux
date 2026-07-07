@@ -54,6 +54,33 @@ describe("amazon", () => {
 		expect(j.count).toBe(1);
 	});
 
+	// Regression: Amazon's REAL markup puts `data-asin` BEFORE `data-component-type`
+	// on the same tile div. A naive split on the `data-component-type` marker shifts
+	// each tile's content onto the NEXT tile's asin (and drops the last product), so
+	// the parser must anchor on the tile's opening tag, not the bare marker.
+	it("pairs each asin with its own tile when data-asin precedes data-component-type", async () => {
+		const REAL_ORDER = `<!doctype html><html><body>
+			<div data-asin="B0ABC12345" data-index="1" data-component-type="s-search-result" class="s-result">
+				<h2><span>Echo Dot 5th Gen</span></h2>
+				<span class="a-price"><span class="a-offscreen">$49.99</span></span>
+				<img class="s-image" src="https://m.media-amazon.com/echo.jpg" />
+			</div>
+			<div data-asin="B0XYZ98765" data-index="2" data-component-type="s-search-result" class="s-result">
+				<h2><span>Fire TV Stick 4K</span></h2>
+				<span class="a-price"><span class="a-offscreen">$39.99</span></span>
+				<img class="s-image" src="https://m.media-amazon.com/firetv.jpg" />
+			</div>
+		</body></html>`;
+		macRenderMock.mockResolvedValueOnce({ ok: true, contentType: "text/html", body: REAL_ORDER });
+		const r = await amazon.run({ MAC_RENDER_URL: "x", MAC_RENDER_SECRET: "y" } as any, { action: "search", term: "echo" });
+		expect(r.isError).toBeFalsy();
+		const j = JSON.parse(r.content[0].text);
+		expect(j.count).toBe(2);
+		// Each product carries ITS OWN asin/title/price/image and a matching /dp/ url.
+		expect(j.products[0]).toMatchObject({ id: "B0ABC12345", title: "Echo Dot 5th Gen", price: 49.99, image: "https://m.media-amazon.com/echo.jpg", url: "https://www.amazon.com/dp/B0ABC12345" });
+		expect(j.products[1]).toMatchObject({ id: "B0XYZ98765", title: "Fire TV Stick 4K", price: 39.99, image: "https://m.media-amazon.com/firetv.jpg", url: "https://www.amazon.com/dp/B0XYZ98765" });
+	});
+
 	it("fails with no backend configured (macRender ok:false)", async () => {
 		// No MAC_RENDER_URL on the env → macRender resolves ok:false, so run returns
 		// an isError ToolResult without a render ever happening.

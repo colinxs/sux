@@ -72,6 +72,13 @@ export type RtEnv = Env &
 
 		MAC_RENDER_URL?: string;
 		MAC_RENDER_SECRET?: string;
+
+		// Grafana Cloud Loki push (observability). All three required to ship logs;
+		// absent → sux emits metrics locally only. See sux/src/grafana.ts.
+		GRAFANA_LOKI_URL?: string;
+		GRAFANA_LOKI_USER?: string;
+		GRAFANA_API_TOKEN?: string;
+
 		MCP_RATE_LIMITER?: { limit: (opts: { key: string }) => Promise<{ success: boolean }> };
 	};
 
