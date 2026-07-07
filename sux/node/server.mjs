@@ -67,9 +67,10 @@ const DEFAULT_HEADERS = {
 /** Reject loopback / private / link-local / CGNAT / metadata targets (SSRF guard). */
 export function isPrivateIp(ip) {
 	if (ip.includes(":")) {
-		// IPv6: loopback, unique-local (fc00::/7), link-local (fe80::/10), v4-mapped
+		// IPv6: unspecified (::), loopback, unique-local (fc00::/7), link-local (fe80::/10), v4-mapped
+		// `::` is the v6 twin of 0.0.0.0 (blocked below): connect() to it reaches loopback on Linux.
 		const l = ip.toLowerCase();
-		if (l === "::1" || l.startsWith("fc") || l.startsWith("fd") || l.startsWith("fe8") || l.startsWith("fe9") || l.startsWith("fea") || l.startsWith("feb")) return true;
+		if (l === "::" || l === "::1" || l.startsWith("fc") || l.startsWith("fd") || l.startsWith("fe8") || l.startsWith("fe9") || l.startsWith("fea") || l.startsWith("feb")) return true;
 		if (l.startsWith("::ffff:")) return isPrivateIp(l.slice(7));
 		return false;
 	}

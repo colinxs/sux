@@ -42,7 +42,8 @@ describe("isPrivateIp (SSRF guard)", () => {
 		}
 	});
 	it("handles IPv6 loopback/ULA/link-local and v4-mapped, allows public v6", () => {
-		for (const ip of ["::1", "fc00::1", "fd12::1", "fe80::1", "::ffff:127.0.0.1", "::ffff:10.0.0.1"]) expect(isPrivateIp(ip)).toBe(true);
+		// `::` (unspecified) is the v6 twin of 0.0.0.0 — connect() reaches loopback on Linux.
+		for (const ip of ["::", "::1", "fc00::1", "fd12::1", "fe80::1", "::ffff:127.0.0.1", "::ffff:10.0.0.1"]) expect(isPrivateIp(ip)).toBe(true);
 		for (const ip of ["2606:4700:4700::1111", "2001:4860:4860::8888"]) expect(isPrivateIp(ip)).toBe(false);
 	});
 	it("fails closed on malformed input (wrong shape / NaN octets)", () => {

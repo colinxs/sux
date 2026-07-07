@@ -55,6 +55,11 @@ describe("SSRF guard", () => {
 		expect(isBlockedTarget("http://localhost/")).toBe(true);
 		expect(isBlockedTarget("http://api.localhost/")).toBe(true);
 		expect(isBlockedTarget("http://[::1]/")).toBe(true);
+		// `::` is the IPv6 twin of 0.0.0.0 — connect() reaches loopback on Linux, so block it too.
+		expect(new URL("http://[::]/").hostname).toBe("[::]");
+		expect(isBlockedTarget("http://[::]/")).toBe(true);
+		expect(isBlockedTarget("http://[0:0:0:0:0:0:0:0]/")).toBe(true); // expanded form normalizes to [::]
+		expect(isPrivateIp("::")).toBe(true);
 		expect(isBlockedTarget("http://[fd12:3456::1]/")).toBe(true);
 		expect(isBlockedTarget("http://[fe80::1]/")).toBe(true);
 		expect(isBlockedTarget("gopher://example.com/")).toBe(true); // non-http(s) scheme

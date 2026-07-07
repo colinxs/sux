@@ -99,8 +99,10 @@ function mappedV4ToDotted(tail: string): string | null {
 
 export function isPrivateIp(host: string): boolean {
 	if (host.includes(":")) {
-		// IPv6: loopback (::1), unique-local (fc00::/7), link-local (fe80::/10), v4-mapped.
-		if (host === "::1" || host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe8") || host.startsWith("fe9") || host.startsWith("fea") || host.startsWith("feb")) return true;
+		// IPv6: unspecified (::), loopback (::1), unique-local (fc00::/7), link-local (fe80::/10), v4-mapped.
+		// `::` is the v6 twin of 0.0.0.0 (blocked below): connect() to it reaches loopback on Linux,
+		// so it's an SSRF path to a local service exactly as 0.0.0.0 is — block both for parity.
+		if (host === "::" || host === "::1" || host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe8") || host.startsWith("fe9") || host.startsWith("fea") || host.startsWith("feb")) return true;
 		// IPv4-mapped IPv6 (::ffff:0:0/96) carries an embedded IPv4 address: evaluate
 		// it as that IPv4 so a mapped private/loopback/metadata literal is caught.
 		// The WHATWG URL parser (isBlockedTarget runs targets through `new URL`)
