@@ -22,6 +22,7 @@ BLOCK_MARKERS = (
     "g-recaptcha", "h-captcha", "cf-turnstile", "awswaf", "press & hold",
     "access denied", "request unsuccessful", "unusual traffic",
     "are you a robot", "verify you are a human", "enable javascript and cookies",
+    "robot or human", "activate and hold", "hold the button",
 )
 
 pw = None
@@ -36,7 +37,53 @@ def looks_blocked(status, body):
     low = body.lower()
     return any(m in low for m in BLOCK_MARKERS)
 
-async def render_on(context, spec):
+async def try_solve_px(page):
+    try:
+        html = await page.content()
+    except Exception:
+        return
+    if "px-captcha" not in html.lower():
+        return
+    for _ in range(2):
+        el = await page.query_selector("#px-captcha")
+        if not el:
+            return
+        try:
+            await el.scroll_into_view_if_needed(timeout=3000)
+        except Exception:
+            pass
+        box = await el.bounding_box()
+        if not box:
+            await page.wait_for_timeout(1000)
+            continue
+        cx = box["x"] + box["width"] / 2
+        cy = box["y"] + box["height"] / 2
+        await page.mouse.move(cx - 30, cy, steps=6)
+        await page.mouse.move(cx, cy, steps=6)
+        await page.mouse.down()
+        held = 0
+        while held < 12000:
+            await page.wait_for_timeout(200)
+            held += 200
+            try:
+                await page.mouse.move(cx + ((held // 200) % 3 - 1), cy + ((held // 400) % 2), steps=1)
+                gone = not await page.evaluate("(function(){var e=document.getElementById('px-captcha');return !!(e&&e.offsetHeight>0);})()")
+            except Exception:
+                gone = False
+            if gone and held > 2500:
+                break
+        await page.mouse.up()
+        try:
+            await page.wait_for_load_state("networkidle", timeout=8000)
+        except Exception:
+            await page.wait_for_timeout(3000)
+        try:
+            if "px-captcha" not in (await page.content()).lower():
+                return
+        except Exception:
+            return
+
+async def render_on(context, spec, interactive=False):
     as_ = spec.get("as", "html")
     page = await context.new_page()
     try:
@@ -51,6 +98,8 @@ async def render_on(context, spec):
         status = resp.status if resp else 200
         if spec.get("wait_ms"):
             await page.wait_for_timeout(int(spec["wait_ms"]))
+        if interactive:
+            await try_solve_px(page)
         if as_ == "screenshot":
             data = await page.screenshot(full_page=bool(spec.get("full_page")))
             return {"status": status, "content_type": "image/png", "bodyEncoding": "base64", "body": base64.b64encode(data).decode()}, ""
@@ -77,7 +126,7 @@ async def do_render(spec):
         sspec["block_resources"] = False
         sspec["wait_ms"] = int(spec.get("solve_wait_ms", 15000))
         async with solver_sem:
-            sout, _ = await render_on(solver_ctx, sspec)
+            sout, _ = await render_on(solver_ctx, sspec, interactive=True)
         sout["solver"] = True
         return sout
     except Exception as e:
