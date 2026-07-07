@@ -2,13 +2,18 @@ import type OAuthProvider from "@cloudflare/workers-oauth-provider";
 import { isAllowedLogin } from "./utils";
 import { cacheKey, deferCacheWrite, type JsonRpc, parseJsonRpc, sseResponse } from "./mcp-util";
 import { unpackFromCache } from "./cache-codec";
-import { findFn, type RtEnv, toolList } from "./registry";
+import { findFn, type RtEnv, type ToolResult, toolList } from "./registry";
+import { singleFlight } from "./single-flight";
 import { FUNCTIONS } from "./fns";
 import { recordCall } from "./metrics";
 import { handleObservability } from "./observability";
 import { normalizeArgs, normalizeText } from "./normalize";
 
 type Props = { login: string; name: string; email: string; accessToken: string };
+
+// Per-isolate in-flight map for single-flight coalescing (see single-flight.ts).
+// Keyed by the content-addressed cache key; entries clear when a run settles.
+const inflight = new Map<string, Promise<ToolResult>>();
 
 // The real tools/call dispatch chain, split out from rtServer.fetch so it can be
 // exercised end-to-end in tests without constructing the module-scope
@@ -74,10 +79,13 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 				console.warn(`sux cache read failed for '${name}', recomputing: ${String((e as Error).message ?? e)}`);
 			}
 		}
-		let result;
+		let result: ToolResult;
 		let err: string | undefined;
 		try {
-			result = await fn.run(env, args);
+			// Coalesce concurrent same-key runs (cacheable fns only, keyed by the
+			// content-addressed cache key) so a burst of identical calls runs the
+			// expensive fn.run once; non-cacheable fns (no key) always run directly.
+			result = key ? await singleFlight(inflight, key, () => fn.run(env, args)) : await fn.run(env, args);
 		} catch (e) {
 			err = String((e as Error).message ?? e);
 			console.error(`sux tool '${name}' threw: ${(e as Error)?.stack ?? err}`);
