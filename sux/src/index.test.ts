@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { RtEnv } from "./registry";
 import { cacheKey, extractRpcFromText, type JsonRpc } from "./mcp-util";
-import { handleRpc } from "./index";
+import { handleRpc, oauthErrorResponse } from "./index";
 
 // End-to-end coverage of the REAL tools/call dispatch chain in index.ts
 // (parseJsonRpc → findFn → normalizeArgs/raw bypass → run → normalizeText →
@@ -210,6 +210,28 @@ describe("handleRpc (index.ts dispatch)", () => {
 			.join("");
 		expect(hZwsp).toBe(expected); // the ZWSP survived to run() unmodified
 		expect(hZwsp).not.toBe(hStripped); // and it materially changed the output
+	});
+});
+
+describe("oauthErrorResponse (server_error must not leak internal detail)", () => {
+	it("returns an opaque 500 for a non-client error, keeping the real message out of the body", async () => {
+		const secret = "TypeError: cannot read properties of undefined (reading 'access_token') at fetchUpstreamAuthToken";
+		const res = oauthErrorResponse(new Error(secret));
+		expect(res.status).toBe(500);
+		const body = (await res.json()) as any;
+		expect(body.error).toBe("server_error");
+		expect(body.error_description).toBe("Internal server error.");
+		expect(body.error_description).not.toContain("access_token");
+		expect(body.error_description).not.toContain("fetchUpstreamAuthToken");
+		expect(JSON.stringify(body)).not.toContain(secret);
+	});
+
+	it("still echoes the message for a client-side mistake (400)", async () => {
+		const res = oauthErrorResponse(new Error("invalid redirect_uri: not registered"));
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as any;
+		expect(body.error).toBe("invalid_request");
+		expect(body.error_description).toContain("redirect_uri");
 	});
 });
 

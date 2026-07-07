@@ -233,6 +233,24 @@ async function maintenanceTick(env: RtEnv): Promise<void> {
 	}
 }
 
+// Maps an exception thrown out of the OAuth provider into a clean JSON error
+// Response. Client-side mistakes (bad redirect_uri, missing/invalid params, CSRF
+// state) get a 400 whose error_description echoes the message so the caller can
+// fix their own request. Everything else is an opaque 500: the real message is
+// only logged, never placed in the body, so internal implementation detail (a
+// network failure in handleCallback, an internal TypeError, etc.) is not leaked
+// to the possibly-anonymous caller.
+export function oauthErrorResponse(e: unknown): Response {
+	const msg = String((e as Error)?.message ?? e);
+	const clientError = /redirect|client|invalid|unauthoriz|unregister|missing|csrf|state/i.test(msg);
+	console.error(`oauth wrapper caught: ${msg}`);
+	const errorDescription = clientError ? msg : "Internal server error.";
+	return new Response(JSON.stringify({ error: clientError ? "invalid_request" : "server_error", error_description: errorDescription }), {
+		status: clientError ? 400 : 500,
+		headers: { "content-type": "application/json" },
+	});
+}
+
 // The OAuth library throws on malformed requests (e.g. an unregistered
 // redirect_uri), which Cloudflare surfaces as a raw 1101 error page. Wrap it so
 // those become clean JSON errors: 400 for client mistakes, 500 otherwise.
@@ -250,13 +268,7 @@ export default {
 		try {
 			return await (await getOAuthProvider()).fetch(request, env as any, ctx);
 		} catch (e) {
-			const msg = String((e as Error)?.message ?? e);
-			const clientError = /redirect|client|invalid|unauthoriz|unregister|missing|csrf|state/i.test(msg);
-			console.error(`oauth wrapper caught: ${msg}`);
-			return new Response(JSON.stringify({ error: clientError ? "invalid_request" : "server_error", error_description: msg }), {
-				status: clientError ? 400 : 500,
-				headers: { "content-type": "application/json" },
-			});
+			return oauthErrorResponse(e);
 		}
 	},
 };
