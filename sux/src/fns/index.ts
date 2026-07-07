@@ -66,6 +66,7 @@ import { kroger } from "./kroger";
 import { linkedin } from "./linkedin";
 import { markdown } from "./markdown";
 import { nyt } from "./nyt";
+import { obsidian } from "./obsidian";
 import { openalex } from "./openalex";
 import { pdf } from "./pdf";
 import { pipe } from "./pipe";
@@ -146,6 +147,7 @@ export const FUNCTIONS: Fn[] = [
 	linkedin,
 	markdown,
 	nyt,
+	obsidian,
 	openalex,
 	pdf,
 	pipe,

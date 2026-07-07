@@ -40,6 +40,10 @@ export type RtEnv = Env &
 		// Facebook Graph API access token (facebook fn); Proxycurl key for LinkedIn (linkedin fn).
 		FACEBOOK_TOKEN?: string;
 		PROXYCURL_API_KEY?: string;
+		// Git-backed Obsidian vault (obsidian fn): 'owner/repo', branch, optional subfolder.
+		OBSIDIAN_VAULT_REPO?: string;
+		OBSIDIAN_VAULT_BRANCH?: string;
+		OBSIDIAN_VAULT_DIR?: string;
 
 		EXA_API_KEY?: string;
 
