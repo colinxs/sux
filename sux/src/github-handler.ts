@@ -280,10 +280,55 @@ function renderHealthHtml(h: any): string {
 </div>`;
 }
 
+/** The /health page is served by the OAuth defaultHandler BEFORE any auth gate,
+ * so its payload reaches anonymous visitors. gatherHealth includes fields that
+ * deanonymize the residential proxy node — the residential exit IP, its geo +
+ * ISP org, and the node's Tailscale hostname/IPs. Strip those before rendering
+ * so the public view keeps only the up/down signals a status page needs. The
+ * datacenter (bare Cloudflare) exit is not sensitive and is left intact. */
+export function redactPublicHealth(h: Record<string, unknown>): Record<string, unknown> {
+	const clone = JSON.parse(JSON.stringify(h)) as any;
+	const ts = clone.tailscale;
+	if (ts && typeof ts === "object") {
+		// Drop the identifying residential exit entirely; the ts.routing boolean
+		// still conveys whether egress is live without leaking the IP/geo/org.
+		if (ts.residential) ts.residential = null;
+		const node = ts.node;
+		if (node && typeof node === "object") {
+			delete node.hostname;
+			delete node.tailscaleIPs;
+		}
+	}
+	return clone;
+}
+
+// Short-lived snapshot of the (already redacted) health payload. /health is
+// unauthenticated, and gatherHealth fires expensive probes per hit (a residential
+// smartFetch, a Kagi initialize POST, and an HMAC-signed node /status call), so
+// caching caps an anonymous flood to at most one probe cycle per TTL. 60s is KV's
+// minimum expirationTtl.
+const HEALTH_CACHE_KEY = "sux:health:public";
+const HEALTH_CACHE_TTL = 60;
+
 async function handleHealth(url: URL, env: HandlerEnv): Promise<Response> {
-	const h = await gatherHealth(env);
-	if (url.searchParams.get("format") === "json") return json(h, h.status === "ok" ? 200 : 503);
-	return html(renderHealthHtml(h), h.status === "ok" ? 200 : 503);
+	let h: Record<string, unknown> | undefined;
+	try {
+		const cached = await env.OAUTH_KV.get(HEALTH_CACHE_KEY);
+		if (cached) h = JSON.parse(cached) as Record<string, unknown>;
+	} catch {
+		// cache read is best-effort — fall through to a live gather
+	}
+	if (!h) {
+		h = redactPublicHealth(await gatherHealth(env));
+		try {
+			await env.OAUTH_KV.put(HEALTH_CACHE_KEY, JSON.stringify(h), { expirationTtl: HEALTH_CACHE_TTL });
+		} catch {
+			// non-fatal: serving live (uncached) data is fine
+		}
+	}
+	const status = h.status === "ok" ? 200 : 503;
+	if (url.searchParams.get("format") === "json") return json(h, status);
+	return html(renderHealthHtml(h), status);
 }
 
 async function handleAuthorizeGet(request: Request, env: HandlerEnv): Promise<Response> {
