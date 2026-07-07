@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { backoffDelay, drainRouteTally, fetchPageViaTailscale, fetchViaTailscale, hasUnsafeHeader, hmacHex, isBlockedTarget, isDirectHost, isTailscaleConfigured, isTextualContentType, smartFetch, willProxy } from "./proxy";
+import { backoffDelay, drainRouteTally, fetchPageViaTailscale, fetchViaTailscale, hasUnsafeHeader, hmacHex, isBlockedTarget, isDirectHost, isPrivateIp, isTailscaleConfigured, isTextualContentType, smartFetch, willProxy } from "./proxy";
 
 const ON = { TAILSCALE_PROXY_URL: "https://x.ts.net", TAILSCALE_PROXY_SECRET: "s" };
 
@@ -68,6 +68,23 @@ describe("SSRF guard", () => {
 		expect(isBlockedTarget("https://8.8.8.8/")).toBe(false);
 		expect(isBlockedTarget("https://172.32.0.1/")).toBe(false);
 		expect(isBlockedTarget("https://[2606:4700::1]/")).toBe(false);
+	});
+
+	it("blocks IPv4-mapped IPv6 private/loopback/metadata literals (URL parser emits the hex tail)", () => {
+		// `new URL` rewrites ::ffff:127.0.0.1 -> ::ffff:7f00:1, so the guard must
+		// decode the hex tail back to IPv4; otherwise a mapped loopback slips through.
+		expect(new URL("http://[::ffff:127.0.0.1]/").hostname).toBe("[::ffff:7f00:1]");
+		expect(isBlockedTarget("http://[::ffff:127.0.0.1]/")).toBe(true); // loopback
+		expect(isBlockedTarget("http://[::ffff:192.168.0.1]/")).toBe(true); // private LAN
+		expect(isBlockedTarget("http://[::ffff:10.0.0.1]/")).toBe(true); // private
+		expect(isBlockedTarget("http://[::ffff:169.254.169.254]/")).toBe(true); // cloud metadata
+		expect(isBlockedTarget("http://[::ffff:100.64.0.1]/")).toBe(true); // CGNAT
+		// A mapped PUBLIC address still decodes to public and is allowed (no over-block).
+		expect(isBlockedTarget("http://[::ffff:8.8.8.8]/")).toBe(false);
+		// isPrivateIp handles both the dotted and hex mapped forms directly.
+		expect(isPrivateIp("::ffff:7f00:1")).toBe(true);
+		expect(isPrivateIp("::ffff:127.0.0.1")).toBe(true);
+		expect(isPrivateIp("::ffff:808:808")).toBe(false); // 8.8.8.8
 	});
 
 	it("smartFetch refuses a private target and never calls fetch", async () => {

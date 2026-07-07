@@ -82,11 +82,36 @@ export function isDirectHost(url: string): boolean {
  * literal (v4 dotted-decimal or v6); anything that isn't a recognizable private
  * literal returns false so ordinary hostnames pass through.
  */
+/**
+ * Decode the 32-bit IPv4 tail of an IPv4-mapped IPv6 literal (the part after
+ * `::ffff:`) to dotted-decimal. Accepts the dotted form (`127.0.0.1`) and the
+ * compressed two-group hex form the WHATWG URL parser emits (`7f00:1` = the high
+ * and low 16-bit halves). Returns null when the tail isn't a recognizable v4
+ * encoding, so the caller treats it as non-private (an ordinary hostname).
+ */
+function mappedV4ToDotted(tail: string): string | null {
+	if (tail.includes(".")) return tail; // already dotted-decimal (e.g. ::ffff:127.0.0.1)
+	const groups = tail.split(":");
+	if (groups.length !== 2 || !groups.every((g) => /^[0-9a-f]{1,4}$/.test(g))) return null;
+	const [hi, lo] = groups.map((g) => Number.parseInt(g, 16));
+	return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
+}
+
 export function isPrivateIp(host: string): boolean {
 	if (host.includes(":")) {
 		// IPv6: loopback (::1), unique-local (fc00::/7), link-local (fe80::/10), v4-mapped.
 		if (host === "::1" || host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe8") || host.startsWith("fe9") || host.startsWith("fea") || host.startsWith("feb")) return true;
-		if (host.startsWith("::ffff:")) return isPrivateIp(host.slice(7));
+		// IPv4-mapped IPv6 (::ffff:0:0/96) carries an embedded IPv4 address: evaluate
+		// it as that IPv4 so a mapped private/loopback/metadata literal is caught.
+		// The WHATWG URL parser (isBlockedTarget runs targets through `new URL`)
+		// rewrites the dotted tail to compressed HEX — ::ffff:127.0.0.1 becomes
+		// ::ffff:7f00:1 — so decode BOTH the dotted and hex tail forms back to
+		// dotted-decimal; the raw hex form matched none of the IPv4 ranges and let a
+		// v4-mapped loopback slip past this guard.
+		if (host.startsWith("::ffff:")) {
+			const dotted = mappedV4ToDotted(host.slice(7));
+			return dotted != null && isPrivateIp(dotted);
+		}
 		return false;
 	}
 	const parts = host.split(".");
