@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseXml, parseYaml, toXml, toYaml } from "./_convert";
+import { detectFormat, parseXml, parseYaml, toXml, toYaml } from "./_convert";
 
 describe("parseYaml (zero-indent sequences under a mapping key)", () => {
 	it("parses a sequence at the same indent as its key", () => {
@@ -34,6 +34,25 @@ describe("parseYaml (leading-zero and oversized integers stay strings)", () => {
 
 	it("leaves integers beyond safe-integer range as strings to avoid precision loss", () => {
 		expect(parseYaml("id: 123456789012345678901")).toEqual({ id: "123456789012345678901" });
+	});
+});
+
+describe("detectFormat (bare scalars and header-only CSV don't degrade to yaml)", () => {
+	it("detects a bare JSON scalar as json instead of yaml (which parseYaml maps to {})", () => {
+		expect(detectFormat("42")).toBe("json");
+		expect(detectFormat('"hi"')).toBe("json");
+		expect(detectFormat("true")).toBe("json");
+		expect(detectFormat("null")).toBe("json");
+	});
+
+	it("detects a header-only / single-line CSV without a trailing newline as csv", () => {
+		expect(detectFormat("a,b,c")).toBe("csv");
+	});
+
+	it("still detects genuine yaml and json objects", () => {
+		expect(detectFormat("name: Ada")).toBe("yaml");
+		expect(detectFormat('{"a":1}')).toBe("json");
+		expect(detectFormat("a,b\n1,2\n")).toBe("csv");
 	});
 });
 

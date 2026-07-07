@@ -14,8 +14,17 @@ export function detectFormat(s: string): Format {
 	if (t.startsWith("{") || t.startsWith("[")) return "json";
 	// A YAML document usually has `key:` lines or `- ` sequences early on.
 	if (/^\s*[\w.-]+\s*:(\s|$)/m.test(t) || /^\s*-\s/m.test(t)) return "yaml";
-	// Otherwise, comma-separated columns across lines looks like CSV.
-	if (/^[^\n]*,[^\n]*\n/.test(t)) return "csv";
+	// A bare JSON scalar (42, "hi", true, null) is unambiguous; without this it
+	// falls through to yaml, where parseYaml maps it to {} instead of the value.
+	try {
+		const v = JSON.parse(t);
+		if (v === null || typeof v !== "object") return "json";
+	} catch {
+		/* not a JSON scalar — fall through */
+	}
+	// Otherwise, comma-separated columns look like CSV. A header-only or one-line
+	// CSV carries no trailing newline, so don't require one.
+	if (/^[^\n]*,[^\n]*(\n|$)/.test(t)) return "csv";
 	return "yaml";
 }
 
