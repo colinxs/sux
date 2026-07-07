@@ -41,10 +41,12 @@ import { kv_list } from "./kv_list";
 import { kv_delete } from "./kv_delete";
 import { issue } from "./issue";
 import { imageConvert } from "./image_convert";
+import { costco } from "./costco";
 import { csv } from "./csv";
 import { declutter } from "./declutter";
 import { fillable } from "./fillable";
 import { fontcase } from "./fontcase";
+import { homedepot } from "./homedepot";
 import { html } from "./html";
 import { json } from "./json";
 import { kroger } from "./kroger";
@@ -54,6 +56,7 @@ import { pipe } from "./pipe";
 import { render } from "./render";
 import { shop } from "./shop";
 import { store } from "./store";
+import { walmart } from "./walmart";
 import { webSearch } from "./web_search";
 import { xml } from "./xml";
 import { yaml } from "./yaml";
@@ -96,10 +99,12 @@ export const FUNCTIONS: Fn[] = [
 	kv_delete,
 	issue,
 	imageConvert,
+	costco,
 	csv,
 	declutter,
 	fillable,
 	fontcase,
+	homedepot,
 	html,
 	json,
 	kroger,
@@ -109,6 +114,7 @@ export const FUNCTIONS: Fn[] = [
 	render,
 	shop,
 	store,
+	walmart,
 	webSearch,
 	xml,
 	yaml,

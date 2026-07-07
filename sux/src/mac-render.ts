@@ -1,0 +1,92 @@
+// Shared client for the Mac patchright render service (backend:"mac"): a
+// residential, patched-Chromium node exposed via Tailscale Funnel that solves
+// active JS bot challenges (Akamai `_abck`, PerimeterX) a plain fetch — and even
+// CF Browser Rendering — can't pass. The `render` fn drives it for arbitrary
+// pages; the retailer fns (walmart/homedepot) drive it for their search pages and
+// extract structured products from the rendered HTML.
+//
+// Signed with the SAME HMAC scheme as fetchViaTailscale/renderViaMac: hmacHex over
+// `${ts}\n${payload}`, with ts+sig on the query string (so uhttpd-style CGI hosts
+// that drop custom POST headers still verify) and mirrored in x-timestamp/
+// x-signature headers.
+
+import { hmacHex } from "./proxy";
+import type { RtEnv } from "./registry";
+
+// What a caller asks the Mac service to render. Only `url` is required; the rest
+// mirror the render fn's knobs and default sensibly for HTML extraction.
+export type MacRenderSpec = {
+	url: string;
+	as?: string;
+	wait_until?: string;
+	wait_ms?: number;
+	block_resources?: boolean;
+	timeout_ms?: number;
+};
+
+// The Mac service response envelope. For as html/text, `body` is the text; for
+// as screenshot/pdf, bodyEncoding is "base64" and `body` is base64 of the bytes.
+// On error the node returns `{ error }`.
+type MacRenderResponse = {
+	status?: number;
+	content_type?: string;
+	body?: string;
+	bodyEncoding?: "base64";
+	error?: string;
+};
+
+export type MacRenderResult =
+	| { ok: true; contentType: string; body: string; bodyEncoding?: "base64" }
+	| { ok: false; error: string };
+
+// Cap on the AbortSignal for the Mac render call. The service egresses
+// residentially and solves active JS challenges, so it is legitimately slower
+// than a plain fetch — give it the caller's nav budget plus a margin, but keep the
+// Worker bounded so a hung node can never hang the tool call indefinitely.
+const MAC_TIMEOUT_MARGIN_MS = 15_000;
+const MAC_TIMEOUT_CAP_MS = 80_000;
+
+/**
+ * POST a render spec to the Mac service and return the rendered result. Never
+ * throws: unconfigured backend, transport error, non-200, unreadable body, or a
+ * node-side `{ error }` all resolve to `{ ok:false, error }`.
+ */
+export async function macRender(env: RtEnv, spec: MacRenderSpec): Promise<MacRenderResult> {
+	if (!env.MAC_RENDER_URL || !env.MAC_RENDER_SECRET) {
+		return { ok: false, error: "Mac render backend not configured." };
+	}
+	const payload = JSON.stringify({ as: "html", ...spec });
+	const ts = String(Date.now());
+	const sig = await hmacHex(env.MAC_RENDER_SECRET, `${ts}\n${payload}`);
+	// ts+sig ride the query string (same rationale as fetchViaTailscale: some CGI
+	// hosts drop custom POST headers, but QUERY_STRING is always delivered).
+	const endpoint = new URL("/render", env.MAC_RENDER_URL).href;
+	const signedEndpoint = `${endpoint}?ts=${ts}&sig=${sig}`;
+	const timeout = Math.min((spec.timeout_ms ?? 45_000) + MAC_TIMEOUT_MARGIN_MS, MAC_TIMEOUT_CAP_MS);
+	let resp: Response;
+	try {
+		resp = await fetch(signedEndpoint, {
+			method: "POST",
+			headers: { "content-type": "application/json", "x-timestamp": ts, "x-signature": sig },
+			body: payload,
+			signal: AbortSignal.timeout(timeout),
+		});
+	} catch (e) {
+		return { ok: false, error: `mac render failed: ${String((e as Error).message ?? e)}` };
+	}
+	let data: MacRenderResponse;
+	try {
+		data = (await resp.json()) as MacRenderResponse;
+	} catch {
+		return { ok: false, error: `mac render failed: unreadable response (HTTP ${resp.status}).` };
+	}
+	if (!resp.ok || data.error) {
+		return { ok: false, error: `mac render failed: ${data.error ?? `HTTP ${resp.status}`}` };
+	}
+	return {
+		ok: true,
+		contentType: data.content_type ?? "text/html",
+		body: typeof data.body === "string" ? data.body : "",
+		bodyEncoding: data.bodyEncoding,
+	};
+}
