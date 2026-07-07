@@ -43,7 +43,7 @@ export const readability: Fn = {
 		// Drop boilerplate/non-content elements before picking a region.
 		const cleaned = html
 			.replace(/<!--[\s\S]*?-->/g, " ")
-			.replace(/<(script|style|nav|header|footer|aside|form|noscript|svg)[\s\S]*?<\/\1>/gi, " ");
+			.replace(/<(script|style|nav|header|footer|aside|form|noscript|svg)[\s>][\s\S]*?<\/\1>/gi, " ");
 
 		// Prefer a semantic region; otherwise fall back to the densest generic block.
 		let region = firstBlock(cleaned, "article") || firstBlock(cleaned, "main");
