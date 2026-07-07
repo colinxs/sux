@@ -60,6 +60,37 @@ describe("observability", () => {
 		expect(JSON.stringify(body)).not.toContain("leaked");
 	});
 
+	it("emits only allowlisted fields from /logs (future LogEntry fields cannot leak)", async () => {
+		const env = fakeEnv();
+		const m = emptyMetrics(0);
+		applyEvent(m, { tool: "fetch", ms: 120, cache: true, routes: { proxied: 1 } });
+		// Simulate a future LogEntry gaining sensitive fields: inject them into the stored
+		// rolling-log blob. The public /logs view must NOT echo them back to anonymous callers.
+		const raw = JSON.parse(JSON.stringify(m));
+		raw.recent[0].secret = "sk-should-never-leak";
+		raw.recent[0].args = { url: "http://10.0.0.1/internal" };
+		env.store.set("sux:metrics", JSON.stringify(raw));
+		const body = await getJson(env, "/logs");
+		// Top-level shape is pinned to the public allowlist.
+		expect(Object.keys(body).sort()).toEqual(["cache_hits", "errors", "recent", "since", "total"]);
+		expect(body.recent).toHaveLength(1);
+		const entry = body.recent[0];
+		const allowed = ["at", "tool", "ms", "cache", "error", "routes"];
+		expect(Object.keys(entry).every((k) => allowed.includes(k))).toBe(true);
+		expect(entry).toMatchObject({ tool: "fetch", ms: 120, cache: true, error: false, routes: { proxied: 1 } });
+		// Injected sensitive fields are dropped, not passed through.
+		expect(JSON.stringify(body)).not.toContain("should-never-leak");
+		expect(JSON.stringify(body)).not.toContain("10.0.0.1");
+	});
+
+	it("returns null for non-GET requests to observability paths (falls through to OAuth)", async () => {
+		const env = fakeEnv();
+		for (const path of ["/logs", "/metrics", "/feedback"]) {
+			const res = await handleObservability(new URL(`https://sux.test${path}`), new Request(`https://sux.test${path}`, { method: "POST" }), env);
+			expect(res).toBeNull();
+		}
+	});
+
 	it("filters /feedback by ?tool= alongside ?type=", async () => {
 		const env = fakeEnv();
 		await appendFeedback(env, "issue", "dns broke", "dns");

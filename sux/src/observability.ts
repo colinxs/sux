@@ -77,9 +77,18 @@ export async function handleObservability(url: URL, request: Request, env: RtEnv
 			total: m.total,
 			cache_hits: m.cache_hits,
 			errors: m.errors,
-			// Omit `err` (raw tool failure text) from the unauthenticated log view; the
-			// boolean `error` flag stays so callers still see which calls failed.
-			recent: recent.slice(0, limit).map(({ err, ...e }) => ({ ...e, at: new Date(e.at).toISOString() })),
+			// Explicit allowlist, NOT a spread: only these known-safe fields are emitted so
+			// any future LogEntry field (args/headers/secrets) can't silently leak to the
+			// unauthenticated view. `err` (raw tool failure text) is deliberately excluded;
+			// the boolean `error` flag stays so callers still see which calls failed.
+			recent: recent.slice(0, limit).map((e) => ({
+				at: new Date(e.at).toISOString(),
+				tool: e.tool,
+				ms: e.ms,
+				cache: e.cache,
+				error: e.error,
+				...(e.routes ? { routes: e.routes } : {}),
+			})),
 		});
 	}
 
