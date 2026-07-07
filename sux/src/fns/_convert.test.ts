@@ -49,3 +49,15 @@ describe("toXml (attribute-value escaping)", () => {
 		expect(parseXml(toXml(obj))).toEqual(obj);
 	});
 });
+
+describe("parseXml (`>` inside a quoted attribute value)", () => {
+	it("does not truncate the tag at a `>` sitting inside a double-quoted attribute", () => {
+		// A bare indexOf(">") ends the tag at `a>`, dropping the attribute and
+		// leaking `b">text` into the text node. The scan must skip quoted regions.
+		expect(parseXml('<tag attr="a>b">text</tag>')).toEqual({ tag: { "@attr": "a>b", "#text": "text" } });
+	});
+
+	it("handles `>` inside a single-quoted attribute value", () => {
+		expect(parseXml("<tag attr='x>y'/>")).toEqual({ tag: { "@attr": "x>y" } });
+	});
+});

@@ -262,6 +262,25 @@ function collapse(node: Record<string, unknown>): unknown {
 	return node;
 }
 
+/** Find the `>` that closes the tag opened at `lt`, skipping any `>` that sits
+ * inside a quoted attribute value (legal XML, e.g. `<a href="x>y">`). A bare
+ * indexOf(">") would truncate the tag there, dropping the attribute and leaking
+ * the remainder into the text node. */
+function tagEnd(s: string, lt: number): number {
+	let quote = "";
+	for (let i = lt + 1; i < s.length; i++) {
+		const c = s[i];
+		if (quote) {
+			if (c === quote) quote = "";
+		} else if (c === '"' || c === "'") {
+			quote = c;
+		} else if (c === ">") {
+			return i;
+		}
+	}
+	return -1;
+}
+
 export function parseXml(xml: string): unknown {
 	const src = xml
 		.replace(/<\?[\s\S]*?\?>/g, "")
@@ -280,7 +299,7 @@ export function parseXml(xml: string): unknown {
 			const top = nodes[nodes.length - 1];
 			top["#text"] = ((top["#text"] as string) ?? "") + decodeEntities(text).trim();
 		}
-		const gt = src.indexOf(">", lt);
+		const gt = tagEnd(src, lt);
 		if (gt === -1) throw new Error("unterminated tag");
 		let tag = src.slice(lt + 1, gt).trim();
 		if (tag.startsWith("/")) {
