@@ -51,6 +51,25 @@ describe("lowes", () => {
 		});
 	});
 
+	it("binds the price to a real price key, not a sibling rating 'value'", async () => {
+		// A state blob where a rating object (with its own "value") sits between the
+		// productId and the real sellingPrice, all inside the ±700-char window. The old
+		// regex accepted a bare "value" key and, scanning left-to-right, would capture the
+		// rating (4) instead of the price (79.00). The price must come from sellingPrice.
+		const STATE_HTML = `<!doctype html><html><body><script>window.__DATA__={"products":[{"productId":"1000123456","description":"Kobalt 24-in Steel Tool Box","brand":"Kobalt","rating":{"value":"4","count":"128"},"sellingPrice":"79.00","image":"https://mobileimages.lowes.com/kobalt.jpg"}]};</script></body></html>`;
+		macRenderMock.mockResolvedValueOnce({ ok: true, contentType: "text/html", body: STATE_HTML });
+		const r = await lowes.run({ MAC_RENDER_URL: "x", MAC_RENDER_SECRET: "y" } as any, { action: "search", term: "tool box" });
+		expect(r.isError).toBeFalsy();
+		const j = JSON.parse(r.content[0].text);
+		expect(j.count).toBe(1);
+		expect(j.products[0]).toMatchObject({
+			id: "1000123456",
+			title: "Kobalt 24-in Steel Tool Box",
+			price: 79.0,
+		});
+		expect(j.products[0].price).not.toBe(4);
+	});
+
 	it("honors the limit", async () => {
 		macRenderMock.mockResolvedValueOnce({ ok: true, contentType: "text/html", body: ANCHORS_HTML });
 		const r = await lowes.run({ MAC_RENDER_URL: "x", MAC_RENDER_SECRET: "y" } as any, { action: "search", term: "tool box", limit: 1 });

@@ -66,7 +66,14 @@ function fromStateBlob(html: string): RetailProduct[] {
 			const title = win.match(/"(?:description|productLabel|title|name)"\s*:\s*"([^"]{3,})"/i);
 			if (!title) continue; // too little signal — let the DOM parse handle this one.
 			const brand = win.match(/"(?:brand|brandName)"\s*:\s*"([^"]{1,})"/i);
-			const price = win.match(/"(?:sellingPrice|finalPrice|price|value)"\s*:\s*"?([0-9][0-9,]*(?:\.[0-9]{1,2})?)"?/i);
+			// Price keys are ordered specific→generic. Prefer an unambiguous price key
+			// (sellingPrice/finalPrice); only fall back to the bare "price" key when no
+			// specific one sits in the window. The generic "value" key is intentionally
+			// NOT accepted — it also names rating/review/aisle fields in the same ±700-char
+			// window, so it would bind the price to an unrelated number (e.g. a star rating).
+			const price =
+				win.match(/"(?:sellingPrice|finalPrice)"\s*:\s*"?([0-9][0-9,]*(?:\.[0-9]{1,2})?)"?/i) ??
+				win.match(/"price"\s*:\s*"?([0-9][0-9,]*(?:\.[0-9]{1,2})?)"?/i);
 			const image = win.match(/"(https:\/\/(?:mobileimages|images)\.lowes\.com\/[^"]+)"/i);
 			seen.add(id);
 			out.push({
