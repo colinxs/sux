@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { CACHE_TTL_SECONDS, cacheKey, deferCacheWrite } from "./mcp-util";
 
+// Verifies the content-addressed KV cache mechanism used by index.ts tools/call:
+// key = sha256(tool + stable-stringified args), then a single key drives both the
+// read (get) and write (put), so identical calls hit.
+
 describe("cacheKey", () => {
 	it("is deterministic for identical inputs", async () => {
 		expect(await cacheKey("search", { q: "cats", n: 3 })).toBe(await cacheKey("search", { q: "cats", n: 3 }));
@@ -21,6 +25,10 @@ describe("cacheKey", () => {
 	});
 });
 
+// deferCacheWrite is the real write side of index.ts tools/call: it decides
+// cacheability, strips the internal noCache flag, and hands the KV put to
+// ctx.waitUntil so the response path never waits on (or fails from) the write.
+
 describe("deferCacheWrite", () => {
 	const makeCtx = () => {
 		const deferred: Promise<unknown>[] = [];
@@ -30,8 +38,8 @@ describe("deferCacheWrite", () => {
 		const store = new Map<string, { value: string; opts: { expirationTtl: number } }>();
 		const kv = {
 			put: async (key: string, value: string | ArrayBufferView | ArrayBuffer, opts: { expirationTtl: number }) => {
-				await Promise.resolve();
-				store.set(key, { value: value as string, opts });
+				await Promise.resolve(); // genuinely async, so a blocking (awaited-inline) write would be visible
+				store.set(key, { value: value as string, opts }); // small test payloads stay plain strings (packForCache passthrough)
 			},
 		};
 		return { store, kv };
@@ -44,8 +52,8 @@ describe("deferCacheWrite", () => {
 
 		deferCacheWrite(kv, ctx, "cache:k1", result);
 
-		expect(deferred).toHaveLength(1);
-		expect(store.size).toBe(0);
+		expect(deferred).toHaveLength(1); // write handed to waitUntil…
+		expect(store.size).toBe(0); // …and not yet landed: the response path didn't wait for it
 		await Promise.all(deferred);
 		const entry = store.get("cache:k1")!;
 		expect(JSON.parse(entry.value)).toEqual(result);
@@ -101,7 +109,7 @@ describe("deferCacheWrite", () => {
 		deferCacheWrite(kv, ctx, "cache:k1", result);
 
 		expect(deferred).toHaveLength(0);
-		expect("noCache" in result).toBe(false);
+		expect("noCache" in result).toBe(false); // internal flag must not leak into the MCP response
 	});
 
 	it("strips a falsy noCache flag before the value is stored", async () => {
@@ -136,7 +144,7 @@ describe("deferCacheWrite", () => {
 		deferCacheWrite(kv, ctx, "cache:k1", { content: [{ type: "text", text: "ok" }] });
 
 		expect(deferred).toHaveLength(1);
-		await expect(deferred[0]).resolves.toBeUndefined();
+		await expect(deferred[0]).resolves.toBeUndefined(); // swallowed by the trailing .catch
 	});
 });
 
@@ -154,18 +162,18 @@ describe("cache read/write round-trip (index.ts flow)", () => {
 			if (cached) return { cache: true, result: JSON.parse(cached) };
 			const result = { content: [{ type: "text", text: `ran ${++ran}` }] };
 			deferCacheWrite(kv, ctx, key, result);
-			await Promise.all(deferred);
+			await Promise.all(deferred); // let the deferred write settle, as the runtime does after responding
 			return { cache: false, result };
 		};
 
 		const a = await call("scrape", { url: "https://x" });
 		const b = await call("scrape", { url: "https://x" });
-		const c = await call("scrape", { url: "https://y" });
+		const c = await call("scrape", { url: "https://y" }); // different args -> miss
 
 		expect(a.cache).toBe(false);
-		expect(b.cache).toBe(true);
-		expect(b.result).toEqual(a.result);
+		expect(b.cache).toBe(true); // <-- cache hit
+		expect(b.result).toEqual(a.result); // same stored value
 		expect(c.cache).toBe(false);
-		expect(ran).toBe(2);
+		expect(ran).toBe(2); // run only executed for the two distinct arg sets
 	});
 });

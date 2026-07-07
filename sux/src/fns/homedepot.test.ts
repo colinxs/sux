@@ -7,6 +7,9 @@ vi.mock("../mac-render", () => ({ macRender: vi.fn() }));
 
 const macRenderMock = vi.mocked(macRender);
 
+// A rendered Home Depot search page with two product-pod tiles (the client-side
+// grid), each an anchor to /p/<slug>/<itemId> with an img alt, a $-price, and a
+// thd image — what the mac render backend returns after warming the Akamai sensor.
 const PODS_HTML = `<!doctype html><html><body>
 <div data-testid="product-pod">
 	<a href="/p/RYOBI-ONE-18V-Drill/312345678?store=1710">

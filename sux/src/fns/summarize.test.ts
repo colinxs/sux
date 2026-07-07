@@ -57,7 +57,7 @@ describe("summarize", () => {
 		expect(r.isError).toBeFalsy();
 		expect(r.content[0].text).toBe("Kagi summary of the page.");
 		expect(kagiTool).toHaveBeenCalledWith(kagiEnv, "kagi_summarizer", { url: "https://example.com", summary_type: "takeaway" });
-		expect(llm).not.toHaveBeenCalled();
+		expect(llm).not.toHaveBeenCalled(); // Kagi handled it — no Workers-AI duplication
 	});
 
 	it("maps bullets/paragraph styles to Kagi summary_type 'summary'", async () => {
@@ -96,9 +96,9 @@ describe("summarize", () => {
 		(kagiTool as any).mockRejectedValueOnce(new Error("kagi down"));
 		(textFromUrlOr as any).mockRejectedValueOnce(new Error("Upstream fetch failed: HTTP 403 — https://example.com"));
 		const r = await summarize.run({ ...env, KAGI_API_KEY: "k" }, { url: "https://example.com" });
-		expect(r.isError).toBe(true);
+		expect(r.isError).toBe(true); // isError results never enter the KV cache
 		expect(r.content[0].text).toMatch(/HTTP 403/);
-		expect(llm).not.toHaveBeenCalled();
+		expect(llm).not.toHaveBeenCalled(); // no confident summary of a 403 page
 	});
 
 	it("tags the Kagi backend in the structured log line", async () => {

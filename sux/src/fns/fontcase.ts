@@ -1,6 +1,13 @@
 import { defont } from "../normalize";
 import { type Fn, fail, ok } from "../registry";
 
+// Build a font mapper from base code points for the uppercase, lowercase, and
+// (optional) digit runs of a contiguous unicode block. Letters/digits outside a
+// provided base are left unchanged, so punctuation and non-Latin scripts survive.
+// The Mathematical Alphanumeric Symbols block leaves reserved holes where a
+// letter was already encoded in the Letterlike Symbols block (U+2100); pass an
+// overrides string ("Hℋeℯ...", ascii char followed by its glyph) to patch those
+// offsets so they render the intended glyph instead of an unassigned code point.
 function block(
 	upper?: number,
 	lower?: number,
@@ -27,10 +34,11 @@ function block(
 		}).join("");
 }
 
+// small_caps and circled are not contiguous single runs, so map by hand.
 function fromPairs(pairs: string): (s: string) => string {
 	const map = new Map<string, string>();
 	const glyphs = Array.from(pairs);
-
+	// pairs is "aAbB..." — ascii char followed by its glyph
 	for (let i = 0; i + 1 < glyphs.length; i += 2) map.set(glyphs[i], glyphs[i + 1]);
 	return (s: string) => Array.from(s, (ch) => map.get(ch) ?? ch).join("");
 }
@@ -41,6 +49,9 @@ const CIRCLED_LETTERS =
 	"aⓐbⓑcⓒdⓓeⓔfⓕgⓖhⓗiⓘjⓙkⓚlⓛmⓜnⓝoⓞpⓟqⓠrⓡsⓢtⓣuⓤvⓥwⓦxⓧyⓨzⓩ" +
 	"AⒶBⒷCⒸDⒹEⒺFⒻGⒼHⒽIⒾJⒿKⓀLⓁMⓂNⓃOⓄPⓅQⓆRⓇSⓈTⓉUⓊVⓋWⓌXⓍYⓎZⓏ";
 
+// Reserved-hole patches for the Mathematical Alphanumeric Symbols blocks: these
+// letters live in the Letterlike Symbols block (U+2100) instead, so the run-based
+// offset would otherwise land on an unassigned code point that renders as tofu.
 const ITALIC_HOLES = "hℎ";
 const SCRIPT_HOLES =
 	"BℬEℰFℱHℋIℐLℒMℳRℛeℯgℊoℴ";
@@ -112,14 +123,18 @@ export const fontcase: Fn = {
 		},
 	},
 	cacheable: true,
-
+	// raw: unicode-font output must survive the MCP boundary — normalize.ts defont
+	// would otherwise fold the fancy glyphs back to ASCII, destroying the result.
 	raw: true,
 	run: async (_env, args) => {
 		const to = String(args?.to ?? "");
 		const apply = FONTS[to] ?? CASES[to];
 		if (!apply) return fail(`Unknown to. Use one of: ${TARGETS.join(", ")}`);
 		let text = String(args?.text ?? "");
-
+		// from-direction: normalize any fonted input back to ASCII before restyling.
+		// Reuse normalize.ts's defont rather than duplicating the mapping tables.
+		// defont is NFKC-based, so a few blocks with reserved holes (mathematical
+		// script) or non-compatibility styling (small_caps) don't fully round-trip.
 		if (args?.from !== undefined && args?.from !== null && String(args.from) !== "") {
 			text = defont(text);
 		}

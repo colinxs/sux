@@ -1,6 +1,13 @@
 import { type Fn, fail, ok } from "../registry";
 import { loadHtml, stripHtml } from "./_util";
 
+// uBlock-style HTML cleaning: strip scripts/styles/iframes/ads/tracking pixels
+// and inline event handlers so downstream tools (summarize, readability, markdown)
+// see content, not clutter. Regex-based and dependency-free — best-effort: full
+// CSS-selector element hiding would need a DOM parser (see PLAN). Composes:
+// declutter -> summarize.
+
+// Known ad/tracker/consent markers in class/id — used to drop simple wrapper blocks.
 const CLUTTER = "ad|ads|advert|adslot|banner|sponsor|promo|popup|modal|overlay|interstitial|cookie|consent|gdpr|newsletter|subscribe|signup|paywall|social-share|sharethis|addthis|share-bar|related-posts|recommended|taboola|outbrain|disqus|comments?";
 
 function clean(html: string): string {
@@ -16,14 +23,14 @@ function clean(html: string): string {
 		// 1x1 / tracking pixels.
 		.replace(/<img\b[^>]*(?:\b(?:width|height)=["']?1["']?[^>]*){2}[^>]*>/gi, "")
 		.replace(/<img\b[^>]*\bsrc=["'][^"']*(?:doubleclick|googlesyndication|google-analytics|googletagmanager|scorecardresearch|quantserve|facebook\.com\/tr|pixel)[^"']*["'][^>]*>/gi, "");
-
+	// Simple, non-nested wrapper blocks whose class/id looks like clutter.
 	const wrapper = new RegExp(`<(div|section|aside|ul|ins|span)\\b[^>]*\\b(?:class|id)=["'][^"']*\\b(?:${CLUTTER})\\b[^"']*["'][^>]*>(?:(?!<\\1\\b)[\\s\\S])*?<\\/\\1>`, "gi");
-	for (let i = 0; i < 3; i++) s = s.replace(wrapper, "");
-
+	for (let i = 0; i < 3; i++) s = s.replace(wrapper, ""); // a few passes for adjacent blocks
+	// Strip inline event handlers + common tracking attributes.
 	s = s
 		.replace(/\son\w+=("[^"]*"|'[^']*'|[^\s>]+)/gi, "")
 		.replace(/\s(?:data-(?:track|ga|gtm|analytics|ad)[\w-]*)=("[^"]*"|'[^']*'|[^\s>]+)/gi, "");
-
+	// Collapse the whitespace left behind.
 	return s.replace(/\n{3,}/g, "\n\n").replace(/[ \t]{2,}/g, " ").trim();
 }
 

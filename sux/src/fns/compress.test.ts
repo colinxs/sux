@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { compress } from "./compress";
 
-const original = "the quick brown fox ".repeat(200);
+const original = "the quick brown fox ".repeat(200); // compressible
 
 async function roundTrip(codec: string) {
 	const c = JSON.parse((await compress.run({} as any, { data: original, codec })).content[0].text);
@@ -13,7 +13,7 @@ describe("compress", () => {
 	it("defaults to brotli and round-trips losslessly at high ratio", async () => {
 		const { meta, decoded } = await roundTrip("brotli");
 		expect(meta.codec).toBe("brotli");
-		expect(meta.saved_pct).toBeGreaterThan(80);
+		expect(meta.saved_pct).toBeGreaterThan(80); // repetitive text -> excellent brotli ratio
 		expect(meta.out_bytes).toBeLessThan(meta.in_bytes);
 		expect(decoded).toBe(original);
 	});
@@ -35,10 +35,11 @@ describe("compress", () => {
 	});
 
 	it('decompress as:"base64" round-trips binary payloads losslessly', async () => {
-
+		// Compress bytes that are NOT valid UTF-8 (would be mangled by TextDecoder).
 		const binary = new Uint8Array([0, 1, 2, 0xff, 0xfe, 0x80, 9, 9]);
 		const b64 = btoa(String.fromCharCode(...binary));
-
+		// gzip the raw text form via node zlib in-fn: compress direction takes text,
+		// so gzip the base64-decoded bytes by hand instead.
 		const zlib = (await import("node:zlib")) as any;
 		const packed = btoa(String.fromCharCode(...new Uint8Array(zlib.gzipSync(binary))));
 		const d = await compress.run({} as any, { data: packed, codec: "gzip", direction: "decompress", as: "base64" });

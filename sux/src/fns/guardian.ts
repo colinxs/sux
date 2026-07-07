@@ -1,5 +1,8 @@
 import { type Fn, fail, ok } from "../registry";
 
+// Guardian Content API (content.guardianapis.com) — official, free key rides
+// the query string. Full-text search across Guardian content by `term`.
+
 const API = "https://content.guardianapis.com/search";
 
 const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);

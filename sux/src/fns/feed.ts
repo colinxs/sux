@@ -1,6 +1,7 @@
 import { type Fn, fail, ok } from "../registry";
 import { fetchTextOk } from "./_util";
 
+/** Decode the handful of entities that turn up in feed text. */
 function decodeEntities(s: string): string {
 	return s
 		.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
@@ -14,6 +15,7 @@ function decodeEntities(s: string): string {
 		.replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10)));
 }
 
+/** First inner text of <name>…</name> within `xml`, entity-decoded. */
 function tag(xml: string, name: string): string | null {
 	const m = xml.match(new RegExp(`<${name}\\b[^>]*>([\\s\\S]*?)<\\/${name}>`, "i"));
 	return m ? decodeEntities(m[1]).trim() : null;
@@ -36,7 +38,8 @@ export const feed: Fn = {
 	run: async (env, args) => {
 		let xml = String(args?.xml ?? "");
 		if (!xml && args?.url) {
-
+			// An error page is not a feed — fetchTextOk surfaces the status instead
+			// of letting an empty items list get cached for an hour.
 			const fetched = await fetchTextOk(env, args.url);
 			if ("error" in fetched) return fail(fetched.error);
 			xml = fetched.text;
@@ -49,7 +52,7 @@ export const feed: Fn = {
 
 		const items = blocks.slice(0, limit).map((m) => {
 			const b = m[0];
-
+			// Atom links live in a href attribute; RSS links are element text.
 			let link = isAtom ? b.match(/<link\b[^>]*\bhref=["']([^"']+)["']/i)?.[1] ?? null : tag(b, "link");
 			const summaryRaw = tag(b, "description") ?? tag(b, "summary") ?? tag(b, "content") ?? "";
 			const summary = summaryRaw.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 500) || null;
@@ -61,6 +64,7 @@ export const feed: Fn = {
 			};
 		});
 
+		// Feed-level title = first <title> before any item/entry block.
 		const head = xml.replace(/<(item|entry)\b[\s\S]*/i, "");
 		return ok(
 			JSON.stringify({ kind: isAtom ? "atom" : "rss", title: tag(head, "title"), count: items.length, items }, null, 2),

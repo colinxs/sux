@@ -1,6 +1,10 @@
 import { type Fn, fail, ok } from "../registry";
 import { htmlToMd } from "./_markup";
 
+// markdown(x): convert HTML TO Markdown. Inverse of html(). Common subset:
+// headings, links, bold/em, lists, inline code, code blocks, blockquotes,
+// paragraphs. Unknown tags are flattened to text.
+
 export const markdown: Fn = {
 	name: "markdown",
 	description:

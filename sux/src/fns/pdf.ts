@@ -9,12 +9,13 @@ type Field = { name: string; type?: "text" | "checkbox"; page?: number; x: numbe
 type TocItem = { title: string; page?: number; level?: number };
 
 const MAGIC = (b: Uint8Array): Kind => {
-	if (b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46) return "pdf";
+	if (b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46) return "pdf"; // %PDF
 	if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return "png";
 	if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "jpg";
 	return "text";
 };
 
+/** Parse a human (1-indexed) page range like "1-3,5,8-" into 0-indexed indices. */
 function parsePages(spec: string, n: number): number[] {
 	const out: number[] = [];
 	for (const part of spec.split(",").map((s) => s.trim()).filter(Boolean)) {
@@ -31,6 +32,7 @@ function parsePages(spec: string, n: number): number[] {
 	return out;
 }
 
+/** Fetch bytes for a source (base64 or URL, via the shared _util.loadBytes). */
 async function loadSource(env: any, src: Source): Promise<{ bytes: Uint8Array; kind: Kind }> {
 	if (!(typeof src.data === "string" && src.data) && !isHttpUrl(src.url)) throw new Error("each source needs `data` (base64) or `url`");
 	const { bytes } = await loadBytes(env, { base64: src.data, url: src.url });
@@ -38,6 +40,7 @@ async function loadSource(env: any, src: Source): Promise<{ bytes: Uint8Array; k
 	return { bytes, kind: declared };
 }
 
+/** Lay text out onto paginated Letter-size pages. */
 async function drawText(doc: PDFDocument, text: string) {
 	const font = await doc.embedFont(StandardFonts.Helvetica);
 	const [W, H] = [612, 792];
@@ -81,6 +84,7 @@ async function drawImage(doc: PDFDocument, bytes: Uint8Array, kind: Kind) {
 	page.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
 }
 
+/** Build a nested PDF outline (table of contents) from a flat, level-tagged list. */
 function buildOutline(doc: PDFDocument, items: TocItem[]) {
 	if (!items.length) return;
 	const ctx = doc.context;
@@ -202,7 +206,7 @@ export const pdf: Fn = {
 	cacheable: true,
 	raw: true,
 	run: async (env, args) => {
-
+		// Normalize inputs to a list of { text } | Source items.
 		const items: Array<{ text: string } | Source> = [];
 		if (Array.isArray(args?.sources) && args.sources.length) items.push(...(args.sources as Source[]));
 		else if (typeof args?.text === "string" && args.text) items.push({ text: args.text });
@@ -215,7 +219,7 @@ export const pdf: Fn = {
 			const ocrTexts: string[] = [];
 
 			for (const item of items) {
-
+				// Literal text convenience.
 				if ("text" in item) {
 					await drawText(out, item.text);
 					continue;
@@ -239,10 +243,12 @@ export const pdf: Fn = {
 
 			if (ocrTexts.length) await drawText(out, `\n[OCR transcription]\n\n${ocrTexts.join("\n\n")}`);
 
+			// Page selection over the merged document.
 			if (typeof args?.pages === "string" && args.pages.trim()) {
 				const keep = parsePages(args.pages, out.getPageCount());
 				if (!keep.length) return fail(`Page range '${args.pages}' selected no pages (document has ${out.getPageCount()}).`);
-
+				// Remove pages not kept, from the back so indices stay valid. The spec selects
+				// pages; kept pages stay in original document order (no reordering).
 				const wanted = new Set(keep);
 				for (let i = out.getPageCount() - 1; i >= 0; i--) if (!wanted.has(i)) out.removePage(i);
 			}
@@ -258,6 +264,7 @@ export const pdf: Fn = {
 				}
 			}
 
+			// Metadata (stripped under `compress` unless explicitly provided).
 			if (typeof args?.title === "string") out.setTitle(args.title);
 			else if (args?.compress) out.setTitle("");
 			if (typeof args?.author === "string") out.setAuthor(args.author);

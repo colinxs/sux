@@ -6,6 +6,10 @@ export type KagiResult = { content?: Array<{ type?: string; text?: string }>; is
 
 const KAGI_MCP_URL = "https://mcp.kagi.com/mcp";
 
+// `route` overrides smart routing for this call: mcp.kagi.com is a direct-host
+// (see DIRECT_HOST_RE), so it egresses direct under "auto". Callers that want the
+// query to originate from a residential IP pass "proxy" — smartFetch still falls
+// back to a direct fetch when the tailnet node is down.
 export async function kagiTool(env: KagiEnv, name: string, args: unknown, route: Route = "auto"): Promise<KagiResult> {
 	const resp = await smartFetch(
 		env,

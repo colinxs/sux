@@ -49,7 +49,7 @@ describe("store", () => {
 		expect(env.OAUTH_KV._m.has(`store:${put.uuid}`)).toBe(true);
 		const got = j(await store.run(env, { op: "get", id: put.uuid }));
 		expect(got.text).toBe("hello world");
-
+		// Also resolvable from the full URL.
 		const got2 = j(await store.run(env, { op: "get", id: put.url }));
 		expect(got2.text).toBe("hello world");
 	});
@@ -95,7 +95,7 @@ describe("store", () => {
 
 	it("get by raw key defaults to octet-stream (base64 branch) when the object has no content type", async () => {
 		const env = mkEnv();
-		env.R2._m.set("raw/no-ct", { bytes: new Uint8Array([0, 1, 2]) });
+		env.R2._m.set("raw/no-ct", { bytes: new Uint8Array([0, 1, 2]) }); // no httpMetadata contentType
 		const got = j(await store.run(env, { op: "get", key: "raw/no-ct" }));
 		expect(got.content_type).toBe("application/octet-stream");
 		expect(got.base64).toBe(btoa("\x00\x01\x02"));
@@ -128,11 +128,11 @@ describe("store", () => {
 		const spy = vi.spyOn(env.R2, "list");
 		const one = j(await store.run(env, { op: "list", limit: -5 }));
 		expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({ limit: 1 }));
-		expect(one.objects).toHaveLength(1);
+		expect(one.objects).toHaveLength(1); // the clamp is observable, not just passed through
 		await store.run(env, { op: "list", limit: 5000 });
 		expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({ limit: 1000 }));
 		await store.run(env, { op: "list", limit: 0 });
-		expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({ limit: 100 }));
+		expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({ limit: 100 })); // falsy -> default
 	});
 
 	it("list passes truncated and cursor through from R2", async () => {
@@ -150,7 +150,7 @@ describe("store", () => {
 		const del = j(await store.run(env, { op: "delete", id: put.uuid }));
 		expect(del.deleted).toBe(true);
 		expect((await store.run(env, { op: "get", id: put.uuid })).isError).toBe(true);
-		expect(env.R2._m.size).toBe(1);
+		expect(env.R2._m.size).toBe(1); // blob retained
 	});
 
 	it("get by id of an over-4MB object returns the url ref and never inlines (texty branch)", async () => {
@@ -183,7 +183,7 @@ describe("store", () => {
 		expect(got.base64).toBeUndefined();
 		expect(text).not.toHaveBeenCalled();
 		expect(arrayBuffer).not.toHaveBeenCalled();
-
+		// The minted handle resolves in KV.
 		const uuid = got.url.split("/s/")[1];
 		expect(JSON.parse(env.OAUTH_KV._m.get(`store:${uuid}`)!)).toMatchObject({ key: "cas/abc123", size: 4 * 1024 * 1024 + 1 });
 	});

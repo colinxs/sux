@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { imageConvert } from "./image_convert";
 
 const PNG_1x1 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
-
+// Minimal MP4: "ftyp" box at offset 4.
 const MP4 = btoa(String.fromCharCode(0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, ...Array(16).fill(0)));
 
 function mockImagesEnv(captured: any) {
@@ -30,11 +30,11 @@ describe("image_convert", () => {
 		expect(r.isError).toBeFalsy();
 		expect(cap.t).toMatchObject({ width: 100, fit: "cover" });
 		expect(cap.o).toMatchObject({ format: "image/webp", quality: 80 });
-
+		// Standard inline envelope: { mime, size, base64 }.
 		const j = JSON.parse(r.content[0].text);
 		expect(j.mime).toBe("image/webp");
 		expect(j.size).toBe(3);
-		expect(atob(j.base64)).toBe("\t\t\t");
+		expect(atob(j.base64)).toBe("\t\t\t"); // bytes 9,9,9
 	});
 
 	it("rejects an unsupported target format", async () => {
@@ -70,6 +70,6 @@ describe("image_convert", () => {
 		const ref = JSON.parse(r.content[0].text);
 		expect(ref.url).toMatch(/\/s\/[0-9a-f-]{36}$/);
 		expect(ref.content_type).toBe("image/webp");
-		expect(ref.size).toBe(3);
+		expect(ref.size).toBe(3); // the mocked 9,9,9 bytes
 	});
 });

@@ -1,12 +1,19 @@
 import { type Fn, fail, ok, type RtEnv } from "../registry";
 import { normalizeMoney, type RetailProduct } from "./_retail";
 
+// Kroger Public API (api.kroger.com) — official, free, clean REST, no bot wall.
+// One fn covers Kroger and every banner it owns (QFC, Fred Meyer, Ralphs, …) via
+// the locations chain filter. Auth is OAuth2 client-credentials; the bearer token
+// is minted once and cached in KV (env.OAUTH_KV) until just before it expires, so
+// we never re-mint per call.
+
 const API = "https://api.kroger.com/v1";
 const TOKEN_URL = `${API}/connect/oauth2/token`;
 const TOKEN_KEY = "sux:kroger:token";
 
 const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);
 
+/** Get a valid bearer token — from KV if present, else mint one and cache it. */
 async function getToken(env: RtEnv): Promise<string> {
 	const cached = await env.OAUTH_KV.get(TOKEN_KEY);
 	if (cached) return cached;
@@ -20,12 +27,14 @@ async function getToken(env: RtEnv): Promise<string> {
 	const j: any = await resp.json();
 	const token = String(j?.access_token ?? "");
 	if (!token) throw new Error("OAuth token response had no access_token.");
-
+	// TTL = expires_in - 60 so the cached token is never used in its final minute;
+	// clamp to Cloudflare KV's 60s floor.
 	const ttl = Math.max(60, (Number(j?.expires_in) || 1800) - 60);
 	await env.OAUTH_KV.put(TOKEN_KEY, token, { expirationTtl: ttl });
 	return token;
 }
 
+/** GET an authed Kroger endpoint, throwing a status-carrying error on failure. */
 async function api(token: string, path: string): Promise<any> {
 	const resp = await fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } });
 	if (!resp.ok) throw new Error(`Kroger API HTTP ${resp.status}: ${(await resp.text().catch(() => "")).slice(0, 300)}`);
@@ -65,6 +74,7 @@ function normProduct(d: any): RetailProduct {
 	};
 }
 
+/** Resolve the first matching store's locationId for a zip (chain-filtered). */
 async function resolveLocationId(token: string, zip: string, chain?: string): Promise<string | undefined> {
 	const j = await api(token, locationsPath(zip, 1, chain));
 	return (j?.data ?? [])[0]?.locationId;
@@ -122,6 +132,7 @@ export const kroger: Fn = {
 				return ok(JSON.stringify({ retailer: "kroger", action, count: 1, products: [normProduct(d)] }, null, 2));
 			}
 
+			// action === "search"
 			const term = String(args?.term ?? "").trim();
 			if (!term) return fail("action=search requires a `term`.");
 			let locationId = args?.location_id ? String(args.location_id).trim() : "";

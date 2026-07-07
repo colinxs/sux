@@ -23,7 +23,7 @@ describe("extract", () => {
 		const text = r.content[0].text;
 		expect(text).toContain("https://a.com");
 		expect(text).toContain("https://b.com");
-
+		// deduped: only one occurrence of a.com
 		expect(text.split("\n").filter((l: string) => l === "https://a.com").length).toBe(1);
 	});
 

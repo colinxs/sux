@@ -22,6 +22,10 @@ export const summarize: Fn = {
 		const url = args?.url ? String(args.url) : undefined;
 		const style = String(args?.style ?? "bullets");
 
+		// Julia-style dispatch: URLs go to Kagi's Universal Summarizer when the
+		// gateway is configured — better existing tooling than stripping the page
+		// ourselves and truncating 24k chars into a 3B model. Any failure falls
+		// through to the Workers-AI path so summarize never gets worse.
 		if (url && env.KAGI_API_KEY) {
 			try {
 				const r = await kagiTool(env, "kagi_summarizer", { url, summary_type: style === "tldr" ? "takeaway" : "summary" });
@@ -40,7 +44,8 @@ export const summarize: Fn = {
 		const maxWords = Number(args?.max_words) || 150;
 		const shape = style === "tldr" ? "a single TL;DR sentence" : style === "paragraph" ? "one tight paragraph" : "concise bullet points";
 		try {
-
+			// textFromUrlOr throws on upstream 4xx/5xx — fail() (never cached) instead
+			// of summarizing a 403/404/consent wall and poisoning the cache for an hour.
 			const input = await textFromUrlOr(env, String(args?.text ?? ""), url);
 			if (!input) return fail("Provide `text` or a fetchable `url`.");
 			const out = await llm(

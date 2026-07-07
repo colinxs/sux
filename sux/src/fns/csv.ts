@@ -1,6 +1,9 @@
 import { type Fn, fail, ok } from "../registry";
 import { toCsv } from "./_convert";
 
+// csv(x): serialize a JSON array of objects TO CSV. Inverse of json(from:'csv').
+// Compose json({from:'csv'}) then csv(...) to round-trip a spreadsheet.
+
 export const csv: Fn = {
 	name: "csv",
 	description:

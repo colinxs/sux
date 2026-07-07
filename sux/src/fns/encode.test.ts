@@ -23,7 +23,7 @@ describe("encode", () => {
 	});
 
 	it("base64 round-trips a large (>200KB) input without a stack overflow", async () => {
-		const text = "sûx-".repeat(60_000);
+		const text = "sûx-".repeat(60_000); // >200KB UTF-8
 		const enc = await encode.run({} as any, { text, codec: "base64" });
 		expect(enc.isError).toBeFalsy();
 		const dec = await encode.run({} as any, { text: enc.content[0].text, codec: "base64", direction: "decode" });

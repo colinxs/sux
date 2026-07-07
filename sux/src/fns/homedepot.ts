@@ -2,8 +2,16 @@ import { macRender } from "../mac-render";
 import { type Fn, fail, ok, type RtEnv } from "../registry";
 import { normalizeMoney, type RetailProduct } from "./_retail";
 
+// Home Depot sits behind an ACTIVE Akamai `_abck` JS challenge a plain fetch can't
+// pass. The mac render backend (a residential patched browser) warms the sensor
+// and renders the client-side product grid, so this fn renders HD's search page
+// and lifts products out of the rendered HTML. HD builds its tiles client-side, so
+// extraction is best-effort: prefer an embedded state blob if present, else parse
+// the product-pod anchors. Every step guards/try-catches — never throws.
+
 const NO_PRODUCTS_MSG = "homedepot: no products extracted (challenge or layout change).";
 
+/** Decode HTML entities that show up in extracted title text (best-effort). */
 function decodeEntities(s: string): string {
 	return s
 		.replace(/&amp;/g, "&")
@@ -18,6 +26,12 @@ function decodeEntities(s: string): string {
 		.trim();
 }
 
+/**
+ * Try an embedded state blob first: HD (and many React/Apollo apps) inline product
+ * data as `window.__APOLLO_STATE__ = {…}` or a similar assignment. If found and it
+ * contains Product entities with an itemId, lift those — richer than DOM scraping.
+ * Returns [] when no usable blob is present (caller falls back to pod parsing).
+ */
 function fromStateBlob(html: string): RetailProduct[] {
 	const m = html.match(/window\.__APOLLO_STATE__\s*=\s*(\{[\s\S]*?\})\s*;?\s*<\/script>/i);
 	if (!m) return [];
@@ -53,10 +67,17 @@ function fromStateBlob(html: string): RetailProduct[] {
 	return out;
 }
 
+/**
+ * Fallback: parse product tiles from the rendered DOM. HD renders each result as a
+ * `data-testid="product-pod"` container whose anchor points to `/p/<slug>/<itemId>`.
+ * Best-effort and fully guarded — pull title (img alt / header text), a price span,
+ * and the href. Returns whatever parses.
+ */
 function fromPods(html: string): RetailProduct[] {
 	const out: RetailProduct[] = [];
 	const seen = new Set<string>();
-
+	// Split on product-pod markers so each chunk is roughly one tile; the anchor +
+	// fields we want live within that chunk. Resilient to attribute reordering.
 	const chunks = html.split(/data-testid="product-pod"/i).slice(1);
 	for (const chunk of chunks) {
 		try {
@@ -66,13 +87,15 @@ function fromPods(html: string): RetailProduct[] {
 			if (seen.has(itemId)) continue;
 			seen.add(itemId);
 			const url = new URL(href[1], "https://www.homedepot.com").href;
-
+			// Title: prefer an img alt on the pod, else the pod header text.
 			const alt = chunk.match(/alt="([^"]{3,})"/i);
 			const header = chunk.match(/product-pod__title[^>]*>([\s\S]*?)<\/[a-z]/i);
 			const rawTitle = alt?.[1] ?? (header?.[1] ? header[1].replace(/<[^>]+>/g, " ") : undefined);
-
+			// Price: HD splits dollars/cents across sibling spans (e.g.
+			// `$<span>79</span><span>.00</span>`), so strip tags first, then grab the
+			// first $-amount from the resulting text.
 			const price = chunk.replace(/<[^>]+>/g, "").match(/\$\s*([0-9][0-9,]*(?:\.[0-9]{2})?)/);
-
+			// Image: first product image src on the pod.
 			const img = chunk.match(/src="(https:\/\/images\.thdstatic\.com\/[^"]+)"/i);
 			out.push({
 				id: itemId,
@@ -123,6 +146,7 @@ export const homedepot: Fn = {
 		});
 		if (!r.ok) return fail(`homedepot: blocked or render failed — ${r.error}`);
 
+		// Prefer an embedded state blob (richer), fall back to DOM pod parsing.
 		let products = fromStateBlob(r.body);
 		if (products.length === 0) products = fromPods(r.body);
 		products = products.filter((p) => p.id && p.title).slice(0, limit);

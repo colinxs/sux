@@ -1,8 +1,15 @@
 import { type Fn, fail, ok } from "../registry";
 import { extractStoreId, fromB64, putBlob, STORE_KV_PREFIX, storeBase, toB64 } from "./_util";
 
+// Object storage in sux's R2. Bytes are content-addressed (key = sha256, so
+// identical content dedupes to one immutable object — Nix-store style). Each put
+// also mints a short uuid handle stored in KV (uuid → { r2 key, type, size }),
+// and returns a resolvable URL ending in that uuid: GET /s/<uuid> streams it back.
+// The put path itself lives in _util.putBlob, shared with every binary-output fn.
+
 export type StoreRef = { key: string; content_type: string; size: number; sha256: string };
 
+/** Above this, get won't inline text/base64 — it returns the streaming URL ref instead. */
 const MAX_INLINE_BYTES = 4 * 1024 * 1024;
 
 const isTexty = (ct: string): boolean => /^(text\/|application\/(json|xml|javascript|yaml|x-yaml)|application\/[a-z.+-]*\+(json|xml))/i.test(ct);
@@ -72,7 +79,9 @@ export const store: Fn = {
 				if (!obj) return fail(`No object at key '${r2key}'.`);
 				const type = ct ?? obj.httpMetadata?.contentType ?? "application/octet-stream";
 				if (obj.size > MAX_INLINE_BYTES) {
-
+					// Too large to inline (texty or binary) — hand back the streaming URL
+					// ref instead (same shape as put's as:"url" response). If we came in
+					// via a raw key there's no handle yet, so mint one.
 					if (!uuid) {
 						uuid = crypto.randomUUID();
 						sha = obj.customMetadata?.sha256;

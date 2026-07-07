@@ -2,10 +2,27 @@ import { type Fn, type RtEnv, fail, ok } from "../registry";
 import { type BlobRef, fetchText, getBlob, isHttpUrl, noCacheOn4xx, putBlob, storeRefUuid } from "./_util";
 import { smartFetch } from "../proxy";
 
+// Fetch many URLs concurrently through the residential proxy (direct fallback).
+// Concurrency is capped; each URL is fetched inside its own try/catch so one
+// failure never aborts the batch.
+//
+// as:"text" (default) — read each body as text, truncated to max_bytes; returns
+//   { url, status, bytes, text }. The token-cheap preview mode.
+// as:"url" — server-side bulk DOWNLOAD: store each successful response's RAW
+//   BYTES to the content-addressed R2 store binary-safely and return a compact
+//   /s/<uuid> ref { url, status, bytes, ref } instead of the body — so an agent
+//   can pull many files (images, PDFs, zips) without dragging megabytes through
+//   its context.
+
 const CONCURRENCY = 8;
 
+// Amplification cap: one batch_fetch call may drive at most this many upstream
+// fetches. Mirrors batch's MAX_CALLS — a fetch fan-out is the same DoS surface.
 const MAX_URLS = 100;
 
+// Raw-byte cap for as:"url" downloads. This is a size guard on stored objects,
+// distinct from max_bytes (a text-preview cap). Oversize is reported per-URL, so
+// one huge file never fails the whole batch.
 const MAX_STORE_BYTES = 25 * 1024 * 1024;
 
 type UrlResult = {
@@ -18,6 +35,10 @@ type UrlResult = {
 	error?: string;
 };
 
+/** Fetch raw bytes for as:"url", preserving the HTTP status (a 4xx error page is
+ * still transport content here) and short-circuiting the worker's own /s/<uuid>
+ * CAS refs to a direct KV→R2 read. Binary-safe: smartFetch decodes base64 proxy
+ * bodies to raw bytes so images/pdfs/zips survive byte-for-byte. */
 async function fetchBytes(
 	env: RtEnv,
 	url: string,
@@ -90,7 +111,7 @@ export const batch_fetch: Fn = {
 					if (as === "url") {
 						const r = await fetchBytes(env, url, method);
 						if (r.bytes.length > MAX_STORE_BYTES) {
-
+							// Oversize isolated to this URL — report it, don't store, don't fail the batch.
 							results[i] = { url, status: r.status, bytes: r.bytes.length, oversize: true };
 							continue;
 						}
@@ -109,6 +130,8 @@ export const batch_fetch: Fn = {
 		const pool = Math.min(CONCURRENCY, urls.length);
 		await Promise.all(Array.from({ length: pool }, () => worker()));
 
+		// Worst status across the batch decides cacheability — a per-URL `error`
+		// (network blip) counts as a 5xx so one bad URL never poisons the cache.
 		const worst = results.reduce((m, r) => Math.max(m, r.error !== undefined ? 599 : r.status ?? 0), 0);
 		return noCacheOn4xx(ok(JSON.stringify(results, null, 2)), worst);
 	},

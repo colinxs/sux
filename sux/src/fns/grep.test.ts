@@ -20,7 +20,7 @@ describe("grep", () => {
 
 	it("is case-sensitive by default", async () => {
 		const r = await grep.run({} as any, { pattern: "beta", text: TEXT });
-		expect(JSON.parse(r.content[0].text).count).toBe(1);
+		expect(JSON.parse(r.content[0].text).count).toBe(1); // only "beta again"
 	});
 
 	it("includes context lines", async () => {
@@ -43,7 +43,7 @@ describe("grep", () => {
 	it("fails on an upstream error page instead of grepping it", async () => {
 		vi.mocked(smartFetch).mockResolvedValueOnce(new Response("Too Many Requests", { status: 429 }));
 		const r = await grep.run({} as any, { pattern: "Requests", url: "https://example.com/big.log" });
-		expect(r.isError).toBe(true);
+		expect(r.isError).toBe(true); // errors never enter the KV cache
 		expect(r.content[0].text).toMatch(/HTTP 429/);
 	});
 });

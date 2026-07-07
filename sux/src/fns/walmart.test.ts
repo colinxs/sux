@@ -7,6 +7,8 @@ vi.mock("../mac-render", () => ({ macRender: vi.fn() }));
 
 const macRenderMock = vi.mocked(macRender);
 
+// Wrap a __NEXT_DATA__ JSON object in a minimal page, as the mac render backend
+// would return the rendered Walmart HTML.
 function pageWithNextData(obj: unknown): string {
 	return `<!doctype html><html><head></head><body><div id="app"></div><script id="__NEXT_DATA__" type="application/json">${JSON.stringify(obj)}</script></body></html>`;
 }

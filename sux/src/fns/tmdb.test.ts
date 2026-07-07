@@ -66,7 +66,7 @@ describe("tmdb", () => {
 			poster: "https://image.tmdb.org/t/p/w500/fc.jpg",
 			url: "https://www.themoviedb.org/movie/550",
 		});
-
+		// tv uses name/first_air_date; null poster → undefined.
 		expect(j.results[1]).toMatchObject({ type: "tv", title: "Breaking Bad", date: "2008-01-20", url: "https://www.themoviedb.org/tv/1396" });
 		expect(j.results[1].poster).toBeUndefined();
 		expect(calls.urls[0]).toContain("query=fight+club");

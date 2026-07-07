@@ -25,6 +25,7 @@ async function brave(env: any, q: string, limit: number, _route: Route): Promise
 	return (j?.web?.results ?? []).slice(0, limit).map((r: any) => ({ title: r.title, url: r.url, snippet: r.description }));
 }
 
+// Kagi (the flagship) — its hosted MCP returns markdown `### [title](url)` blocks.
 async function kagi(env: any, q: string, limit: number, route: Route): Promise<Hit[]> {
 	const r = await kagiTool(env, "kagi_search_fetch", { query: q, limit }, route);
 	const md = r?.content?.[0]?.text ?? "";
@@ -45,6 +46,7 @@ const ENGINES: Record<string, { envKey?: string; envName?: string; run: (env: an
 	brave: { envKey: "BRAVE_API_KEY", envName: "BRAVE_API_KEY", run: brave },
 };
 
+/** Engines usable right now: keyed ones only when their secret is set. */
 function available(env: any): string[] {
 	return Object.entries(ENGINES)
 		.filter(([, spec]) => !spec.envKey || (env as any)[spec.envKey])
@@ -59,6 +61,8 @@ const normUrl = (u: string): string =>
 		.replace(/^www\./, "")
 		.replace(/[/?#]+$/, "");
 
+/** Merge hits from several engines: dedupe by URL, rank by how many engines
+ * returned each (consensus) then earliest position. */
 function merge(lists: Hit[][], limit: number): Hit[] {
 	const seen = new Map<string, { hit: Hit; count: number; order: number }>();
 	let order = 0;
@@ -106,6 +110,7 @@ export const webSearch: Fn = {
 		const wantSummary = args?.summarize === true;
 		const route: Route = args?.proxy === true ? "proxy" : "auto";
 
+		// Resolve the engine list.
 		let engines: string[];
 		if (engine === "all") {
 			engines = available(env);
@@ -117,6 +122,7 @@ export const webSearch: Fn = {
 			engines = [engine];
 		}
 
+		// Run the selected engines in parallel; keep whatever succeeds.
 		const settled = await Promise.allSettled(engines.map((name) => ENGINES[name].run(env, q, limit, route)));
 		const lists = settled.map((s) => (s.status === "fulfilled" ? s.value : []));
 		const ranAll = engine === "all";

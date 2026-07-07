@@ -1,5 +1,8 @@
 import { type Fn, fail, ok } from "../registry";
 
+// Re-encode a JSON array of records into a header-plus-rows tabular form so the
+// keys aren't repeated on every object. Cuts token count for LLM consumption.
+
 type Row = Record<string, unknown>;
 
 function cellString(v: unknown): string {
@@ -22,6 +25,7 @@ function packCsv(headers: string[], rows: Row[]): string {
 	return lines.join("\n");
 }
 
+// kv: one "k=v" pair per field, records separated by a blank line. Skips empties.
 function packKv(headers: string[], rows: Row[]): string {
 	return rows
 		.map((r) => headers.filter((h) => cellString(r[h]) !== "").map((h) => `${h}=${cellString(r[h])}`).join("\n"))
@@ -61,6 +65,7 @@ export const pack: Fn = {
 
 		if (args?.note === false) return ok(packed);
 
+		// ~4 chars/token heuristic for the savings note.
 		const originalBytes = JSON.stringify(data).length;
 		const packedBytes = packed.length;
 		const saved = originalBytes - packedBytes;

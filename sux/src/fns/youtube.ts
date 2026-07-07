@@ -1,5 +1,9 @@
 import { type Fn, fail, ok } from "../registry";
 
+// YouTube Data API v3 (googleapis.com) — official, free-quota key rides the
+// query string. `search` returns matching videos; an optional `videos` call
+// enriches each with view/like counts and duration when possible.
+
 const SEARCH = "https://www.googleapis.com/youtube/v3/search";
 const VIDEOS = "https://www.googleapis.com/youtube/v3/videos";
 

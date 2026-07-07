@@ -1,6 +1,10 @@
 import { type Fn, fail, ok } from "../registry";
 import { toYaml } from "./_convert";
 
+// yaml(x): serialize a JSON document TO YAML. Inverse of json(); compose as
+// yaml(...) over json(...) to round-trip. Practical common subset (scalars,
+// nested maps, block sequences) — no anchors/aliases or multiline scalars.
+
 export const yaml: Fn = {
 	name: "yaml",
 	description: "Convert JSON to YAML (a practical common subset: scalars, nested maps, block sequences). Inverse of json(). No anchors/aliases or block scalars.",

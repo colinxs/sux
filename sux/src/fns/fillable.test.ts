@@ -6,6 +6,7 @@ vi.mock("../proxy", () => ({ smartFetch: vi.fn() }));
 import { fillable } from "./fillable";
 import { smartFetch } from "../proxy";
 
+// Build a blank one-page PDF and return it as base64.
 async function blankPdfB64(): Promise<string> {
 	const doc = await PDFDocument.create();
 	doc.addPage([600, 800]);

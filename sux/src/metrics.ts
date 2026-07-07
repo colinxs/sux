@@ -1,11 +1,22 @@
+// Lightweight usage metrics for the sux engine. Aggregated in a single KV key
+// (read-modify-write, best-effort via ctx.waitUntil) — good enough for a
+// dashboard at low/medium volume. NOT strongly consistent: concurrent writers
+// can lose an increment. If precise counts ever matter, move to a Durable Object.
+
 import { drainRouteTally } from "./proxy";
 import type { RtEnv } from "./registry";
 
+// Legacy single-key aggregate — still READ (and merged) for back-compat, but no
+// longer written. New writes fan out across SHARDS keys to cut the read-modify-
+// write contention that lost increments under concurrency (a single hot key had
+// every writer clobbering every other). Each writer touches one shard; readers
+// merge all shards (+ the legacy key). Contention drops ~SHARDS×; a shard is
+// still RMW, so this reduces — not eliminates — loss (a Durable Object would).
 const KEY = "sux:metrics";
 const SHARDS = 8;
 const shardKey = (i: number): string => `sux:metrics:${i}`;
 let writeSeq = 0;
-const TTL = 60 * 60 * 24 * 30;
+const TTL = 60 * 60 * 24 * 30; // 30 days
 
 export type ToolStat = { calls: number; errors: number; cache_hits: number; total_ms: number; last_error?: string };
 export type LogEntry = { at: number; tool: string; ms: number; cache: boolean; error: boolean; err?: string; routes?: Record<string, number> };
@@ -15,30 +26,33 @@ export type Metrics = {
 	cache_hits: number;
 	errors: number;
 	tools: Record<string, ToolStat>;
-
+	// Lifetime fetch-route tally (proxied / direct / proxy_fallback / binary_refetch)
+	// — answers "what fraction of fetches used the residential proxy".
 	routes: Record<string, number>;
-	recent: LogEntry[];
+	recent: LogEntry[]; // rolling log (newest first), capped
 };
 
 const RECENT_CAP = 500;
-const ERR_CAP = 200;
+const ERR_CAP = 200; // keep only the first ~200 chars of an error message
 
 export function emptyMetrics(now: number): Metrics {
 	return { since: now, total: 0, cache_hits: 0, errors: 0, tools: {}, routes: {}, recent: [] };
 }
 
+/** Parse one KV metrics value, tolerating older records; null on absent/corrupt. */
 function parseMetrics(raw: string | null): Metrics | null {
 	if (!raw) return null;
 	try {
 		const m = JSON.parse(raw) as Metrics;
-		if (!Array.isArray(m.recent)) m.recent = [];
-		if (!m.routes) m.routes = {};
+		if (!Array.isArray(m.recent)) m.recent = []; // migrate older records
+		if (!m.routes) m.routes = {}; // migrate pre-route records
 		return m;
 	} catch {
 		return null;
 	}
 }
 
+/** Merge shard/legacy Metrics into one aggregate. Pure — easy to unit-test. */
 export function mergeMetrics(parts: Metrics[]): Metrics {
 	const out = emptyMetrics(Math.min(...parts.map((p) => p.since || Date.now())));
 	for (const p of parts) {
@@ -56,7 +70,7 @@ export function mergeMetrics(parts: Metrics[]): Metrics {
 		for (const [r, n] of Object.entries(p.routes || {})) out.routes[r] = (out.routes[r] ?? 0) + n;
 		out.recent.push(...(p.recent || []));
 	}
-
+	// Rolling log is global-newest-first across shards, capped to the same size.
 	out.recent.sort((a, b) => b.at - a.at);
 	if (out.recent.length > RECENT_CAP) out.recent.length = RECENT_CAP;
 	return out;
@@ -70,11 +84,13 @@ export async function readMetrics(env: RtEnv): Promise<Metrics> {
 
 export type CallEvent = { tool: string; ms: number; cache?: boolean; error?: boolean; err?: string; at?: number; routes?: Record<string, number> };
 
+/** Truncate an error message to its first ~200 chars (undefined stays undefined/empty). */
 export function clipErr(err?: string): string | undefined {
 	if (!err) return undefined;
 	return err.length > ERR_CAP ? err.slice(0, ERR_CAP) : err;
 }
 
+/** Fold one tool call into the aggregate + rolling log. Pure — easy to unit-test. */
 export function applyEvent(m: Metrics, e: CallEvent): Metrics {
 	const t = (m.tools[e.tool] ??= { calls: 0, errors: 0, cache_hits: 0, total_ms: 0 });
 	m.total++;
@@ -92,7 +108,7 @@ export function applyEvent(m: Metrics, e: CallEvent): Metrics {
 	}
 	const routes = e.routes && Object.keys(e.routes).length ? e.routes : undefined;
 	if (routes) {
-		m.routes ??= {};
+		m.routes ??= {}; // pre-route records read straight from KV
 		for (const [r, n] of Object.entries(routes)) m.routes[r] = (m.routes[r] ?? 0) + n;
 	}
 	m.recent.unshift({ at: e.at ?? 0, tool: e.tool, ms: e.ms || 0, cache: Boolean(e.cache), error: Boolean(e.error), ...(err ? { err } : {}), ...(routes ? { routes } : {}) });
@@ -100,16 +116,25 @@ export function applyEvent(m: Metrics, e: CallEvent): Metrics {
 	return m;
 }
 
+/**
+ * Record a call: emits a structured log line (Workers Logs) AND folds it into the
+ * KV-backed metrics/rolling-log — all best-effort, off the response path.
+ */
 export function recordCall(env: RtEnv, ctx: { waitUntil(p: Promise<unknown>): void }, e: CallEvent): void {
 	const at = Date.now();
-
+	// Fetch-route tally accumulated by smartFetch since the last drain — attributes
+	// proxied/direct/fallback decisions to this call (best-effort under concurrency).
 	const routes = drainRouteTally();
 	const hasRoutes = Object.keys(routes).length > 0;
-
+	// The single structured log line (queryable in Workers Logs / wrangler tail).
 	console.log(
 		`sux ${JSON.stringify({ tool: e.tool, ms: e.ms, cache: Boolean(e.cache), error: Boolean(e.error), ...(e.err ? { err: clipErr(e.err) } : {}), ...(hasRoutes ? { routes } : {}), at })}`,
 	);
-
+	// Fan out across shards to spread contention: mix the wall-clock with a
+	// per-isolate sequence so concurrent writers (same or different isolates) land
+	// on different shards rather than all clobbering one key. Read-modify-write of
+	// the CHOSEN shard only — never the merged view (that would re-collapse every
+	// shard into one).
 	const key = shardKey((at + writeSeq++) % SHARDS);
 	ctx.waitUntil(
 		(async () => {
@@ -119,6 +144,7 @@ export function recordCall(env: RtEnv, ctx: { waitUntil(p: Promise<unknown>): vo
 	);
 }
 
+/** Nearest-rank percentile of a numeric list (0 for empty). */
 export function percentile(values: number[], p: number): number {
 	if (!values.length) return 0;
 	const sorted = [...values].sort((a, b) => a - b);
@@ -136,6 +162,11 @@ export type Slo = {
 	breaches: string[];
 };
 
+// Health/SLO view over the north-star budgets. Latency percentiles AND
+// success/cache rates come from the rolling `recent` window (last ≤500 calls) so
+// the report reflects current behavior, not lifetime history; lifetime totals
+// remain in the counters. Breaches are only flagged once there's a meaningful
+// sample (≥20) so we don't cry wolf at startup.
 export function sloReport(m: Metrics): Slo {
 	const lats = m.recent.map((e) => e.ms);
 	const p50 = percentile(lats, 50);
@@ -157,6 +188,7 @@ export function sloReport(m: Metrics): Slo {
 	return { window_calls: window, latency_ms: { p50, p95, avg }, success_rate: r4(success_rate), cache_hit_rate: r4(cache_hit_rate), error_rate: r4(error_rate), targets, breaches };
 }
 
+/** Prometheus text exposition (text/plain; version=0.0.4). */
 export function toPrometheus(m: Metrics): string {
 	const lines: string[] = [
 		"# HELP sux_calls_total Total tool calls.",
@@ -186,7 +218,7 @@ export function toPrometheus(m: Metrics): string {
 	for (const [name, t] of Object.entries(m.tools)) {
 		lines.push(`sux_tool_latency_ms_avg{tool="${name}"} ${t.calls ? Math.round(t.total_ms / t.calls) : 0}`);
 	}
-
+	// SLO view: recent-window latency quantiles + breach count.
 	const slo = sloReport(m);
 	lines.push(
 		"# HELP sux_latency_ms Recent-window request latency quantiles (ms).",

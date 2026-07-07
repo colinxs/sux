@@ -1,5 +1,10 @@
 import { type Fn, fail, ok } from "../registry";
 
+// OpenAlex (api.openalex.org) — keyless, free, open scholarly graph (250M+ works).
+// Single JSON endpoint: /works?search=<term>. No residential proxy: a public,
+// bot-wall-free API. A `mailto` politeness param is optional and lets OpenAlex
+// route us to their faster pool; harmless when absent.
+
 const API = "https://api.openalex.org/works";
 const MAILTO = "colinxsummers@gmail.com";
 

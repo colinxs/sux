@@ -1,6 +1,10 @@
 import { type Fn, fail, ok } from "../registry";
 import { detectFormat, type Format, parseSource } from "./_convert";
 
+// json(x): convert a source document TO JSON, dispatching on the source format
+// (auto-detected, or forced with `from`). The inverse converters are yaml()/csv()
+// /xml(); bidirectionality comes from composing them.
+
 const SUPPORTED: Format[] = ["json", "yaml", "csv", "xml"];
 
 export const json: Fn = {

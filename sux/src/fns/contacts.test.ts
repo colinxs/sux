@@ -67,7 +67,7 @@ describe("contacts", () => {
 			new Response(`<html><body>Blocked — contact abuse@cdn-provider.com</body></html>`, { status: 502 }),
 		);
 		const r = await contacts.run({} as any, { url: "https://example.com" });
-		expect(r.isError).toBe(true);
+		expect(r.isError).toBe(true); // errors never enter the KV cache
 		expect(r.content[0].text).toMatch(/HTTP 502/);
 	});
 });

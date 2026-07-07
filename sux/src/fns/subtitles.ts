@@ -7,10 +7,10 @@ function srtToVtt(srt: string): string {
 	const out: string[] = [];
 	for (const block of blocks) {
 		const lines = block.split("\n");
-
+		// Drop a leading numeric cue index.
 		if (lines[0] !== undefined && /^\d+$/.test(lines[0].trim())) lines.shift();
 		if (!lines.length) continue;
-
+		// Comma -> dot in the timing line.
 		lines[0] = lines[0].replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, "$1.$2");
 		out.push(lines.join("\n"));
 	}
@@ -25,9 +25,10 @@ function vttToSrt(vtt: string): string {
 	for (const block of blocks) {
 		const lines = block.split("\n").filter((l, i) => !(i === 0 && /^WEBVTT/.test(l)));
 		if (!lines.length) continue;
-
+		// Skip metadata blocks (NOTE / STYLE / REGION) and a stray WEBVTT header.
 		if (/^(NOTE|STYLE|REGION)\b/.test(lines[0]) || /^WEBVTT/.test(lines[0])) continue;
 
+		// A cue may carry an optional identifier line before its timing line.
 		let idx = 0;
 		if (!TIMING.test(lines[0]) && lines[1] !== undefined && TIMING.test(lines[1])) idx = 1;
 
@@ -35,6 +36,7 @@ function vttToSrt(vtt: string): string {
 		const m = timingLine?.match(TIMING);
 		if (!m) continue;
 
+		// Normalize to full HH:MM:SS,mmm and drop cue settings after the end timestamp.
 		const start = `${padTs(m[1])},${m[2]}`;
 		const end = `${padTs(m[3])},${m[4]}`;
 		const text = lines.slice(idx + 1).join("\n");
@@ -43,6 +45,7 @@ function vttToSrt(vtt: string): string {
 	return cues.join("\n\n") + (cues.length ? "\n" : "");
 }
 
+// Ensure a timestamp is HH:MM:SS (VTT allows the MM:SS short form).
 function padTs(ts: string): string {
 	return /^\d{2}:\d{2}$/.test(ts) ? `00:${ts}` : ts;
 }

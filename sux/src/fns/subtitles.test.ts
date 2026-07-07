@@ -10,7 +10,7 @@ describe("subtitles", () => {
 		expect(vtt).toContain("00:00:01.000 --> 00:00:04.000");
 		expect(vtt).toContain("00:00:05.500 --> 00:00:07.000");
 		expect(vtt).toContain("Hello world");
-		expect(vtt).not.toMatch(/,\d{3}/);
+		expect(vtt).not.toMatch(/,\d{3}/); // no comma timestamps left
 	});
 
 	it("converts VTT to SRT (strip header/NOTE/cue-settings, renumber, dot->comma)", async () => {
@@ -22,7 +22,7 @@ describe("subtitles", () => {
 		expect(srt).toContain("2\n00:00:05,000 --> 00:00:06,000\nBye");
 		expect(srt).not.toContain("WEBVTT");
 		expect(srt).not.toContain("NOTE");
-		expect(srt).not.toContain("align:start");
+		expect(srt).not.toContain("align:start"); // cue settings stripped
 	});
 
 	it("round-trips SRT -> VTT -> SRT", async () => {

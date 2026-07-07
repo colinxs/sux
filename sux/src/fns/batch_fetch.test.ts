@@ -10,6 +10,8 @@ vi.mock("../proxy", () => ({
 
 import { batch_fetch } from "./batch_fetch";
 
+// Minimal R2 + KV mocks (mirrors store.test.ts) so as:"url" can content-address
+// bytes into CAS and mint /s/<uuid> handles.
 function mockKV() {
 	const m = new Map<string, string>();
 	return { _m: m, get: async (k: string) => m.get(k) ?? null, put: async (k: string, v: string) => void m.set(k, v), delete: async (k: string) => void m.delete(k) };
@@ -54,7 +56,7 @@ describe("batch_fetch", () => {
 		const out = JSON.parse(r.content[0].text);
 		expect(out[0].error).toMatch(/not an absolute http/);
 		expect(out[1].error).toMatch(/network down/);
-		expect(out[2].status).toBe(200);
+		expect(out[2].status).toBe(200); // survivor
 	});
 
 	it("rejects an empty urls array", async () => {
@@ -75,13 +77,13 @@ describe("batch_fetch", () => {
 
 	it("marks the batch noCache when any URL errors or comes back 4xx (must not poison the cache)", async () => {
 		const bad = await batch_fetch.run({} as any, { urls: ["https://blocked.com", "https://ok.com"] });
-		expect(bad.isError).toBeFalsy();
+		expect(bad.isError).toBeFalsy(); // per-url results are still returned
 		expect(JSON.parse(bad.content[0].text)[0].status).toBe(429);
 		expect(bad.noCache).toBe(true);
-
+		// Per-url fetch exceptions must not be cached either.
 		const thrown = await batch_fetch.run({} as any, { urls: ["https://boom.com", "https://ok.com"] });
 		expect(thrown.noCache).toBe(true);
-
+		// An all-2xx batch stays cacheable.
 		const good = await batch_fetch.run({} as any, { urls: ["https://a.com", "https://b.com"] });
 		expect(good.noCache).toBeUndefined();
 	});
@@ -96,13 +98,13 @@ describe("batch_fetch", () => {
 			expect(item.status).toBe(200);
 			expect(item.ref).toMatch(UUID);
 			expect(item.text).toBeUndefined();
-
+			// bytes reported is the raw stored size.
 			expect(item.bytes).toBe(new TextEncoder().encode(`body of ${item.url}`).length);
 		}
-
+		// Two distinct bodies → two CAS blobs and two handles.
 		expect(env.R2._m.size).toBe(2);
 		expect(env.OAUTH_KV._m.size).toBe(2);
-
+		// The stored bytes are the actual response bodies (fetch through the mocked proxy).
 		const refUuid = out[0].ref.split("/s/")[1];
 		const kvRef = JSON.parse(env.OAUTH_KV._m.get(`store:${refUuid}`));
 		expect(new TextDecoder().decode(env.R2._m.get(kvRef.key).bytes)).toBe("body of https://a.com");
@@ -117,7 +119,7 @@ describe("batch_fetch", () => {
 		expect(out[2].status).toBe(200);
 		expect(out[2].ref).toMatch(UUID);
 		expect(out[2].text).toBeUndefined();
-
+		// Only the survivor was stored.
 		expect(env.R2._m.size).toBe(1);
 	});
 

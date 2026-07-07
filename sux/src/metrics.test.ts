@@ -20,10 +20,10 @@ describe("metrics", () => {
 		applyEvent(m, { tool: "dns", ms: 50, error: true, err: "upstream 500" });
 		expect(m.recent[0].err).toBe("upstream 500");
 		expect(m.tools.dns.last_error).toBe("upstream 500");
-
+		// success events don't carry err
 		applyEvent(m, { tool: "dns", ms: 10 });
 		expect(m.recent[0].err).toBeUndefined();
-		expect(m.tools.dns.last_error).toBe("upstream 500");
+		expect(m.tools.dns.last_error).toBe("upstream 500"); // sticky until next error
 	});
 
 	it("clips error messages to ~200 chars", () => {
@@ -41,14 +41,14 @@ describe("metrics", () => {
 		const m = emptyMetrics(0);
 		for (let i = 0; i < 510; i++) applyEvent(m, { tool: "t", ms: 1 });
 		expect(m.recent).toHaveLength(500);
-		expect(m.total).toBe(510);
+		expect(m.total).toBe(510); // lifetime counter unaffected by the cap
 	});
 
 	it("folds per-route fetch tallies into the aggregate and the log entry", () => {
 		const m = emptyMetrics(0);
 		applyEvent(m, { tool: "fetch", ms: 100, routes: { proxied: 2, direct: 1 } });
 		applyEvent(m, { tool: "fetch", ms: 50, routes: { proxied: 1, proxy_fallback: 1 } });
-		applyEvent(m, { tool: "calc", ms: 5 });
+		applyEvent(m, { tool: "calc", ms: 5 }); // no fetches → no routes
 		expect(m.routes).toEqual({ proxied: 3, direct: 1, proxy_fallback: 1 });
 		expect(m.recent[2].routes).toEqual({ proxied: 2, direct: 1 });
 		expect(m.recent[0].routes).toBeUndefined();
@@ -92,7 +92,7 @@ describe("metrics", () => {
 
 	it("flags breaches once there is enough sample", () => {
 		const m = emptyMetrics(0);
-
+		// 25 calls, 10 errors -> 60% success (< 98%), 0% cache (< 40%).
 		for (let i = 0; i < 25; i++) applyEvent(m, { tool: "t", ms: 5, error: i < 10 });
 		const slo = sloReport(m);
 		expect(slo.breaches.some((b) => b.includes("success_rate"))).toBe(true);
@@ -101,23 +101,24 @@ describe("metrics", () => {
 
 	it("computes SLO rates from the recent window, not lifetime totals", () => {
 		const m = emptyMetrics(0);
-
+		// Simulate a bad past that has scrolled out of the window: lifetime says
+		// 100 errors, but the window only holds the last 500 (all fresh successes).
 		m.total = 1000;
 		m.errors = 100;
 		m.cache_hits = 0;
 		for (let i = 0; i < 30; i++) applyEvent(m, { tool: "t", ms: 5, cache: true });
 		const slo = sloReport(m);
 		expect(slo.window_calls).toBe(30);
-		expect(slo.success_rate).toBe(1);
+		expect(slo.success_rate).toBe(1); // window-based, ignores the lifetime errors
 		expect(slo.cache_hit_rate).toBe(1);
 		expect(slo.error_rate).toBe(0);
 		expect(slo.breaches).toHaveLength(0);
-		expect(m.total).toBe(1030);
+		expect(m.total).toBe(1030); // lifetime counters keep counting
 	});
 
 	it("does not cry wolf below the sample threshold", () => {
 		const m = emptyMetrics(0);
-		applyEvent(m, { tool: "t", ms: 5, error: true });
+		applyEvent(m, { tool: "t", ms: 5, error: true }); // 1 call, 100% error but < 20 sample
 		expect(sloReport(m).breaches).toHaveLength(0);
 	});
 
@@ -136,8 +137,8 @@ describe("metrics", () => {
 		expect(m.tools.search).toMatchObject({ calls: 3, cache_hits: 1, total_ms: 310 });
 		expect(m.tools.dns).toMatchObject({ calls: 1, errors: 1, last_error: "boom" });
 		expect(m.routes).toEqual({ proxied: 1, direct: 2 });
-		expect(m.since).toBe(50);
-		expect(m.recent.map((r) => r.at)).toEqual([8, 7, 6, 5]);
+		expect(m.since).toBe(50); // earliest wins
+		expect(m.recent.map((r) => r.at)).toEqual([8, 7, 6, 5]); // global newest-first
 	});
 
 	it("readMetrics merges across shard keys AND the legacy key", async () => {
@@ -156,7 +157,7 @@ describe("metrics", () => {
 	it("recordCall fans writes across shards; readMetrics reads them all back without loss", async () => {
 		const store = new Map<string, string>();
 		const env = { OAUTH_KV: { get: async (k: string) => store.get(k) ?? null, put: async (k: string, v: string) => void store.set(k, v) } } as any;
-
+		// Serial: await each write before the next so the round-trip is deterministic.
 		for (let i = 0; i < 20; i++) {
 			const tasks: Promise<unknown>[] = [];
 			recordCall(env, { waitUntil: (p) => tasks.push(p) }, { tool: "t", ms: 1 });
@@ -164,7 +165,7 @@ describe("metrics", () => {
 		}
 		const m = await readMetrics(env);
 		expect(m.total).toBe(20);
-		expect([...store.keys()].filter((k) => k.startsWith("sux:metrics:")).length).toBeGreaterThan(1);
-		expect(store.has("sux:metrics")).toBe(false);
+		expect([...store.keys()].filter((k) => k.startsWith("sux:metrics:")).length).toBeGreaterThan(1); // used >1 shard
+		expect(store.has("sux:metrics")).toBe(false); // legacy key no longer written
 	});
 });

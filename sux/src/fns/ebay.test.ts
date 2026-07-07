@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ebay } from "./ebay";
 
+// Map-backed KV stub (env.OAUTH_KV) — mirrors the KVNamespace surface ebay uses.
 function kvStub() {
 	const map = new Map<string, string>();
 	return {
@@ -29,6 +30,7 @@ const RESULTS = {
 	],
 };
 
+/** Install a global.fetch mock that routes by URL and counts token mints. */
 function installFetch() {
 	const calls = { token: 0, urls: [] as string[] };
 	const f = vi.fn(async (input: any) => {
@@ -83,7 +85,7 @@ describe("ebay", () => {
 		await ebay.run(env, { action: "search", term: "ipad" });
 		expect(calls.token).toBe(1);
 		expect(env.OAUTH_KV.map.get("sux:ebay:token")).toBe("TOK");
-
+		// TTL applied = expires_in - 60.
 		expect(env.OAUTH_KV.put).toHaveBeenCalledWith("sux:ebay:token", "TOK", { expirationTtl: 7140 });
 	});
 

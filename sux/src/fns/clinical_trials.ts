@@ -1,5 +1,8 @@
 import { type Fn, fail, ok } from "../registry";
 
+// ClinicalTrials.gov API v2 (clinicaltrials.gov/api/v2) — keyless, free registry of
+// clinical studies. No residential proxy: a public government API with no bot wall.
+
 const API = "https://clinicaltrials.gov/api/v2/studies";
 
 function normStudy(s: any): Record<string, unknown> {

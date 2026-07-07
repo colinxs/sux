@@ -1,5 +1,9 @@
 import { type Fn, fail, ok } from "../registry";
 
+// Alpha Vantage (alphavantage.co) — official, free stock/market data over a plain
+// REST endpoint; one apiKey rides the query string. `quote` fetches a real-time
+// global quote for a symbol; `search` resolves a keyword to matching symbols.
+
 const API = "https://www.alphavantage.co/query";
 
 const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);
@@ -8,7 +12,8 @@ async function api(url: string): Promise<any> {
 	const resp = await fetch(url, { headers: { Accept: "application/json" } });
 	if (!resp.ok) throw new Error(`Alpha Vantage HTTP ${resp.status}: ${(await resp.text().catch(() => "")).slice(0, 300)}`);
 	const j = await resp.json();
-
+	// Alpha Vantage returns HTTP 200 with a Note/Information/Error Message body when
+	// rate-limited or misconfigured; surface it as an error rather than empty data.
 	const notice = (j as any)?.Note ?? (j as any)?.Information ?? (j as any)?.["Error Message"];
 	if (notice) throw new Error(String(notice).slice(0, 300));
 	return j;
@@ -69,6 +74,7 @@ export const alphavantage: Fn = {
 				return ok(JSON.stringify({ provider: "alphavantage", action, count: matches.length, matches }, null, 2));
 			}
 
+			// action === "quote"
 			const symbol = String(args?.symbol ?? "").trim();
 			if (!symbol) return fail("action=quote requires a `symbol`.");
 			const p = new URLSearchParams({ function: "GLOBAL_QUOTE", symbol, apikey: key });

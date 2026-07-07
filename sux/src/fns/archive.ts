@@ -2,11 +2,14 @@ import { type Fn, fail, ok } from "../registry";
 import { gunzipSync, gzipSync, strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import { deliverBytes, fromB64, putBlob, toB64 } from "./_util";
 
-const MAX_TEXT = 100_000;
+const MAX_TEXT = 100_000; // don't inline megabytes of decoded text per entry
 
+/** Heuristic: does this byte run decode cleanly as UTF-8 without binary control noise? */
 function looksUtf8(bytes: Uint8Array): boolean {
 	if (bytes.length === 0) return true;
-
+	// A non-fatal decode maps invalid UTF-8 sequences to U+FFFD; treat any such
+	// replacement char, NUL, or other C0 control byte (tab/newline/CR excepted)
+	// as a sign the payload is binary and should not be inlined as text.
 	const text = new TextDecoder().decode(bytes);
 	for (let i = 0; i < text.length; i++) {
 		const c = text.charCodeAt(i);
@@ -103,7 +106,8 @@ export const archive: Fn = {
 				const entries: Entry[] = [];
 				for (const { name, data } of raw) {
 					const e = decodeEntry(name, data);
-
+					// as:"url" → each entry (crucially, binary ones that get no inline
+					// text) becomes a consumable /s/<uuid> CAS ref.
 					if (args?.as === "url") {
 						const ref = await putBlob(env, data, "application/octet-stream");
 						e.url = ref.url;

@@ -63,7 +63,7 @@ describe("web_search", () => {
 	});
 
 	it("engine 'all' fans out over available engines and merges by consensus", async () => {
-
+		// kagi returns example.com/a + example.org/b; google (keyed) also returns example.com/a.
 		const fetchMock = vi.fn(async () => new Response(JSON.stringify({ organic_results: [{ title: "Kagi Result", link: "https://example.com/a", snippet: "google desc" }] }), { status: 200 }));
 		vi.stubGlobal("fetch", fetchMock);
 		const r = await webSearch.run({ KAGI_API_KEY: "k", SERPAPI_KEY: "k" } as any, { query: "hello", engine: "all" });
@@ -71,7 +71,7 @@ describe("web_search", () => {
 		expect(r.isError).toBeFalsy();
 		const text = r.content[0].text;
 		expect(text).toMatch(/Merged \d+ results from: kagi, google/);
-
+		// example.com/a appeared in both engines -> ranked first by consensus.
 		expect(text.indexOf("example.com/a")).toBeLessThan(text.indexOf("example.org/b"));
 	});
 

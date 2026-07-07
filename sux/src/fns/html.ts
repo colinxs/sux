@@ -1,6 +1,8 @@
 import { type Fn, fail, ok } from "../registry";
 import { mdToHtml } from "./_markup";
 
+// html(x): convert Markdown TO HTML. Inverse of markdown(). Same common subset.
+
 export const html: Fn = {
 	name: "html",
 	description: "Convert Markdown to HTML (common subset: headings, links, bold/em, lists, inline code, fenced code blocks, blockquotes, paragraphs). Inverse of markdown().",

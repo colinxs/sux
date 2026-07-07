@@ -30,7 +30,7 @@ describe("shop", () => {
 		expect(r.content[0].text).toContain("1. Widget — $9.99");
 		expect(r.content[0].text).toContain("4.5★ (12)");
 		expect(r.content[0].text).toContain("[Acme]");
-
+		// Correct engine + param name used.
 		expect((fetchMock.mock.calls[0] as any[])[0]).toContain("engine=google_shopping");
 		expect((fetchMock.mock.calls[0] as any[])[0]).toContain("q=widget");
 	});

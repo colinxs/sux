@@ -2,8 +2,19 @@ import { macRender } from "../mac-render";
 import { type Fn, fail, ok, type RtEnv } from "../registry";
 import { normalizeMoney, type RetailProduct } from "./_retail";
 
+// Walmart sits behind an ACTIVE PerimeterX JS challenge a plain fetch can't pass.
+// The mac render backend (a residential patched browser) does, so this fn renders
+// Walmart's own search/product pages and lifts products out of the __NEXT_DATA__
+// JSON blob Next.js embeds (props.pageProps.initialData…). No Orchestra GraphQL —
+// its persisted-query hashes rotate; __NEXT_DATA__ is stable.
+
 const BLOCKED_MSG = "walmart: blocked or no data — the mac render backend may be down or Walmart challenged the request.";
 
+/**
+ * Extract and parse the `<script id="__NEXT_DATA__" type="application/json">…
+ * </script>` JSON from rendered HTML. Returns undefined if absent/unparseable —
+ * every caller treats that as a challenge/layout-change failure rather than throwing.
+ */
 function extractNextData(html: string): any {
 	const m = html.match(/<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/i);
 	if (!m) return undefined;
@@ -14,6 +25,7 @@ function extractNextData(html: string): any {
 	}
 }
 
+/** Normalize one Walmart itemStacks item to the shared RetailProduct shape. */
 function normSearchItem(it: any): RetailProduct {
 	const id = String(it?.usItemId ?? it?.id ?? "");
 	return {
@@ -79,6 +91,7 @@ export const walmart: Fn = {
 			return ok(JSON.stringify({ retailer: "walmart", action, count: 1, products: [norm] }, null, 2));
 		}
 
+		// action === "search"
 		const term = String(args?.term ?? "").trim();
 		if (!term) return fail("action=search requires a `term`.");
 		const r = await macRender(env, {
@@ -93,7 +106,8 @@ export const walmart: Fn = {
 		if (!data) return fail(BLOCKED_MSG);
 		const items = data?.props?.pageProps?.initialData?.searchResult?.itemStacks?.[0]?.items;
 		if (!Array.isArray(items)) return fail(BLOCKED_MSG);
-
+		// itemStacks can carry non-product tiles (ads/placeholders) with no id — keep
+		// only real products, then cap to the requested limit.
 		const products = items
 			.filter((it: any) => it && (it.usItemId || it.id) && it.name)
 			.slice(0, limit)

@@ -1,5 +1,8 @@
 import { type Fn, fail, ok } from "../registry";
 
+// Tavily (api.tavily.com) — LLM-oriented search that returns a synthesized answer
+// alongside ranked results. The api_key rides the JSON body of a single POST.
+
 const API = "https://api.tavily.com/search";
 
 const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);

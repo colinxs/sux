@@ -1,5 +1,10 @@
 import { type Fn, fail, ok, type RtEnv } from "../registry";
 
+// Semantic Scholar Academic Graph (api.semanticscholar.org) — keyless paper search
+// across ~200M papers. No residential proxy: a public academic API with no bot
+// wall. An optional S2_API_KEY (x-api-key header) raises the rate limit but is not
+// required.
+
 const API = "https://api.semanticscholar.org/graph/v1/paper/search";
 const FIELDS = "title,abstract,year,authors,citationCount,url,externalIds,openAccessPdf";
 

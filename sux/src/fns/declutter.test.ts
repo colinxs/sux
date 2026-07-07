@@ -46,7 +46,7 @@ describe("declutter", () => {
 
 	it("fails on an upstream error page instead of cleaning it", async () => {
 		const r = await declutter.run({} as any, { url: "https://example.com" });
-		expect(r.isError).toBe(true);
+		expect(r.isError).toBe(true); // errors never enter the KV cache
 		expect(r.content[0].text).toMatch(/HTTP 429/);
 	});
 });

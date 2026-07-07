@@ -1,6 +1,9 @@
 import { type Fn, fail, ok } from "../registry";
 import { toXml } from "./_convert";
 
+// xml(x): serialize a JSON document TO XML. Inverse of json(from:'xml').
+// Attributes come from '@attr' keys, text from '#text'; arrays repeat the tag.
+
 export const xml: Fn = {
 	name: "xml",
 	description:

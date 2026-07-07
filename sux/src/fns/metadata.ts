@@ -32,7 +32,7 @@ export const metadata: Fn = {
 			const content = attrs.match(/content\s*=\s*["']([^"']*)["']/i)?.[1];
 			if (!key || content == null) continue;
 			const k = key.toLowerCase();
-
+			// Keep the metadata fields we care about, plus all og:/twitter: tags.
 			if (k === "description" || k === "keywords" || k === "author" || k.startsWith("og:") || k.startsWith("twitter:")) {
 				if (!(k in out)) out[k] = content;
 			}

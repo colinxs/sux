@@ -2,9 +2,11 @@ import { type Fn, fail, ok } from "../registry";
 import { fetchTextOk, stripHtml } from "./_util";
 
 const EMAIL = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi;
-
+// US-style (with optional country code) OR an E.164-ish international run.
 const PHONE = /(?:\+?\d{1,3}[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}\b|\+\d{7,15}\b/g;
 
+// Social profiles: each matches `domain/handle` (any scheme/subdomain around it),
+// with a set of reserved paths that are pages, not profiles.
 const SOCIAL: Record<string, { re: RegExp; skip: Set<string> }> = {
 	twitter: { re: /(?:twitter\.com|x\.com)\/([A-Za-z0-9_]{1,15})/gi, skip: new Set(["home", "search", "i", "intent", "share", "hashtag", "explore", "settings", "login"]) },
 	github: { re: /github\.com\/([A-Za-z0-9-]{1,39})/gi, skip: new Set(["features", "about", "pricing", "login", "join", "marketplace", "sponsors", "topics", "explore", "settings", "orgs", "apps", "contact", "search"]) },
@@ -18,6 +20,7 @@ const SOCIAL: Record<string, { re: RegExp; skip: Set<string> }> = {
 	bluesky: { re: /bsky\.app\/profile\/([A-Za-z0-9_.-]+)/gi, skip: new Set() },
 };
 
+/** Pull social-profile handles from a raw source (keeps hrefs — scan before stripping). */
 function extractSocials(source: string): Record<string, string[]> {
 	const out: Record<string, string[]> = {};
 	for (const [platform, { re, skip }] of Object.entries(SOCIAL)) {
@@ -59,7 +62,7 @@ export const contacts: Fn = {
 		} else {
 			return fail("Provide `url`, `html`, or `text`.");
 		}
-
+		// Emails/phones read cleanest from stripped text; socials from the raw source.
 		const text = stripHtml(raw);
 
 		const emails = new Set<string>();

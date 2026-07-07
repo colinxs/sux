@@ -1,5 +1,8 @@
 import { type Fn, fail, ok } from "../registry";
 
+// NYT Article Search API (api.nytimes.com) — official, free key rides the
+// query string. Full-text search across New York Times articles by `term`.
+
 const API = "https://api.nytimes.com/svc/search/v2/articlesearch.json";
 
 const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);

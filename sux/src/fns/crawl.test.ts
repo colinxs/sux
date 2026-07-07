@@ -70,7 +70,7 @@ describe("crawl", () => {
 		const out = JSON.parse(r.content[0].text);
 		expect(out.results.map((x: any) => x.url)).toEqual(["https://ex.com/", "https://ex.com/about"]);
 		expect(out.results.some((x: any) => x.title?.includes("404"))).toBe(false);
-
+		// links on the error page are not followed
 		expect(mockFetch).not.toHaveBeenCalledWith(expect.anything(), "https://ex.com/from-error", expect.anything());
 	});
 
@@ -83,7 +83,8 @@ describe("crawl", () => {
 			if (url === "https://ex.com/") return new Response(`<title>Home</title>${links}`, { status: 200 });
 			inFlight++;
 			maxInFlight = Math.max(maxInFlight, inFlight);
-
+			// Hold every child fetch open until all four have started, then release
+			// them in reverse order — order in `results` must still be p0..p3.
 			await new Promise<void>((resolve) => {
 				resolvers.push(resolve);
 				if (resolvers.length === 4) for (const r of resolvers.reverse()) r();
@@ -95,7 +96,7 @@ describe("crawl", () => {
 		const r = await crawl.run({} as any, { url: "https://ex.com/", depth: 1, max: 25 });
 		expect(r.isError).toBeFalsy();
 		const out = JSON.parse(r.content[0].text);
-		expect(maxInFlight).toBe(4);
+		expect(maxInFlight).toBe(4); // whole level was in flight at once
 		expect(out.results.map((x: any) => x.url)).toEqual([
 			"https://ex.com/",
 			"https://ex.com/p0",
@@ -114,7 +115,7 @@ describe("crawl", () => {
 		const r = await crawl.run({} as any, { url: "https://ex.com/", depth: 3, max: 5 });
 		const out = JSON.parse(r.content[0].text);
 		expect(out.pages).toBe(5);
-
+		// Budget bounds the *fetches* too, not just the indexed results.
 		expect(mockFetch.mock.calls.length).toBeLessThanOrEqual(5);
 	});
 

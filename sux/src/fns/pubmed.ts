@@ -1,5 +1,10 @@
 import { type Fn, fail, ok, type RtEnv } from "../registry";
 
+// NCBI E-utilities (eutils.ncbi.nlm.nih.gov) — keyless, free biomedical literature
+// search. Two hops: esearch (term → PMID list) then esummary (PMIDs → article
+// metadata), both JSON. No residential proxy: a public NIH endpoint with no bot
+// wall. An optional NCBI_API_KEY raises the rate limit but is not required.
+
 const EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils";
 
 function authParam(env: RtEnv): string {

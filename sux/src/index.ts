@@ -7,6 +7,8 @@ import { singleFlight } from "./single-flight";
 import { weightedRateLimit } from "./rate-limit";
 import { hasAI, llm } from "./ai";
 
+// Below this length a result isn't worth an AI round-trip to summarize (the call
+// would cost more than the tokens it saves, and may even grow the text).
 const SUMMARIZE_MIN_CHARS = 400;
 import { FUNCTIONS } from "./fns";
 import { recordCall } from "./metrics";
@@ -15,8 +17,14 @@ import { normalizeArgs, normalizeText } from "./normalize";
 
 type Props = { login: string; name: string; email: string; accessToken: string };
 
+// Per-isolate in-flight map for single-flight coalescing (see single-flight.ts).
+// Keyed by the content-addressed cache key; entries clear when a run settles.
 const inflight = new Map<string, Promise<ToolResult>>();
 
+// The real tools/call dispatch chain, split out from rtServer.fetch so it can be
+// exercised end-to-end in tests without constructing the module-scope
+// OAuthProvider or a full Request. rtServer.fetch calls this after the auth gate,
+// so the production path and tests run the exact same code.
 export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc | undefined): Promise<Response> {
 	const method = rpc?.method;
 	const id = rpc?.id ?? null;
@@ -42,6 +50,13 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 		const fn = findFn(FUNCTIONS, name);
 		if (!fn) return sseResponse({ jsonrpc: "2.0", id, error: { code: -32601, message: `unknown tool: ${name}` } });
 
+		// Universal cache-bypass: a truthy `fresh` in the arguments forces a cache
+		// miss (skip the READ so the fn runs on live data) while leaving the WRITE
+		// path untouched (the fresh result repopulates the same entry). Detect and
+		// strip it up front — before cacheKey/normalize/run — so the fn never sees
+		// `fresh` (schemas are additionalProperties:false) and the key is computed
+		// from the same args a normal call uses, so a fresh call overwrites rather
+		// than diverging. Harmless no-op for non-cacheable fns.
 		const rawArgs = rpc?.params?.arguments;
 		let fresh = false;
 		if (rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs) && (rawArgs as Record<string, unknown>).fresh) {
@@ -49,18 +64,27 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 			delete (rawArgs as Record<string, unknown>).fresh;
 		}
 
+		// Universal token-saver: a truthy `summarize` runs the fn's text output
+		// through Workers AI to compress it before returning (fewer tokens back to
+		// the agent). Detected+stripped up front like `fresh`, but it CHANGES the
+		// result, so it namespaces the cache key (summarized and raw cache apart).
 		let summarize = false;
 		if (rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs) && (rawArgs as Record<string, unknown>).summarize) {
 			summarize = true;
 			delete (rawArgs as Record<string, unknown>).summarize;
 		}
 
+		// Sane normalization on open: fold styled/fullwidth "font" unicode to ASCII
+		// and strip BOM/zero-width/control chars from string inputs. Byte-exact fns
+		// (hash/encode/compress/qr/kv/…) opt out via `raw` so their bytes are untouched.
 		const args = fn.raw ? rawArgs : normalizeArgs(rawArgs);
 
 		const started = Date.now();
 		const key = fn.cacheable ? await cacheKey(summarize ? `${name}::summarize` : name, args) : null;
 		if (key && !fresh) {
-
+			// Read as bytes so compressed frames (cache-codec) round-trip; unpack
+			// reverses packForCache (plain string, or zstd/brotli frame). Any unpack
+			// failure (corrupt/unknown codec) is treated as a miss and recomputed.
 			try {
 				const raw = await env.OAUTH_KV.get(key, "arrayBuffer");
 				if (raw) {
@@ -74,20 +98,25 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 		let result: ToolResult;
 		let err: string | undefined;
 		try {
-
+			// Coalesce concurrent same-key runs (cacheable fns only, keyed by the
+			// content-addressed cache key) so a burst of identical calls runs the
+			// expensive fn.run once; non-cacheable fns (no key) always run directly.
 			result = key ? await singleFlight(inflight, key, () => fn.run(env, args)) : await fn.run(env, args);
 		} catch (e) {
 			err = String((e as Error).message ?? e);
 			console.error(`sux tool '${name}' threw: ${(e as Error)?.stack ?? err}`);
 			result = { content: [{ type: "text" as const, text: `Tool '${name}' failed: ${err}` }], isError: true };
 		}
-
+		// Sane normalization on close: same folding/cleanup over text output.
 		if (!fn.raw && !result.isError && Array.isArray(result.content)) {
 			for (const part of result.content) {
 				if (part?.type === "text" && typeof part.text === "string") part.text = normalizeText(part.text);
 			}
 		}
-
+		// Summarize-before-return: compress the (normalized) text output with Workers
+		// AI when the caller asked and the result is worth it. Best-effort — on AI
+		// failure or when unavailable, the raw result is returned unchanged. The
+		// summarized result is what gets cached (under the ::summarize key namespace).
 		if (summarize && !fn.raw && !result.isError && Array.isArray(result.content) && hasAI(env)) {
 			const joined = result.content.filter((p) => p?.type === "text" && typeof p.text === "string").map((p) => p.text).join("\n");
 			if (joined.length >= SUMMARIZE_MIN_CHARS) {
@@ -99,13 +128,16 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 				}
 			}
 		}
-
+		// Record WHY a call failed: from the caught exception, or the isError
+		// result's first text part for fns that return failures without throwing.
 		if (!err && result.isError && Array.isArray(result.content)) {
 			const first = result.content.find((p: { type?: string; text?: unknown }) => p?.type === "text" && typeof p.text === "string");
 			if (first) err = (first as { text: string }).text;
 		}
 		recordCall(env, ctx, { tool: name, ms: Date.now() - started, error: Boolean(result.isError), err });
-
+		// noCache/isError results are returned but never cached; the noCache flag is
+		// stripped and the KV write happens off the response path via ctx.waitUntil.
+		// fn.ttl (when set) overrides the global cache lifetime for this fn.
 		deferCacheWrite(env.OAUTH_KV, ctx, key, result, fn.ttl);
 		return sseResponse({ jsonrpc: "2.0", id, result });
 	}
@@ -126,13 +158,19 @@ const rtServer = {
 
 		const isBodyless = request.method === "GET" || request.method === "HEAD";
 		const rpc = parseJsonRpc(isBodyless ? undefined : await request.text());
-
+		// Weighted rate limit: expensive tools (render/Kagi/SerpAPI/Workers AI)
+		// consume extra tokens beyond the base 1 charged above, so a burst of paid
+		// calls drains the budget faster than free deterministic fns (see Fn.cost).
 		const limited = await weightedRateLimit(env, login!, rpc);
 		if (limited) return limited;
 		return handleRpc(env, ctx, rpc);
 	},
 };
 
+// Built lazily on first request so that importing this module (e.g. from
+// index.test.ts to exercise handleRpc) does not eval @cloudflare/workers-oauth-
+// provider / github-handler, which pull in runtime-only `cloudflare:` modules.
+// Runtime behavior is unchanged: the provider is a per-isolate singleton.
 let oauthProvider: OAuthProvider | undefined;
 async function getOAuthProvider(): Promise<OAuthProvider> {
 	if (!oauthProvider) {
@@ -152,9 +190,13 @@ async function getOAuthProvider(): Promise<OAuthProvider> {
 	return oauthProvider;
 }
 
+// The OAuth library throws on malformed requests (e.g. an unregistered
+// redirect_uri), which Cloudflare surfaces as a raw 1101 error page. Wrap it so
+// those become clean JSON errors: 400 for client mistakes, 500 otherwise.
 export default {
 	async fetch(request: Request, env: RtEnv, ctx: ExecutionContext): Promise<Response> {
-
+		// Public, unauthenticated observability routes (health/metrics/dashboard)
+		// are served before the OAuth provider claims every path.
 		const obs = await handleObservability(new URL(request.url), request, env);
 		if (obs) return obs;
 		try {

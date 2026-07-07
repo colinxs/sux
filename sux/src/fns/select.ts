@@ -9,6 +9,7 @@ type Simple = {
 	attrVal: string | null;
 };
 
+/** Parse one compound selector like `a.btn#x[href="/y"]` (no combinators). */
 function parseSimple(sel: string): Simple | null {
 	const m = sel.match(/^([a-z0-9]+|\*)?((?:[.#][\w-]+)*)(?:\[([\w-]+)(?:=["']?([^"'\]]*)["']?)?\])?$/i);
 	if (!m) return null;
@@ -20,6 +21,7 @@ function parseSimple(sel: string): Simple | null {
 	return { tag, id, classes, attr: attr ?? null, attrVal: attrVal ?? null };
 }
 
+/** Does an element (its full outer HTML) satisfy a single simple selector? */
 function elementMatches(el: string, s: Simple): boolean {
 	const open = el.match(/^<[a-z0-9]+\b([^>]*)>/i);
 	if (!open) return false;
@@ -38,6 +40,7 @@ function elementMatches(el: string, s: Simple): boolean {
 	return true;
 }
 
+/** All top-level elements whose tag matches `tag` (or any tag), returning outer HTML. */
 function findByTag(html: string, tag: string | null): string[] {
 	const t = tag ?? "[a-z0-9]+";
 	const re = new RegExp(`<(${t})\\b([^>]*?)(\\/?)>`, "gi");
@@ -50,7 +53,7 @@ function findByTag(html: string, tag: string | null): string[] {
 			out.push(m[0]);
 			continue;
 		}
-
+		// Walk forward to the matching close tag, accounting for nesting of the same tag.
 		const openRe = new RegExp(`<${name}\\b[^>]*?(?<!/)>|<\\/${name}\\s*>`, "gi");
 		openRe.lastIndex = m.index;
 		let depth = 0;
@@ -72,6 +75,7 @@ function findByTag(html: string, tag: string | null): string[] {
 	return out;
 }
 
+/** Evaluate one comma-free selector (space-separated descendant steps). */
 function selectOne(html: string, selector: string): string[] {
 	const steps = selector.trim().split(/\s+/).map(parseSimple);
 	if (steps.some((s) => s === null)) return [];
@@ -85,7 +89,7 @@ function selectOne(html: string, selector: string): string[] {
 			}
 		}
 		results = next;
-		scopes = next;
+		scopes = next; // descend into matched elements for the next step
 	});
 	return results;
 }
@@ -118,6 +122,7 @@ export const select: Fn = {
 		const limit = Math.min(Number(args?.limit) || 50, 1000);
 		const attr = args?.attr != null ? String(args.attr) : null;
 
+		// Comma list = union of each group's matches, de-duplicated by outer HTML.
 		const groups = selector.split(",").map((g) => g.trim()).filter(Boolean);
 		const seen = new Set<string>();
 		const els: string[] = [];

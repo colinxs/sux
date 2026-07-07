@@ -42,10 +42,13 @@ export const GitHubHandler = {
 
 const html = (body: string, status = 200) => new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8" } });
 
+/** Race a promise against a timeout; resolve to `fallback` if it's too slow. */
 function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
 	return Promise.race([p, new Promise<T>((r) => setTimeout(() => r(fallback), ms))]);
 }
 
+/** IP + geo of whoever makes the request — residential (via proxy) vs datacenter (direct) egress.
+ * Uses Cloudflare's cdn-cgi/trace (reliable from Workers) for the IP, enriched best-effort with geo. */
 async function ipInfo(fetcher: (u: string) => Promise<Response>): Promise<Record<string, unknown> | null> {
 	let ip: string | undefined, country: string | undefined, colo: string | undefined;
 	try {
@@ -73,6 +76,7 @@ async function ipInfo(fetcher: (u: string) => Promise<Response>): Promise<Record
 	return { ip, city, region, country, colo, org };
 }
 
+/** Best-effort `tailscale status --json` from the node's /status endpoint (HMAC-signed, same secret as /fetch). */
 async function nodeStatus(env: HandlerEnv): Promise<Record<string, unknown>> {
 	if (!isTailscaleConfigured(env)) return { available: false, reason: "proxy not configured" };
 	try {
@@ -99,6 +103,11 @@ async function nodeStatus(env: HandlerEnv): Promise<Record<string, unknown>> {
 	}
 }
 
+/** Caching-proxy effectiveness derived from the KV-backed metrics (presentation only).
+ * Mirrors observability.ts: r4() 4-dp rounding, rate = hits/calls. Route counts are the
+ * lifetime tally {proxied, direct, proxy_fallback, binary_refetch}; residential_ratio is
+ * the fraction that actually egressed residentially. Rates are null when there's no sample
+ * (guarded 0-denominators) so the UI can render "—" instead of NaN. */
 export function deriveMetrics(m: Metrics): {
 	calls: number;
 	cache_hit_rate: number | null;
@@ -127,12 +136,14 @@ async function gatherHealth(env: HandlerEnv): Promise<Record<string, unknown>> {
 		githubClient: Boolean(env.GITHUB_CLIENT_ID),
 	};
 
+	// Residential (through the proxy) vs datacenter (direct) egress + tunnel latency.
 	const t0 = Date.now();
 	const [proxied, direct, status, rawMetrics] = await Promise.all([
 		withTimeout(ipInfo((u) => smartFetch(env, u, {})), 9000, null),
 		withTimeout(ipInfo((u) => fetch(u)), 9000, null),
 		withTimeout(nodeStatus(env), 9000, { available: false, reason: "timeout" } as Record<string, unknown>),
-
+		// Caching-proxy effectiveness (KV-backed). Degrade to null on a cold/failed
+		// isolate — this is presentation-only and must never fail the health page.
 		withTimeout(readMetrics(env as unknown as RtEnv).catch(() => null), 9000, null),
 	]);
 	const tunnelMs = Date.now() - t0;
@@ -157,6 +168,7 @@ async function gatherHealth(env: HandlerEnv): Promise<Record<string, unknown>> {
 		node: status,
 	};
 
+	// Kagi upstream reachability.
 	let upstream: Record<string, unknown>;
 	try {
 		const r = await withTimeout(
@@ -183,10 +195,10 @@ function renderHealthHtml(h: any): string {
 	const res = ts.residential;
 	const dc = ts.datacenter;
 	const node = ts.node ?? {};
-
+	// metrics null on a cold/failed KV read — render "—" and zeroes, never NaN.
 	const mx = h.metrics ?? { calls: 0, cache_hit_rate: null, residential_ratio: null, error_rate: null, proxied: 0, route_total: 0 };
 	const esc = (s: any) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-
+	// Rate (0..1) → readable %; null/undefined → em dash. Whole numbers drop the decimal (73%, not 73.0%).
 	const pct = (r: number | null | undefined) => (r == null ? "—" : `${Number.isInteger(r * 100) ? r * 100 : (r * 100).toFixed(1)}%`);
 	const check = (ok: boolean, label: string, reason?: string) =>
 		`<div class="chk"><span class="mark ${ok ? "ok" : "bad"}">${ok ? "✓" : "✗"}</span><div class="chk-body"><span class="chk-label">${label}</span>${!ok && reason ? `<span class="chk-why">${esc(reason)}</span>` : ""}</div></div>`;

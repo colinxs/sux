@@ -1,5 +1,11 @@
 import { type Fn, fail, ok } from "../registry";
 
+// arXiv API (export.arxiv.org) — keyless, free, returns Atom XML. No residential
+// proxy: this is a public academic endpoint with no bot wall, so a plain fetch is
+// correct and cheaper. Entries are parsed with a small regex reader (the same
+// shape feed.ts uses) rather than the full XML parser — arXiv's Atom is regular
+// and the fields we want are shallow.
+
 const API = "http://export.arxiv.org/api/query";
 
 function decodeEntities(s: string): string {
@@ -15,6 +21,7 @@ function decodeEntities(s: string): string {
 		.replace(/&amp;/gi, "&");
 }
 
+/** First inner text of <name>…</name> within `xml`, entity-decoded and collapsed. */
 function tag(xml: string, name: string): string | null {
 	const m = xml.match(new RegExp(`<${name}\\b[^>]*>([\\s\\S]*?)<\\/${name}>`, "i"));
 	return m ? decodeEntities(m[1]).replace(/\s+/g, " ").trim() : null;

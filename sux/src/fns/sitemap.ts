@@ -1,6 +1,7 @@
 import { type Fn, fail, ok } from "../registry";
 import { fetchText, isHttpUrl } from "./_util";
 
+/** Extract and decode every <loc>…</loc> URL from a sitemap document. */
 function extractLocs(xml: string): string[] {
 	return [...xml.matchAll(/<loc>\s*([\s\S]*?)\s*<\/loc>/gi)].map((m) =>
 		m[1]
@@ -29,6 +30,8 @@ export const sitemap: Fn = {
 		if (!isHttpUrl(url)) return fail("url must be an absolute http(s) URL.");
 		const limit = Math.min(Number(args?.limit) || 1000, 1000);
 
+		// Sitemaps run big (spec allows 50MB) — raise the byte cap well past the
+		// 2MB default so a full urlset isn't silently truncated mid-<loc>.
 		const xml = (await fetchText(env, url, { maxBytes: 10_000_000 })).text;
 		if (!xml.trim()) return fail(`Empty response from ${url}.`);
 

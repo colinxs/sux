@@ -5,7 +5,7 @@ import { deliverBytes, inlineB64, isHttpUrl, loadBytes } from "./_util";
 type FieldSpec = {
 	name: string;
 	type?: "text" | "checkbox";
-	page?: number;
+	page?: number; // 0-indexed
 	x: number;
 	y: number;
 	width?: number;
@@ -60,6 +60,8 @@ export const fillable: Fn = {
 		const fields = args?.fields as FieldSpec[] | undefined;
 		if (!Array.isArray(fields) || fields.length === 0) return fail("Provide a non-empty `fields` array.");
 
+		// Load the source bytes from base64 or a URL (shared _util.loadBytes:
+		// binary-safe proxy fetch, HTTP>=400 rejection, /s/<uuid> short-circuit).
 		if (!(typeof args?.pdf === "string" && args.pdf) && !isHttpUrl(args?.url)) return fail("Provide `pdf` (base64) or a fetchable `url`.");
 		let bytes: Uint8Array;
 		try {
@@ -84,7 +86,7 @@ export const fillable: Fn = {
 				const page = pages[pageIdx];
 				const width = f.width ?? 120;
 				const height = f.height ?? 16;
-
+				// Convert a top-origin y to PDF's bottom-left origin.
 				const y = fromTop ? page.getHeight() - f.y - height : f.y;
 				const rect = { x: f.x, y, width, height };
 
@@ -97,7 +99,8 @@ export const fillable: Fn = {
 					if (f.multiline) tf.enableMultiline();
 					if (typeof f.value === "string") tf.setText(f.value);
 					tf.addToPage(page, rect);
-
+					// After addToPage: pdf-lib only creates the field's /DA entry when the
+					// widget is added, and setFontSize throws without one.
 					if (f.fontSize) tf.setFontSize(f.fontSize);
 				}
 			}

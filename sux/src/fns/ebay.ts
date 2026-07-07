@@ -1,6 +1,11 @@
 import { type Fn, fail, ok, type RtEnv } from "../registry";
 import { normalizeMoney, type RetailProduct } from "./_retail";
 
+// eBay Browse API (api.ebay.com) — official, clean REST, no bot wall. Auth is
+// OAuth2 client-credentials (same shape as kroger): the app token is minted once
+// and cached in KV (env.OAUTH_KV) until just before it expires, so we never
+// re-mint per call.
+
 const API = "https://api.ebay.com/buy/browse/v1";
 const TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token";
 const TOKEN_KEY = "sux:ebay:token";
@@ -8,6 +13,7 @@ const SCOPE = "https://api.ebay.com/oauth/api_scope";
 
 const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);
 
+/** Get a valid app token — from KV if present, else mint one and cache it. */
 async function getToken(env: RtEnv): Promise<string> {
 	const cached = await env.OAUTH_KV.get(TOKEN_KEY);
 	if (cached) return cached;
@@ -72,6 +78,7 @@ export const ebay: Fn = {
 		try {
 			const token = await getToken(env);
 
+			// action === "search"
 			const term = String(args?.term ?? "").trim();
 			if (!term) return fail("action=search requires a `term`.");
 			const p = new URLSearchParams({ q: term, limit: String(limit) });

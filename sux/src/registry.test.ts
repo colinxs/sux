@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import { FUNCTIONS } from "./fns/index";
 import type { RtEnv, ToolResult } from "./registry";
 
+// Inert binding stubs: {} args should fail validation inside each fn before any
+// binding is touched, so these never need to do real work.
 const fakeEnv = {
 	OAUTH_KV: { get: async () => null, put: async () => undefined, delete: async () => undefined, list: async () => ({ keys: [] }) },
 	R2: { get: async () => null, put: async () => undefined, head: async () => null, delete: async () => undefined, list: async () => ({ objects: [] }) },

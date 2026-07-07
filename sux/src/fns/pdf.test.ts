@@ -15,10 +15,11 @@ async function blankPdf(pages = 1): Promise<string> {
 	return b64(await doc.save());
 }
 
+// 1x1 transparent PNG.
 const PNG_1x1 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
 const run = (args: any) => pdf.run({} as any, args);
-
+// Inline delivery is the standard { mime, size, base64 } envelope.
 const load = async (r: any) => PDFDocument.load(unb64(JSON.parse(r.content[0].text).base64));
 
 describe("pdf", () => {
@@ -55,7 +56,7 @@ describe("pdf", () => {
 		expect(r.isError).toBeFalsy();
 		const out = await load(r);
 		expect(out.getPageCount()).toBe(2);
-
+		// Pinned behavior: pages come back in original document order (1 then 3), not spec order (3 then 1).
 		expect(out.getPage(0).getWidth()).toBe(100);
 		expect(out.getPage(1).getWidth()).toBe(300);
 	});
@@ -95,7 +96,7 @@ describe("pdf", () => {
 
 	it("skips OCR gracefully when the AI binding is absent", async () => {
 		const r = await run({ sources: [{ data: PNG_1x1 }], ocr: true });
-		expect(r.isError).toBeFalsy();
+		expect(r.isError).toBeFalsy(); // ocr fn fails internally -> skipped, image page still produced
 		expect((await load(r)).getPageCount()).toBe(1);
 	});
 

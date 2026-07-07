@@ -2,13 +2,23 @@ import { type Fn, fail, ok, type RtEnv } from "../registry";
 import { smartFetch } from "../proxy";
 import { normalizeMoney, type RetailProduct, type RetailResult } from "./_retail";
 
+// Costco sits behind Akamai, but the wall here is JA3/fingerprint-centric rather
+// than IP-centric: the residential curl-impersonate path (smartFetch → proxy,
+// coherent Chrome TLS/HTTP2) reaches its search HTML where a datacenter fetch is
+// blocked. So we force the residential proxy, pull the CatalogSearch results
+// page, and extract products out of the HTML — embedded JSON first, product
+// tiles as the fallback. Best-effort throughout: parsing never throws, and a
+// zero-product result is disambiguated (Akamai block vs. layout change).
+
 const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);
 
+/** Absolute costco.com URL from a possibly-relative href. */
 function absUrl(href: string): string {
 	if (/^https?:\/\//i.test(href)) return href;
 	return `https://www.costco.com${href.startsWith("/") ? "" : "/"}${href}`;
 }
 
+/** Strip tags/entities to trimmed, whitespace-collapsed text. */
 function stripText(html: string): string {
 	return html
 		.replace(/<[^>]+>/g, " ")
@@ -22,16 +32,19 @@ function stripText(html: string): string {
 		.trim();
 }
 
+/** First <img src> inside a fragment, if any. */
 function firstImgSrc(html: string): string | undefined {
 	const m = /<img\b[^>]*\bsrc="([^"]+)"/i.exec(html);
 	return m ? m[1] : undefined;
 }
 
+/** First <img alt> inside a fragment, if any. */
 function firstImgAlt(html: string): string | undefined {
 	const m = /<img\b[^>]*\balt="([^"]+)"/i.exec(html);
 	return m ? stripText(m[1]) : undefined;
 }
 
+/** Pull a price out of a tile slice — prefer Costco's automation-id output. */
 function extractPrice(slice: string): number | undefined {
 	const m =
 		/automation-id="itemPriceOutput[^"]*"[^>]*>\s*\$?\s*([\d.,]+)/i.exec(slice) ??
@@ -40,6 +53,12 @@ function extractPrice(slice: string): number | undefined {
 	return m ? normalizeMoney(m[1]) : undefined;
 }
 
+/**
+ * Attempt 1: embedded product JSON. Costco seeds the results into a script
+ * (adobeProductList / dataLayer). Field names drift, so map defensively and only
+ * return when we got at least one titled product; otherwise the caller falls
+ * through to tile parsing.
+ */
 function fromEmbeddedJson(html: string): RetailProduct[] {
 	const m = /adobeProductList"?\s*[:=]\s*(\[[\s\S]*?\])\s*[,;<}]/i.exec(html);
 	if (!m) return [];
@@ -68,6 +87,13 @@ function fromEmbeddedJson(html: string): RetailProduct[] {
 	return products;
 }
 
+/**
+ * Attempt 2: parse product tiles. Costco tiles link out to
+ * `<slug>.product.<id>.html` — that anchor (image thumb and/or description link)
+ * is the reliable anchor. We collect one entry per product id (page order), then
+ * bound a window from each tile's first anchor to the next tile's to scavenge a
+ * price and image.
+ */
 function fromTiles(html: string): RetailProduct[] {
 	const anchorRe = /<a\b[^>]*href="([^"]*\.product\.(\d+)\.html[^"]*)"[^>]*>([\s\S]*?)<\/a>/gi;
 	type Entry = { url: string; start: number; title?: string; alt?: string; image?: string };
@@ -106,6 +132,7 @@ function fromTiles(html: string): RetailProduct[] {
 	return products;
 }
 
+/** Extract products from a Costco search page — never throws. */
 function extractProducts(html: string): RetailProduct[] {
 	try {
 		const json = fromEmbeddedJson(html);

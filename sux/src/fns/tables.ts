@@ -1,6 +1,7 @@
 import { type Fn, fail, ok } from "../registry";
 import { loadHtml, stripHtml } from "./_util";
 
+/** Split a <tr> fragment into cleaned cell strings. */
 function cells(rowHtml: string): string[] {
 	return [...rowHtml.matchAll(/<(?:td|th)[^>]*>([\s\S]*?)<\/(?:td|th)>/gi)].map((m) => stripHtml(m[1]));
 }

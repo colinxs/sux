@@ -70,7 +70,7 @@ describe("bestbuy", () => {
 			url: "https://www.bestbuy.com/site/6487433.p",
 			in_stock: true,
 		});
-
+		// No promo when salePrice == regularPrice.
 		expect(j.products[1].promo_price).toBeUndefined();
 		expect(j.products[1].in_stock).toBe(false);
 		const url = calls.urls[0];

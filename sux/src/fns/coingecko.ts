@@ -1,5 +1,10 @@
 import { type Fn, fail, ok } from "../registry";
 
+// CoinGecko (api.coingecko.com) — keyless free tier for crypto prices and coin
+// search. No residential proxy: a public market-data API with no bot wall. Two
+// actions: price (simple/price for given coin ids) and search (coins matching a
+// term). Prices are volatile, so a short cache ttl.
+
 const API = "https://api.coingecko.com/api/v3";
 
 async function getJson(url: string): Promise<{ ok: boolean; status: number; json: any }> {
@@ -47,6 +52,7 @@ export const coingecko: Fn = {
 			return ok(JSON.stringify({ action, currency, count: prices.length, prices }, null, 2));
 		}
 
+		// action === "search"
 		const term = String(args?.term ?? "").trim();
 		if (!term) return fail("action=search requires a `term`.");
 		let r: { ok: boolean; status: number; json: any };

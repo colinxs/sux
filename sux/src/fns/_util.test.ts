@@ -227,10 +227,10 @@ describe("fetchText streaming byte cap", () => {
 
 	it("does not split a multi-byte character at the cap boundary", async () => {
 		const { smartFetch } = await import("../proxy");
-
+		// "é" is 2 bytes in UTF-8; cap of 3 bytes lands mid-character.
 		vi.mocked(smartFetch as any).mockResolvedValueOnce(new Response("éé", { status: 200 }));
 		const r = await fetchText({} as any, "https://utf8.example", { maxBytes: 3 });
-		expect(r.text).toBe("é");
+		expect(r.text).toBe("é"); // partial trailing bytes are dropped, not U+FFFD'd
 	});
 });
 
@@ -270,10 +270,10 @@ describe("in-isolate fetch dedup cache", () => {
 		clearFetchCache();
 		const entry = { at: 1000, status: 200, text: "<p>x</p>", headers: { "content-type": "text/html" }, url: "https://a.com" };
 		fetchCacheSet("k", entry);
-		expect(fetchCacheGet("k", 1000)).toEqual(entry);
-		expect(fetchCacheGet("k", 1000 + FETCH_CACHE_TTL_MS)).toEqual(entry);
-		expect(fetchCacheGet("k", 1000 + FETCH_CACHE_TTL_MS + 1)).toBeNull();
-		expect(fetchCacheGet("k", 1000)).toBeNull();
+		expect(fetchCacheGet("k", 1000)).toEqual(entry); // same instant
+		expect(fetchCacheGet("k", 1000 + FETCH_CACHE_TTL_MS)).toEqual(entry); // exactly at TTL still fresh
+		expect(fetchCacheGet("k", 1000 + FETCH_CACHE_TTL_MS + 1)).toBeNull(); // expired → evicted
+		expect(fetchCacheGet("k", 1000)).toBeNull(); // and gone
 	});
 
 	it("evicts the oldest entry when the cap is exceeded", () => {
@@ -281,18 +281,18 @@ describe("in-isolate fetch dedup cache", () => {
 		for (let i = 0; i < FETCH_CACHE_MAX_ENTRIES; i++) {
 			fetchCacheSet(`k${i}`, { at: 0, status: 200, text: "x", headers: {}, url: `https://x/${i}` });
 		}
-		expect(fetchCacheGet("k0", 0)).not.toBeNull();
+		expect(fetchCacheGet("k0", 0)).not.toBeNull(); // oldest still present at cap
 		fetchCacheSet("overflow", { at: 0, status: 200, text: "x", headers: {}, url: "https://x/of" });
-		expect(fetchCacheGet("k0", 0)).toBeNull();
-		expect(fetchCacheGet("overflow", 0)).not.toBeNull();
+		expect(fetchCacheGet("k0", 0)).toBeNull(); // oldest evicted
+		expect(fetchCacheGet("overflow", 0)).not.toBeNull(); // newest kept
 	});
 
 	it("re-setting an existing key does not evict under the cap", () => {
 		clearFetchCache();
 		for (let i = 0; i < FETCH_CACHE_MAX_ENTRIES; i++) fetchCacheSet(`k${i}`, { at: 0, status: 200, text: "x", headers: {}, url: `u${i}` });
-		fetchCacheSet("k0", { at: 5, status: 200, text: "updated", headers: {}, url: "u0" });
+		fetchCacheSet("k0", { at: 5, status: 200, text: "updated", headers: {}, url: "u0" }); // update in place
 		expect(fetchCacheGet("k0", 5)?.text).toBe("updated");
-		expect(fetchCacheGet("k63", 0)).not.toBeNull();
+		expect(fetchCacheGet("k63", 0)).not.toBeNull(); // nothing evicted
 	});
 
 	it("clearFetchCache empties everything", () => {
@@ -303,14 +303,14 @@ describe("in-isolate fetch dedup cache", () => {
 
 	it("fetchText serves a repeated same-URL GET from the isolate cache (one proxy hit)", async () => {
 		clearFetchCache();
-		setFetchDedup(true);
+		setFetchDedup(true); // integration is gated off under vitest by default
 		try {
 			const { smartFetch } = await import("../proxy");
 			vi.mocked(smartFetch as any).mockClear();
 			const a = await fetchText({} as any, "https://dedupe-once.example/page");
 			const b = await fetchText({} as any, "https://dedupe-once.example/page");
 			expect(a.text).toBe(b.text);
-			expect(smartFetch).toHaveBeenCalledTimes(1);
+			expect(smartFetch).toHaveBeenCalledTimes(1); // second call skipped the round-trip
 		} finally {
 			setFetchDedup(null);
 			clearFetchCache();
@@ -325,7 +325,7 @@ describe("in-isolate fetch dedup cache", () => {
 			vi.mocked(smartFetch as any).mockClear();
 			await fetchText({} as any, "https://post-nocache.example", { method: "POST", body: "x" });
 			await fetchText({} as any, "https://post-nocache.example", { method: "POST", body: "x" });
-			expect(smartFetch).toHaveBeenCalledTimes(2);
+			expect(smartFetch).toHaveBeenCalledTimes(2); // never dedup non-GET
 		} finally {
 			setFetchDedup(null);
 			clearFetchCache();

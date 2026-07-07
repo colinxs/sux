@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 
+// `seen` must be hoisted so the vi.mock factory (also hoisted) can close over it.
 const seen = vi.hoisted(() => ({ args: [] as any[] }));
 
+// Stub FUNCTIONS with a few deterministic tools so we test pipe's plumbing,
+// not real fns. `echo` returns its `text`; `upper` uppercases {{prev}}; `jsonify`
+// emits JSON; `boom` errors; `throws` throws; `dump`/`rawdump` echo their args as
+// JSON (non-raw vs raw); `spy` records the args it received and emits text with
+// a zero-width space.
 vi.mock("./index", () => ({
 	FUNCTIONS: [
 		{ name: "echo", run: async (_e: any, a: any) => ({ content: [{ type: "text", text: String(a.text ?? "") }] }) },
@@ -116,8 +122,8 @@ describe("pipe", () => {
 	it("normalizes args and output for non-raw steps (boundary parity)", async () => {
 		seen.args.length = 0;
 		const r = await out([{ tool: "spy", args: { text: "a\u200Bb\uFEFFc" } }]);
-		expect(seen.args[0].text).toBe("abc");
-		expect(r.output).toBe("xy");
+		expect(seen.args[0].text).toBe("abc"); // ZWSP/BOM stripped before a non-raw fn sees them
+		expect(r.output).toBe("xy"); // spy emits "x\u200By"; close-side normalization strips it
 		expect(r.steps[0].text).toBe("xy");
 	});
 
@@ -131,11 +137,11 @@ describe("pipe", () => {
 	it("truncates intermediate step texts to a preview while output keeps the full final text", async () => {
 		const big = "z".repeat(2_000);
 		const r = await out([{ tool: "echo", args: { text: big } }, { tool: "upper", args: { text: "{{prev}}" } }]);
-
+		// steps[] carries previews only…
 		expect(r.steps[0].text.length).toBeLessThan(600);
 		expect(r.steps[0].text).toContain("truncated at 500 bytes");
 		expect(r.steps[0].text.startsWith("z".repeat(500))).toBe(true);
-
+		// …but the full text still threads through {{prev}} and lands in output.
 		expect(r.output).toBe("Z".repeat(2_000));
 	});
 
@@ -154,7 +160,7 @@ describe("pipe", () => {
 					{ tool: "dump", args: { a: "{{prev.title}}", b: "n={{prev.n}}", nested: { c: "{{prev.title}}/{{prev.n}}" } } },
 				],
 			});
-
+			// Only the {{prev.path}} substitution parses prev — once, shared step-wide.
 			const prevParses = parse.mock.calls.filter(([s]) => s === '{"title":"Doc","n":2}');
 			expect(prevParses).toHaveLength(1);
 			const r = JSON.parse(raw.content[0].text);

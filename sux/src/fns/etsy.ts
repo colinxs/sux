@@ -1,6 +1,10 @@
 import { type Fn, fail, ok } from "../registry";
 import { normalizeMoney, type RetailProduct } from "./_retail";
 
+// Etsy Open API v3 (openapi.etsy.com) — active-listing search across Etsy's
+// handmade/vintage marketplace. The keystring rides the `x-api-key` header.
+// Prices arrive as {amount, divisor, currency_code}; divide to a real number.
+
 const API = "https://openapi.etsy.com/v3/application/listings/active";
 
 const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);

@@ -23,7 +23,8 @@ export async function llm(env: AiEnv, system: string, user: string, maxTokens = 
 		],
 		max_tokens: maxTokens,
 	});
-
+	// Some Workers-AI models return `response` as an already-parsed object; String()
+	// would yield "[object Object]", so JSON-encode non-strings.
 	const resp = r?.response;
 	if (resp == null) return "";
 	return (typeof resp === "string" ? resp : JSON.stringify(resp)).trim();
@@ -33,7 +34,8 @@ export async function textFromUrlOr(env: TailscaleEnv, text: string, url?: strin
 	if (text) return text;
 	if (url && /^https?:\/\//i.test(url)) {
 		const resp = await smartFetch(env, url, {});
-
+		// Surface upstream 4xx/5xx instead of returning the error page's markup —
+		// otherwise callers confidently summarize (and cache) a 403/404/consent wall.
 		if (resp.status >= 400) throw new Error(`Upstream fetch failed: HTTP ${resp.status} — ${url}`);
 		const html = await resp.text();
 		return html

@@ -18,7 +18,8 @@ export const redirects: Fn = {
 		for (let i = 0; i < 20; i++) {
 			let resp: Response;
 			try {
-
+				// redirect:"manual" so each hop is observed, not followed; smartFetch
+				// bounds every attempt (30s) and falls back to direct if the node is down.
 				resp = await smartFetch(env, url, { method: "GET", redirect: "manual" });
 			} catch (e) {
 				return fail(`Fetch failed at ${url}: ${String((e as Error).message ?? e)}`);

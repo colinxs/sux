@@ -27,7 +27,7 @@ describe("feed", () => {
 		expect(out.count).toBe(2);
 		expect(out.items[0].title).toBe("First & Foremost");
 		expect(out.items[0].link).toBe("https://ex.com/1");
-		expect(out.items[0].summary).toBe("Hello world");
+		expect(out.items[0].summary).toBe("Hello world"); // tags stripped
 	});
 
 	it("detects Atom and reads link href", async () => {
@@ -51,7 +51,7 @@ describe("feed", () => {
 	it("fails on an upstream error page instead of parsing an empty feed", async () => {
 		vi.mocked(smartFetch).mockResolvedValueOnce(new Response("<html>Too Many Requests</html>", { status: 429 }));
 		const r = await feed.run({} as any, { url: "https://ex.com/feed.xml" });
-		expect(r.isError).toBe(true);
+		expect(r.isError).toBe(true); // errors never enter the KV cache
 		expect(r.content[0].text).toMatch(/HTTP 429/);
 	});
 });

@@ -1,5 +1,10 @@
 import { type Fn, fail, ok, type RtEnv } from "../registry";
 
+// Stack Exchange search (api.stackexchange.com) — keyless advanced search over any
+// site in the network (Stack Overflow, Super User, Server Fault, …). No residential
+// proxy: a public API with no bot wall. The API gzips responses; a direct fetch
+// auto-decompresses. An optional STACKEXCHANGE_KEY (&key=) raises the daily quota.
+
 const API = "https://api.stackexchange.com/2.3/search/advanced";
 
 function decodeEntities(s: string): string {

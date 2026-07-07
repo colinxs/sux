@@ -1,8 +1,12 @@
 import { type Fn, fail, ok } from "../registry";
 
+// User-facing KV keys live under a fixed "kv:" namespace so tool deletes can never
+// touch internal cache:/sux:/oauth keys. A key is rejected if, after trimming, it
+// is empty or resolves into one of those reserved spaces.
 const NS = "kv:";
 const RESERVED = ["cache:", "sux:", "oauth"];
 
+/** Validate a user-supplied key and return its namespaced form, or an error string. */
 function resolveKey(raw: unknown): { key: string } | { error: string } {
 	if (typeof raw !== "string") return { error: "key is required (string)." };
 	const key = raw.trim();

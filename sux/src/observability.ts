@@ -1,3 +1,12 @@
+// Public, unauthenticated observability endpoints for the sux engine:
+//   GET /metrics  — usage metrics as JSON (?format=prometheus for scraping)
+//   GET /logs     — rolling call log with metric fields (JSON; ?tool= / ?limit= )
+//   GET /feedback — server-side issue/suggest backlog (JSON; ?type= / ?tool= / ?limit= )
+// No dashboard UI by design — logging + metrics only. `/health` is intentionally
+// NOT handled here: it falls through to the richer browsable page in
+// github-handler.ts (residential-egress stats). Returns null when the path isn't
+// ours so index.ts can fall through to OAuth.
+
 import { type FeedbackKind, readFeedback } from "./fns/_feedback";
 import { readMetrics, sloReport, toPrometheus } from "./metrics";
 import type { RtEnv } from "./registry";
@@ -8,6 +17,8 @@ const json = (obj: unknown, status = 200): Response =>
 export async function handleObservability(url: URL, request: Request, env: RtEnv): Promise<Response | null> {
 	if (request.method !== "GET") return null;
 
+	// Public content handle: GET /s/<uuid> resolves the KV mapping to its R2
+	// object and streams it back (the URL `store` returns on put).
 	if (url.pathname.startsWith("/s/")) {
 		const uuid = url.pathname.slice(3).split("/")[0];
 		if (!uuid) return new Response("not found", { status: 404 });
@@ -27,7 +38,7 @@ export async function handleObservability(url: URL, request: Request, env: RtEnv
 			headers: {
 				"content-type": ref.content_type ?? obj.httpMetadata?.contentType ?? "application/octet-stream",
 				"cache-control": "public, max-age=31536000, immutable",
-
+				// Untrusted stored bytes: no MIME sniffing, and sandbox anything renderable.
 				"x-content-type-options": "nosniff",
 				"content-security-policy": "sandbox",
 			},
@@ -39,7 +50,9 @@ export async function handleObservability(url: URL, request: Request, env: RtEnv
 		if (url.searchParams.get("format") === "prometheus") {
 			return new Response(toPrometheus(m), { status: 200, headers: { "content-type": "text/plain; version=0.0.4", "cache-control": "no-store" } });
 		}
-
+		// Metrics view excludes the rolling log (see /logs) to stay compact, and
+		// adds the SLO/health view (latency percentiles + breaches vs targets)
+		// plus derived per-tool rates so hot spots are readable at a glance.
 		const { recent, ...summary } = m;
 		const r4 = (n: number) => Math.round(n * 10000) / 10000;
 		const tools = Object.fromEntries(

@@ -1,6 +1,7 @@
 import { extractRpcFromText } from "../mcp-util";
 import { smartFetch, type TailscaleEnv } from "../proxy";
 
+// Env needed to call Kagi (key) and route via the residential proxy.
 type ShopEnv = { KAGI_API_KEY: string } & TailscaleEnv;
 const KAGI_MCP_URL = "https://mcp.kagi.com/mcp";
 
@@ -24,11 +25,18 @@ type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: bo
 const toolText = (text: string): ToolResult => ({ content: [{ type: "text", text }] });
 const toolError = (text: string): ToolResult => ({ content: [{ type: "text", text }], isError: true });
 
+// Hosts that are almost never a store checkout page — skip so we spend our N
+// page-extracts on actual retailers.
 const NON_STORE_HOSTS = /(^|\.)(wikipedia\.org|reddit\.com|youtube\.com|quora\.com|pinterest\.com|facebook\.com|x\.com|twitter\.com|instagram\.com)$/i;
 
+/**
+ * Pull the numbered `### [title](url)` entries — with their snippet text — out of
+ * a Kagi search result. Kagi's snippets often carry the price and local store
+ * info, so we parse those directly rather than fetching each page.
+ */
 export function parseSearchResults(md: string): Array<{ title: string; url: string; host: string; snippet: string }> {
 	const out: Array<{ title: string; url: string; host: string; snippet: string }> = [];
-
+	// Each result starts at a `### [` heading; split into per-result blocks.
 	for (const block of md.split(/\n(?=###\s*\[)/)) {
 		const m = block.match(/###\s*\[([^\]]+)\]\((https?:\/\/[^)]+)\)/);
 		if (!m) continue;
@@ -42,7 +50,7 @@ export function parseSearchResults(md: string): Array<{ title: string; url: stri
 			continue;
 		}
 		if (NON_STORE_HOSTS.test(host)) continue;
-
+		// Drop image/asset/CDN results — not shoppable store pages.
 		if (/\.(webp|jpe?g|png|gif|svg|bmp)$/i.test(path)) continue;
 		if (/(^|\.)(cdn|fdn|img|imgs|images|media|static|assets)\./i.test(host)) continue;
 		if (/cloudfront|-cdn|cdn-|thumbor|vox-cdn/i.test(host)) continue;
@@ -51,7 +59,7 @@ export function parseSearchResults(md: string): Array<{ title: string; url: stri
 			.replace(/###\s*\[[^\]]+\]\([^)]+\)/, "")
 			.replace(/\*\*URL:\*\*[^\n]*/g, "")
 			.replace(/\*\*Published:\*\*[^\n]*/g, "")
-			.replace(/<[^>]+>/g, " ")
+			.replace(/<[^>]+>/g, " ") // strip inline HTML like <strong>
 			.replace(/\s+/g, " ")
 			.trim();
 		out.push({ title: m[1].trim(), url: m[2], host, snippet });
@@ -59,6 +67,11 @@ export function parseSearchResults(md: string): Array<{ title: string; url: stri
 	return out;
 }
 
+/**
+ * Best-effort price: scan all currency amounts, drop implausibly small ones
+ * (e.g. "$1 off" noise), and return the lowest real price — usually the sale
+ * price on a "list $X / our $Y" listing.
+ */
 export function parsePrice(text: string): { raw: string; value: number } | null {
 	const re = /(?:USD\s*)?\$\s?(\d{1,3}(?:,\d{3})+(?:\.\d{2})?|\d+(?:\.\d{2})?)(?!\d)/g;
 	let best: { raw: string; value: number } | null = null;
@@ -66,16 +79,17 @@ export function parsePrice(text: string): { raw: string; value: number } | null 
 	while ((m = re.exec(text)) !== null) {
 		const before = text.slice(Math.max(0, m.index - 9), m.index).toLowerCase();
 		const after = text.slice(m.index + m[0].length, m.index + m[0].length + 10).toLowerCase();
-		if (/^\s*\/?\s*(mo\b|month)/.test(after)) continue;
-		if (/^\s*off\b/.test(after)) continue;
-		if (/(save|up to)\s*$/.test(before)) continue;
+		if (/^\s*\/?\s*(mo\b|month)/.test(after)) continue; // financing "$24/mo"
+		if (/^\s*off\b/.test(after)) continue; // "$50 off"
+		if (/(save|up to)\s*$/.test(before)) continue; // "save $50" / "up to $50"
 		const value = Number(m[1].replace(/,/g, ""));
-		if (!Number.isFinite(value) || value < 5) continue;
+		if (!Number.isFinite(value) || value < 5) continue; // "$1 off"-style noise
 		if (best === null || value < best.value) best = { raw: `$${m[1]}`, value };
 	}
 	return best;
 }
 
+/** Best-effort stock signal from page text. */
 export function parseAvailability(md: string): string | null {
 	if (/\bout of stock\b|\bsold out\b|\bunavailable\b/i.test(md)) return "out of stock";
 	if (/\bin stock\b|\bavailable\b/i.test(md)) return "in stock";
@@ -83,6 +97,7 @@ export function parseAvailability(md: string): string | null {
 	return null;
 }
 
+/** Call a real Kagi tool server-side (via the residential proxy when enabled). */
 async function kagiToolCall(env: ShopEnv, name: string, args: unknown): Promise<ToolResult | null> {
 	const resp = await smartFetch(env, KAGI_MCP_URL, {
 		method: "POST",
@@ -97,6 +112,12 @@ async function kagiToolCall(env: ShopEnv, name: string, args: unknown): Promise<
 	return (obj?.result as ToolResult) ?? null;
 }
 
+/**
+ * Orchestrate a local-shopping query: one retail search → parse price/stock from
+ * each result's snippet → render a price-ranked markdown table. Kagi's snippets
+ * carry prices for most retail results, so no per-page fetch is needed (which
+ * also dodges JS-rendered / anti-bot store pages that return no content).
+ */
 export async function runLocalShop(env: ShopEnv, args: any): Promise<ToolResult> {
 	const product = String(args?.product ?? "").trim();
 	const location = String(args?.location ?? "").trim();
@@ -114,6 +135,9 @@ export async function runLocalShop(env: ShopEnv, args: any): Promise<ToolResult>
 
 	const parsed = results.map((r) => ({ ...r, price: parsePrice(r.snippet), stock: parseAvailability(r.snippet) }));
 
+	// One row per store — keep the priced (cheapest) listing for each host, so a
+	// retailer that appears several times (e.g. Amazon search pages) collapses to
+	// its best entry.
 	const byHost = new Map<string, (typeof parsed)[number]>();
 	for (const r of parsed) {
 		const cur = byHost.get(r.host);
@@ -122,6 +146,7 @@ export async function runLocalShop(env: ShopEnv, args: any): Promise<ToolResult>
 		}
 	}
 
+	// Price-ranked: rows with a parsed price first (cheapest → priciest), rest after.
 	const rows = [...byHost.values()]
 		.sort((a, b) => (a.price?.value ?? Infinity) - (b.price?.value ?? Infinity))
 		.slice(0, stores);

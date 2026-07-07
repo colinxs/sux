@@ -34,7 +34,7 @@ describe("pack", () => {
 		expect(head).toBe("a,b");
 		expect(csv.content[0].text).toContain('"has,comma"');
 		const kv = await run({ data: [{ a: 1, b: "" }], format: "kv" });
-
+		// Empty fields are dropped in kv form.
 		expect(kv.content[0].text.startsWith("a=1")).toBe(true);
 		expect(kv.content[0].text).not.toMatch(/^b=/m);
 	});

@@ -2,6 +2,7 @@ import { type Fn, fail, ok } from "../registry";
 
 type ShopHit = { title: string; price?: string; source?: string; url?: string; rating?: string };
 
+// SerpAPI-backed stores: engine + the query-parameter name + how to read results.
 const SERP: Record<string, { engine: string; param: string; pick: (j: any) => ShopHit[] }> = {
 	gshop: {
 		engine: "google_shopping",
@@ -25,6 +26,8 @@ const SERP: Record<string, { engine: string; param: string; pick: (j: any) => Sh
 	},
 };
 
+// Stores with no wired provider yet (SerpAPI doesn't cover them / no public API).
+// Kept in the enum so the signature is stable; they report how to enable.
 const UNWIRED: Record<string, string> = {
 	costco: "Costco has no public product API and isn't on SerpAPI. Provide a scraper key or a third-party catalog API to enable.",
 	kroger: "Kroger has an official Products API (needs OAuth client credentials). Wire KROGER_* secrets to enable.",

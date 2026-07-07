@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { batch } from "./batch";
 
+// batch dynamically imports ./index (the full registry). We drive it with
+// `hash` — a pure, network-free tool — so the test stays hermetic.
+
 describe("batch", () => {
 	it("rejects an unknown tool", async () => {
 		const r = await batch.run({} as any, { tool: "does_not_exist", calls: [{}] });
@@ -18,7 +21,7 @@ describe("batch", () => {
 		expect(out.tool).toBe("hash");
 		expect(out.results).toHaveLength(2);
 		expect(out.results[0].ok).toBe(true);
-		expect(out.results[0].text).toMatch(/^[0-9a-f]{64}$/);
+		expect(out.results[0].text).toMatch(/^[0-9a-f]{64}$/); // sha256 hex
 		expect(out.results[1].ok).toBe(true);
 		expect(out.results[0].text).not.toBe(out.results[1].text);
 	});
@@ -55,12 +58,13 @@ describe("batch", () => {
 	});
 
 	it("bounds the fan-out product when mapping a nested fan-out tool (pipe)", async () => {
-
+		// batch{tool:'pipe'} would let 100 calls × 25 pipe steps = 2500 tool runs;
+		// the nested cap holds it to 25 pipe calls (25 × 25 = 625 max).
 		const calls = Array.from({ length: 26 }, () => ({ steps: [{ tool: "hash", args: { text: "x" } }] }));
 		const over = await batch.run({} as any, { tool: "pipe", calls });
 		expect(over.isError).toBe(true);
 		expect(over.content[0].text).toMatch(/Too many calls for nested fan-out tool 'pipe': 26 \(max 25/);
-
+		// Exactly 25 nested pipe calls is allowed (each pipe runs one hash step).
 		const ok25 = await batch.run({} as any, { tool: "pipe", calls: calls.slice(0, 25) });
 		expect(ok25.isError).toBeFalsy();
 		const out = JSON.parse(ok25.content[0].text);
@@ -104,7 +108,7 @@ describe("batch", () => {
 		const out = JSON.parse(r.content[0].text);
 		expect(out.results).toHaveLength(2);
 		expect(out.results[1].ok).toBe(false);
-
+		// Only the one ok result is in the reduction (no separator, no failed text).
 		expect(out.reduced).toBe(out.results[0].text);
 	});
 
@@ -139,7 +143,7 @@ describe("batch", () => {
 		const out = JSON.parse(r.content[0].text);
 		expect(out.reduced).toBe("SYNTHESIZED");
 		expect(out.results).toHaveLength(2);
-
+		// The joined ok text was handed to the model.
 		expect(seen[0]).toContain(out.results[0].text);
 		expect(seen[0]).toContain(out.results[1].text);
 	});
@@ -162,15 +166,15 @@ import { fillItemsTokens, fillToken, pluckItems } from "./batch";
 describe("batch map/reduce templating", () => {
 	it("fillToken injects {{item}} whole (keeps type) and {{item.path}} inline", () => {
 		expect(fillToken({ url: "{{item}}" }, "item", "https://x")).toEqual({ url: "https://x" });
-		expect(fillToken({ v: "{{item}}" }, "item", { a: 1 })).toEqual({ v: { a: 1 } });
+		expect(fillToken({ v: "{{item}}" }, "item", { a: 1 })).toEqual({ v: { a: 1 } }); // whole-value keeps object
 		expect(fillToken({ s: "id-{{item.id}}" }, "item", { id: 7 })).toEqual({ s: "id-7" });
 		expect(fillToken({ nested: [{ u: "{{item}}" }] }, "item", "z")).toEqual({ nested: [{ u: "z" }] });
 	});
 
 	it("pluckItems collects a field across JSON outputs, or the whole array", () => {
 		const items = ['{"url":"/s/a","n":1}', '{"url":"/s/b","n":2}', "not-json"];
-		expect(pluckItems(items, "url")).toEqual(["/s/a", "/s/b"]);
-		expect(pluckItems(items)).toBe(items);
+		expect(pluckItems(items, "url")).toEqual(["/s/a", "/s/b"]); // non-JSON dropped
+		expect(pluckItems(items)).toBe(items); // no path → whole array
 	});
 
 	it("fillItemsTokens replaces {{items.path}} with the plucked array (whole-value)", () => {
@@ -194,7 +198,7 @@ describe("batch over + reduce_with (map-reduce composition)", () => {
 	});
 
 	it("reduce_with runs a reducer once over the mapped outputs", async () => {
-
+		// Map hash over two items, then hash the joined array of results → one hash.
 		const r = await batch.run({} as any, {
 			tool: "hash",
 			over: ["a", "b"],
@@ -204,7 +208,7 @@ describe("batch over + reduce_with (map-reduce composition)", () => {
 		const out = JSON.parse(r.content[0].text);
 		expect(out.reduced_with).toBe("hash");
 		expect(out.reduced).toMatch(/^[0-9a-f]{64}$/);
-
+		// The reduce hashed the array of the two item hashes → differs from either.
 		expect(out.reduced).not.toBe(out.results[0].text);
 		expect(out.results).toHaveLength(2);
 	});

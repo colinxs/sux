@@ -1,5 +1,9 @@
 import { type Fn, fail, ok } from "../registry";
 
+// Google Places API (places.googleapis.com) — local business / point-of-interest
+// text search. The key rides the `X-Goog-Api-Key` header; a field mask names the
+// exact fields to return. One POST resolves a free-text query to nearby places.
+
 const API = "https://places.googleapis.com/v1/places:searchText";
 const FIELD_MASK = "places.displayName,places.formattedAddress,places.rating,places.priceLevel,places.location,places.websiteUri,places.nationalPhoneNumber";
 

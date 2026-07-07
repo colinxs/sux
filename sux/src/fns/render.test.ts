@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// A shared, resettable set of stubs the mocked puppeteer.launch() yields, so
+// each test can assert what goto received and that close() ran. Declared via
+// vi.hoisted so they exist when the (hoisted) vi.mock factory runs.
 const stubs = vi.hoisted(() => ({
 	goto: vi.fn(async (_url: string, _opts: any) => {}),
 	content: vi.fn(async () => "<html>rendered</html>"),
@@ -38,24 +41,34 @@ vi.mock("@cloudflare/puppeteer", () => {
 	return { default: { launch: stubs.launch.mockResolvedValue(browser as any) } };
 });
 
+// smartFetch is the residential path render now routes intercepted requests
+// through. Mock it so tests can assert the handler calls it and forwards its
+// status/body to request.respond, and can simulate a throw for graceful fallback.
 const smartFetchMock = vi.hoisted(() => vi.fn());
-
+// hmacHex is used by the mac backend to sign the render request. Stub it to a
+// deterministic 64-hex-char digest so the signed-endpoint assertion is stable.
 const hmacHexMock = vi.hoisted(() => vi.fn(async (_secret: string, _msg: string) => "a".repeat(64)));
 vi.mock("../proxy", () => ({ smartFetch: smartFetchMock, hmacHex: hmacHexMock }));
 
 import { render } from "./render";
 
+// Grab the request-interception handler render registered via page.on("request").
+// The registered handler is fire-and-forget (`void handleRequest(...)`), so tests
+// invoke it via `drive` which also flushes the pending microtask chain (smartFetch
+// → arrayBuffer → respond) before assertions run.
 function capturedRequestHandler(): (req: any) => Promise<void> {
 	const call = stubs.on.mock.calls.find((c) => c[0] === "request");
 	if (!call) throw new Error("no request handler was registered");
 	const raw = call[1] as (req: any) => void;
 	return async (req: any) => {
 		raw(req);
-
+		// A handful of macrotask turns drains the async handler's await points
+		// (mocked smartFetch resolve, arrayBuffer, respond/continue) deterministically.
 		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
 	};
 }
 
+// A fake intercepted request whose spies (respond/continue/abort) tests inspect.
 function fakeReq(over: Partial<Record<string, any>> = {}) {
 	return {
 		resourceType: () => over.resourceType ?? "document",
@@ -70,7 +83,8 @@ function fakeReq(over: Partial<Record<string, any>> = {}) {
 }
 
 const BROWSER_ENV = { BROWSER: { fetch: async () => new Response() } } as any;
-
+// Screenshot as:"url" delivery goes through deliverBytes → putBlob, which needs
+// the R2 + KV bindings; the stubs just have to accept the writes.
 const CAS_ENV = { ...BROWSER_ENV, R2: { put: async () => {} }, OAUTH_KV: { put: async () => {} } } as any;
 
 describe("render", () => {
@@ -87,7 +101,8 @@ describe("render", () => {
 		stubs.setExtraHTTPHeaders.mockClear().mockResolvedValue(undefined as any);
 		stubs.evaluateOnNewDocument.mockClear().mockResolvedValue(undefined as any);
 		stubs.close.mockClear().mockResolvedValue(undefined as any);
-
+		// Return a FRESH Response per call — a Response body can only be read once,
+		// so a shared instance would throw on the second intercepted request.
 		smartFetchMock.mockClear().mockImplementation(async () => new Response("<html>from-proxy</html>", { status: 200, headers: { "content-type": "text/html" } }));
 	});
 
@@ -138,7 +153,7 @@ describe("render", () => {
 		stubs.content.mockResolvedValueOnce(huge);
 		const r = await render.run(BROWSER_ENV, { url: "https://example.com" });
 		expect(r.isError).toBeFalsy();
-
+		// Clamped to the 2MB output cap (+ a short truncation marker), not 3MB.
 		expect(r.content[0].text.length).toBeLessThan(2_000_100);
 		expect(r.content[0].text).toContain("truncated at 2000000 bytes");
 	});
@@ -159,7 +174,7 @@ describe("render", () => {
 		const ref = JSON.parse(r.content[0].text);
 		expect(ref.url).toMatch(/\/s\/[0-9a-f-]{36}$/);
 		expect(ref.content_type).toBe("image/png");
-		expect(ref.size).toBe(4);
+		expect(ref.size).toBe(4); // the mocked PNG-magic bytes
 		expect(stubs.close).toHaveBeenCalled();
 	});
 
@@ -180,12 +195,12 @@ describe("render", () => {
 	it("pdf mode delivers a /s/<uuid> CAS ref by default", async () => {
 		const r = await render.run(CAS_ENV, { url: "https://example.com", as: "pdf" });
 		expect(r.isError).toBeFalsy();
-
+		// Defaults: A4, portrait, backgrounds on.
 		expect(stubs.pdf).toHaveBeenCalledWith({ format: "A4", landscape: false, printBackground: true });
 		const ref = JSON.parse(r.content[0].text);
 		expect(ref.url).toMatch(/\/s\/[0-9a-f-]{36}$/);
 		expect(ref.content_type).toBe("application/pdf");
-		expect(ref.size).toBe(5);
+		expect(ref.size).toBe(5); // the mocked %PDF- header bytes
 		expect(stubs.close).toHaveBeenCalled();
 	});
 
@@ -207,7 +222,7 @@ describe("render", () => {
 		await render.run(BROWSER_ENV, { url: "https://example.com", as: "text", block_resources: true, residential: false });
 		expect(stubs.setRequestInterception).toHaveBeenCalledWith(true);
 		expect(stubs.on).toHaveBeenCalledWith("request", expect.any(Function));
-
+		// Drive the registered handler: an image request aborts, a document continues.
 		const handler = capturedRequestHandler();
 		const imgReq = fakeReq({ resourceType: "image" });
 		await handler(imgReq);
@@ -215,7 +230,7 @@ describe("render", () => {
 		expect(imgReq.continue).not.toHaveBeenCalled();
 		const docReq = fakeReq({ resourceType: "document" });
 		await handler(docReq);
-
+		// residential off → the browser fetches the document directly (continue), not smartFetch.
 		expect(docReq.continue).toHaveBeenCalled();
 		expect(docReq.abort).not.toHaveBeenCalled();
 		expect(smartFetchMock).not.toHaveBeenCalled();
@@ -232,6 +247,8 @@ describe("render", () => {
 		expect(stubs.setRequestInterception).not.toHaveBeenCalled();
 	});
 
+	// --- residential routing (default true) ---
+
 	it("residential:true routes a document request through smartFetch and responds with its bytes", async () => {
 		smartFetchMock.mockResolvedValueOnce(
 			new Response("<html>proxied-doc</html>", { status: 201, headers: { "content-type": "text/html; charset=utf-8", "content-encoding": "gzip" } }),
@@ -241,19 +258,19 @@ describe("render", () => {
 		const handler = capturedRequestHandler();
 		const docReq = fakeReq({ resourceType: "document", url: "https://akamai-protected.example", method: "GET", headers: { accept: "text/html" } });
 		await handler(docReq);
-
+		// Fetched residentially with the intercepted request's method/headers/url.
 		expect(smartFetchMock).toHaveBeenCalledWith(BROWSER_ENV, "https://akamai-protected.example", {
 			method: "GET",
 			headers: { accept: "text/html" },
 			body: undefined,
 		});
-
+		// Fulfilled the browser request with the residential status + bytes.
 		expect(docReq.respond).toHaveBeenCalledTimes(1);
 		const respondArg = docReq.respond.mock.calls[0][0];
 		expect(respondArg.status).toBe(201);
 		expect(respondArg.contentType).toBe("text/html; charset=utf-8");
 		expect(new TextDecoder().decode(respondArg.body)).toBe("<html>proxied-doc</html>");
-
+		// Framing headers dropped (smartFetch already decoded the body).
 		expect(Object.keys(respondArg.headers).map((k) => k.toLowerCase())).not.toContain("content-encoding");
 		expect(docReq.continue).not.toHaveBeenCalled();
 		expect(docReq.abort).not.toHaveBeenCalled();
@@ -274,12 +291,12 @@ describe("render", () => {
 	it("residential on + block_resources on: heavy assets still abort, the rest route residentially", async () => {
 		await render.run(BROWSER_ENV, { url: "https://example.com", as: "text", block_resources: true });
 		const handler = capturedRequestHandler();
-
+		// An image is a heavy asset → aborted, never proxied.
 		const imgReq = fakeReq({ resourceType: "image" });
 		await handler(imgReq);
 		expect(imgReq.abort).toHaveBeenCalled();
 		expect(smartFetchMock).not.toHaveBeenCalledWith(expect.anything(), "https://example.com/asset", expect.anything());
-
+		// A document is not heavy → residential-routed.
 		const docReq = fakeReq({ resourceType: "document", url: "https://example.com/page" });
 		await handler(docReq);
 		expect(smartFetchMock).toHaveBeenCalledWith(BROWSER_ENV, "https://example.com/page", expect.anything());
@@ -288,23 +305,25 @@ describe("render", () => {
 
 	it("residential:false does NOT route through smartFetch (browser fetches directly)", async () => {
 		await render.run(BROWSER_ENV, { url: "https://example.com", residential: false });
-
+		// No interception installed at all when neither residential nor block_resources is on.
 		expect(stubs.setRequestInterception).not.toHaveBeenCalled();
 		expect(smartFetchMock).not.toHaveBeenCalled();
 	});
 
+	// --- stealth (default true) ---
+
 	it("stealth (default) sets a realistic UA (no Headless), a desktop viewport, accept-language, and the webdriver mask", async () => {
 		await render.run(BROWSER_ENV, { url: "https://example.com" });
-
+		// Realistic desktop Chrome UA — crucially without the "HeadlessChrome" tell.
 		expect(stubs.setUserAgent).toHaveBeenCalledTimes(1);
 		const ua = stubs.setUserAgent.mock.calls[0][0];
 		expect(ua).not.toMatch(/Headless/i);
 		expect(ua).toMatch(/Chrome\//);
-
+		// Real desktop viewport, not the headless default.
 		expect(stubs.setViewport).toHaveBeenCalledWith({ width: 1280, height: 800, deviceScaleFactor: 1 });
-
+		// Plausible accept-language.
 		expect(stubs.setExtraHTTPHeaders).toHaveBeenCalledWith({ "accept-language": "en-US,en;q=0.9" });
-
+		// navigator.webdriver mask installed before page scripts run.
 		expect(stubs.evaluateOnNewDocument).toHaveBeenCalledTimes(1);
 		expect(typeof stubs.evaluateOnNewDocument.mock.calls[0][0]).toBe("function");
 	});
@@ -319,19 +338,22 @@ describe("render", () => {
 	});
 
 	it("an unsupported/throwing stealth API degrades gracefully — the render still returns content", async () => {
-
+		// Simulate a CF Browser Rendering build where setUserAgent isn't supported.
 		stubs.setUserAgent.mockRejectedValueOnce(new Error("setUserAgent unsupported"));
 		const r = await render.run(BROWSER_ENV, { url: "https://example.com" });
 		expect(r.isError).toBeFalsy();
 		expect(r.content[0].text).toBe("<html>rendered</html>");
-
+		// The remaining stealth steps still ran despite the earlier throw.
 		expect(stubs.setViewport).toHaveBeenCalled();
 		expect(stubs.setExtraHTTPHeaders).toHaveBeenCalled();
 		expect(stubs.evaluateOnNewDocument).toHaveBeenCalled();
 	});
 
-	describe("backend:mac", () => {
+	// --- backend:"mac" (residential patchright service) ---
 
+	describe("backend:mac", () => {
+		// The Mac service is reached via global fetch (not puppeteer/smartFetch), so
+		// stub global fetch per test to a fake JSON envelope and inspect the request.
 		const MAC_ENV = { ...CAS_ENV, MAC_RENDER_URL: "https://mac.example.ts.net", MAC_RENDER_SECRET: "s3cr3t" } as any;
 		const b64 = (bytes: number[]) => btoa(String.fromCharCode(...bytes));
 		let fetchSpy: ReturnType<typeof vi.spyOn>;
@@ -350,14 +372,14 @@ describe("render", () => {
 			const r = await render.run(MAC_ENV, { url: "https://homedepot.com/p/123", backend: "mac", as: "html", wait_ms: 500 });
 			expect(r.isError).toBeFalsy();
 			expect(r.content[0].text).toBe("<html>from-mac</html>");
-
+			// The puppeteer path was never touched — no navigation happened for this render.
 			expect(stubs.goto).not.toHaveBeenCalled();
-
+			// POSTed to the signed endpoint.
 			expect(fetchSpy).toHaveBeenCalledTimes(1);
 			const [endpoint, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
 			expect(endpoint).toMatch(/^https:\/\/mac\.example\.ts\.net\/render\?ts=\d+&sig=[0-9a-f]{64}$/);
 			expect(init.method).toBe("POST");
-
+			// The payload is well-shaped pass-through of the render args.
 			const payload = JSON.parse(init.body as string);
 			expect(payload).toMatchObject({
 				url: "https://homedepot.com/p/123",

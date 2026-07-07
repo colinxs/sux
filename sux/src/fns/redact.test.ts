@@ -5,7 +5,7 @@ const run = async (args: any) => JSON.parse((await redact.run({} as any, args)).
 
 describe("redact", () => {
 	it("redacts email, phone, ssn, valid credit card and ip", async () => {
-
+		// 4111111111111111 is a valid Luhn test card.
 		const out = await run({
 			text: "Email a@b.com, call 415-555-0198, SSN 123-45-6789, card 4111 1111 1111 1111, ip 10.0.0.1",
 		});
@@ -20,8 +20,8 @@ describe("redact", () => {
 
 	it("leaves Luhn-invalid card-length digit runs and out-of-range IPs alone", async () => {
 		const out = await run({ text: "order 1234567890123456 from 999.1.1.1", types: ["credit_card", "ip"] });
-		expect(out.redacted).toContain("1234567890123456");
-		expect(out.redacted).toContain("999.1.1.1");
+		expect(out.redacted).toContain("1234567890123456"); // fails Luhn
+		expect(out.redacted).toContain("999.1.1.1"); // octet > 255
 		expect(out.counts.credit_card).toBeUndefined();
 	});
 

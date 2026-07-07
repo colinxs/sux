@@ -1,6 +1,10 @@
 import { type Fn, fail, ok } from "../registry";
 import { normalizeMoney, type RetailProduct } from "./_retail";
 
+// Best Buy Products API (api.bestbuy.com) — official, free, clean REST, no bot
+// wall. A single apiKey rides the query string; no OAuth handshake. `search`
+// hits the open-ended query endpoint; `product` fetches one SKU directly.
+
 const API = "https://api.bestbuy.com/v1";
 const SHOW = "sku,name,salePrice,regularPrice,onlineAvailability,image,url,manufacturer";
 
@@ -65,6 +69,7 @@ export const bestbuy: Fn = {
 				return ok(JSON.stringify({ retailer: "bestbuy", action, count: 1, products: [normProduct(d)] }, null, 2));
 			}
 
+			// action === "search"
 			const term = String(args?.term ?? "").trim();
 			if (!term) return fail("action=search requires a `term`.");
 			const p = new URLSearchParams({ apiKey: key, format: "json", show: SHOW, pageSize: String(limit) });

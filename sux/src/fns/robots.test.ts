@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 const ROBOTS = ["User-agent: *", "Disallow: /admin", "Allow: /admin/public", "Crawl-delay: 5", "", "Sitemap: https://x.com/sitemap.xml"].join("\n");
 
+// Mock the residential proxy so the test is offline & deterministic.
 vi.mock("../proxy", () => ({
 	smartFetch: vi.fn(async () => new Response(ROBOTS, { status: 200, statusText: "OK", headers: { "content-type": "text/plain" } })),
 }));

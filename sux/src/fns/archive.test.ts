@@ -3,7 +3,7 @@ import { archive } from "./archive";
 
 describe("archive", () => {
 	it("round-trips a zip with text and binary entries", async () => {
-		const bin = btoa("\x00\x01\x02binary\xff");
+		const bin = btoa("\x00\x01\x02binary\xff"); // has NUL/high byte -> not utf-8
 		const packed = await archive.run({} as any, {
 			op: "pack",
 			format: "zip",
@@ -23,7 +23,7 @@ describe("archive", () => {
 		const txt = out.entries.find((e: any) => e.name === "hello.txt");
 		expect(txt.text).toBe("hello world");
 		const raw = out.entries.find((e: any) => e.name === "raw.bin");
-		expect(raw.text).toBeUndefined();
+		expect(raw.text).toBeUndefined(); // binary not decoded to text
 	});
 
 	it("gzips and gunzips a single file", async () => {
@@ -70,7 +70,7 @@ describe("archive", () => {
 			expect(e.sha256).toMatch(/^[0-9a-f]{64}$/);
 		}
 		const raw = out.entries.find((e: any) => e.name === "b.bin");
-		expect(raw.text).toBeUndefined();
+		expect(raw.text).toBeUndefined(); // binary still not inlined as text
 		expect(raw.bytes).toBeGreaterThan(0);
 	});
 });

@@ -1,5 +1,9 @@
 import { type Fn, fail, ok } from "../registry";
 
+// Wolfram Alpha (api.wolframalpha.com) — computational knowledge answers. Both
+// endpoints return text/plain, not JSON: `short` hits the one-line result API;
+// `full` hits the richer LLM API. The appid rides the query string.
+
 const SHORT_URL = "https://api.wolframalpha.com/v1/result";
 const LLM_URL = "https://www.wolframalpha.com/api/v1/llm-api";
 

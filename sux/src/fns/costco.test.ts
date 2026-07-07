@@ -7,6 +7,9 @@ vi.mock("../proxy", () => ({
 import { smartFetch } from "../proxy";
 import { costco } from "./costco";
 
+// A couple of realistic Costco search-result product tiles: an image thumbnail
+// anchor and a description anchor both pointing at `<slug>.product.<id>.html`,
+// plus a price element with Costco's automation-id.
 const SEARCH_HTML = `<!doctype html><html><body>
 <div class="product-list">
 	<div class="product-tile-set">

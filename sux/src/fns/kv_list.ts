@@ -1,5 +1,8 @@
 import { type Fn, ok } from "../registry";
 
+// User-facing KV keys live under a fixed "kv:" namespace. Listing scopes to that
+// namespace and strips the prefix from the returned names so callers only ever
+// see their own keyspace, never internal cache:/sux:/oauth keys.
 const NS = "kv:";
 
 export const kv_list: Fn = {

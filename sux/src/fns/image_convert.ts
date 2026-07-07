@@ -3,10 +3,11 @@ import { deliverBytes, inlineB64, isHttpUrl, loadBytes } from "./_util";
 
 const MIME: Record<string, string> = { png: "image/png", jpeg: "image/jpeg", webp: "image/webp", avif: "image/avif" };
 
+/** Best-effort detection of a video container, so we can fail it clearly. */
 function looksLikeVideo(b: Uint8Array): boolean {
-	if (b[4] === 0x66 && b[5] === 0x74 && b[6] === 0x79 && b[7] === 0x70) return true;
-	if (b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3) return true;
-	if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 && b[8] === 0x41 && b[9] === 0x56 && b[10] === 0x49) return true;
+	if (b[4] === 0x66 && b[5] === 0x74 && b[6] === 0x79 && b[7] === 0x70) return true; // ...ftyp (mp4/mov)
+	if (b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3) return true; // EBML (webm/mkv)
+	if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 && b[8] === 0x41 && b[9] === 0x56 && b[10] === 0x49) return true; // RIFF..AVI
 	return false;
 }
 
@@ -43,6 +44,8 @@ export const imageConvert: Fn = {
 		const to = String(args?.to ?? "");
 		if (!MIME[to]) return fail("`to` must be one of: png, jpeg, webp, avif.");
 
+		// Load source bytes (shared _util.loadBytes: binary-safe proxy fetch,
+		// HTTP>=400 rejection, /s/<uuid> short-circuit).
 		if (!(typeof args?.image === "string" && args.image) && !isHttpUrl(args?.url)) return fail("Provide `image` (base64) or a fetchable `url`.");
 		let bytes: Uint8Array;
 		try {
@@ -58,6 +61,7 @@ export const imageConvert: Fn = {
 			return fail("image_convert needs the Cloudflare Images binding (IMAGES), not available in this environment.");
 		}
 
+		// Build the transform option set from the provided args.
 		const t: Record<string, unknown> = {};
 		for (const k of ["width", "height", "rotate", "blur", "sharpen", "brightness", "contrast", "gamma"] as const) {
 			if (typeof args?.[k] === "number") t[k] = args[k];

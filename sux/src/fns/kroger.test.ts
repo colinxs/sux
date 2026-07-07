@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { kroger } from "./kroger";
 
+// Map-backed KV stub (env.OAUTH_KV) — mirrors the KVNamespace surface kroger uses.
 function kvStub() {
 	const map = new Map<string, string>();
 	return {
@@ -34,6 +35,7 @@ const LOCATIONS = {
 	],
 };
 
+/** Install a global.fetch mock that routes by URL and counts token mints. */
 function installFetch() {
 	const calls = { token: 0, urls: [] as string[] };
 	const f = vi.fn(async (input: any) => {
@@ -90,7 +92,7 @@ describe("kroger", () => {
 		await kroger.run(env, { action: "search", term: "eggs", location_id: "70100123" });
 		expect(calls.token).toBe(1);
 		expect(env.OAUTH_KV.map.get("sux:kroger:token")).toBe("TOK");
-
+		// TTL applied = expires_in - 60.
 		expect(env.OAUTH_KV.put).toHaveBeenCalledWith("sux:kroger:token", "TOK", { expirationTtl: 1740 });
 	});
 
@@ -111,7 +113,7 @@ describe("kroger", () => {
 		expect(r.isError).toBeFalsy();
 		const j = JSON.parse(r.content[0].text);
 		expect(j.location_id).toBe("70100123");
-
+		// A locations lookup happened before the product search.
 		expect(calls.urls.some((u) => u.includes("/v1/locations"))).toBe(true);
 		const prodUrl = calls.urls.find((u) => /\/v1\/products\?/.test(u))!;
 		expect(prodUrl).toContain("filter.locationId=70100123");

@@ -1,5 +1,8 @@
 import { type Fn, fail, ok } from "../registry";
 
+// The Movie DB (api.themoviedb.org) — official, free key rides the query
+// string. `search/multi` matches movies, TV shows, and people by `term`.
+
 const API = "https://api.themoviedb.org/3";
 const IMG = "https://image.tmdb.org/t/p/w500";
 

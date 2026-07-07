@@ -47,12 +47,12 @@ describe("normalizeText (sane defaults)", () => {
 	});
 
 	it("still applies NFC on strings that become ASCII only after defont", () => {
-
+		// decomposed é after an ASCII prefix — NFC must still run
 		expect(normalizeText("abc é")).toBe("abc é");
 	});
 
 	it("applies NFC composition", () => {
-
+		// decomposed e + combining acute -> composed é
 		expect(normalizeText("é")).toBe("é");
 		expect(SANE.form).toBe("NFC");
 	});

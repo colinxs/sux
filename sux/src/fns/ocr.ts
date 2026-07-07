@@ -18,7 +18,8 @@ export const ocr: Fn = {
 	cacheable: true,
 	run: async (env, args) => {
 		if (!hasAI(env)) return fail("Workers AI binding not configured (add \"ai\" to wrangler).");
-
+		// Workers AI vision wants a number[] — adapt from base64 (data-URI tolerated)
+		// or the shared _util.loadBytes URL path (binary-safe proxy, /s/ refs).
 		let bytes: number[];
 		try {
 			if (args?.image) bytes = Array.from(fromB64(String(args.image).replace(/^data:[^,]+,/, "")));

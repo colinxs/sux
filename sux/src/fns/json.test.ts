@@ -4,6 +4,7 @@ import { yaml } from "./yaml";
 
 const jrun = async (args: any) => (await json.run({} as any, args)).content[0].text;
 const yrun = async (args: any) => (await yaml.run({} as any, args)).content[0].text;
+// yaml's own unit tests live in yaml.test.ts; here we exercise json + composition.
 
 describe("json (to JSON, dispatched on source)", () => {
 	it("auto-detects and parses YAML", async () => {
@@ -30,7 +31,7 @@ describe("json/yaml compose (bidirectionality)", () => {
 		const yamlSrc = "name: Ada\nactive: true\ntags:\n  - a\n  - b\n";
 		const asJson = await jrun({ data: yamlSrc });
 		const backToYaml = await yrun({ data: asJson });
-
+		// Re-parse the regenerated YAML and compare structurally.
 		const reparsed = JSON.parse(await jrun({ data: backToYaml }));
 		expect(reparsed).toEqual({ name: "Ada", active: true, tags: ["a", "b"] });
 	});

@@ -52,7 +52,7 @@ describe("etsy", () => {
 			url: "https://www.etsy.com/listing/123456789/handmade-ceramic-mug",
 			tags: ["mug", "ceramic", "handmade"],
 		});
-
+		// amount 0 → price undefined (normalizeMoney drops non-positive).
 		expect(j.products[1].price).toBeUndefined();
 		expect(j.products[1].url).toBe("https://www.etsy.com/listing/987654321");
 		expect(calls[0].url).toContain("keywords=mug");

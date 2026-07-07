@@ -2,6 +2,10 @@ import zlib from "node:zlib";
 import { type Fn, fail, ok } from "../registry";
 import { fromB64, putBlob, toB64 } from "./_util";
 
+// Lossless compression at MAXIMUM ratio by default (Bosman: "highest compression,
+// zstd"). Uses node:zlib (available under nodejs_compat) for real level control —
+// gzip/deflate at level 9, brotli at quality 11, zstd at level 19 when the runtime
+// supports it (Node ≥22.15 / newer workerd). Bidirectional; base64 for binary.
 const Z = zlib as any;
 const zstdOk = typeof Z.zstdCompressSync === "function";
 
@@ -66,7 +70,8 @@ export const compress: Fn = {
 		try {
 			if (decompress) {
 				const out = new Uint8Array(decompressBytes(codec, fromB64(String(args?.data ?? ""))));
-
+				// Binary-safe delivery: TextDecoding arbitrary bytes is lossy, so
+				// binary payloads should ask for base64 or a CAS url instead.
 				if (as === "url") {
 					const ref = await putBlob(env, out, "application/octet-stream");
 					return ok(JSON.stringify({ bytes: out.length, url: ref.url, sha256: ref.sha256, content_type: ref.content_type }));
