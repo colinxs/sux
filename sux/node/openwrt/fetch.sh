@@ -83,14 +83,25 @@ method=$(jq -r '.method // "GET" | ascii_upcase' "$req")
 # Header config. With curl-impersonate, forward only NON-fingerprint headers
 # (auth, content-type, cookies, custom) — the wrapper owns UA/Accept/sec-*.
 # Without it, keep the old browser-UA default + all forwarded headers but UA.
+#
+# Header-injection guard (defense-in-depth; mirrors src/proxy.ts hasUnsafeHeader):
+# each header is written raw into this --config file as `header = "KEY: VALUE"`,
+# so a CR/LF in a key/value would break out of the line and inject arbitrary curl
+# directives (rewrite -o over a node file, add request URLs, leak the secret), and
+# a double-quote would terminate the quoted arg. Drop any header whose key or
+# value contains CR, LF or a double-quote before it reaches the config file.
 : > "$cfg"
 if [ -n "$IMP" ]; then
 	jq -r '.headers // {} | to_entries[]
 		| select(.key|ascii_downcase | IN("user-agent","accept","accept-encoding","accept-language","sec-ch-ua","sec-ch-ua-mobile","sec-ch-ua-platform","sec-fetch-dest","sec-fetch-mode","sec-fetch-site","sec-fetch-user","upgrade-insecure-requests","priority","connection","host","content-length") | not)
+		| select(((.key + (.value|tostring)) | test("[\r\n\"]")) | not)
 		| "header = \"\(.key): \(.value)\""' "$req" >> "$cfg" 2>/dev/null
 else
 	printf 'user-agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"\n' > "$cfg"
-	jq -r '.headers // {} | to_entries[] | select(.key|ascii_downcase != "user-agent") | "header = \"\(.key): \(.value)\""' "$req" >> "$cfg" 2>/dev/null
+	jq -r '.headers // {} | to_entries[]
+		| select(.key|ascii_downcase != "user-agent")
+		| select(((.key + (.value|tostring)) | test("[\r\n\"]")) | not)
+		| "header = \"\(.key): \(.value)\""' "$req" >> "$cfg" 2>/dev/null
 fi
 
 CURL="${IMP:-curl}"

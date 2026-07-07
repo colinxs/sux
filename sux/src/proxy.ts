@@ -125,6 +125,26 @@ export function isBlockedTarget(url: string): boolean {
 	return isPrivateIp(host);
 }
 
+/**
+ * Header-injection guard: true when any header name or value carries a CR or LF.
+ * The residential node builds a curl `--config` file from the forwarded headers
+ * (node/openwrt/fetch.sh writes `header = "KEY: VALUE"` lines); an embedded
+ * newline breaks out of the header line and injects arbitrary curl directives —
+ * rewrite the `-o` output path over a node file, add extra request URLs, or
+ * exfiltrate /etc/sux-proxy.secret. Workers' own `fetch` already rejects CRLF in
+ * headers, so this hard-refuses before a header can reach the proxy transport;
+ * no legitimate caller sends a bare CR/LF in a header. (fetch.sh also strips
+ * these node-side — defense in depth.)
+ */
+export function hasUnsafeHeader(headers?: Headers | Record<string, string>): boolean {
+	if (!headers) return false;
+	const entries = headers instanceof Headers ? headers.entries() : Object.entries(headers);
+	for (const [key, value] of entries) {
+		if (/[\r\n]/.test(key) || /[\r\n]/.test(String(value))) return true;
+	}
+	return false;
+}
+
 export type Route = "auto" | "proxy" | "direct";
 
 // Transient/rate-limit statuses worth another shot with backoff: gateway/
@@ -274,6 +294,12 @@ export async function smartFetch(
 	if (isBlockedTarget(url)) {
 		throw new Error(`smartFetch: refusing blocked target ${url} (private/loopback/link-local/metadata host)`);
 	}
+	// Header-injection guard: a CR/LF in a header name/value would break out of a
+	// curl config line on the residential node. Hard refusal (like isBlockedTarget)
+	// so a proxy→direct fallback can never smuggle the header through either path.
+	if (hasUnsafeHeader(init.headers)) {
+		throw new Error("smartFetch: refusing header with CR/LF in name or value (header injection)");
+	}
 	// GitHub auth applies regardless of route; caller-supplied headers win.
 	const ghAuth = githubAuthHeaders(env, url);
 	let directRoute: FetchRoute = "direct";
@@ -316,6 +342,11 @@ export async function fetchViaTailscale(
 ): Promise<ProxiedResponse> {
 	if (!isTailscaleConfigured(env)) {
 		throw new Error("Tailscale proxy not configured (TAILSCALE_PROXY_URL / TAILSCALE_PROXY_SECRET).");
+	}
+	// Header-injection guard for direct callers of this transport (smartFetch
+	// already checks, but fetchPageViaTailscale and future callers reach here too).
+	if (hasUnsafeHeader(init?.headers)) {
+		throw new Error("fetchViaTailscale: refusing header with CR/LF in name or value (header injection)");
 	}
 
 	const endpoint = new URL("/fetch", env.TAILSCALE_PROXY_URL).href;
