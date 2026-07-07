@@ -12,6 +12,7 @@ import { createServer } from "node:http";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { pathToFileURL } from "node:url";
 
 const PORT = Number(process.env.PORT || 8787);
 const SECRET = process.env.PROXY_SECRET; // REQUIRED — a strong random string
@@ -24,11 +25,6 @@ const ALLOWED_HOSTS = (process.env.ALLOWED_HOSTS || "")
 	.split(",")
 	.map((h) => h.trim().toLowerCase())
 	.filter(Boolean);
-
-if (!SECRET || SECRET.length < 16) {
-	console.error("Refusing to start: set PROXY_SECRET to a strong (>=16 char) secret.");
-	process.exit(1);
-}
 
 /** Verify the HMAC-SHA256 of `${ts}\n${rawBody}` (timing-safe) + freshness. */
 function verifySignature(ts, rawBody, sigHex) {
@@ -112,6 +108,18 @@ async function readBody(req) {
 	return Buffer.concat(chunks).toString("utf8");
 }
 
+/**
+ * Encode the upstream body for the JSON transport. Always base64 + flag
+ * bodyEncoding:"base64" so arbitrary bytes (images, PDFs, archives) survive the
+ * JSON string transport and reach the Worker's residential path byte-for-byte —
+ * a plain utf8 string mangles any non-UTF-8 byte to U+FFFD, which the Worker then
+ * has to refetch DIRECT (defeating residential egress). Matches openwrt/fetch.sh
+ * and the Worker's already-tested base64 decode path (src/proxy.ts).
+ */
+export function encodeBody(buf) {
+	return { bodyEncoding: "base64", body: buf.toString("base64") };
+}
+
 const server = createServer(async (req, res) => {
 	if (req.method === "GET" && req.url === "/health") return json(res, 200, { status: "ok" });
 
@@ -172,8 +180,6 @@ const server = createServer(async (req, res) => {
 				parts.push(Buffer.from(value));
 			}
 		}
-		const body = Buffer.concat(parts).toString("utf8");
-
 		console.log(`${new Date().toISOString()} fetch ${target.host} -> ${upstream.status} ${total}b`);
 		json(res, 200, {
 			status: upstream.status,
@@ -181,11 +187,22 @@ const server = createServer(async (req, res) => {
 			headers: Object.fromEntries(upstream.headers),
 			bytes: total,
 			truncated: total > MAX_BYTES,
-			body,
+			...encodeBody(Buffer.concat(parts)),
 		});
 	} catch (e) {
 		json(res, 502, { error: "upstream_failed", detail: String(e.message || e) });
 	}
 });
 
-server.listen(PORT, () => console.log(`tailscale fetch-proxy on :${PORT} (expose with: tailscale funnel ${PORT})`));
+function main() {
+	if (!SECRET || SECRET.length < 16) {
+		console.error("Refusing to start: set PROXY_SECRET to a strong (>=16 char) secret.");
+		process.exit(1);
+	}
+	server.listen(PORT, () => console.log(`tailscale fetch-proxy on :${PORT} (expose with: tailscale funnel ${PORT})`));
+}
+
+// Only bind a port when run as the entrypoint (`node server.mjs`); importing the
+// module (tests) gets the helpers/handler without a listening socket or the
+// process.exit secret guard.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();
