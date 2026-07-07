@@ -317,7 +317,11 @@ export function toXml(obj: unknown, name?: string): string {
 		const entries = Object.entries(obj as Record<string, unknown>);
 		const attrs = entries
 			.filter(([k]) => k.startsWith("@"))
-			.map(([k, v]) => ` ${k.slice(1)}="${encodeEntities(String(v))}"`)
+			// The value lands inside a double-quoted attribute; encodeEntities only
+			// escapes &<>, so a value carrying a `"` (e.g. {"@id":'a"b'}) would close
+			// the attribute early — emitting malformed XML that parseXml then reads
+			// back truncated. Escape the quote too so the value round-trips intact.
+			.map(([k, v]) => ` ${k.slice(1)}="${encodeEntities(String(v)).replace(/"/g, "&quot;")}"`)
 			.join("");
 		const inner = entries
 			.filter(([k]) => !k.startsWith("@"))
