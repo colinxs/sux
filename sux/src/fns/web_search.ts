@@ -1,7 +1,7 @@
 import { type Fn, fail, ok } from "../registry";
 import { hasAI, llm } from "../ai";
 import { kagiTool } from "../kagi";
-import type { Route } from "../proxy";
+import { type Route, smartFetch } from "../proxy";
 import { stripHtml } from "./_util";
 
 export type Hit = { title: string; url: string; snippet?: string };
@@ -48,6 +48,35 @@ export function parseGoogleSerp(html: string, limit: number): Hit[] {
 	return hits;
 }
 
+/** Parse DuckDuckGo's html/lite endpoint: result anchors carry the real URL in a
+ * //duckduckgo.com/l/?uddg=<encoded> redirect wrapper. Clean, key-free, no JS. */
+export function parseDdg(html: string, limit: number): Hit[] {
+	const hits: Hit[] = [];
+	const seen = new Set<string>();
+	const re = /<a\b[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+	let m: RegExpExecArray | null;
+	while ((m = re.exec(html)) && hits.length < limit) {
+		const uddg = m[1].match(/[?&]uddg=([^&]+)/);
+		const url = uddg ? decodeURIComponent(uddg[1]) : m[1].startsWith("//") ? `https:${m[1]}` : m[1];
+		if (!/^https?:\/\//.test(url)) continue;
+		const title = stripHtml(m[2]).trim();
+		if (!title || seen.has(url)) continue;
+		seen.add(url);
+		hits.push({ title, url });
+	}
+	return hits;
+}
+
+// DuckDuckGo, DIRECT — the html endpoint returns real results with no JS and no
+// key, so it goes through the residential proxy (curl-impersonate on the node).
+// The cheap keyless engine (vs google's heavy render).
+async function ddg(env: any, q: string, limit: number, route: Route): Promise<Hit[]> {
+	const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`;
+	const resp = await smartFetch(env, url, { headers: { "Accept-Language": "en-US,en;q=0.9" } }, route === "direct" ? "auto" : route);
+	if (resp.status >= 400) throw new Error(`DuckDuckGo HTTP ${resp.status}`);
+	return parseDdg(await resp.text(), limit);
+}
+
 // Google, DIRECT — no SerpAPI. Google now gates results behind JS (a plain HTTP
 // fetch, even residential/curl-impersonate, returns an empty JS shell), so we
 // render the SERP in the `render` mac backend (headed browser + CapSolver clears
@@ -89,7 +118,8 @@ async function kagi(env: any, q: string, limit: number, route: Route): Promise<H
 
 const ENGINES: Record<string, { envKey?: string; envName?: string; run: (env: any, q: string, n: number, route: Route) => Promise<Hit[]> }> = {
 	kagi: { envKey: "KAGI_API_KEY", envName: "KAGI_API_KEY", run: kagi },
-	google: { run: googleDirect }, // no key — scraped directly via the residential proxy
+	ddg: { run: ddg }, // no key — cheap residential HTML scrape (no JS)
+	google: { run: googleDirect }, // no key — heavy: rendered in the mac backend (Google needs JS)
 	brave: { envKey: "BRAVE_API_KEY", envName: "BRAVE_API_KEY", run: brave },
 };
 
@@ -134,14 +164,14 @@ export const webSearch: Fn = {
 	cost: 3,
 	description:
 		"Web search over Kagi, native Google, and Brave. `engine`: kagi (default), google, brave, or `all` — which fans out across every currently-available engine concurrently (MAP), merges/dedupes by URL with consensus ranking, and with `summarize: true` reduces the pooled results into one Workers-AI synthesis with citations (map-reduce). " +
-		"google renders the real SERP in the headed `render` mac backend (Google now needs JS — a plain HTTP fetch returns an empty shell) and parses it — no SERP API key, but heavier/slower than an API, so it's opt-in. kagi (default) and brave are key-gated (KAGI_API_KEY, BRAVE_API_KEY) and used only when their secret is set; `all` skips unconfigured ones. Falls back to the plain merged list if AI isn't configured. Returns numbered results (title, url, snippet) — cite by number.",
+		"ddg (DuckDuckGo) is scraped keyless+cheap via the residential proxy (no JS needed) — the best no-key default. google renders the real SERP in the headed `render` mac backend (Google needs JS; heavier/slower, opt-in) and parses it — no SERP API key either. kagi (default) and brave are key-gated (KAGI_API_KEY, BRAVE_API_KEY) and used only when their secret is set; `all` skips unconfigured ones. Falls back to the plain merged list if AI isn't configured. Returns numbered results (title, url, snippet) — cite by number.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
 		required: ["query"],
 		properties: {
 			query: { type: "string", description: "Search query." },
-			engine: { type: "string", enum: ["kagi", "google", "brave", "all"], default: "kagi" },
+			engine: { type: "string", enum: ["kagi", "ddg", "google", "brave", "all"], default: "kagi" },
 			limit: { type: "integer", minimum: 1, maximum: 25, default: 10 },
 			summarize: { type: "boolean", description: "Summarize the merged results with Workers AI.", default: false },
 			proxy: { type: "boolean", description: "Route the Kagi query through the Tailscale residential proxy (direct fallback if the node is down).", default: false },
