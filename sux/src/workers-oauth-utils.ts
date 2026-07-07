@@ -673,7 +673,16 @@ async function getApprovedClientsFromCookie(
 	if (parts.length !== 2) return null;
 
 	const [signatureHex, base64Payload] = parts;
-	const payload = atob(base64Payload);
+
+	// A malformed (non-base64) payload must be treated as "no valid cookie",
+	// not throw — atob() raises on invalid input and this path runs on
+	// attacker-controlled cookies during the unauthenticated /authorize GET.
+	let payload: string;
+	try {
+		payload = atob(base64Payload);
+	} catch {
+		return null;
+	}
 
 	const isValid = await verifySignature(signatureHex, payload, cookieSecret);
 
