@@ -45,7 +45,6 @@ import { kv_delete } from "./kv_delete";
 import { issue } from "./issue";
 import { imageConvert } from "./image_convert";
 import { ace } from "./ace";
-import { alphavantage } from "./alphavantage";
 import { amazon } from "./amazon";
 import { arxiv } from "./arxiv";
 import { bestbuy } from "./bestbuy";
@@ -55,12 +54,10 @@ import { crossref } from "./crossref";
 import { csv } from "./csv";
 import { declutter } from "./declutter";
 import { ebay } from "./ebay";
-import { etsy } from "./etsy";
 import { facebook } from "./facebook";
 import { fillable } from "./fillable";
 import { find_similar } from "./find_similar";
 import { fontcase } from "./fontcase";
-import { guardian } from "./guardian";
 import { homedepot } from "./homedepot";
 import { html } from "./html";
 import { json } from "./json";
@@ -68,7 +65,6 @@ import { kroger } from "./kroger";
 import { linkedin } from "./linkedin";
 import { lowes } from "./lowes";
 import { markdown } from "./markdown";
-import { nyt } from "./nyt";
 import { openalex } from "./openalex";
 import { pdf } from "./pdf";
 import { people } from "./people";
@@ -81,10 +77,9 @@ import { stackexchange } from "./stackexchange";
 import { store } from "./store";
 import { obsidian } from "./obsidian";
 import { tavily } from "./tavily";
-import { tmdb } from "./tmdb";
 import { walmart } from "./walmart";
 import { webSearch } from "./web_search";
-import { wolfram } from "./wolfram";
+import { winco } from "./winco";
 import { xml } from "./xml";
 import { yaml } from "./yaml";
 
@@ -130,7 +125,6 @@ export const FUNCTIONS: Fn[] = [
 	issue,
 	imageConvert,
 	ace,
-	alphavantage,
 	amazon,
 	arxiv,
 	bestbuy,
@@ -140,12 +134,10 @@ export const FUNCTIONS: Fn[] = [
 	csv,
 	declutter,
 	ebay,
-	etsy,
 	facebook,
 	fillable,
 	find_similar,
 	fontcase,
-	guardian,
 	homedepot,
 	html,
 	json,
@@ -153,7 +145,6 @@ export const FUNCTIONS: Fn[] = [
 	linkedin,
 	lowes,
 	markdown,
-	nyt,
 	openalex,
 	pdf,
 	people,
@@ -166,10 +157,9 @@ export const FUNCTIONS: Fn[] = [
 	store,
 	obsidian,
 	tavily,
-	tmdb,
 	walmart,
 	webSearch,
-	wolfram,
+	winco,
 	xml,
 	yaml,
 ];
