@@ -92,7 +92,7 @@ Route each retailer to the lowest fetch-ladder rung that works:
 | **Costco** | `scrape` (curl-impersonate) | Akamai JA3-centric → passive; HTML search + extract. |
 | **Ace** | needs Kibo session token | Kibo REST 401s without a warmed token → render:mac. |
 | **Home Depot** | `render:mac` | active Akamai `_abck` → real browser. GraphQL `federation-gateway` or rendered tiles. |
-| **Walmart** | `render:mac` | PerimeterX → real browser; extract `__NEXT_DATA__`. |
+| **Walmart** | `render:mac` (⚠ blocked) | PerimeterX press-and-hold captcha challenges even the headless patched browser → fn fails gracefully. Would need a *headed* real-Chrome or a captcha step. |
 | **Lowe's** | `render:mac`/scrape | embedded `__PRELOADED_STATE__` JSON. |
 | **Amazon** | best-effort | PA-API needs an Associate account; direct scrape hits WAF+CAPTCHA. |
 | **WinCo** | store-locator only | no online product catalog exists. |
