@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { loadHtml } from "./_util";
+import { loadHtml, stripHtml } from "./_util";
 
 export const extract: Fn = {
 	name: "extract",
@@ -29,13 +29,6 @@ export const extract: Fn = {
 			return ok(blocks.length ? blocks.join("\n\n") : "(no JSON-LD found)");
 		}
 
-		const text = html
-			.replace(/<script[\s\S]*?<\/script>/gi, " ")
-			.replace(/<style[\s\S]*?<\/style>/gi, " ")
-			.replace(/<[^>]+>/g, " ")
-			.replace(/&nbsp;/g, " ")
-			.replace(/\s+/g, " ")
-			.trim();
-		return ok(text.slice(0, 100_000));
+		return ok(stripHtml(html).slice(0, 100_000));
 	},
 };
