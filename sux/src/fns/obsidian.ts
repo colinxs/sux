@@ -37,17 +37,23 @@ function remoteFetch(env: any, path: string, init?: { method?: string; headers?:
 const encPath = (p: string) => p.split("/").filter(Boolean).map(encodeURIComponent).join("/");
 
 // The Local REST API plugin ALSO ships a built-in MCP server at /mcp/ (Streamable
-// HTTP, Bearer auth) exposing ~15 vault tools. Wrap it directly (F13, same shape
-// as kagiTool): JSON-RPC over HTTP, SSE or JSON response. `tools`/`call` expose
-// the full surface; the REST verbs below stay as convenience shortcuts.
+// HTTP, Bearer auth) exposing ~15 vault tools. Wrap it (F13). Unlike Kagi's
+// stateless MCP, this server is STATEFUL: it requires the MCP handshake —
+// initialize (which returns an Mcp-Session-Id header), then notifications/
+// initialized, then the real call — all carrying the session id. We run the
+// handshake per call (sessions are cheap; keeps the wrapper stateless).
 async function obsidianMcp(env: any, method: string, params: unknown): Promise<{ result?: any; error?: any }> {
-	const base = String(env.OBSIDIAN_REMOTE_URL).replace(/\/+$/, "");
-	const resp = await fetch(`${base}/mcp/`, {
-		method: "POST",
-		headers: { Authorization: `Bearer ${env.OBSIDIAN_REMOTE_KEY}`, "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
-		body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-		signal: AbortSignal.timeout(20_000),
-	});
+	const endpoint = `${String(env.OBSIDIAN_REMOTE_URL).replace(/\/+$/, "")}/mcp/`;
+	const base = { Authorization: `Bearer ${env.OBSIDIAN_REMOTE_KEY}`, "Content-Type": "application/json", Accept: "application/json, text/event-stream" };
+	const post = (sid: string | undefined, payload: unknown) =>
+		fetch(endpoint, { method: "POST", headers: { ...base, ...(sid ? { "Mcp-Session-Id": sid } : {}) }, body: JSON.stringify(payload), signal: AbortSignal.timeout(20_000) });
+
+	const init = await post(undefined, { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "sux", version: "1" } } });
+	if (!init.ok) return { error: { message: `MCP initialize HTTP ${init.status}: ${(await init.text().catch(() => "")).slice(0, 160)}` } };
+	const sid = init.headers.get("mcp-session-id") ?? undefined;
+	if (sid) await post(sid, { jsonrpc: "2.0", method: "notifications/initialized" }).catch(() => {});
+
+	const resp = await post(sid, { jsonrpc: "2.0", id: 2, method, params });
 	const obj = extractRpcFromText(await resp.text(), resp.headers.get("content-type"));
 	return { result: obj?.result, error: obj?.error ?? (resp.status >= 400 ? { message: `HTTP ${resp.status}` } : undefined) };
 }

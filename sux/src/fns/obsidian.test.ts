@@ -126,12 +126,23 @@ describe("obsidian (remote backend — Funnel'd Local REST API)", () => {
 		expect(JSON.parse(r.content[0].text)).toMatchObject({ ok: true, path: "log.md" });
 	});
 
-	it("wraps the vault MCP: action=tools lists tools via /mcp/", async () => {
-		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
+	// A stateful Streamable-HTTP MCP mock: initialize hands out a session id, then
+	// notifications/initialized (202), then the real call must carry the session.
+	const mcpMock = (onCall: (body: any, init: any) => Response) =>
+		vi.fn(async (u: string | URL, init?: any) => {
 			expect(String(u)).toBe("https://vault.tailnet.ts.net/mcp/");
 			expect(init.headers.Authorization).toBe("Bearer sek");
-			expect(JSON.parse(init.body).method).toBe("tools/list");
-			return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { tools: [{ name: "list_files", description: "List vault files" }, { name: "search", description: "Search" }] } }), { status: 200 });
+			const body = JSON.parse(init.body);
+			if (body.method === "initialize") return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: {} }), { status: 200, headers: { "mcp-session-id": "sess-1" } });
+			if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+			expect(init.headers["Mcp-Session-Id"]).toBe("sess-1"); // real call carries the session
+			return onCall(body, init);
+		});
+
+	it("wraps the vault MCP: action=tools handshakes then lists tools via /mcp/", async () => {
+		vi.stubGlobal("fetch", mcpMock((body) => {
+			expect(body.method).toBe("tools/list");
+			return new Response(JSON.stringify({ jsonrpc: "2.0", id: 2, result: { tools: [{ name: "list_files", description: "List vault files" }, { name: "search", description: "Search" }] } }), { status: 200 });
 		}));
 		const r = await obsidian.run(REMOTE, { action: "tools", backend: "remote" });
 		const out = JSON.parse(r.content[0].text);
@@ -139,13 +150,11 @@ describe("obsidian (remote backend — Funnel'd Local REST API)", () => {
 		expect(out.tools.map((t: any) => t.name)).toEqual(["list_files", "search"]);
 	});
 
-	it("wraps the vault MCP: action=call invokes a tool and returns its text (SSE parsed)", async () => {
-		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
-			const body = JSON.parse(init.body);
+	it("wraps the vault MCP: action=call handshakes then invokes a tool (SSE parsed)", async () => {
+		vi.stubGlobal("fetch", mcpMock((body) => {
 			expect(body.method).toBe("tools/call");
 			expect(body.params).toEqual({ name: "search", arguments: { query: "todo" } });
-			// Streamable-HTTP style SSE response
-			return new Response(`event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: "3 matches" }] } })}\n\n`, { status: 200, headers: { "content-type": "text/event-stream" } });
+			return new Response(`event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: 2, result: { content: [{ type: "text", text: "3 matches" }] } })}\n\n`, { status: 200, headers: { "content-type": "text/event-stream" } });
 		}));
 		const r = await obsidian.run(REMOTE, { action: "call", tool: "search", tool_args: { query: "todo" }, backend: "remote" });
 		expect(r.content[0].text).toBe("3 matches");
