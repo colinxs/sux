@@ -119,6 +119,23 @@ describe("crawl", () => {
 		expect(mockFetch.mock.calls.length).toBeLessThanOrEqual(5);
 	});
 
+	it("falls back to defaults on non-numeric depth/max instead of NaN (no uncapped depth, no empty cached crawl)", async () => {
+		mockFetch.mockImplementation(async (_env: unknown, url: string) => {
+			if (url === "https://ex.com/") {
+				return new Response(`<title>Home</title><a href="https://ex.com/about">a</a>`, { status: 200 });
+			}
+			return new Response("<title>About</title>", { status: 200 });
+		});
+		// depth: "2x" -> NaN would leave `depth >= maxDepth` always false (uncapped);
+		// max: {} -> NaN would make `results.length < maxPages` false and return an
+		// empty {pages:0} that gets cached. Both must fall back to defaults instead.
+		const r = await crawl.run({} as any, { url: "https://ex.com/", depth: "2x" as any, max: {} as any });
+		expect(r.isError).toBeFalsy();
+		const out = JSON.parse(r.content[0].text);
+		expect(out.pages).toBe(2);
+		expect(out.results.map((x: any) => x.url)).toEqual(["https://ex.com/", "https://ex.com/about"]);
+	});
+
 	it("caps each page body read at 512KB (links past the cap are not seen)", async () => {
 		const body = `<title>Seed</title><a href="https://ex.com/early">e</a>${"x".repeat(600 * 1024)}<a href="https://ex.com/late">l</a>`;
 		mockFetch.mockImplementation(async (_env: unknown, url: string) => {
