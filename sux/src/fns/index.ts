@@ -69,7 +69,6 @@ import { linkedin } from "./linkedin";
 import { lowes } from "./lowes";
 import { markdown } from "./markdown";
 import { nyt } from "./nyt";
-import { obsidian } from "./obsidian";
 import { openalex } from "./openalex";
 import { pdf } from "./pdf";
 import { people } from "./people";
@@ -80,6 +79,7 @@ import { semantic_scholar } from "./semantic_scholar";
 import { shop } from "./shop";
 import { stackexchange } from "./stackexchange";
 import { store } from "./store";
+import { obsidian } from "./obsidian";
 import { tavily } from "./tavily";
 import { tmdb } from "./tmdb";
 import { walmart } from "./walmart";
@@ -154,7 +154,6 @@ export const FUNCTIONS: Fn[] = [
 	lowes,
 	markdown,
 	nyt,
-	obsidian,
 	openalex,
 	pdf,
 	people,
@@ -165,6 +164,7 @@ export const FUNCTIONS: Fn[] = [
 	shop,
 	stackexchange,
 	store,
+	obsidian,
 	tavily,
 	tmdb,
 	walmart,
