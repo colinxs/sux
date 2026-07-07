@@ -1,5 +1,6 @@
 import { type Fn, fail, ok } from "../registry";
 import { smartFetch } from "../proxy";
+import { extractRpcFromText } from "../mcp-util";
 import { fromB64, toB64 } from "./_util";
 
 // Work with Obsidian markdown notes across three backends:
@@ -35,11 +36,43 @@ function remoteFetch(env: any, path: string, init?: { method?: string; headers?:
 
 const encPath = (p: string) => p.split("/").filter(Boolean).map(encodeURIComponent).join("/");
 
+// The Local REST API plugin ALSO ships a built-in MCP server at /mcp/ (Streamable
+// HTTP, Bearer auth) exposing ~15 vault tools. Wrap it directly (F13, same shape
+// as kagiTool): JSON-RPC over HTTP, SSE or JSON response. `tools`/`call` expose
+// the full surface; the REST verbs below stay as convenience shortcuts.
+async function obsidianMcp(env: any, method: string, params: unknown): Promise<{ result?: any; error?: any }> {
+	const base = String(env.OBSIDIAN_REMOTE_URL).replace(/\/+$/, "");
+	const resp = await fetch(`${base}/mcp/`, {
+		method: "POST",
+		headers: { Authorization: `Bearer ${env.OBSIDIAN_REMOTE_KEY}`, "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+		body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+		signal: AbortSignal.timeout(20_000),
+	});
+	const obj = extractRpcFromText(await resp.text(), resp.headers.get("content-type"));
+	return { result: obj?.result, error: obj?.error ?? (resp.status >= 400 ? { message: `HTTP ${resp.status}` } : undefined) };
+}
+
 async function runRemote(env: any, action: string, args: any) {
 	if (!env.OBSIDIAN_REMOTE_URL || !env.OBSIDIAN_REMOTE_KEY) {
 		return fail("Obsidian remote backend not configured. Set OBSIDIAN_REMOTE_URL (the Tailscale-Funnel'd Local REST API URL, e.g. https://vault.<tailnet>.ts.net) and OBSIDIAN_REMOTE_KEY (the plugin's API key from Obsidian → Local REST API settings).");
 	}
 	try {
+		// Wrap the vault's built-in MCP server (full 15-tool surface).
+		if (action === "tools") {
+			const { result, error } = await obsidianMcp(env, "tools/list", {});
+			if (error) return fail(`Obsidian MCP tools/list error: ${error.message ?? JSON.stringify(error)}`);
+			const tools = (result?.tools ?? []).map((t: any) => ({ name: t?.name, description: t?.description }));
+			return ok(JSON.stringify({ via: "mcp", count: tools.length, tools }, null, 2));
+		}
+		if (action === "call") {
+			const tool = String(args?.tool ?? "").trim();
+			if (!tool) return fail("action=call requires a `tool` (the MCP tool name — run action=tools to list them) and optional `tool_args`.");
+			const { result, error } = await obsidianMcp(env, "tools/call", { name: tool, arguments: args?.tool_args ?? {} });
+			if (error) return fail(`Obsidian MCP '${tool}' error: ${error.message ?? JSON.stringify(error)}`);
+			const text = (result?.content ?? []).filter((c: any) => c?.type === "text").map((c: any) => c.text).join("\n");
+			if (result?.isError) return fail(text || `Obsidian MCP '${tool}' returned an error.`);
+			return ok(text || JSON.stringify(result, null, 2));
+		}
 		if (action === "list") {
 			const dir = String(args?.path ?? "").replace(/^\/+|\/+$/g, "");
 			const resp = await remoteFetch(env, `/vault/${dir ? `${encPath(dir)}/` : ""}`);
@@ -84,16 +117,18 @@ export const obsidian: Fn = {
 	name: "obsidian",
 	cost: 2,
 	description:
-		"Work with Obsidian markdown notes. action: list (notes, optionally under `path`) | read (a note by `path`) | search (`query`) | append (add `content` to a note at `path`, creating it if absent). backend: git (default) — a GitHub-backed vault (async, versioned; OBSIDIAN_VAULT_REPO='owner/repo', optional OBSIDIAN_VAULT_BRANCH/OBSIDIAN_VAULT_DIR; GITHUB_TOKEN for private repos + writes); remote — Obsidian's Local REST API over a public HTTPS URL (Tailscale Funnel) for real-time access to the LIVE vault (OBSIDIAN_REMOTE_URL + OBSIDIAN_REMOTE_KEY); local — same API on localhost, unreachable from the cloud Worker (use remote instead).",
+		"Work with Obsidian markdown notes. action: list (notes, optionally under `path`) | read (a note by `path`) | search (`query`) | append (add `content` to a note at `path`, creating it if absent). backend: git (default) — a GitHub-backed vault (async, versioned; OBSIDIAN_VAULT_REPO='owner/repo', optional OBSIDIAN_VAULT_BRANCH/OBSIDIAN_VAULT_DIR; GITHUB_TOKEN for private repos + writes); remote — the LIVE vault via Obsidian's Local REST API over a public HTTPS URL (Tailscale Funnel; OBSIDIAN_REMOTE_URL + OBSIDIAN_REMOTE_KEY). remote also wraps the vault's built-in MCP server: action=tools lists its ~15 vault tools and action=call runs one (tool + tool_args) — the full surface beyond list/read/search/append. local — same API on localhost, unreachable from the cloud Worker (use remote).",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
 		required: ["action"],
 		properties: {
-			action: { type: "string", enum: ["list", "read", "search", "append"] },
+			action: { type: "string", enum: ["list", "read", "search", "append", "tools", "call"] },
 			path: { type: "string", description: "Note path within the vault (for read/append; a folder filter for list)." },
 			query: { type: "string", description: "Search query (action=search)." },
 			content: { type: "string", description: "Markdown to append (action=append)." },
+			tool: { type: "string", description: "MCP tool name (remote, action=call). Run action=tools to list them." },
+			tool_args: { type: "object", additionalProperties: true, description: "Arguments for the MCP tool (remote, action=call)." },
 			backend: { type: "string", enum: ["git", "remote", "local"], default: "git" },
 		},
 	},
