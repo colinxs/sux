@@ -76,32 +76,56 @@ export function isDirectHost(url: string): boolean {
 
 export type Route = "auto" | "proxy" | "direct";
 
-// Transient failures worth one more shot: gateway/unavailable/timeout statuses.
-// A 4xx or a plain 500 is a settled answer — retrying just wastes the budget.
-const TRANSIENT_STATUS = new Set([502, 503, 504]);
+// Transient/rate-limit statuses worth another shot with backoff: gateway/
+// unavailable/timeout (502/503/504), request-timeout (408), and rate-limited
+// (429 — the one exponential backoff exists for). A 4xx (other than 408/429) or
+// a plain 500 is a settled answer — retrying just wastes the budget.
+const TRANSIENT_STATUS = new Set([408, 429, 502, 503, 504]);
 
-/** True when a resolved response is a transient upstream failure (502/503/504). */
+/** True when a resolved response is a retryable transient/rate-limit failure. */
 function isTransientStatus(status: number): boolean {
 	return TRANSIENT_STATUS.has(status);
 }
 
+const MAX_ATTEMPTS = 3; // 1 try + 2 retries
+const BASE_DELAY_MS = 250;
+const MAX_DELAY_MS = 8_000;
+
 /**
- * Run `fn` once, and on a transient failure — a thrown network/timeout error OR
- * a 502/503/504 response — retry it EXACTLY once after a small fixed backoff.
- * Scraping proxies hit transient blips constantly; a single retry materially
- * lifts reliability without unbounded time cost. At most 2 attempts total; each
- * attempt keeps its own 30s bound, so the worst case is ~60s + backoff.
+ * Backoff before the retry after `attempt` (0-based) failed attempts. Honors a
+ * server `Retry-After` (seconds, capped) when present — the polite thing on a
+ * 429/503 — else exponential base·2^attempt with full jitter (spreads a
+ * thundering herd instead of syncing every client to the same retry instant).
+ */
+export function backoffDelay(attempt: number, retryAfter?: string | null): number {
+	const ra = retryAfter != null ? Number(retryAfter) : Number.NaN;
+	if (Number.isFinite(ra) && ra >= 0) return Math.min(ra * 1000, MAX_DELAY_MS);
+	const ceil = Math.min(BASE_DELAY_MS * 2 ** attempt, MAX_DELAY_MS);
+	return Math.round(ceil / 2 + Math.random() * (ceil / 2)); // jitter in [ceil/2, ceil]
+}
+
+/**
+ * Run `fn` with up to MAX_ATTEMPTS tries, retrying transient/rate-limit failures
+ * — a thrown network/timeout error OR a 408/429/502/503/504 response — with
+ * exponential backoff + jitter (and honoring Retry-After). Scraping proxies and
+ * rate-limited APIs hit these constantly; bounded retries materially lift
+ * reliability. Each attempt keeps its own 30s bound; the last retryable response
+ * (or thrown error) is surfaced once the attempts are exhausted.
  */
 async function withRetry(fn: () => Promise<Response>): Promise<Response> {
-	try {
-		const resp = await fn();
-		if (!isTransientStatus(resp.status)) return resp;
-	} catch (e) {
-		// Thrown error (network/timeout) is transient — fall through to the retry.
-		void e;
+	let lastResp: Response | undefined;
+	for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+		if (attempt > 0) await new Promise((r) => setTimeout(r, backoffDelay(attempt - 1, lastResp?.headers.get("retry-after"))));
+		try {
+			const resp = await fn();
+			if (!isTransientStatus(resp.status)) return resp;
+			lastResp = resp; // retryable status — loop (or surface it if attempts run out)
+		} catch (e) {
+			if (attempt === MAX_ATTEMPTS - 1) throw e; // out of retries on a thrown error
+			lastResp = undefined;
+		}
 	}
-	await new Promise((r) => setTimeout(r, 250));
-	return fn();
+	return lastResp ?? fn();
 }
 
 // Route accounting: smartFetch tallies which path each fetch actually took into

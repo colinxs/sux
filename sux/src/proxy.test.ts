@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { drainRouteTally, fetchPageViaTailscale, fetchViaTailscale, hmacHex, isDirectHost, isTailscaleConfigured, isTextualContentType, smartFetch, willProxy } from "./proxy";
+import { backoffDelay, drainRouteTally, fetchPageViaTailscale, fetchViaTailscale, hmacHex, isDirectHost, isTailscaleConfigured, isTextualContentType, smartFetch, willProxy } from "./proxy";
 
 const ON = { TAILSCALE_PROXY_URL: "https://x.ts.net", TAILSCALE_PROXY_SECRET: "s" };
 
@@ -198,12 +198,24 @@ describe("smartFetch transient retry (direct path)", () => {
 		expect(fetchMock).toHaveBeenCalledTimes(2);
 	});
 
-	it("returns a persistent 503 after exactly 2 attempts (no infinite loop)", async () => {
+	it("returns a persistent 503 after exactly 3 attempts (no infinite loop)", async () => {
 		const fetchMock = vi.fn(async (_u: string | URL, _init?: RequestInit) => new Response("still busy", { status: 503 }));
 		vi.stubGlobal("fetch", fetchMock);
 		const resp = await smartFetch({}, "https://example.com/", {}, "direct");
 		expect(resp.status).toBe(503);
-		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(fetchMock).toHaveBeenCalledTimes(3); // 1 try + 2 backoff retries
+	});
+
+	it("retries a 429 rate-limit response, then returns the success", async () => {
+		let n = 0;
+		const fetchMock = vi.fn(async (_u: string | URL, _init?: RequestInit) => {
+			n++;
+			return n < 3 ? new Response("slow down", { status: 429, headers: { "retry-after": "0" } }) : new Response("ok", { status: 200 });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		const resp = await smartFetch({}, "https://example.com/", {}, "direct");
+		expect(resp.status).toBe(200);
+		expect(fetchMock).toHaveBeenCalledTimes(3);
 	});
 
 	it("does NOT retry a 404 — returns it immediately (1 attempt)", async () => {
@@ -236,13 +248,36 @@ describe("smartFetch transient retry (direct path)", () => {
 		expect(fetchMock).toHaveBeenCalledTimes(2);
 	});
 
-	it("propagates a persistent thrown error after 2 attempts", async () => {
+	it("propagates a persistent thrown error after 3 attempts", async () => {
 		const fetchMock = vi.fn(async (_u: string | URL, _init?: RequestInit) => {
 			throw new Error("network down");
 		});
 		vi.stubGlobal("fetch", fetchMock);
 		await expect(smartFetch({}, "https://example.com/", {}, "direct")).rejects.toThrow(/network down/);
-		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(fetchMock).toHaveBeenCalledTimes(3); // 1 try + 2 backoff retries
+	});
+});
+
+describe("backoffDelay", () => {
+	it("honors a sane Retry-After (seconds → ms, capped)", () => {
+		expect(backoffDelay(0, "2")).toBe(2000);
+		expect(backoffDelay(5, "1")).toBe(1000); // Retry-After wins over exponential
+		expect(backoffDelay(0, "99999")).toBe(8000); // capped at MAX_DELAY_MS
+	});
+	it("falls back to exponential-with-jitter within [ceil/2, ceil] when no Retry-After", () => {
+		for (let attempt = 0; attempt < 4; attempt++) {
+			const ceil = Math.min(250 * 2 ** attempt, 8000);
+			for (let i = 0; i < 50; i++) {
+				const d = backoffDelay(attempt, null);
+				expect(d).toBeGreaterThanOrEqual(Math.floor(ceil / 2));
+				expect(d).toBeLessThanOrEqual(ceil);
+			}
+		}
+	});
+	it("ignores a garbage Retry-After and uses the backoff", () => {
+		const d = backoffDelay(0, "soon");
+		expect(d).toBeGreaterThanOrEqual(125);
+		expect(d).toBeLessThanOrEqual(250);
 	});
 });
 
