@@ -37,9 +37,9 @@ export type RtEnv = Env &
 		BING_API_KEY?: string;
 		SERPAPI_KEY?: string;
 
-		// Facebook Graph API access token (facebook fn); Proxycurl key for LinkedIn (linkedin fn).
+		// Facebook Graph API access token (facebook fn). (linkedin fn now scrapes via
+		// the render mac backend — Proxycurl shut down July 2025 — so it needs no key.)
 		FACEBOOK_TOKEN?: string;
-		PROXYCURL_API_KEY?: string;
 		// Git-backed Obsidian vault (obsidian fn): 'owner/repo', branch, optional subfolder.
 		OBSIDIAN_VAULT_REPO?: string;
 		OBSIDIAN_VAULT_BRANCH?: string;

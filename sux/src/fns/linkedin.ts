@@ -1,46 +1,67 @@
 import { type Fn, fail, ok } from "../registry";
 
-// LinkedIn data via Proxycurl (nubela.co) — LinkedIn's own API has no general
-// people/company lookup, so a people-data provider is the practical path.
-// Key-gated on PROXYCURL_API_KEY. This is a connector-wrap (F13): Proxycurl's
-// person/company payloads are huge, so we distill them to a few token-cheap
-// fields. Authenticated API → egresses direct, bounded with a timeout.
-const PROXYCURL = "https://nubela.co/proxycurl/api";
+// LinkedIn public data by SCRAPING (Proxycurl — the old provider path — shut down
+// in July 2025 after LinkedIn sued Nubela). We render the public profile/company
+// page through the residential `render` fn's `mac` backend (headed patched
+// browser + CapSolver, which clears LinkedIn's active bot wall) and extract the
+// structured data LinkedIn publishes on the page itself: schema.org JSON-LD
+// (Person / Organization) plus og: meta as a fallback. Distilled to token-cheap
+// fields. Public-page data only — deeper fields need an authenticated session.
 
-function distillPerson(j: any): Record<string, unknown> {
+/** Parse every <script type="application/ld+json"> block, flattening @graph. */
+export function parseJsonLd(html: string): any[] {
+	const out: any[] = [];
+	const re = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+	let m: RegExpExecArray | null;
+	while ((m = re.exec(html))) {
+		try {
+			const j = JSON.parse(m[1].trim());
+			for (const node of Array.isArray(j) ? j : j["@graph"] ? j["@graph"] : [j]) out.push(node);
+		} catch {
+			/* skip malformed block */
+		}
+	}
+	return out;
+}
+
+const ogMeta = (html: string, prop: string): string | undefined =>
+	html.match(new RegExp(`<meta[^>]+property=["']og:${prop}["'][^>]+content=["']([^"']*)["']`, "i"))?.[1];
+
+const asArray = (v: any): any[] => (Array.isArray(v) ? v : v == null ? [] : [v]);
+
+export function extractPerson(html: string): Record<string, unknown> {
+	const person = parseJsonLd(html).find((n) => String(n?.["@type"]).toLowerCase() === "person") ?? {};
+	const worksFor = asArray(person.worksFor);
+	const alumni = asArray(person.alumniOf);
+	const ogTitle = ogMeta(html, "title"); // usually "Name - Headline | LinkedIn"
 	return {
-		full_name: j?.full_name,
-		headline: j?.headline,
-		occupation: j?.occupation,
-		location: [j?.city, j?.state, j?.country_full_name].filter(Boolean).join(", ") || undefined,
-		summary: j?.summary,
-		current: (j?.experiences ?? []).slice(0, 3).map((e: any) => ({ title: e?.title, company: e?.company, starts_at: e?.starts_at?.year })),
-		education: (j?.education ?? []).slice(0, 3).map((e: any) => ({ school: e?.school, degree: e?.degree_name, field: e?.field_of_study })),
-		skills: (j?.skills ?? []).slice(0, 15),
-		connections: j?.connections,
-		profile_url: j?.public_identifier ? `https://www.linkedin.com/in/${j.public_identifier}` : undefined,
+		name: person.name ?? ogTitle?.split(" - ")[0]?.replace(/\s*\|\s*LinkedIn\s*$/i, "").trim(),
+		headline: person.jobTitle ?? person.description ?? ogTitle?.split(" - ").slice(1).join(" - ").replace(/\s*\|\s*LinkedIn\s*$/i, "").trim() ?? ogMeta(html, "description"),
+		location: [person.address?.addressLocality, person.address?.addressRegion, person.address?.addressCountry].filter(Boolean).join(", ") || undefined,
+		current: worksFor.slice(0, 3).map((w) => (typeof w === "string" ? w : w?.name)).filter(Boolean),
+		education: alumni.slice(0, 3).map((a) => (typeof a === "string" ? a : a?.name)).filter(Boolean),
+		image: person.image?.contentUrl ?? person.image,
+		url: person.url ?? person["@id"],
 	};
 }
 
-function distillCompany(j: any): Record<string, unknown> {
+export function extractCompany(html: string): Record<string, unknown> {
+	const org = parseJsonLd(html).find((n) => /organization|corporation/i.test(String(n?.["@type"]))) ?? {};
 	return {
-		name: j?.name,
-		industry: j?.industry,
-		description: j?.description,
-		website: j?.website,
-		size: j?.company_size_on_linkedin,
-		founded_year: j?.founded_year,
-		followers: j?.follower_count,
-		hq: j?.hq ? [j.hq.city, j.hq.state, j.hq.country].filter(Boolean).join(", ") : undefined,
-		specialities: (j?.specialities ?? []).slice(0, 10),
+		name: org.name ?? ogMeta(html, "title")?.replace(/\s*\|\s*LinkedIn\s*$/i, "").trim(),
+		description: org.description ?? ogMeta(html, "description"),
+		website: org.url ?? asArray(org.sameAs)[0],
+		employees: org.numberOfEmployees?.value ?? org.numberOfEmployees,
+		industry: org.industry,
+		location: [org.address?.addressLocality, org.address?.addressCountry].filter(Boolean).join(", ") || undefined,
 	};
 }
 
 export const linkedin: Fn = {
 	name: "linkedin",
-	cost: 3,
+	cost: 5, // scrapes via a full headed-browser render (mac backend) — heavy
 	description:
-		"LinkedIn data via Proxycurl (people-data provider). action: person (default) resolves a profile URL to a distilled profile (name, headline, current roles, education, skills); company resolves a company URL to firmographics. `url` is the linkedin.com profile/company URL. Needs PROXYCURL_API_KEY (nubela.co/proxycurl). Distills Proxycurl's verbose payload to a few token-cheap fields.",
+		"LinkedIn public profile/company data by scraping (the old Proxycurl API shut down July 2025). action: person (default) resolves a profile URL; company resolves a company URL. Renders the public page through the residential `render` mac backend (headed browser + CapSolver to clear the bot wall) and extracts schema.org JSON-LD (Person/Organization) + og: meta, distilled to token-cheap fields. Needs the mac render backend configured (MAC_RENDER_URL/MAC_RENDER_SECRET). Public-page fields only — deeper data needs an authenticated session.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -51,22 +72,26 @@ export const linkedin: Fn = {
 		},
 	},
 	cacheable: true,
-	ttl: 86400, // profiles change slowly; Proxycurl calls cost credits — cache hard
+	ttl: 86400, // profiles change slowly; each lookup is an expensive render — cache hard
 	run: async (env, args) => {
-		const apiKey = env.PROXYCURL_API_KEY;
-		if (!apiKey) return fail("LinkedIn not configured (PROXYCURL_API_KEY). Get a key at https://nubela.co/proxycurl.");
 		const url = String(args?.url ?? "").trim();
 		if (!/^https?:\/\/([\w-]+\.)*linkedin\.com\//i.test(url)) return fail("`url` must be a linkedin.com profile or company URL.");
 		const action = String(args?.action ?? "person") === "company" ? "company" : "person";
-		const endpoint =
-			action === "company"
-				? `${PROXYCURL}/linkedin/company?url=${encodeURIComponent(url)}`
-				: `${PROXYCURL}/v2/linkedin?linkedin_profile_url=${encodeURIComponent(url)}`;
+
+		// Delegate the anti-bot render to the `render` fn (mac backend + CapSolver).
+		const { FUNCTIONS } = (await import("./index")) as { FUNCTIONS: Fn[] };
+		const render = FUNCTIONS.find((f) => f.name === "render");
+		if (!render) return fail("linkedin needs the `render` fn (not found in the registry).");
 		try {
-			const resp = await fetch(endpoint, { headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" }, signal: AbortSignal.timeout(30_000) });
-			const j = (await resp.json().catch(() => null)) as any;
-			if (!resp.ok) return fail(`Proxycurl error: ${j?.description ?? j?.detail ?? `HTTP ${resp.status}`}`);
-			return ok(JSON.stringify(action === "company" ? distillCompany(j) : distillPerson(j), null, 2));
+			const r = await render.run(env, { url, backend: "mac", as: "html", solve: true });
+			if (r.isError) return fail(`linkedin scrape failed (render): ${r.content?.[0]?.text ?? "unknown error"}`);
+			const html = r.content?.[0]?.text ?? "";
+			if (!parseJsonLd(html).length && /authwall|sign in to LinkedIn|Join LinkedIn to view/i.test(html)) {
+				return fail("LinkedIn returned an auth wall (no public data). This profile needs an authenticated session.");
+			}
+			const data = action === "company" ? extractCompany(html) : extractPerson(html);
+			if (!data.name) return fail("Could not extract public profile data from the LinkedIn page (structure may have changed or the page is gated).");
+			return ok(JSON.stringify(data, null, 2));
 		} catch (e) {
 			return fail(`linkedin failed: ${String((e as Error).message ?? e)}`);
 		}

@@ -1,64 +1,84 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { linkedin } from "./linkedin";
+import { describe, expect, it, vi } from "vitest";
 
-afterEach(() => vi.unstubAllGlobals());
+// linkedin delegates the anti-bot fetch to the `render` fn via the registry; mock
+// the registry so we can feed it canned page HTML without a real browser render.
+const { renderRun } = vi.hoisted(() => ({ renderRun: vi.fn() }));
+vi.mock("./index", () => ({ FUNCTIONS: [{ name: "render", run: renderRun }] }));
 
-const ENV = { PROXYCURL_API_KEY: "k" } as any;
+import { extractCompany, extractPerson, linkedin, parseJsonLd } from "./linkedin";
 
-describe("linkedin", () => {
-	it("reports when PROXYCURL_API_KEY is not configured", async () => {
-		const r = await linkedin.run({} as any, { url: "https://www.linkedin.com/in/x" });
-		expect(r.isError).toBe(true);
-		expect(r.content[0].text).toMatch(/PROXYCURL_API_KEY/);
+const personHtml = `<html><head>
+<meta property="og:title" content="Ada Lovelace - Analyst at X | LinkedIn"/>
+<script type="application/ld+json">${JSON.stringify({
+	"@graph": [
+		{
+			"@type": "Person",
+			name: "Ada Lovelace",
+			jobTitle: "Analyst",
+			address: { addressLocality: "London", addressCountry: "UK" },
+			worksFor: [{ name: "X" }, { name: "Y" }],
+			alumniOf: [{ name: "Uni" }],
+			url: "https://www.linkedin.com/in/ada",
+		},
+	],
+})}</script></head><body></body></html>`;
+
+const companyHtml = `<html><head>
+<script type="application/ld+json">${JSON.stringify({ "@type": "Organization", name: "Acme", description: "We make things", url: "https://acme.com", numberOfEmployees: { value: 500 }, address: { addressLocality: "SF", addressCountry: "US" } })}</script>
+</head></html>`;
+
+describe("linkedin extractors", () => {
+	it("parseJsonLd flattens @graph and multiple blocks", () => {
+		const nodes = parseJsonLd(personHtml);
+		expect(nodes.some((n) => n["@type"] === "Person")).toBe(true);
 	});
+	it("extractPerson distills the Person JSON-LD", () => {
+		const p = extractPerson(personHtml);
+		expect(p).toMatchObject({ name: "Ada Lovelace", headline: "Analyst", location: "London, UK", url: "https://www.linkedin.com/in/ada" });
+		expect(p.current).toEqual(["X", "Y"]);
+		expect(p.education).toEqual(["Uni"]);
+	});
+	it("extractPerson falls back to og:title when JSON-LD is absent", () => {
+		const p = extractPerson(`<meta property="og:title" content="Grace Hopper - Rear Admiral | LinkedIn"/>`);
+		expect(p.name).toBe("Grace Hopper");
+		expect(p.headline).toBe("Rear Admiral");
+	});
+	it("extractCompany distills the Organization JSON-LD", () => {
+		expect(extractCompany(companyHtml)).toMatchObject({ name: "Acme", description: "We make things", website: "https://acme.com", employees: 500, location: "SF, US" });
+	});
+});
 
+describe("linkedin fn", () => {
 	it("rejects a non-linkedin url", async () => {
-		const r = await linkedin.run(ENV, { url: "https://example.com/in/x" });
+		const r = await linkedin.run({} as any, { url: "https://example.com/in/x" });
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toMatch(/linkedin\.com/);
 	});
 
-	it("resolves a person profile and distills Proxycurl's verbose payload", async () => {
-		const payload = {
-			full_name: "Ada Lovelace",
-			headline: "Mathematician",
-			occupation: "Analyst at X",
-			city: "London",
-			country_full_name: "UK",
-			experiences: [{ title: "Analyst", company: "X", starts_at: { year: 2020 } }, { title: "Old", company: "Y" }, { title: "Older", company: "Z" }, { title: "Oldest", company: "W" }],
-			education: [{ school: "Uni", degree_name: "BS", field_of_study: "Math" }],
-			skills: Array.from({ length: 30 }, (_, i) => `skill${i}`),
-			public_identifier: "ada",
-		};
-		const fetchMock = vi.fn(async (u: string | URL, _init?: RequestInit) => {
-			expect(String(u)).toContain("/v2/linkedin?linkedin_profile_url=");
-			return new Response(JSON.stringify(payload), { status: 200 });
-		});
-		vi.stubGlobal("fetch", fetchMock);
-		const r = await linkedin.run(ENV, { url: "https://www.linkedin.com/in/ada" });
-		const out = JSON.parse(r.content[0].text);
-		expect(out.full_name).toBe("Ada Lovelace");
-		expect(out.current).toHaveLength(3); // capped
-		expect(out.skills).toHaveLength(15); // capped
-		expect(out.profile_url).toBe("https://www.linkedin.com/in/ada");
-		// Bearer auth sent
-		expect((fetchMock.mock.calls[0][1] as any).headers.Authorization).toBe("Bearer k");
+	it("scrapes a person via the render mac backend and returns distilled data", async () => {
+		renderRun.mockResolvedValueOnce({ content: [{ text: personHtml }] });
+		const r = await linkedin.run({} as any, { url: "https://www.linkedin.com/in/ada" });
+		expect(renderRun).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ url: "https://www.linkedin.com/in/ada", backend: "mac", solve: true }));
+		expect(JSON.parse(r.content[0].text).name).toBe("Ada Lovelace");
 	});
 
-	it("resolves a company via the company endpoint", async () => {
-		const fetchMock = vi.fn(async (u: string | URL) => {
-			expect(String(u)).toContain("/linkedin/company?url=");
-			return new Response(JSON.stringify({ name: "Acme", industry: "Tech", follower_count: 100 }), { status: 200 });
-		});
-		vi.stubGlobal("fetch", fetchMock);
-		const r = await linkedin.run(ENV, { url: "https://www.linkedin.com/company/acme", action: "company" });
-		expect(JSON.parse(r.content[0].text)).toMatchObject({ name: "Acme", industry: "Tech", followers: 100 });
+	it("resolves a company via action=company", async () => {
+		renderRun.mockResolvedValueOnce({ content: [{ text: companyHtml }] });
+		const r = await linkedin.run({} as any, { url: "https://www.linkedin.com/company/acme", action: "company" });
+		expect(JSON.parse(r.content[0].text)).toMatchObject({ name: "Acme", employees: 500 });
 	});
 
-	it("surfaces a Proxycurl error", async () => {
-		vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ description: "Profile not found" }), { status: 404 })));
-		const r = await linkedin.run(ENV, { url: "https://www.linkedin.com/in/nobody" });
+	it("surfaces an auth wall when there's no public data", async () => {
+		renderRun.mockResolvedValueOnce({ content: [{ text: "<html><body>Sign in to LinkedIn to view</body></html>" }] });
+		const r = await linkedin.run({} as any, { url: "https://www.linkedin.com/in/private" });
 		expect(r.isError).toBe(true);
-		expect(r.content[0].text).toMatch(/Profile not found/);
+		expect(r.content[0].text).toMatch(/auth wall/);
+	});
+
+	it("propagates a render error", async () => {
+		renderRun.mockResolvedValueOnce({ content: [{ text: "mac backend not configured" }], isError: true });
+		const r = await linkedin.run({} as any, { url: "https://www.linkedin.com/in/ada" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/render/);
 	});
 });
