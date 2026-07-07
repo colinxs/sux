@@ -1,0 +1,21 @@
+{
+  "name": "sux",
+  "owner": {
+    "name": "colinxs",
+    "email": "colinxsummers@gmail.com"
+  },
+  "description": "Single-plugin marketplace for the sux MCP connector companion plugin.",
+  "plugins": [
+    {
+      "name": "sux",
+      "source": "./sux",
+      "description": "Skills and slash commands that teach Claude when and how to route work to the sux MCP connector — residential web search/scrape/render, crawl/extract, retailer product search, data transforms, storage, and Workers-AI text tools.",
+      "version": "0.1.0",
+      "author": {
+        "name": "colinxs",
+        "email": "colinxsummers@gmail.com"
+      },
+      "keywords": ["mcp", "web-search", "scraping", "retail", "data-transforms"]
+    }
+  ]
+}

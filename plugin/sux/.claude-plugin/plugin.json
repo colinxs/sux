@@ -1,0 +1,11 @@
+{
+  "name": "sux",
+  "description": "Skills and slash commands for the sux MCP connector — residential web search, scrape/render (cf|mac + captcha solve), crawl/extract, retailer product search, format transforms, storage, and Workers-AI text tools.",
+  "version": "0.1.0",
+  "author": {
+    "name": "colinxs",
+    "email": "colinxsummers@gmail.com"
+  },
+  "homepage": "https://sux.colinxs.workers.dev",
+  "keywords": ["mcp", "web-search", "scraping", "residential-proxy", "retail", "cloudflare-workers"]
+}
