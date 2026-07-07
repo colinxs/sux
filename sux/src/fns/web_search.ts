@@ -57,7 +57,16 @@ export function parseDdg(html: string, limit: number): Hit[] {
 	let m: RegExpExecArray | null;
 	while ((m = re.exec(html)) && hits.length < limit) {
 		const uddg = m[1].match(/[?&]uddg=([^&]+)/);
-		const url = uddg ? decodeURIComponent(uddg[1]) : m[1].startsWith("//") ? `https:${m[1]}` : m[1];
+		let url: string;
+		if (uddg) {
+			try {
+				url = decodeURIComponent(uddg[1]);
+			} catch {
+				continue; // truncated/invalid percent-escape in the redirect param — skip this anchor, keep the rest
+			}
+		} else {
+			url = m[1].startsWith("//") ? `https:${m[1]}` : m[1];
+		}
 		if (!/^https?:\/\//.test(url)) continue;
 		const title = stripHtml(m[2]).trim();
 		if (!title || seen.has(url)) continue;

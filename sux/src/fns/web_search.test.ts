@@ -11,7 +11,7 @@ vi.mock("./index", () => ({ FUNCTIONS: [{ name: "render", run: renderRun }] }));
 const { smartFetch } = vi.hoisted(() => ({ smartFetch: vi.fn() }));
 vi.mock("../proxy", () => ({ smartFetch }));
 
-import { parseGoogleSerp, webSearch } from "./web_search";
+import { parseDdg, parseGoogleSerp, webSearch } from "./web_search";
 
 const serp = (hits: Array<{ url: string; title: string }>) =>
 	`<html><body>${hits.map((h) => `<div class="g"><a href="${h.url}"><h3>${h.title}</h3></a></div>`).join("")}</body></html>`;
@@ -31,6 +31,19 @@ describe("parseGoogleSerp", () => {
 		const hits = parseGoogleSerp(html, 10);
 		expect(hits.map((h) => h.url)).toEqual(["https://real.example/page", "https://foo.com/a"]);
 		expect(hits[0].title).toBe("Real Result");
+	});
+});
+
+describe("parseDdg", () => {
+	it("skips a result whose uddg redirect has a malformed percent-escape, keeps the rest", () => {
+		// The second anchor's uddg ends in a truncated escape (%E0%A4%A) that makes
+		// decodeURIComponent throw — it must be skipped, not abort the whole parse.
+		const html = `
+			<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fgood.example%2Fone">One</a>
+			<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fbad.example%2F%E0%A4%A">Bad</a>
+			<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fgood.example%2Ftwo">Two</a>`;
+		const hits = parseDdg(html, 10);
+		expect(hits.map((h) => h.url)).toEqual(["https://good.example/one", "https://good.example/two"]);
 	});
 });
 
