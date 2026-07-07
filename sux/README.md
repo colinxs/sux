@@ -75,7 +75,7 @@ See `sux/docs/retail-endpoints.md` for per-retailer specifics.
 - **Compress/encode** — `compress`, `archive`, `encode`, `hash`, `pack`.
 - **Store/cache** — `store` (R2 CAS), `kv_get/put/list/delete`.
 - **Compose** — `pipe` (COMPOSE), `batch` (MAP + reduce), `fresh` (universal cache-bypass arg).
-- **Retail** — `kroger` (official API; QFC + Fred Meyer via chain), `walmart`, `homedepot`, `costco` (+ `ace`, `lowes`, `amazon`, `winco` planned). See retail section.
+- **Retail** — `kroger` (official API; QFC + Fred Meyer via chain), `walmart`, `homedepot`, `costco`, `amazon`, `lowes`, `ace` (+ `winco` planned). See retail section.
 - **Meta** — `issue`, `shop`.
 
 Registry is auto-generated: add `sux/src/fns/<name>.ts` (`export const <name>: Fn`) → `npm run gen:index`. Cap: **100 fns** (upper limit, not a goal).
@@ -90,12 +90,14 @@ Route each retailer to the lowest fetch-ladder rung that works:
 |---|---|---|
 | **Kroger / QFC / Fred Meyer** | official free API (`api.kroger.com`) | OAuth client-creds, zero bot protection. Needs free `KROGER_CLIENT_ID/SECRET`. Cleanest. |
 | **Costco** | `scrape` (curl-impersonate) | Akamai JA3-centric → passive; HTML search + extract. |
-| **Ace** | needs Kibo session token | Kibo REST 401s without a warmed token → render:mac. |
-| **Home Depot** | `render:mac` | active Akamai `_abck` → real browser. GraphQL `federation-gateway` or rendered tiles. |
-| **Walmart** | `render:mac` (⚠ blocked) | PerimeterX press-and-hold captcha challenges even the headless patched browser → fn fails gracefully. Would need a *headed* real-Chrome or a captcha step. |
-| **Lowe's** | `render:mac`/scrape | embedded `__PRELOADED_STATE__` JSON. |
-| **Amazon** | best-effort | PA-API needs an Associate account; direct scrape hits WAF+CAPTCHA. |
+| **Home Depot** | `render:mac` | active Akamai `_abck` → real browser; rendered product-pod tiles / `__APOLLO_STATE__`. |
+| **Walmart** | `render:mac` + **solver** | PerimeterX press-and-hold — **solved** by the headed solver tier's real hold gesture (`solve:true`). Lifts `__NEXT_DATA__`. |
+| **Amazon** | `render:mac` | no free API (PA-API needs an Associate acct). Solver renders `s-search-result` tiles by ASIN; auto-escalates on Robot Check. |
+| **Lowe's** | `render:mac` | no public API. Rendered `/pd/<slug>/<id>` tiles + embedded state. |
+| **Ace** | `render:mac` | Kibo/Mozu; invisible reCAPTCHA v3 doesn't block — renders `mz-productlisting` tiles. |
 | **WinCo** | store-locator only | no online product catalog exists. |
+
+The **solver tier** (headed patchright + CapSolver extension on the Mac) is what unlocked Walmart/Amazon/Ace: PerimeterX press-and-hold falls to a real mouse hold gesture (no CapSolver needed); DataDome/reCAPTCHA/hCaptcha/Turnstile fall to the CapSolver extension. `render backend:"mac"` auto-escalates to it when a page looks blocked.
 
 ---
 

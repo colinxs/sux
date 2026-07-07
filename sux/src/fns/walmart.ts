@@ -72,6 +72,7 @@ export const walmart: Fn = {
 				block_resources: true,
 				wait_until: "domcontentloaded",
 				wait_ms: 4000,
+				solve: true,
 			});
 			if (!r.ok) return fail(`${BLOCKED_MSG} (${r.error})`);
 			const data = extractNextData(r.body);
@@ -100,6 +101,7 @@ export const walmart: Fn = {
 			block_resources: true,
 			wait_until: "domcontentloaded",
 			wait_ms: 4000,
+			solve: true,
 		});
 		if (!r.ok) return fail(`${BLOCKED_MSG} (${r.error})`);
 		const data = extractNextData(r.body);

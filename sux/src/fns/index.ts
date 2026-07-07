@@ -44,7 +44,9 @@ import { kv_list } from "./kv_list";
 import { kv_delete } from "./kv_delete";
 import { issue } from "./issue";
 import { imageConvert } from "./image_convert";
+import { ace } from "./ace";
 import { alphavantage } from "./alphavantage";
+import { amazon } from "./amazon";
 import { arxiv } from "./arxiv";
 import { bestbuy } from "./bestbuy";
 import { coingecko } from "./coingecko";
@@ -64,6 +66,7 @@ import { html } from "./html";
 import { json } from "./json";
 import { kroger } from "./kroger";
 import { linkedin } from "./linkedin";
+import { lowes } from "./lowes";
 import { markdown } from "./markdown";
 import { nyt } from "./nyt";
 import { obsidian } from "./obsidian";
@@ -126,7 +129,9 @@ export const FUNCTIONS: Fn[] = [
 	kv_delete,
 	issue,
 	imageConvert,
+	ace,
 	alphavantage,
+	amazon,
 	arxiv,
 	bestbuy,
 	coingecko,
@@ -146,6 +151,7 @@ export const FUNCTIONS: Fn[] = [
 	json,
 	kroger,
 	linkedin,
+	lowes,
 	markdown,
 	nyt,
 	obsidian,

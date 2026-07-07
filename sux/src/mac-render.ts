@@ -22,6 +22,10 @@ export type MacRenderSpec = {
 	wait_ms?: number;
 	block_resources?: boolean;
 	timeout_ms?: number;
+	// Force the CapSolver-equipped headed solver tier (captchas/press-and-hold).
+	// The service auto-escalates when a page looks blocked; set for always-walled
+	// sites (e.g. Walmart PerimeterX) to skip the wasted headless pass.
+	solve?: boolean;
 };
 
 // The Mac service response envelope. For as html/text, `body` is the text; for
