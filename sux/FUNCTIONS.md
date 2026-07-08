@@ -133,7 +133,7 @@ Status: ✅ working · 🟡 planned (needs a binding/WASM not yet wired).
 | `places` | ✅ | ✓ | Google Places API (official, free credit) — local business and point-of-interest search from a free-… |
 | `product_search` | ✅ | ✓ | Multi-retailer product search — fan one `term` across the retailer fns (kroger, walmart, homedepot, … |
 | `pubmed` | ✅ | ✓ | Search PubMed / NCBI (keyless, free) — biomedical and life-sciences literature |
-| `reddit` | ✅ | ✓ | Reddit read-only API (app-only OAuth) — search posts, browse a subreddit, read a post's comments, or… |
+| `reddit` | ✅ | ✓ | Reddit read-only API — search posts, browse a subreddit, read a post's comments, or look up a user |
 | `render` | ✅ | ✓ | Scrape a JavaScript-rendered page via headless Chromium (Cloudflare Browser Rendering) |
 | `selftest` | ✅ | ✓ | Probe the fetch ladder and report which rungs are up |
 | `semantic_scholar` | ✅ | ✓ | Search Semantic Scholar (keyless, free) — the Academic Graph across every field of research |
