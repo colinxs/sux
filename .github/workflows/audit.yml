@@ -1,0 +1,79 @@
+name: Audit & SBOM
+
+# Dependency vulnerability audit + Software Bill of Materials generation.
+# Runs on every push and pull request, and weekly (Mondays 07:00 UTC) so a
+# newly disclosed CVE in an unchanged dependency still trips the build.
+#
+# The audit FAILS the build on genuine high/critical advisories, but stays
+# advisory (does not fail) when npm cannot reach the registry — a network
+# blip must not turn CI red. The SBOM is uploaded as a build artifact for
+# supply-chain provenance.
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 7 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: npm audit & SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Fail on high/critical advisories. A registry/network failure yields an
+      # error object instead of a vulnerability report — we treat that as
+      # advisory (::warning::) so transient outages don't flake the build,
+      # while a real high/critical count exits non-zero.
+      - name: npm audit (fail on high/critical)
+        run: |
+          npm audit --audit-level=high --json > audit-report.json || true
+          node -e '
+            const fs = require("fs");
+            let r;
+            try {
+              r = JSON.parse(fs.readFileSync("audit-report.json", "utf8"));
+            } catch (e) {
+              console.log("::warning::Could not parse npm audit output; treating as advisory.");
+              process.exit(0);
+            }
+            if (r.error) {
+              const code = (r.error && r.error.code) || "unknown";
+              console.log("::warning::npm audit could not reach the registry (" + code + "); treating as advisory.");
+              process.exit(0);
+            }
+            const v = (r.metadata && r.metadata.vulnerabilities) || {};
+            const critical = v.critical || 0, high = v.high || 0;
+            console.log("Vulnerabilities: critical=" + critical + " high=" + high + " moderate=" + (v.moderate || 0) + " low=" + (v.low || 0));
+            if (critical + high > 0) {
+              console.log("::error::Found " + critical + " critical and " + high + " high severity vulnerabilities (see audit-report.json).");
+              process.exit(1);
+            }
+            console.log("No high or critical vulnerabilities.");
+          '
+
+      # CycloneDX SBOM of the fully-resolved dependency tree.
+      - name: Generate SBOM (CycloneDX)
+        run: npm sbom --sbom-format cyclonedx > sbom.cyclonedx.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sbom-cyclonedx
+          path: sbom.cyclonedx.json
+          if-no-files-found: error
