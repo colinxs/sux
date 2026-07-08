@@ -26,6 +26,11 @@ export const csv: Fn = {
 		try {
 			const arr = JSON.parse(data);
 			if (!Array.isArray(arr)) return fail("csv expects a JSON array of objects.");
+			// Headers come only from object keys; a scalar (or array) element would
+			// silently serialise to a zero-column row and drop all its data. Reject
+			// such elements up front so the loss surfaces as an error, not blank lines.
+			if (arr.some((el) => !el || typeof el !== "object" || Array.isArray(el)))
+				return fail("csv expects a JSON array of objects; found a non-object element.");
 			return ok(toCsv(arr, delim));
 		} catch (e) {
 			return fail(`csv failed: ${String((e as Error).message ?? e)}`);

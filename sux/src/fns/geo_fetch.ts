@@ -1,6 +1,5 @@
 import { type Fn, failWith, ok } from "../registry";
-import { smartFetch } from "../proxy";
-import { isHttpUrl, noCacheOn4xx } from "./_util";
+import { type Fetched, fetchText, isHttpUrl, noCacheOn4xx } from "./_util";
 
 export const geo_fetch: Fn = {
 	name: "geo_fetch",
@@ -25,14 +24,16 @@ export const geo_fetch: Fn = {
 		const headers: Record<string, string> = {};
 		if (geo) headers["x-exit-geo"] = geo;
 
-		let resp: Response;
+		let fetched: Fetched;
 		try {
-			resp = await smartFetch(env, url, { headers });
+			// fetchText streams the body and aborts at maxBytes (via readBodyText) so a
+			// huge/hostile response is never fully buffered in the isolate — smartFetch's
+			// direct-fallback path applies no size cap, so resp.text() here would OOM.
+			fetched = await fetchText(env, url, { headers, maxBytes });
 		} catch (e) {
 			return failWith("upstream_error", `Fetch failed: ${String((e as Error).message ?? e)}`);
 		}
-		const full = await resp.text();
-		const text = full.slice(0, maxBytes);
-		return noCacheOn4xx(ok(JSON.stringify({ url, geo: geo || null, status: resp.status, bytes: full.length, text }, null, 2)), resp.status);
+		const text = fetched.text;
+		return noCacheOn4xx(ok(JSON.stringify({ url, geo: geo || null, status: fetched.status, bytes: text.length, text }, null, 2)), fetched.status);
 	},
 };

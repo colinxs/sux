@@ -127,6 +127,46 @@ export function clearFetchCache(): void {
  * (feeds, sitemaps) aren't silently truncated, small enough to bound memory. */
 export const FETCH_TEXT_MAX_BYTES = 2_000_000;
 
+/** Default byte cap for binary (bytes) fetches — larger than the text cap since
+ * binary consumers (pdf, image, ocr) legitimately handle bigger inputs, but still
+ * bounded so a hostile/huge remote file can't OOM the isolate. */
+export const FETCH_BYTES_MAX_BYTES = 32_000_000;
+
+/** Read a response body as raw bytes, streaming, and abort once `maxBytes` have
+ * been consumed — so a huge/hostile body is never fully buffered (the bytes
+ * analogue of readBodyText). Rejects up front on an oversized Content-Length and
+ * mid-stream once the running total exceeds the cap; throws rather than truncate
+ * (a partial binary is not usable input). */
+async function readBodyBytes(resp: Response, maxBytes: number): Promise<Uint8Array> {
+	const declared = Number(resp.headers.get("content-length"));
+	if (Number.isFinite(declared) && declared > maxBytes) throw new Error(`Response too large: ${declared} bytes exceeds ${maxBytes}-byte cap`);
+	if (!resp.body) {
+		const buf = new Uint8Array(await resp.arrayBuffer());
+		if (buf.byteLength > maxBytes) throw new Error(`Response too large: ${buf.byteLength} bytes exceeds ${maxBytes}-byte cap`);
+		return buf;
+	}
+	const reader = resp.body.getReader();
+	const chunks: Uint8Array[] = [];
+	let consumed = 0;
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		consumed += value.byteLength;
+		if (consumed > maxBytes) {
+			await reader.cancel().catch(() => {});
+			throw new Error(`Response too large: exceeds ${maxBytes}-byte cap`);
+		}
+		chunks.push(value);
+	}
+	const out = new Uint8Array(consumed);
+	let off = 0;
+	for (const c of chunks) {
+		out.set(c, off);
+		off += c.byteLength;
+	}
+	return out;
+}
+
 /** Read a response body as text, streaming, and cancel the stream once
  * `maxBytes` have been consumed — so a huge body is never fully buffered. */
 async function readBodyText(resp: Response, maxBytes: number): Promise<string> {
@@ -174,7 +214,11 @@ export async function fetchText(
 	// never cache a POST or a request with a body). A hit skips the whole proxy
 	// round-trip; a miss populates for the rest of the chain.
 	const method = (init?.method ?? "GET").toUpperCase();
-	const dedupKey = fetchDedupActive() && method === "GET" && !init?.body ? `${maxBytes}|${url}` : null;
+	// Fold request headers into the key: a header can select different content for
+	// the same URL (e.g. geo_fetch's x-exit-geo, Accept-Language), so a header-blind
+	// key would serve one variant's body for another's request.
+	const headerSig = init?.headers ? JSON.stringify(init.headers) : "";
+	const dedupKey = fetchDedupActive() && method === "GET" && !init?.body ? `${maxBytes}|${headerSig}|${url}` : null;
 	if (dedupKey) {
 		const hit = fetchCacheGet(dedupKey, Date.now());
 		if (hit) return { status: hit.status, text: hit.text, headers: new Headers(hit.headers), url: hit.url };
@@ -224,14 +268,29 @@ export function noCacheOn4xx<T extends { noCache?: boolean }>(result: T, status:
 }
 
 /**
+ * Transport fns (proxy/scrape/batch_fetch) accept an arbitrary method, but their
+ * results are content-addressed by args and cached for the fn TTL. A non-idempotent
+ * request (POST/PUT/PATCH/DELETE/…) must never be memoized: caching it both serves
+ * a stale response for a repeat mutation and silently skips re-executing the side
+ * effect. Only GET/HEAD are safe to cache; mark everything else noCache.
+ */
+export function noCacheOnMutation<T extends { noCache?: boolean }>(result: T, method: unknown): T {
+	const m = String(method ?? "GET").toUpperCase();
+	if (m !== "GET" && m !== "HEAD") result.noCache = true;
+	return result;
+}
+
+/**
  * Load raw bytes from an inline base64 payload or a URL — THE binary input path,
  * shared by every bytes-consuming fn. URL fetches go through the residential
  * proxy binary-safely (the proxy transports binary bodies base64-encoded, see
  * proxy.ts bodyEncoding), reject HTTP >= 400 consistently, and the worker's own
- * /s/<uuid> CAS refs short-circuit to a direct KV→R2 read. Throws on failure —
+ * /s/<uuid> CAS refs short-circuit to a direct KV→R2 read. URL bodies are
+ * streamed and capped at `maxBytes` (default 32MB) — a huge/hostile remote file
+ * is aborted mid-stream, never fully buffered into an OOM. Throws on failure —
  * callers wrap with their own fail() message.
  */
-export async function loadBytes(env: RtEnv, src: { url?: string; base64?: string }): Promise<{ bytes: Uint8Array; contentType?: string }> {
+export async function loadBytes(env: RtEnv, src: { url?: string; base64?: string }, maxBytes = FETCH_BYTES_MAX_BYTES): Promise<{ bytes: Uint8Array; contentType?: string }> {
 	if (typeof src.base64 === "string" && src.base64) return { bytes: fromB64(src.base64) };
 	if (!isHttpUrl(src.url)) throw new Error("provide `base64` bytes or an absolute http(s) `url`");
 	const url = String(src.url);
@@ -243,7 +302,7 @@ export async function loadBytes(env: RtEnv, src: { url?: string; base64?: string
 	}
 	const resp = await smartFetch(env, url, {});
 	if (resp.status >= 400) throw new Error(`Fetch failed: HTTP ${resp.status} for ${url}`);
-	return { bytes: new Uint8Array(await resp.arrayBuffer()), contentType: resp.headers.get("content-type") ?? undefined };
+	return { bytes: await readBodyBytes(resp, maxBytes), contentType: resp.headers.get("content-type") ?? undefined };
 }
 
 /**
@@ -307,18 +366,29 @@ export function storeRefUuid(u: unknown): string | null {
 	}
 }
 
+/** True when a handle's absolute unix-seconds `expiry` is set and in the past. */
+export function isExpired(ref: { expiry?: number }, now = Date.now()): boolean {
+	return typeof ref.expiry === "number" && ref.expiry * 1000 <= now;
+}
+
 /** Resolve a /s/<uuid> handle to its bytes via KV→R2 directly (no HTTP hop). */
 export async function getBlob(env: RtEnv, uuid: string): Promise<{ bytes: Uint8Array; contentType: string } | null> {
 	if (!env.R2) return null;
 	const raw = await env.OAUTH_KV.get(`${STORE_KV_PREFIX}${uuid}`);
 	if (!raw) return null;
-	const ref = JSON.parse(raw) as { key: string; content_type?: string };
+	const ref = JSON.parse(raw) as { key: string; content_type?: string; expiry?: number };
+	// An expired handle is a not-found (KV's own expirationTtl usually evicts it,
+	// but enforce it here too and best-effort delete a handle KV hasn't reaped yet).
+	if (isExpired(ref)) {
+		await env.OAUTH_KV.delete(`${STORE_KV_PREFIX}${uuid}`).catch(() => {});
+		return null;
+	}
 	const obj = await env.R2.get(ref.key);
 	if (!obj) return null;
 	return { bytes: new Uint8Array(await obj.arrayBuffer()), contentType: ref.content_type ?? obj.httpMetadata?.contentType ?? "application/octet-stream" };
 }
 
-export type BlobRef = { uuid: string; url: string; key: string; sha256: string; size: number; content_type: string };
+export type BlobRef = { uuid: string; url: string; key: string; sha256: string; size: number; content_type: string; expiry?: number };
 
 export async function sha256Hex(bytes: Uint8Array): Promise<string> {
 	const buf = await crypto.subtle.digest("SHA-256", bytes);
@@ -333,17 +403,27 @@ export async function sha256Hex(bytes: Uint8Array): Promise<string> {
  * any fn's binary output becomes a ~100-token reference every other fn can take
  * as a `url` input. Throws when R2 is unbound.
  */
-export async function putBlob(env: RtEnv, bytes: Uint8Array, contentType: string): Promise<BlobRef> {
+export async function putBlob(env: RtEnv, bytes: Uint8Array, contentType: string, opts?: { ttlSeconds?: number }): Promise<BlobRef> {
 	if (!env.R2) throw new Error("R2 is not available (bucket binding missing).");
 	const sha256 = await sha256Hex(bytes);
 	const key = `cas/${sha256}`;
 	const uuid = crypto.randomUUID();
+	// Optional expiry (ephemeral artifacts — render screenshots/pdfs). Record an
+	// absolute unix-seconds `expiry` in the handle JSON so any reader can enforce
+	// it, and set KV's own expirationTtl so the handle self-evicts. KV rejects an
+	// expirationTtl under 60s, so below that we lean on the JSON expiry alone — the
+	// reader still treats it as not-found once past. No ttl = permanent handle.
+	const ttl = typeof opts?.ttlSeconds === "number" && opts.ttlSeconds > 0 ? Math.floor(opts.ttlSeconds) : undefined;
+	const expiry = ttl ? Math.floor(Date.now() / 1000) + ttl : undefined;
+	const handle: Record<string, unknown> = { key, content_type: contentType, size: bytes.length, sha256 };
+	if (expiry) handle.expiry = expiry;
+	const kvOpts = ttl && ttl >= 60 ? { expirationTtl: ttl } : undefined;
 	// The R2 object and KV handle are independent writes — run them concurrently.
 	await Promise.all([
 		env.R2.put(key, bytes, { httpMetadata: { contentType }, customMetadata: { sha256 } }),
-		env.OAUTH_KV.put(`${STORE_KV_PREFIX}${uuid}`, JSON.stringify({ key, content_type: contentType, size: bytes.length, sha256 })),
+		env.OAUTH_KV.put(`${STORE_KV_PREFIX}${uuid}`, JSON.stringify(handle), kvOpts),
 	]);
-	return { uuid, url: `${storeBase(env)}/s/${uuid}`, key, sha256, size: bytes.length, content_type: contentType };
+	return { uuid, url: `${storeBase(env)}/s/${uuid}`, key, sha256, size: bytes.length, content_type: contentType, ...(expiry ? { expiry } : {}) };
 }
 
 /**

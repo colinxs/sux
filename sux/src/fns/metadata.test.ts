@@ -39,4 +39,23 @@ describe("metadata", () => {
 		const r = await metadata.run({} as any, {});
 		expect(r.isError).toBe(true);
 	});
+
+	it("keeps a malformed canonical href instead of crashing", async () => {
+		const html = `<head><title>T</title><link rel="canonical" href="http://[bad"></head>`;
+		const r = await metadata.run({} as any, { html, url: "https://example.com/page" });
+		expect(r.isError).toBeUndefined();
+		const out = JSON.parse(r.content[0].text);
+		expect(out.title).toBe("T");
+		expect(out.canonical).toBe("http://[bad");
+	});
+
+	it("does not crash when url is not an absolute base and refs are relative", async () => {
+		const html = `<head><title>T</title><link rel="canonical" href="/x"><link rel="icon" href="/f.png"></head>`;
+		const r = await metadata.run({} as any, { html, url: "example.com" });
+		expect(r.isError).toBeUndefined();
+		const out = JSON.parse(r.content[0].text);
+		expect(out.title).toBe("T");
+		expect(out.canonical).toBe("/x");
+		expect(out.favicon).toBe("/f.png");
+	});
 });

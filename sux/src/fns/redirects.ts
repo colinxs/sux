@@ -27,7 +27,13 @@ export const redirects: Fn = {
 			const loc = resp.headers.get("location") ?? undefined;
 			chain.push({ status: resp.status, url, location: loc });
 			if (resp.status >= 300 && resp.status < 400 && loc) {
-				url = new URL(loc, url).href;
+				try {
+					// A malformed Location (servers emit garbage routinely) must not
+					// discard the chain already traced — stop here and return what we have.
+					url = new URL(loc, url).href;
+				} catch {
+					break;
+				}
 				continue;
 			}
 			break;

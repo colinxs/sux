@@ -30,12 +30,34 @@ describe("geo_fetch", () => {
 		expect(passedInit.headers?.["x-exit-geo"]).toBe("us-ca");
 	});
 
-	it("truncates the body to max_bytes and reports the full byte count", async () => {
+	it("truncates the body to max_bytes and reports the returned byte count", async () => {
 		const r = await geo_fetch.run({} as any, { url: "https://x.com", max_bytes: 4 });
 		const j = JSON.parse(r.content[0].text);
 		expect(j.text).toBe("PAGE");
-		expect(j.bytes).toBe("PAGE BODY".length);
+		expect(j.bytes).toBe(4);
 		expect(j.geo).toBeNull();
+	});
+
+	it("streams and aborts at max_bytes rather than buffering the whole body", async () => {
+		// A body larger than max_bytes: the old resp.text() path buffered it all
+		// (bytes = full length, stream drained); the streaming path caps + cancels.
+		let cancelled = false;
+		let pulls = 0;
+		const stream = new ReadableStream({
+			pull(controller) {
+				if (pulls++ < 50) controller.enqueue(new TextEncoder().encode("x".repeat(1000)));
+				else controller.close();
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		vi.mocked(smartFetch).mockResolvedValueOnce(new Response(stream, { status: 200 }));
+		const r = await geo_fetch.run({} as any, { url: "https://x.com/big", max_bytes: 10 });
+		const j = JSON.parse(r.content[0].text);
+		expect(j.text).toBe("x".repeat(10));
+		expect(j.bytes).toBe(10); // returned bytes, not the ~50KB full body
+		expect(cancelled).toBe(true); // stream aborted, never fully materialized
 	});
 
 	it("surfaces a fetch failure", async () => {

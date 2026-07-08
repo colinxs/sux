@@ -44,6 +44,14 @@ function elementMatches(el: string, s: Simple): boolean {
 	return true;
 }
 
+/** The content between an element's own open and close tags (its innerHTML). */
+function innerHtml(el: string): string {
+	const open = el.match(/^<[a-z0-9]+\b[^>]*>/i);
+	if (!open) return "";
+	const close = el.match(/<\/[a-z0-9]+\s*>$/i);
+	return el.slice(open[0].length, close ? el.length - close[0].length : el.length);
+}
+
 /** All top-level elements whose tag matches `tag` (or any tag), returning outer HTML. */
 function findByTag(html: string, tag: string | null): string[] {
 	const t = tag ?? "[a-z0-9]+";
@@ -79,8 +87,44 @@ function findByTag(html: string, tag: string | null): string[] {
 	return out;
 }
 
-/** Evaluate one comma-free selector (space-separated descendant steps). */
+/** Split a selector list on commas that sit outside `[...]` and quotes, so a
+ * comma inside an attribute value (e.g. `meta[content="a,b"]`) stays intact. */
+function splitSelectorList(selector: string): string[] {
+	const out: string[] = [];
+	let depth = 0;
+	let quote: string | null = null;
+	let start = 0;
+	for (let i = 0; i < selector.length; i++) {
+		const ch = selector[i];
+		if (quote) {
+			if (ch === quote) quote = null;
+		} else if (ch === '"' || ch === "'") {
+			quote = ch;
+		} else if (ch === "[") {
+			depth++;
+		} else if (ch === "]") {
+			if (depth > 0) depth--;
+		} else if (ch === "," && depth === 0) {
+			out.push(selector.slice(start, i));
+			start = i + 1;
+		}
+	}
+	out.push(selector.slice(start));
+	return out.map((g) => g.trim()).filter(Boolean);
+}
+
+/** Evaluate one comma-free selector (space-separated descendant steps). A
+ * pathological input (e.g. a 100k-char "tag" that overflows the regex engine)
+ * can't match any real element, so degrade to no matches rather than throwing. */
 function selectOne(html: string, selector: string): string[] {
+	try {
+		return selectOneUnsafe(html, selector);
+	} catch {
+		return [];
+	}
+}
+
+function selectOneUnsafe(html: string, selector: string): string[] {
 	const steps = selector.trim().split(/\s+/).map(parseSimple);
 	if (steps.some((s) => s === null)) return [];
 	let scopes = [html];
@@ -93,7 +137,7 @@ function selectOne(html: string, selector: string): string[] {
 			}
 		}
 		results = next;
-		scopes = next; // descend into matched elements for the next step
+		scopes = next.map(innerHtml); // descend into matched elements' contents (not the elements themselves)
 	});
 	return results;
 }
@@ -127,7 +171,7 @@ export const select: Fn = {
 		const attr = args?.attr != null ? String(args.attr) : null;
 
 		// Comma list = union of each group's matches, de-duplicated by outer HTML.
-		const groups = selector.split(",").map((g) => g.trim()).filter(Boolean);
+		const groups = splitSelectorList(selector);
 		const seen = new Set<string>();
 		const els: string[] = [];
 		for (const g of groups) {
@@ -144,7 +188,14 @@ export const select: Fn = {
 		for (const el of els) {
 			if (attr) {
 				const open = el.match(/^<[a-z0-9]+\b([^>]*)>/i);
-				const v = open?.[1].match(new RegExp(`\\b${escapeRegex(attr)}=["']([^"']*)["']`, "i"))?.[1];
+				// A junk `attr` (e.g. a 100k-char string) can overflow the regex
+				// engine — treat it as no match instead of letting it throw.
+				let v: string | undefined;
+				try {
+					v = open?.[1].match(new RegExp(`\\b${escapeRegex(attr)}=["']([^"']*)["']`, "i"))?.[1];
+				} catch {
+					v = undefined;
+				}
 				if (v != null) out.push(v);
 			} else {
 				out.push(el.replace(/<[^>]+>/g, " ").replace(/&nbsp;/gi, " ").replace(/\s+/g, " ").trim());

@@ -1,5 +1,16 @@
 import { type Fn, fail, ok } from "../registry";
-import { loadHtml, stripHtml } from "./_util";
+import { isHttpUrl, loadHtml, stripHtml } from "./_util";
+
+// Resolve `href` against `base`, but never let a malformed href/base crash the
+// whole extraction — fall back to `href` verbatim (a caller passing a bad
+// canonical/favicon still gets the raw value instead of losing every field).
+function resolveHref(href: string, base: string): string {
+	try {
+		return new URL(href, base).href;
+	} catch {
+		return href;
+	}
+}
 
 export const metadata: Fn = {
 	name: "metadata",
@@ -19,7 +30,9 @@ export const metadata: Fn = {
 		if ("error" in loaded) return fail(loaded.error);
 
 		const html = loaded.html;
-		const base = args?.url ? String(args.url) : "";
+		// Only resolve relative refs against an absolute http(s) base — a bare host
+		// or garbage `url` would make `new URL(rel, base)` throw for every hit.
+		const base = isHttpUrl(args?.url) ? String(args.url) : "";
 		const head = html.match(/<head[\s\S]*?<\/head>/i)?.[0] ?? html;
 		const out: Record<string, string> = {};
 
@@ -39,14 +52,14 @@ export const metadata: Fn = {
 		}
 
 		let canonical = head.match(/<link[^>]+rel=["']canonical["'][^>]*href=["']([^"']+)["']/i)?.[1];
-		if (canonical && base) canonical = new URL(canonical, base).href;
+		if (canonical && base) canonical = resolveHref(canonical, base);
 		if (canonical) out.canonical = canonical;
 
 		let favicon =
 			head.match(/<link[^>]+rel=["'][^"']*\bicon\b[^"']*["'][^>]*href=["']([^"']+)["']/i)?.[1] ??
 			head.match(/<link[^>]+href=["']([^"']+)["'][^>]*rel=["'][^"']*\bicon\b[^"']*["']/i)?.[1];
-		if (favicon && base) favicon = new URL(favicon, base).href;
-		else if (!favicon && base) favicon = new URL("/favicon.ico", base).href;
+		if (favicon && base) favicon = resolveHref(favicon, base);
+		else if (!favicon && base) favicon = resolveHref("/favicon.ico", base);
 		if (favicon) out.favicon = favicon;
 
 		if (!Object.keys(out).length) return ok("(no metadata found)");

@@ -20,8 +20,9 @@ function clean(html: string): string {
 		.replace(/<(?:link|meta|input|source)\b[^>]*>/gi, "")
 		// Google/Amazon ad containers.
 		.replace(/<ins\b[^>]*adsbygoogle[\s\S]*?<\/ins>/gi, "")
-		// 1x1 / tracking pixels.
-		.replace(/<img\b[^>]*(?:\b(?:width|height)=["']?1["']?[^>]*){2}[^>]*>/gi, "")
+		// 1x1 / tracking pixels — isolate each tag first (single bounded scan) then
+		// test its attrs, so adversarial input can't trigger regex backtracking.
+		.replace(/<img\b[^>]*>/gi, (tag) => ((tag.match(/\b(?:width|height)=["']?1["']?/gi)?.length ?? 0) >= 2 ? "" : tag))
 		.replace(/<img\b[^>]*\bsrc=["'][^"']*(?:doubleclick|googlesyndication|google-analytics|googletagmanager|scorecardresearch|quantserve|facebook\.com\/tr|pixel)[^"']*["'][^>]*>/gi, "");
 	// Simple, non-nested wrapper blocks whose class/id looks like clutter.
 	const wrapper = new RegExp(`<(div|section|aside|ul|ins|span)\\b[^>]*\\b(?:class|id)=["'][^"']*\\b(?:${CLUTTER})\\b[^"']*["'][^>]*>(?:(?!<\\1\\b)[\\s\\S])*?<\\/\\1>`, "gi");

@@ -37,4 +37,14 @@ describe("tables", () => {
 		const r = await tables.run({} as any, { html: "<p>nothing</p>" });
 		expect(r.content[0].text).toBe("(no tables found)");
 	});
+
+	it("does not truncate an outer table at a nested </table>", async () => {
+		const NESTED =
+			"<table><tr><td><table><tr><td>x</td></tr></table></td></tr><tr><td>lost</td></tr></table>";
+		const r = await tables.run({} as any, { html: NESTED });
+		const out = JSON.parse(r.content[0].text);
+		// One top-level table (no phantom extra), and the post-nesting "lost" row is retained.
+		expect(out).toHaveLength(1);
+		expect(JSON.stringify(out)).toContain("lost");
+	});
 });

@@ -6,6 +6,25 @@ function cells(rowHtml: string): string[] {
 	return [...rowHtml.matchAll(/<(?:td|th)[^>]*>([\s\S]*?)<\/(?:td|th)>/gi)].map((m) => stripHtml(m[1]));
 }
 
+/** Slice out top-level <table>…</table> blocks, honoring nesting depth so nested tables don't truncate the outer one. */
+function topLevelTables(html: string): string[] {
+	const out: string[] = [];
+	let depth = 0;
+	let start = -1;
+	for (const t of html.matchAll(/<(\/?)table\b[^>]*>/gi)) {
+		if (t[1] === "/") {
+			if (depth > 0 && --depth === 0 && start >= 0) {
+				out.push(html.slice(start, t.index + t[0].length));
+				start = -1;
+			}
+		} else {
+			if (depth === 0) start = t.index;
+			depth++;
+		}
+	}
+	return out;
+}
+
 export const tables: Fn = {
 	name: "tables",
 	description:
@@ -25,7 +44,7 @@ export const tables: Fn = {
 		const loaded = await loadHtml(env, args);
 		if ("error" in loaded) return fail(loaded.error);
 
-		const tableHtmls = [...loaded.html.matchAll(/<table[\s\S]*?<\/table>/gi)].map((m) => m[0]);
+		const tableHtmls = topLevelTables(loaded.html);
 		if (!tableHtmls.length) return ok("(no tables found)");
 
 		const single = args?.index != null;

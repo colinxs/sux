@@ -55,4 +55,13 @@ describe("wayback", () => {
 		expect(j.count).toBe(2);
 		expect(j.captures[0].url).toContain("/web/20190101000000/");
 	});
+
+	it("clamps an oversized history-mode limit to 500", async () => {
+		const fetchMock = vi.fn(async () => okResp([["timestamp", "original", "statuscode", "digest"]]));
+		vi.stubGlobal("fetch", fetchMock);
+		await wayback.run({} as any, { url: "https://example.com", mode: "history", limit: 5000000 });
+		const cdx = String((fetchMock.mock.calls[0] as unknown[])[0]);
+		expect(cdx).toContain("&limit=500&");
+		expect(cdx).not.toContain("5000000");
+	});
 });

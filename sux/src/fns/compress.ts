@@ -12,6 +12,10 @@ const zstdOk = typeof Z.zstdCompressSync === "function";
 type Codec = "brotli" | "zstd" | "gzip" | "deflate" | "deflate-raw";
 const CODECS: Codec[] = ["brotli", "zstd", "gzip", "deflate", "deflate-raw"];
 
+// Decompression-bomb guard: a tiny payload can inflate to gigabytes and OOM the
+// isolate. Cap the output buffer — node:zlib throws ERR_BUFFER_TOO_LARGE past it.
+const MAX_DECOMPRESS_BYTES = 32 * 1024 * 1024;
+
 function compressBytes(codec: Codec, buf: Uint8Array): Uint8Array {
 	switch (codec) {
 		case "gzip":
@@ -28,17 +32,18 @@ function compressBytes(codec: Codec, buf: Uint8Array): Uint8Array {
 }
 
 function decompressBytes(codec: Codec, buf: Uint8Array): Uint8Array {
+	const opts = { maxOutputLength: MAX_DECOMPRESS_BYTES };
 	switch (codec) {
 		case "gzip":
-			return Z.gunzipSync(buf);
+			return Z.gunzipSync(buf, opts);
 		case "deflate":
-			return Z.inflateSync(buf);
+			return Z.inflateSync(buf, opts);
 		case "deflate-raw":
-			return Z.inflateRawSync(buf);
+			return Z.inflateRawSync(buf, opts);
 		case "brotli":
-			return Z.brotliDecompressSync(buf);
+			return Z.brotliDecompressSync(buf, opts);
 		case "zstd":
-			return Z.zstdDecompressSync(buf);
+			return Z.zstdDecompressSync(buf, opts);
 	}
 }
 
@@ -89,6 +94,9 @@ export const compress: Fn = {
 			}
 			return ok(JSON.stringify({ ...stats, base64: toB64(out) }));
 		} catch (e) {
+			if ((e as { code?: string })?.code === "ERR_BUFFER_TOO_LARGE") {
+				return fail(`decompress failed: output exceeds the ${MAX_DECOMPRESS_BYTES} byte cap (possible decompression bomb).`);
+			}
 			return fail(`${decompress ? "decompress" : "compress"} failed: ${String((e as Error).message ?? e)}`);
 		}
 	},

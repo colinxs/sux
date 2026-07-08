@@ -3,7 +3,7 @@ import { fetchTextOk, stripHtml } from "./_util";
 
 const EMAIL = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi;
 // US-style (with optional country code) OR an E.164-ish international run.
-const PHONE = /(?:\+?\d{1,3}[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}\b|\+\d{7,15}\b/g;
+const PHONE = /(?<!\d)(?:\+?\d{1,3}[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}(?!\d)|(?<!\d)\+\d{7,15}(?!\d)/g;
 
 // Social profiles: each matches `domain/handle` (any scheme/subdomain around it),
 // with a set of reserved paths that are pages, not profiles.

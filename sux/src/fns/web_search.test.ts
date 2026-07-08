@@ -11,7 +11,7 @@ vi.mock("./index", () => ({ FUNCTIONS: [{ name: "render", run: renderRun }] }));
 const { smartFetch } = vi.hoisted(() => ({ smartFetch: vi.fn() }));
 vi.mock("../proxy", () => ({ smartFetch }));
 
-import { parseGoogleSerp, webSearch } from "./web_search";
+import { parseDdg, parseGoogleSerp, webSearch } from "./web_search";
 
 const serp = (hits: Array<{ url: string; title: string }>) =>
 	`<html><body>${hits.map((h) => `<div class="g"><a href="${h.url}"><h3>${h.title}</h3></a></div>`).join("")}</body></html>`;
@@ -31,6 +31,27 @@ describe("parseGoogleSerp", () => {
 		const hits = parseGoogleSerp(html, 10);
 		expect(hits.map((h) => h.url)).toEqual(["https://real.example/page", "https://foo.com/a"]);
 		expect(hits[0].title).toBe("Real Result");
+	});
+
+	it("drops YouTube's off-site redirect wrapper (path-based, not host-based)", () => {
+		const html = `
+			<a href="https://www.youtube.com/redirect?q=https://real-site.com"><h3>YT Redirect</h3></a>
+			<a href="https://foo.com/a"><h3>Foo</h3></a>`;
+		const hits = parseGoogleSerp(html, 10);
+		expect(hits.map((h) => h.url)).toEqual(["https://foo.com/a"]);
+	});
+});
+
+describe("parseDdg", () => {
+	it("skips a result whose uddg redirect has a malformed percent-escape, keeps the rest", () => {
+		// The second anchor's uddg ends in a truncated escape (%E0%A4%A) that makes
+		// decodeURIComponent throw — it must be skipped, not abort the whole parse.
+		const html = `
+			<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fgood.example%2Fone">One</a>
+			<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fbad.example%2F%E0%A4%A">Bad</a>
+			<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fgood.example%2Ftwo">Two</a>`;
+		const hits = parseDdg(html, 10);
+		expect(hits.map((h) => h.url)).toEqual(["https://good.example/one", "https://good.example/two"]);
 	});
 });
 
@@ -71,6 +92,15 @@ describe("web_search", () => {
 		expect(String(renderRun.mock.calls[0][1].url)).toContain("google.com/search");
 	});
 
+	it("over-requests the Google SERP so a high limit can be honored after host-drops/dedupe", async () => {
+		// Google's host filtering + dedupe shrink the parsed count, so the requested
+		// num must exceed limit — a num capped at 20 could never honor limit:25.
+		renderRun.mockResolvedValueOnce({ content: [{ text: serp([{ url: "https://g.com/x", title: "G Result" }]) }] });
+		await webSearch.run({} as any, { query: "x", engine: "google", limit: 25 });
+		const num = Number(new URL(String(renderRun.mock.calls[0][1].url)).searchParams.get("num"));
+		expect(num).toBeGreaterThan(25);
+	});
+
 	it("calls Brave when the key is present", async () => {
 		const fetchMock = vi.fn(async (_u?: any, _i?: any) => new Response(JSON.stringify({ web: { results: [{ title: "B", url: "https://b.com", description: "brave desc" }] } }), { status: 200 }));
 		vi.stubGlobal("fetch", fetchMock);
@@ -95,6 +125,16 @@ describe("web_search", () => {
 		const text = r.content[0].text;
 		expect(text).toMatch(/Merged \d+ results from: kagi, ddg, google/);
 		expect(text.indexOf("example.com/a")).toBeLessThan(text.indexOf("example.org/b"));
+	});
+
+	it("surfaces a single engine's error instead of masking it as 'no results'", async () => {
+		const kagi = await import("../kagi");
+		(kagi.kagiTool as any).mockRejectedValueOnce(new Error("HTTP 401"));
+		const r = await webSearch.run({ KAGI_API_KEY: "k" } as any, { query: "x", engine: "kagi" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toContain("Engine 'kagi' failed");
+		expect(r.content[0].text).toContain("HTTP 401");
+		expect(r.content[0].text).not.toMatch(/No results/);
 	});
 
 	it("summarize falls back to the plain list when AI is absent", async () => {

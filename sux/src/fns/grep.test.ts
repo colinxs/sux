@@ -53,7 +53,14 @@ describe("grep ReDoS guards", () => {
 		for (const p of ["(a+)+", "(a*)*", "(.*)+$"]) {
 			const r = await grep.run({} as any, { text: "aaaa", pattern: p });
 			expect(r.isError).toBe(true);
-			expect(r.content[0].text).toMatch(/nested quantifiers/);
+			expect(r.content[0].text).toMatch(/catastrophic backtracking/);
+		}
+	});
+	it("rejects overlapping-alternation and interval-quantifier groups", async () => {
+		for (const p of ["(a|aa)+$", "(a{2,})+b", "(a|aa)*", "(.{1,})+"]) {
+			const r = await grep.run({} as any, { text: "aaaa", pattern: p });
+			expect(r.isError).toBe(true);
+			expect(r.content[0].text).toMatch(/catastrophic backtracking/);
 		}
 	});
 	it("rejects an over-long pattern", async () => {

@@ -21,6 +21,28 @@ describe("csv (JSON array -> CSV)", () => {
 		expect(await crun({ data: '[{"a":1,"b":2}]', delimiter: ";" })).toBe("a;b\n1;2");
 		expect((await csv.run({} as any, { data: '{"a":1}' })).isError).toBe(true);
 	});
+
+	it("neutralizes spreadsheet formula-injection prefixes on string cells", async () => {
+		const out = await crun({
+			data: '[{"eq":"=cmd|\'/c calc\'!A0","at":"@SUM(1)","plus":"+1","minus":"-2+3","tab":"\\tx"}]',
+		});
+		// each dangerous string cell gains a leading single quote so Excel/Sheets treats it as text.
+		expect(out).toContain("'=cmd|'");
+		expect(out).toContain("'@SUM(1)");
+		expect(out).toContain("'+1");
+		expect(out).toContain("'-2+3");
+		expect(out).toContain("'\tx");
+	});
+
+	it("leaves genuine numeric (non-string) values untouched", async () => {
+		expect(await crun({ data: '[{"n":-5}]' })).toBe("n\n-5");
+	});
+
+	it("rejects scalar or mixed arrays instead of emitting blank rows", async () => {
+		expect((await csv.run({} as any, { data: '["a","b"]' })).isError).toBe(true);
+		expect((await csv.run({} as any, { data: '[{"a":1},"stray"]' })).isError).toBe(true);
+		expect((await csv.run({} as any, { data: "[1,2,3]" })).isError).toBe(true);
+	});
 });
 
 describe("json from csv (dispatch + round-trip)", () => {

@@ -18,6 +18,14 @@ describe("markdown (HTML -> Markdown)", () => {
 	it("errors on empty data", async () => {
 		expect((await markdown.run({} as any, { data: "" })).isError).toBe(true);
 	});
+
+	it("does not double-decode entities or strip decoded angle brackets in block bodies", async () => {
+		// Block bodies are converted once; the final leftover pass must not run over
+		// them again. Otherwise the decoded literal "<b>" gets stripped as a tag and
+		// "&amp;" gets decoded a second time.
+		expect(await mrun({ data: "<p>Use the &lt;b&gt; tag</p>" })).toBe("Use the <b> tag");
+		expect(await mrun({ data: "<p>a &amp;amp; b</p>" })).toBe("a &amp; b");
+	});
 });
 
 describe("html (Markdown -> HTML)", () => {

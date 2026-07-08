@@ -101,6 +101,13 @@ describe("summarize", () => {
 		expect(llm).not.toHaveBeenCalled(); // no confident summary of a 403 page
 	});
 
+	it("fails (uncacheable) when the Workers-AI model returns an empty summary instead of caching a sentinel", async () => {
+		(llm as any).mockResolvedValueOnce("   ");
+		const r = await summarize.run(env, { text: "some long article body" });
+		expect(r.isError).toBe(true); // isError results never enter the KV cache
+		expect(r.content[0].text).toMatch(/empty result/);
+	});
+
 	it("tags the Kagi backend in the structured log line", async () => {
 		const log = vi.spyOn(console, "log").mockImplementation(() => {});
 		await summarize.run({ ...env, KAGI_API_KEY: "k" }, { url: "https://example.com" });
