@@ -28,7 +28,12 @@ export const translate: Fn = {
 				target_lang: to,
 				...(args?.from ? { source_lang: String(args.from) } : {}),
 			});
-			return ok(String(r?.translated_text ?? "").trim() || "(empty translation)");
+			// An empty translated_text (transient AI-binding hiccup, or an unsupported
+			// language pair silently yielding nothing) is a failure, not a result —
+			// fail() so it's never cached as a success and the next call retries.
+			const out = String(r?.translated_text ?? "").trim();
+			if (!out) return fail("translate produced an empty result — retry (transient model hiccup or unsupported language pair).");
+			return ok(out);
 		} catch (e) {
 			return fail(`translate failed: ${String((e as Error).message ?? e)}`);
 		}
