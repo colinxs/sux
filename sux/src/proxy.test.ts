@@ -265,6 +265,18 @@ describe("route tally", () => {
 		expect(drainRouteTally()).toEqual({ direct: 3 });
 	});
 
+	it("forces residential egress for a direct host when route is 'proxy' (the Kagi opt-in)", async () => {
+		// mcp.kagi.com is a direct-host (auto → direct, asserted above), but an
+		// explicit "proxy" route OVERRIDES isDirectHost so the query originates from
+		// the residential IP — the search/web_search `proxy: true` opt-in. Prove it
+		// end-to-end: the fetch hits the residential /fetch endpoint, not Kagi direct.
+		const fetchMock = vi.fn(async (_u: string | URL, _init?: RequestInit) => html());
+		vi.stubGlobal("fetch", fetchMock);
+		await smartFetch(ON, "https://mcp.kagi.com/mcp", { method: "POST" }, "proxy");
+		expect(drainRouteTally()).toEqual({ proxied: 1 });
+		expect(String(fetchMock.mock.calls[0]?.[0])).toMatch(/^https:\/\/x\.ts\.net\/fetch\?ts=\d+&sig=[a-f0-9]+$/);
+	});
+
 	it("tallies proxy_fallback when the proxy errors", async () => {
 		vi.stubGlobal(
 			"fetch",
