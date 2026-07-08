@@ -128,6 +128,7 @@ call `json` with CSV or YAML in, `csv` with JSON in.
 | Scrub PII | `redact` |
 | Restyle text into a tone or a learned voice | `voice` (rewrites into a `style` and/or a saved `profile`, preserving facts/names/links) |
 | Teach / persist a preferred writing voice | `preferences` (`action: learn` appends an exemplar and re-distills a style spec in KV; `voice` folds it back) |
+| Teach a knowledge base, then answer from it | `oracle` (`knowledge`: text/URL/book → distilled + saved to KV under `topic`; `problem` alone answers using Claude's own knowledge + the learned KB; `action: get\|list\|forget`) |
 | Case/unicode-font conversion | `fontcase` |
 | base64/hex/url, hashes, compression, zip/gzip | `encode`, `hash`, `compress`, `archive` |
 | JSON rows → token-cheap TSV | `pack` |
