@@ -49,6 +49,7 @@ import { amazon } from "./amazon";
 import { arxiv } from "./arxiv";
 import { bestbuy } from "./bestbuy";
 import { coingecko } from "./coingecko";
+import { controld } from "./controld";
 import { costco } from "./costco";
 import { crossref } from "./crossref";
 import { csv } from "./csv";
@@ -132,6 +133,7 @@ export const FUNCTIONS: Fn[] = [
 	arxiv,
 	bestbuy,
 	coingecko,
+	controld,
 	costco,
 	crossref,
 	csv,

@@ -54,6 +54,8 @@ export type RtEnv = Env &
 
 		BESTBUY_API_KEY?: string;
 
+		CONTROLD_API_TOKEN?: string;
+
 		EBAY_CLIENT_ID?: string;
 		EBAY_CLIENT_SECRET?: string;
 
