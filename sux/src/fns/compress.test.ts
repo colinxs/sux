@@ -70,6 +70,17 @@ describe("compress", () => {
 		expect(meta.url).toMatch(/\/s\/[0-9a-f-]{36}$/);
 	});
 
+	it("fails cleanly on a decompression bomb instead of OOMing the isolate", async () => {
+		// 64 MB of zeros gzips to a few KB but inflates past the 32 MB output cap.
+		const zlib = (await import("node:zlib")) as any;
+		const bomb = new Uint8Array(64 * 1024 * 1024);
+		const packed = zlib.gzipSync(bomb);
+		const b64 = Buffer.from(packed).toString("base64");
+		const r = await compress.run({} as any, { data: b64, codec: "gzip", direction: "decompress" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/exceeds the \d+ byte cap|decompression bomb/);
+	});
+
 	it("rejects an unknown codec", async () => {
 		const r = await compress.run({} as any, { data: "x", codec: "7z" });
 		expect(r.isError).toBe(true);
