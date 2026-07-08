@@ -72,6 +72,7 @@ import { people } from "./people";
 import { pipe } from "./pipe";
 import { places } from "./places";
 import { product_search } from "./product_search";
+import { reddit } from "./reddit";
 import { render } from "./render";
 import { selftest } from "./selftest";
 import { semantic_scholar } from "./semantic_scholar";
@@ -157,6 +158,7 @@ export const FUNCTIONS: Fn[] = [
 	pipe,
 	places,
 	product_search,
+	reddit,
 	render,
 	selftest,
 	semantic_scholar,

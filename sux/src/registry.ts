@@ -54,6 +54,10 @@ export type RtEnv = Env &
 
 		BESTBUY_API_KEY?: string;
 
+		// Reddit app-only OAuth (reddit fn) — client_credentials; read-only API.
+		REDDIT_CLIENT_ID?: string;
+		REDDIT_CLIENT_SECRET?: string;
+
 		// Tailscale API (tailscale fn) — Bearer PAT + tailnet id ("-" = default
 		// tailnet for the token). DISTINCT from the TAILSCALE_PROXY_URL/SECRET funnel
 		// secrets (in TailscaleEnv): those drive egress; these read the control plane.
