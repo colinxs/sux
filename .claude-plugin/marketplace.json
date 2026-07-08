@@ -1,0 +1,15 @@
+{
+  "name": "sux",
+  "description": "Plugins for the sux MCP server — currently the sux-router skill, which maps natural-language requests to the right sux tool.",
+  "owner": {
+    "name": "colinxs"
+  },
+  "plugins": [
+    {
+      "name": "sux-router",
+      "source": "./plugins/sux-router",
+      "description": "Routes natural-language requests to the right tool on the sux MCP server (web search, scraping/rendering, papers, shopping, documents, transforms, pipe/batch composition).",
+      "version": "0.1.0"
+    }
+  ]
+}

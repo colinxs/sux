@@ -1,0 +1,80 @@
+name: Skill sync
+
+# Keeps .claude/skills/sux-router/SKILL.md aligned with the deployed sux
+# server's tool surface. Weekly (and on demand) it asks the live server for
+# tools/list and diffs against docs/sux-tools.txt + the skill; on drift it
+# opens/refreshes a `skill-sync` issue. On PRs that touch the skill it runs
+# the offline (snapshot-only) check, so no secret is needed there.
+#
+# Secrets: SUX_MCP_URL (the /mcp endpoint), SUX_MCP_TOKEN (bearer, if gated).
+# If SUX_MCP_URL is unset the live check is skipped rather than failed.
+
+on:
+  schedule:
+    - cron: '0 14 * * 1' # Mondays 14:00 UTC
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.claude/skills/sux-router/SKILL.md'
+      - 'docs/sux-tools.txt'
+      - 'docs/claude-profile-snippet.md'
+      - 'scripts/check-skill-sync.mjs'
+      - '.github/workflows/skill-sync.yml'
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: skill-sync-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: SKILL.md vs deployed tool surface
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Check
+        id: check
+        env:
+          SUX_MCP_URL: ${{ secrets.SUX_MCP_URL }}
+          SUX_MCP_TOKEN: ${{ secrets.SUX_MCP_TOKEN }}
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ] || [ -z "$SUX_MCP_URL" ]; then
+            [ -z "$SUX_MCP_URL" ] && echo "SUX_MCP_URL not set — running offline check only." | tee -a "$GITHUB_STEP_SUMMARY"
+            node scripts/check-skill-sync.mjs --offline 2>&1 | tee report.txt
+          else
+            node scripts/check-skill-sync.mjs 2>&1 | tee report.txt
+          fi
+
+      - name: Open or refresh drift issue
+        if: failure() && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh label create skill-sync --description "sux-router skill drifted from the deployed tool surface" --color D93F0B 2>/dev/null || true
+          {
+            echo "The deployed sux tool surface no longer matches \`.claude/skills/sux-router/SKILL.md\` / \`docs/sux-tools.txt\`."
+            echo
+            echo '```'
+            cat report.txt
+            echo '```'
+            echo
+            echo "Fix: update the skill (and \`docs/claude-profile-snippet.md\` if a headline tool changed), then refresh the snapshot with \`SUX_MCP_URL=… node scripts/check-skill-sync.mjs --write\`."
+            echo
+            echo "_Last checked by run ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}_"
+          } > body.md
+          existing=$(gh issue list --state open --label skill-sync --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue edit "$existing" --body-file body.md
+            gh issue comment "$existing" --body "Still drifting as of the latest scheduled check — body updated."
+          else
+            gh issue create --title "sux-router skill drift: SKILL.md vs deployed tool surface" --label skill-sync --body-file body.md
+          fi
