@@ -82,9 +82,34 @@ export type RtEnv = Env &
 		MCP_RATE_LIMITER?: { limit: (opts: { key: string }) => Promise<{ success: boolean }> };
 	};
 
-export type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean; noCache?: boolean };
+/**
+ * Machine-readable failure taxonomy. A small fixed set so callers and Grafana can
+ * group failures by cause instead of parsing free-text. Every code maps to a
+ * distinct operator/caller action:
+ *   not_configured — a required key/binding is absent (fix config)
+ *   blocked        — upstream refused us (bot wall / challenge / access denied)
+ *   timeout        — upstream/render did not respond in time
+ *   rate_limited   — upstream throttled us (429 / quota)
+ *   not_found      — the requested resource does not exist
+ *   upstream_error — upstream errored, no more precise attribution
+ *   bad_input      — the caller's args are invalid (bad url, missing field, SSRF target)
+ *   layout_change  — we fetched fine but the page/response shape no longer parses
+ */
+export const FAIL_CODES = ["not_configured", "blocked", "timeout", "rate_limited", "not_found", "upstream_error", "bad_input", "layout_change"] as const;
+export type FailCode = (typeof FAIL_CODES)[number];
+
+export type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean; noCache?: boolean; errorCode?: FailCode };
 export const ok = (text: string): ToolResult => ({ content: [{ type: "text", text }] });
 export const fail = (text: string): ToolResult => ({ content: [{ type: "text", text }], isError: true });
+
+/**
+ * A fail() carrying a machine-readable code from FAIL_CODES. The code is prefixed
+ * to the human text as `[code]` — so it flows into the Grafana `err` field (index.ts
+ * derives `err` from the first text part) and stays visible to callers — AND is
+ * attached as a structured `errorCode` on the ToolResult for typed consumers. The
+ * human message is preserved verbatim after the prefix. Never used on a success path.
+ */
+export const failWith = (code: FailCode, text: string): ToolResult => ({ content: [{ type: "text", text: `[${code}] ${text}` }], isError: true, errorCode: code });
 
 export type Fn = {
 	name: string;

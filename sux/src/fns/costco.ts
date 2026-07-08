@@ -1,4 +1,4 @@
-import { type Fn, fail, ok, type RtEnv } from "../registry";
+import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { smartFetch } from "../proxy";
 import { normalizeMoney, type RetailProduct, type RetailResult } from "./_retail";
 
@@ -191,9 +191,9 @@ export const costco: Fn = {
 	ttl: 300,
 	run: async (env, args) => {
 		const action = String(args?.action ?? "search");
-		if (action !== "search") return fail(`costco: unsupported action '${action}'.`);
+		if (action !== "search") return failWith("bad_input", `costco: unsupported action '${action}'.`);
 		const term = String(args?.term ?? "").trim();
-		if (!term) return fail("costco: action=search requires a `term`.");
+		if (!term) return failWith("bad_input", "costco: action=search requires a `term`.");
 		const limit = Math.min(40, Math.max(1, Number(args?.limit) || 15));
 
 		const url = `https://www.costco.com/CatalogSearch?keyword=${encodeURIComponent(term)}`;
@@ -202,13 +202,15 @@ export const costco: Fn = {
 			const resp = await smartFetch(env, url, {}, "proxy");
 			html = await resp.text();
 		} catch (e) {
-			return fail(`costco: fetch failed — ${errMsg(e)}`);
+			return failWith("upstream_error", `costco: fetch failed — ${errMsg(e)}`);
 		}
 
 		const products = extractProducts(html).slice(0, limit);
 		if (!products.length) {
 			const blocked = /Access Denied|sec-cpt/i.test(html) || html.trim().length < 1000;
-			return fail(blocked ? "costco: blocked by Akamai (try render:mac) — no products" : "costco: no products extracted (layout change)");
+			return blocked
+				? failWith("blocked", "costco: blocked by Akamai (try render:mac) — no products")
+				: failWith("layout_change", "costco: no products extracted (layout change)");
 		}
 
 		const result: RetailResult = { retailer: "costco", action: "search", count: products.length, products };

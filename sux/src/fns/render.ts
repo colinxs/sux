@@ -1,6 +1,6 @@
 import puppeteer from "@cloudflare/puppeteer";
 import { hmacHex, isBlockedTarget, smartFetch } from "../proxy";
-import { type Fn, type RtEnv, type ToolResult, fail, ok } from "../registry";
+import { type Fn, type RtEnv, type ToolResult, failWith, ok } from "../registry";
 import { clamp, deliverBytes, fromB64, inlineB64, isHttpUrl } from "./_util";
 
 const WAIT_UNTIL = ["load", "domcontentloaded", "networkidle0", "networkidle2"] as const;
@@ -136,7 +136,7 @@ type MacRenderResponse = {
 
 async function renderViaMac(env: RtEnv, payload: MacRenderPayload, delivery: string | undefined): Promise<ToolResult> {
 	if (!env.MAC_RENDER_URL || !env.MAC_RENDER_SECRET) {
-		return fail("Mac render backend not configured (MAC_RENDER_URL/MAC_RENDER_SECRET).");
+		return failWith("not_configured", "Mac render backend not configured (MAC_RENDER_URL/MAC_RENDER_SECRET).");
 	}
 	const body = JSON.stringify(payload);
 	const ts = String(Date.now());
@@ -154,16 +154,16 @@ async function renderViaMac(env: RtEnv, payload: MacRenderPayload, delivery: str
 			signal: AbortSignal.timeout(timeout),
 		});
 	} catch (e) {
-		return fail(`mac render failed: ${String((e as Error).message ?? e)}`);
+		return failWith("upstream_error", `mac render failed: ${String((e as Error).message ?? e)}`);
 	}
 	let data: MacRenderResponse;
 	try {
 		data = (await resp.json()) as MacRenderResponse;
 	} catch {
-		return fail(`mac render failed: unreadable response (HTTP ${resp.status}).`);
+		return failWith("upstream_error", `mac render failed: unreadable response (HTTP ${resp.status}).`);
 	}
 	if (!resp.ok || data.error) {
-		return fail(`mac render failed: ${data.error ?? `HTTP ${resp.status}`}`);
+		return failWith("upstream_error", `mac render failed: ${data.error ?? `HTTP ${resp.status}`}`);
 	}
 	const text = typeof data.body === "string" ? data.body : "";
 	if (payload.as === "screenshot" || payload.as === "pdf") {
@@ -234,14 +234,14 @@ export const render: Fn = {
 	ttl: 300,
 	run: async (env, args) => {
 		const url = String(args?.url ?? "");
-		if (!isHttpUrl(url)) return fail("Provide an absolute http(s) url.");
+		if (!isHttpUrl(url)) return failWith("bad_input", "Provide an absolute http(s) url.");
 		// SSRF guard: refuse private/loopback/link-local/CGNAT/metadata targets before
 		// they reach a renderer. The mac backend forwards `url` to a residential node
 		// that sits INSIDE the home LAN (router admin UI, other devices) and does no
 		// guarding of its own — the same exposure smartFetch/fetchViaTailscale already
 		// block. Applied to the cf backend too (defense in depth; render only ever
 		// wants public pages), so no renderer can be pointed at an internal address.
-		if (isBlockedTarget(url)) return fail("Refusing to render a private/loopback/link-local/metadata address.");
+		if (isBlockedTarget(url)) return failWith("bad_input", "Refusing to render a private/loopback/link-local/metadata address.");
 
 		const waitUntil = (WAIT_UNTIL as readonly string[]).includes(args?.wait_until) ? args.wait_until : "networkidle0";
 		const timeout = Math.min(Math.max(Number(args?.timeout_ms) || 30000, 1), 60000);
@@ -268,7 +268,7 @@ export const render: Fn = {
 			);
 		}
 
-		if (!env.BROWSER) return fail("Browser Rendering is not configured (BROWSER binding).");
+		if (!env.BROWSER) return failWith("not_configured", "Browser Rendering is not configured (BROWSER binding).");
 
 		let browser: Awaited<ReturnType<typeof puppeteer.launch>> | undefined;
 		try {
@@ -304,7 +304,7 @@ export const render: Fn = {
 					: await page.content();
 			return ok(clamp(content, MAX_OUTPUT_BYTES));
 		} catch (e) {
-			return fail(`render failed: ${String((e as Error).message ?? e)}`);
+			return failWith("upstream_error", `render failed: ${String((e as Error).message ?? e)}`);
 		} finally {
 			if (browser) await browser.close();
 		}

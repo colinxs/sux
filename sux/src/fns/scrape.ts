@@ -1,4 +1,4 @@
-import { type Fn, fail, ok } from "../registry";
+import { type Fn, failWith, ok } from "../registry";
 import { smartFetch } from "../proxy";
 import { isHttpUrl, noCacheOn4xx } from "./_util";
 
@@ -18,7 +18,7 @@ export const scrape: Fn = {
 	cacheable: true,
 	run: async (env, args) => {
 		const url = String(args?.url ?? "");
-		if (!isHttpUrl(url)) return fail("Provide an absolute http(s) url.");
+		if (!isHttpUrl(url)) return failWith("bad_input", "Provide an absolute http(s) url.");
 		const resp = await smartFetch(env, url, { method: args?.method });
 		const body = await resp.text();
 		return noCacheOn4xx(ok(`HTTP ${resp.status} — ${url}\n\n${body.slice(0, 100_000)}`), resp.status);

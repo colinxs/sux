@@ -1,5 +1,5 @@
 import { macRender } from "../mac-render";
-import { type Fn, fail, ok, type RtEnv } from "../registry";
+import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { normalizeMoney, type RetailProduct } from "./_retail";
 
 // Ace Hardware runs on the Kibo/Mozu commerce platform and exposes no public
@@ -118,7 +118,7 @@ export const ace: Fn = {
 	ttl: 300,
 	run: async (env: RtEnv, args) => {
 		const term = String(args?.term ?? "").trim();
-		if (!term) return fail("action=search requires a `term`.");
+		if (!term) return failWith("bad_input", "action=search requires a `term`.");
 		const limit = Math.min(40, Math.max(1, Number(args?.limit) || 15));
 
 		const r = await macRender(env, {
@@ -129,14 +129,14 @@ export const ace: Fn = {
 			wait_ms: 6000,
 			timeout_ms: 55000,
 		});
-		if (!r.ok) return fail(`ace: blocked or render failed — ${r.error}`);
+		if (!r.ok) return failWith("blocked", `ace: blocked or render failed — ${r.error}`);
 
 		let products = fromTiles(r.body);
 		products = products.filter((p) => p.id && p.title).slice(0, limit);
 		if (products.length === 0) {
 			// No products: decide block vs. layout change so the caller gets a real hint.
-			if (looksBlocked(r.body)) return fail("ace: blocked (challenge wall or access denied).");
-			return fail(NO_PRODUCTS_MSG);
+			if (looksBlocked(r.body)) return failWith("blocked", "ace: blocked (challenge wall or access denied).");
+			return failWith("layout_change", NO_PRODUCTS_MSG);
 		}
 		return ok(JSON.stringify({ retailer: "ace", action: "search", count: products.length, products }, null, 2));
 	},
