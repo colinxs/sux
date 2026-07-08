@@ -1,0 +1,7 @@
+{
+  "obsidian": {
+    "upstream": "http://127.0.0.1:27123/mcp/",
+    "bearerFile": "/Users/colinxs/Documents/Obsidian/Primary/Primary/.obsidian/plugins/obsidian-local-rest-api/data.json",
+    "bearerField": "apiKey"
+  }
+}
