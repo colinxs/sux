@@ -127,6 +127,24 @@ export async function vaultPut(
 	return { ok: true, commit: put.json?.commit?.sha, created: cur.status === 404 };
 }
 
+/** Read a note's decoded body + sha from GitHub, refetching raw for >1MB files.
+ * The Contents API omits inline content past 1MB (returns a positive `size` but
+ * content:""), so every git reader — read, append, edit — must go through here;
+ * decoding content directly would silently see an empty body and (on append)
+ * destroy the note. Returns status 404 with an empty body for a missing note. */
+async function readGitContents(env: any, cfg: VaultCfg, full: string): Promise<{ status: number; sha?: string; body: string; error?: string }> {
+	const cur = await ghJson(env, `${GH}/repos/${cfg.repo}/contents/${encodeURIComponent(full)}?ref=${encodeURIComponent(cfg.branch)}`);
+	if (cur.status === 404) return { status: 404, body: "" };
+	if (cur.status >= 400) return { status: cur.status, body: "", error: `GitHub error reading note: ${cur.json?.message ?? `HTTP ${cur.status}`}` };
+	let body = cur.json?.content ? new TextDecoder().decode(fromB64(String(cur.json.content).replace(/\n/g, ""))) : "";
+	if (!body && Number(cur.json?.size ?? 0) > 0) {
+		const raw = await smartFetch(env, `${GH}/repos/${cfg.repo}/contents/${encodeURIComponent(full)}?ref=${encodeURIComponent(cfg.branch)}`, { headers: { ...ghHeaders, Accept: "application/vnd.github.raw+json" } });
+		if (raw.status >= 400) return { status: raw.status, sha: cur.json?.sha, body: "", error: `GitHub error reading large note (${cur.json?.size} bytes): HTTP ${raw.status}` };
+		body = await raw.text();
+	}
+	return { status: cur.status, sha: cur.json?.sha, body };
+}
+
 // Surgical find/replace: the match must be unique unless all=true, so an edit
 // can never land somewhere unintended — task ops flip exactly the checkbox they
 // mean to, and a note is never reprinted wholesale. The function replacer keeps
@@ -310,8 +328,10 @@ export const obsidian: Fn = {
 	},
 	cacheable: false, // notes are mutable; reads should reflect the live vault
 	run: async (env, args) => {
-		const action = String(args?.action ?? "");
-		const backend = String(args?.backend ?? "git");
+		// Normalize so 'Tools' / 'CALL' / 'read ' don't dead-end at "Unknown action"
+		// (dispatch does no server-side enum enforcement).
+		const action = String(args?.action ?? "").trim().toLowerCase();
+		const backend = String(args?.backend ?? "git").trim().toLowerCase();
 		if (["append", "write", "edit", "delete"].includes(action)) {
 			const p0 = String(args?.path ?? "").trim();
 			const bad = p0 ? badVaultPath(p0) : null;
@@ -321,10 +341,13 @@ export const obsidian: Fn = {
 		if (backend === "local") {
 			return fail("backend:'local' (Obsidian Local REST API over the tailnet) isn't wired yet — expose the Local REST API over Tailscale Funnel and use backend:'remote' (OBSIDIAN_REMOTE_URL + OBSIDIAN_REMOTE_KEY), or use the git backend.");
 		}
+		// tools/call are remote-only (they wrap the live vault's MCP server); check
+		// this BEFORE vaultCfg so a remote-only config isn't misdirected to "set
+		// OBSIDIAN_VAULT_REPO".
+		if (action === "tools" || action === "call") return fail("actions 'tools' and 'call' wrap the live vault's MCP server — pass backend:'remote'.");
 		const cfg = vaultCfg(env);
 		if ("error" in cfg) return fail(cfg.error);
 		const { repo, branch, dir, inVault } = cfg;
-		if (action === "tools" || action === "call") return fail("actions 'tools' and 'call' wrap the live vault's MCP server — pass backend:'remote'.");
 
 		try {
 			if (action === "list") {
@@ -352,18 +375,11 @@ export const obsidian: Fn = {
 					const hit = await cacheGet(env, gitNoteKey(cfg, p));
 					if (hit?.sha === head && typeof hit.body === "string") return ok(hit.body);
 				}
-				const { status, json } = await ghJson(env, `${GH}/repos/${repo}/contents/${encodeURIComponent(inVault(p))}?ref=${encodeURIComponent(branch)}`);
-				if (status === 404) return fail(`Note not found: ${p}`);
-				if (status >= 400) return fail(`GitHub error reading note: ${json?.message ?? `HTTP ${status}`}`);
-				let text = json?.content ? new TextDecoder().decode(fromB64(String(json.content).replace(/\n/g, ""))) : "";
-				if (!text && Number(json?.size ?? 0) > 0) {
-					// contents API omits inline content for >1MB files — refetch raw.
-					const raw = await smartFetch(env, `${GH}/repos/${repo}/contents/${encodeURIComponent(inVault(p))}?ref=${encodeURIComponent(branch)}`, { headers: { ...ghHeaders, Accept: "application/vnd.github.raw+json" } });
-					if (raw.status >= 400) return fail(`GitHub error reading large note (${json?.size} bytes): HTTP ${raw.status}`);
-					text = await raw.text();
-				}
-				if (head) await cachePut(env, gitNoteKey(cfg, p), { body: text, sha: head, at: Date.now(), src: "git" });
-				return ok(text);
+				const r = await readGitContents(env, cfg, inVault(p));
+				if (r.status === 404) return fail(`Note not found: ${p}`);
+				if (r.error) return fail(r.error);
+				if (head) await cachePut(env, gitNoteKey(cfg, p), { body: r.body, sha: head, at: Date.now(), src: "git" });
+				return ok(r.body);
 			}
 			if (action === "search") {
 				const q = String(args?.query ?? "").trim();
@@ -379,10 +395,13 @@ export const obsidian: Fn = {
 				if (!p) return fail("action=append requires a `path`.");
 				if (!content) return fail("action=append requires `content`.");
 				const full = inVault(p);
-				// Read current (for the sha + existing body); 404 → create fresh.
-				const cur = await ghJson(env, `${GH}/repos/${repo}/contents/${encodeURIComponent(full)}?ref=${encodeURIComponent(branch)}`);
-				const existing = cur.status === 200 && cur.json?.content ? new TextDecoder().decode(fromB64(String(cur.json.content).replace(/\n/g, ""))) : "";
-				const sha = cur.status === 200 ? cur.json?.sha : undefined;
+				// Read current (for the sha + existing body); 404 → create fresh. Goes
+				// through readGitContents so a >1MB note's body isn't seen as empty and
+				// destroyed by the merge.
+				const cur = await readGitContents(env, cfg, full);
+				if (cur.error) return fail(cur.error);
+				const existing = cur.body;
+				const sha = cur.status === 200 ? cur.sha : undefined;
 				const merged = existing ? `${existing.replace(/\n+$/, "")}\n\n${content}\n` : `${content}\n`;
 				const body = JSON.stringify({ message: `sux: append to ${p}`, content: toB64(new TextEncoder().encode(merged)), branch, ...(sha ? { sha } : {}) });
 				const put = await ghJson(env, `${GH}/repos/${repo}/contents/${encodeURIComponent(full)}`, { method: "PUT", body });
@@ -405,13 +424,12 @@ export const obsidian: Fn = {
 				if (!p) return fail("action=edit requires a `path`.");
 				if (!find) return fail("action=edit requires `find` (the exact text to replace).");
 				const full = inVault(p);
-				const cur = await ghJson(env, `${GH}/repos/${repo}/contents/${encodeURIComponent(full)}?ref=${encodeURIComponent(branch)}`);
+				const cur = await readGitContents(env, cfg, full);
 				if (cur.status === 404) return fail(`Note not found: ${p}`);
-				if (cur.status >= 400) return fail(`GitHub error reading note: ${cur.json?.message ?? `HTTP ${cur.status}`}`);
-				const existing = cur.json?.content ? new TextDecoder().decode(fromB64(String(cur.json.content).replace(/\n/g, ""))) : "";
-				const edited = applyEdit(existing, find, String(args?.replace ?? ""), args?.all === true);
+				if (cur.error) return fail(cur.error);
+				const edited = applyEdit(cur.body, find, String(args?.replace ?? ""), args?.all === true);
 				if ("error" in edited) return fail(`${edited.error} in ${p}`);
-				const body = JSON.stringify({ message: `sux: edit ${p}`, content: toB64(new TextEncoder().encode(edited.text)), branch, sha: cur.json?.sha });
+				const body = JSON.stringify({ message: `sux: edit ${p}`, content: toB64(new TextEncoder().encode(edited.text)), branch, sha: cur.sha });
 				const put = await ghJson(env, `${GH}/repos/${repo}/contents/${encodeURIComponent(full)}`, { method: "PUT", body });
 				if (put.status >= 400) return fail(`GitHub write error: ${put.json?.message ?? `HTTP ${put.status}`} (edit needs a GITHUB_TOKEN with write access).`);
 				await noteWritten(env, cfg, p, edited.text, put.json?.commit?.sha);

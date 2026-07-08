@@ -144,4 +144,26 @@ describe("dropbox (app-folder blob store)", () => {
 		const r = await dropbox.run(ENV, { op: "delete", path: "a.pdf" });
 		expect(JSON.parse(r.content[0].text)).toMatchObject({ ok: true, deleted: "/a.pdf" });
 	});
+
+	it("delete surfaces the real Dropbox error text (not a blanket 'Not found')", async () => {
+		vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error_summary: "path_lookup/not_found/" }), { status: 409 })));
+		const r = await dropbox.run(ENV, { op: "delete", path: "missing.pdf" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toContain("path_lookup/not_found");
+		expect(r.content[0].text).toContain("missing.pdf");
+	});
+
+	it("get refuses to download when metadata carries no size (unbounded-body guard)", async () => {
+		let downloaded = false;
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL) => {
+			const url = String(u);
+			if (url.endsWith("/files/get_metadata")) return new Response(JSON.stringify({ ".tag": "file" }), { status: 200 });
+			downloaded = true;
+			return new Response("should not happen", { status: 200 });
+		}));
+		const r = await dropbox.run(ENV, { op: "get", path: "weird.bin" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/no size|unbounded/);
+		expect(downloaded).toBe(false);
+	});
 });

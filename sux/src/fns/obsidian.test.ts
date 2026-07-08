@@ -168,6 +168,54 @@ describe("obsidian (git backend)", () => {
 		expect(r.content[0].text).toMatch(/backend:'remote'/);
 	});
 
+	it("routes tools/call even when the git vault is unconfigured (remote-only env)", async () => {
+		const remoteOnly = { OBSIDIAN_REMOTE_URL: "https://v.ts.net", OBSIDIAN_REMOTE_KEY: "k" } as any;
+		const r = await obsidian.run(remoteOnly, { action: "call" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/backend:'remote'/); // NOT "set OBSIDIAN_VAULT_REPO"
+		expect(r.content[0].text).not.toMatch(/OBSIDIAN_VAULT_REPO/);
+	});
+
+	it("normalizes action case/whitespace so 'READ ' is not an unknown action", async () => {
+		routes.handler = () => new Response(JSON.stringify({ content: b64("hi"), sha: "s" }), { status: 200 });
+		const r = await obsidian.run(ENV, { action: " READ ", path: "n.md" });
+		expect(r.isError).toBeFalsy();
+		expect(r.content[0].text).toBe("hi");
+	});
+
+	it("appends to a >1MB note without destroying its body (raw refetch)", async () => {
+		let putBody: any;
+		routes.handler = (url, init) => {
+			if (init?.method === "PUT") {
+				putBody = JSON.parse(init.body);
+				return new Response(JSON.stringify({ commit: { sha: "cbig" } }), { status: 200 });
+			}
+			const accept = String(init?.headers?.Accept ?? "");
+			if (accept.includes("raw")) return new Response("HUGE EXISTING BODY", { status: 200 });
+			return new Response(JSON.stringify({ content: "", size: 2_000_000, sha: "sbig", encoding: "none" }), { status: 200 });
+		};
+		const r = await obsidian.run(ENV, { action: "append", path: "big.md", content: "new tail" });
+		expect(r.isError).toBeFalsy();
+		expect(putBody.sha).toBe("sbig");
+		expect(Buffer.from(putBody.content, "base64").toString("utf8")).toBe("HUGE EXISTING BODY\n\nnew tail\n");
+	});
+
+	it("edits a >1MB note against its real body (raw refetch), not an empty string", async () => {
+		let putBody: any;
+		routes.handler = (url, init) => {
+			if (init?.method === "PUT") {
+				putBody = JSON.parse(init.body);
+				return new Response(JSON.stringify({ commit: { sha: "cbig" } }), { status: 200 });
+			}
+			const accept = String(init?.headers?.Accept ?? "");
+			if (accept.includes("raw")) return new Response("- [ ] task\nmuch more text", { status: 200 });
+			return new Response(JSON.stringify({ content: "", size: 2_000_000, sha: "sbig" }), { status: 200 });
+		};
+		const r = await obsidian.run(ENV, { action: "edit", path: "big.md", find: "- [ ] task", replace: "- [x] task" });
+		expect(JSON.parse(r.content[0].text)).toMatchObject({ ok: true, replaced: 1 });
+		expect(Buffer.from(putBody.content, "base64").toString("utf8")).toBe("- [x] task\nmuch more text");
+	});
+
 	it("reads a >1MB note via the raw refetch when contents omits the body", async () => {
 		routes.handler = (url, init) => {
 			const accept = init?.headers?.Accept ?? "";
@@ -250,6 +298,22 @@ describe("obsidian (KV read-through cache)", () => {
 		};
 		const r = await obsidian.run({ ...ENV, OAUTH_KV: kv }, { action: "read", path: "a.md" });
 		expect(r.content[0].text).toBe("fresh"); // ancient cached copy is NOT trusted
+	});
+
+	it("trusts a recently-cached head within the window when GitHub fails (bounded stale)", async () => {
+		const kv = fakeKV({
+			"cache:vault:git:me/vault@main:head": JSON.stringify({ sha: "h1", at: Date.now() - 120_000 }), // 2 min old: stale-recheck but < 10 min
+			"cache:vault:git:me/vault@main:note:a.md": JSON.stringify({ body: "recent cached", sha: "h1", at: 1, src: "git" }),
+		});
+		let contentsCalls = 0;
+		routes.handler = (url) => {
+			if (url.includes("/git/ref/")) return new Response(JSON.stringify({ message: "rate limited" }), { status: 403 });
+			contentsCalls++;
+			return new Response(JSON.stringify({ content: b64("fresh"), sha: "f1" }), { status: 200 });
+		};
+		const r = await obsidian.run({ ...ENV, OAUTH_KV: kv }, { action: "read", path: "a.md" });
+		expect(r.content[0].text).toBe("recent cached"); // served from cache — HEAD still trusted
+		expect(contentsCalls).toBe(0); // no GitHub contents round-trip
 	});
 
 	it("caches git lists per filter, keyed to HEAD", async () => {

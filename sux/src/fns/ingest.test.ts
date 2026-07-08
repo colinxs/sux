@@ -81,6 +81,20 @@ describe("ingest (capture → vault)", () => {
 		expect(gh.puts[out.note]).toContain(`![[Attachments/${date}-report.pdf]]`);
 	});
 
+	it("disambiguates a same-day attachment name instead of overwriting the first file", async () => {
+		const taken = `Attachments/${date}-report.pdf`;
+		const gh = ghMock([taken]); // a report.pdf already captured today
+		routes.handler = (url, init) => {
+			if (url.includes("api.github.com")) return gh.handler(url, init);
+			return new Response(Buffer.from([1, 2, 3]), { status: 200, headers: { "content-type": "application/pdf" } });
+		};
+		const r = await ingest.run(ENV, { url: "https://other.example/x/report.pdf" });
+		const out = JSON.parse(r.content[0].text);
+		expect(out.blob.link).toBe(`Attachments/${date}-report-1.pdf`); // the extension is preserved
+		expect(gh.puts[taken]).toBeUndefined(); // first file's bytes untouched
+		expect(gh.puts[out.note]).toContain(`![[Attachments/${date}-report-1.pdf]]`);
+	});
+
 	it("routes a large binary to Dropbox and links the shared URL", async () => {
 		const gh = ghMock();
 		const big = new Uint8Array(1_100_000);
@@ -159,16 +173,23 @@ describe("ingest (capture → vault)", () => {
 		expect(gh.puts[out.note]).toContain("keep me verbatim");
 	});
 
-	it("a same-day slug collision writes a time-suffixed note instead of overwriting", async () => {
+	it("a same-day slug collision disambiguates instead of overwriting", async () => {
 		const taken = `Inbox/${date} untitled.md`;
 		const gh = ghMock([taken]);
 		routes.handler = gh.handler;
 		const r = await ingest.run(ENV, { text: "second capture", title: "Untitled" });
 		const out = JSON.parse(r.content[0].text);
-		expect(out.note).not.toBe(taken);
-		expect(out.note).toMatch(new RegExp(`^Inbox/${date} untitled \\d{6}\\.md$`));
+		expect(out.note).toBe(`Inbox/${date} untitled-1.md`);
 		expect(gh.puts[taken]).toBeUndefined(); // the first capture survives
 		expect(gh.puts[out.note]).toContain("second capture");
+	});
+
+	it("disambiguates again when both the base and -1 are taken (no same-second loss)", async () => {
+		const base = `Inbox/${date} note.md`;
+		const gh = ghMock([base, `Inbox/${date} note-1.md`]);
+		routes.handler = gh.handler;
+		const r = await ingest.run(ENV, { text: "third", title: "Note" });
+		expect(JSON.parse(r.content[0].text).note).toBe(`Inbox/${date} note-2.md`);
 	});
 
 	it("an explicit path still overwrites deliberately", async () => {
@@ -228,6 +249,24 @@ describe("ingest (capture → vault)", () => {
 		};
 		const r = await ingest.run({ ...ENV, AI: { run: async () => ({ response: "x" }) } }, { url: "https://f.example/a.pdf", summarize: true });
 		expect(JSON.parse(r.content[0].text).pass).toMatch(/skipped \(binary/);
+	});
+
+	it("labels a minted Dropbox link as a public shared link in the note", async () => {
+		const gh = ghMock();
+		const big = new Uint8Array(1_100_000);
+		routes.handler = (url, init) => {
+			if (url.includes("api.github.com")) return gh.handler(url, init);
+			return new Response(big, { status: 200, headers: { "content-type": "application/zip" } });
+		};
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL) => {
+			if (String(u).endsWith("/files/upload")) return new Response(JSON.stringify({ path_display: "/attachments/big.zip", size: big.length }), { status: 200 });
+			return new Response(JSON.stringify({ url: "https://www.dropbox.com/s/x/big.zip" }), { status: 200 });
+		}));
+		const r = await ingest.run({ ...ENV, DROPBOX_TOKEN: "d" }, { url: "https://f.example/big.zip" });
+		const out = JSON.parse(r.content[0].text);
+		expect(out.blob.link).toBe("https://www.dropbox.com/s/x/big.zip");
+		expect(gh.puts[out.note]).toContain("(public shared link)");
+		expect(gh.puts[out.note]).toContain("[big.zip](https://www.dropbox.com/s/x/big.zip)");
 	});
 
 	it("flags the Dropbox link as public and degrades honestly when none is minted", async () => {

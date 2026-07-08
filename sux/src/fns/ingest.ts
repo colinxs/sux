@@ -2,7 +2,7 @@ import { type Fn, fail, ok } from "../registry";
 import { htmlToMd } from "./_markup";
 import { clamp, loadBytes, putBlob } from "./_util";
 import { dropboxPut } from "./dropbox";
-import { vaultCfg, vaultPut } from "./obsidian";
+import { type VaultCfg, vaultCfg, vaultPut } from "./obsidian";
 
 // Capture — the intake half of the knowledge core (docs/proposals/domains.md §3).
 // Exactly one source in (url | text | query), one provenance-stamped markdown
@@ -46,6 +46,32 @@ function buildNote(title: string, source: string, body: string, tags: string[]):
 async function fnByName(name: string): Promise<Fn | undefined> {
 	const { FUNCTIONS } = (await import("./index")) as { FUNCTIONS: Fn[] };
 	return FUNCTIONS.find((f) => f.name === name);
+}
+
+// Write into the vault without ever clobbering an existing file: on a name
+// collision, disambiguate before the extension (-1, -2, …) and retry. Capture is
+// meant to never lose an earlier note/attachment; failIfExists guards every
+// attempt and each uses a distinct name, so the loop terminates. Returns the
+// path actually written (which the note body must reference).
+async function vaultPutNoClobber(
+	env: any,
+	cfg: VaultCfg,
+	path: string,
+	content: string | Uint8Array,
+	message: string,
+): Promise<{ ok: true; path: string; commit?: string; created: boolean } | { ok: false; error: string }> {
+	const slash = path.lastIndexOf("/");
+	const dot = path.lastIndexOf(".");
+	const hasExt = dot > slash + 1; // a real extension, not a leading dot or a dot in a dir name
+	const stem = hasExt ? path.slice(0, dot) : path;
+	const ext = hasExt ? path.slice(dot) : "";
+	for (let i = 0; i < 8; i++) {
+		const p = i === 0 ? path : `${stem}-${i}${ext}`;
+		const w = await vaultPut(env, cfg, p, content, message, { failIfExists: true });
+		if (w.ok) return { ok: true, path: p, commit: w.commit, created: w.created };
+		if (!w.exists) return { ok: false, error: w.error };
+	}
+	return { ok: false, error: `ingest: '${path}' and its disambiguations are all taken — retry` };
 }
 
 export const ingest: Fn = {
@@ -119,7 +145,10 @@ export const ingest: Fn = {
 					const meta = [`- size: ${bytes.length} bytes`, ct ? `- content-type: ${ct}` : ""].filter(Boolean);
 					if (args?.blobs === "dropbox" || bytes.length > BLOB_VAULT_MAX) {
 						if (env.DROPBOX_TOKEN) {
-							const up = await dropboxPut(env, `/attachments/${name}`, bytes);
+							// overwrite:false → Dropbox autorenames on collision (date-prefixed
+							// so same-name files from different days never even collide); up.path
+							// reflects the real stored name.
+							const up = await dropboxPut(env, `/attachments/${date}-${name}`, bytes, { overwrite: false });
 							if ("error" in up) return fail(up.error);
 							blob = { placement: "dropbox", link: up.url ?? up.path, size: bytes.length, content_type: ct || undefined };
 						} else {
@@ -133,11 +162,12 @@ export const ingest: Fn = {
 							`- stored: ${blob.placement}${blob.placement === "dropbox" && /^https?:/.test(blob.link) ? " (public shared link)" : ""}`,
 						].join("\n");
 					} else {
-						const apath = `Attachments/${date}-${name}`;
-						const w = await vaultPut(env, cfg, apath, bytes, `sux: ingest attachment ${name}`);
+						// No-clobber: two different files sharing a name on the same day get
+						// distinct attachments instead of the second overwriting the first.
+						const w = await vaultPutNoClobber(env, cfg, `Attachments/${date}-${name}`, bytes, `sux: ingest attachment ${name}`);
 						if (!w.ok) return fail(w.error);
-						blob = { placement: "vault", link: apath, size: bytes.length, content_type: ct || undefined };
-						body = [`![[${apath}]]`, "", ...meta, "- stored: vault"].join("\n");
+						blob = { placement: "vault", link: w.path, size: bytes.length, content_type: ct || undefined };
+						body = [`![[${w.path}]]`, "", ...meta, "- stored: vault"].join("\n");
 					}
 				}
 			}
@@ -165,14 +195,19 @@ export const ingest: Fn = {
 
 			title = title.replace(/\s+/g, " ").trim() || "capture";
 			const explicit = String(args?.path ?? "").trim();
-			let notePath = explicit || `Inbox/${date} ${slugify(title)}.md`;
 			const md = buildNote(title, source, clamp(body, BODY_MAX), tags);
-			// Default paths never overwrite: on a same-day slug collision, retry with a
-			// time suffix. An explicit `path` overwrites intentionally.
-			let w = await vaultPut(env, cfg, notePath, md, `sux: ingest ${title.slice(0, 60)}`, explicit ? undefined : { failIfExists: true });
-			if (!w.ok && w.exists) {
-				notePath = `Inbox/${date} ${slugify(title)} ${new Date().toISOString().slice(11, 19).replace(/:/g, "")}.md`;
-				w = await vaultPut(env, cfg, notePath, md, `sux: ingest ${title.slice(0, 60)}`);
+			// An explicit `path` overwrites intentionally. A default Inbox path never
+			// clobbers: same-slug same-day captures disambiguate (-1, -2, …) so no
+			// earlier note is lost, even for two captures in the same second.
+			let notePath: string;
+			let w: { ok: true; commit?: string; created: boolean } | { ok: false; error: string };
+			if (explicit) {
+				notePath = explicit;
+				w = await vaultPut(env, cfg, explicit, md, `sux: ingest ${title.slice(0, 60)}`);
+			} else {
+				const nc = await vaultPutNoClobber(env, cfg, `Inbox/${date} ${slugify(title)}.md`, md, `sux: ingest ${title.slice(0, 60)}`);
+				notePath = nc.ok ? nc.path : `Inbox/${date} ${slugify(title)}.md`;
+				w = nc;
 			}
 			if (!w.ok) return fail(w.error);
 			return ok(JSON.stringify({ ok: true, note: notePath, created: w.created, commit: w.commit, source, ...(pass ? { pass } : {}), ...(blob ? { blob } : {}) }, null, 2));

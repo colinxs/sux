@@ -47,14 +47,18 @@ async function sharedLink(env: any, path: string): Promise<string | undefined> {
 	return undefined;
 }
 
-/** Upload bytes into the app folder and return path + shared link (reused by ingest). */
-export async function dropboxPut(env: any, path: string, bytes: Uint8Array): Promise<{ path: string; size: number; url?: string } | { error: string }> {
+/** Upload bytes into the app folder and return path + shared link (reused by ingest).
+ * Default overwrites the exact path (op=put semantics: the caller named it). Pass
+ * overwrite:false for a never-clobber upload — Dropbox autorenames on collision
+ * (e.g. "report (1).pdf") and the returned `path` reflects the actual name. */
+export async function dropboxPut(env: any, path: string, bytes: Uint8Array, opts?: { overwrite?: boolean }): Promise<{ path: string; size: number; url?: string } | { error: string }> {
+	const clobber = opts?.overwrite !== false;
 	const resp = await fetch(`${CONTENT}/files/upload`, {
 		method: "POST",
 		headers: {
 			Authorization: `Bearer ${env.DROPBOX_TOKEN}`,
 			"Content-Type": "application/octet-stream",
-			"Dropbox-API-Arg": headerSafeJson({ path, mode: "overwrite", autorename: false, mute: true }),
+			"Dropbox-API-Arg": headerSafeJson({ path, mode: clobber ? "overwrite" : "add", autorename: !clobber, mute: true }),
 		},
 		body: bytes as BodyInit,
 		signal: AbortSignal.timeout(60_000),
@@ -108,7 +112,10 @@ export const dropbox: Fn = {
 				const meta = await rpc(env, "/files/get_metadata", { path });
 				if (meta.status >= 400) return fail(`Dropbox error: ${meta.json?.error_summary ?? `HTTP ${meta.status}`} (${path})`);
 				if (meta.json?.[".tag"] === "folder") return fail(`'${path}' is a folder — use op=list.`);
-				const size = Number(meta.json?.size ?? 0);
+				// Trust the metadata size as the gate; if it is absent (anomalous — a
+				// file entry always carries size), refuse rather than download unbounded.
+				const size = Number(meta.json?.size);
+				if (!Number.isFinite(size)) return fail(`Dropbox returned no size for '${path}'; refusing to download an unbounded body.`);
 				if (size > MAX_INLINE_BYTES) {
 					return ok(JSON.stringify({ path, size, too_large_to_inline: true, url: await sharedLink(env, path) }, null, 2));
 				}
