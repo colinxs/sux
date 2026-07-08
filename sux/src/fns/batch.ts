@@ -17,12 +17,13 @@ import { pool } from "./_util";
 const CONCURRENCY = 8;
 // Amplification cap: one batch call may fan into at most this many tool runs.
 const MAX_CALLS = 100;
-// Nested fan-out cap: when the mapped tool is itself a fan-out (`pipe`), each
-// call can expand into many more tool runs, so the product must stay bounded.
-// pipe refuses batch/pipe inside itself (depth ≤ 2), and this tighter call limit
-// keeps map-over-pipeline legitimate while bounding the total work product
-// (≤ MAX_NESTED_CALLS × pipe's own step cap) instead of 100 × 25 = 2500.
-const NESTED_FANOUT_TOOLS = new Set(["pipe"]);
+// Nested fan-out cap: when the mapped tool is itself a fan-out (`pipe`,
+// `batch_fetch`, `crawl`), each call can expand into many more upstream fetches,
+// so the product must stay bounded. Mapping any of these over MAX_CALLS would
+// multiply unbounded (e.g. 100 batch_fetch × 100 URLs = 10 000 node fetches);
+// the tighter MAX_NESTED_CALLS cap holds the total work product to
+// ≤ MAX_NESTED_CALLS × the mapped tool's own width instead of 100 × that width.
+const NESTED_FANOUT_TOOLS = new Set(["pipe", "batch_fetch", "crawl"]);
 const MAX_NESTED_CALLS = 25;
 // Joiner between mapped results before concat/summarize reduction.
 const SEP = "\n\n---\n\n";
