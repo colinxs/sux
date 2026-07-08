@@ -214,7 +214,11 @@ export async function fetchText(
 	// never cache a POST or a request with a body). A hit skips the whole proxy
 	// round-trip; a miss populates for the rest of the chain.
 	const method = (init?.method ?? "GET").toUpperCase();
-	const dedupKey = fetchDedupActive() && method === "GET" && !init?.body ? `${maxBytes}|${url}` : null;
+	// Fold request headers into the key: a header can select different content for
+	// the same URL (e.g. geo_fetch's x-exit-geo, Accept-Language), so a header-blind
+	// key would serve one variant's body for another's request.
+	const headerSig = init?.headers ? JSON.stringify(init.headers) : "";
+	const dedupKey = fetchDedupActive() && method === "GET" && !init?.body ? `${maxBytes}|${headerSig}|${url}` : null;
 	if (dedupKey) {
 		const hit = fetchCacheGet(dedupKey, Date.now());
 		if (hit) return { status: hit.status, text: hit.text, headers: new Headers(hit.headers), url: hit.url };

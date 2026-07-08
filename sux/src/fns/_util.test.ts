@@ -343,6 +343,24 @@ describe("in-isolate fetch dedup cache", () => {
 			clearFetchCache();
 		}
 	});
+
+	it("keys the dedup on request headers so a differing header (e.g. geo) is not collapsed", async () => {
+		clearFetchCache();
+		setFetchDedup(true);
+		try {
+			const { smartFetch } = await import("../proxy");
+			vi.mocked(smartFetch as any).mockClear();
+			await fetchText({} as any, "https://geo.example/page", { headers: { "x-exit-geo": "us-ca" } });
+			await fetchText({} as any, "https://geo.example/page", { headers: { "x-exit-geo": "de" } });
+			expect(smartFetch).toHaveBeenCalledTimes(2); // different header ⇒ distinct fetch
+			// Identical headers still hit the cache (one round-trip).
+			await fetchText({} as any, "https://geo.example/page", { headers: { "x-exit-geo": "de" } });
+			expect(smartFetch).toHaveBeenCalledTimes(2);
+		} finally {
+			setFetchDedup(null);
+			clearFetchCache();
+		}
+	});
 });
 
 describe("pool (bounded concurrency)", () => {
