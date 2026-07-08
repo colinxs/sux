@@ -1,26 +1,45 @@
+import { smartFetch } from "../proxy";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 
-// Reddit read-only API via APP-ONLY OAuth (client_credentials). No user context —
-// just a machine bearer minted from REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET and cached
-// in KV (env.OAUTH_KV) until just before it expires (mirrors kroger.ts getToken).
+// Reddit read-only, KEYLESS-FIRST. Reddit now blocks self-serve OAuth app creation,
+// so the default path needs no credentials at all: Reddit serves every public
+// endpoint as JSON by appending `.json` to the path, and those `.json` responses
+// have the SAME shape as the OAuth API (a Listing for posts, [post, comments] for
+// the comments endpoint, {kind, data} for about) — so one set of normalizers covers
+// both. The catch is that Reddit blocks datacenter IPs, so the keyless fetch MUST go
+// through the residential proxy (smartFetch route "proxy") with a descriptive
+// User-Agent — the residential exit is exactly why the keyless path works.
 //
-// Reddit blocks the default/generic User-Agent AND repeat "again" UAs outright, so a
-// stable, descriptive User-Agent rides EVERY request — the token POST and every
-// oauth.reddit.com call. This is essential; without it Reddit 429s/403s us.
+// If REDDIT_CLIENT_ID + REDDIT_CLIENT_SECRET are set we auto-upgrade to the app-only
+// OAuth path (KV-cached bearer minted at www.reddit.com/api/v1/access_token, calls to
+// oauth.reddit.com) for higher rate limits — kept intact as the optional upgrade.
+//
+// Reddit blocks the default/generic User-Agent outright, so a stable, descriptive
+// User-Agent rides EVERY request on both paths — the token POST, every
+// oauth.reddit.com call, and every keyless `.json` fetch.
 
 const TOKEN_URL = "https://www.reddit.com/api/v1/access_token";
 const API = "https://oauth.reddit.com";
 const TOKEN_KEY = "sux:reddit:token";
-const UA = "sux/1.0 (by /u/sux)";
+const UA_OAUTH = "sux/1.0 (by /u/sux)";
+
+// Keyless public-JSON base + its own descriptive User-Agent.
+const PUBLIC = "https://www.reddit.com";
+const UA_KEYLESS = "sux/1.0 (+https://github.com/colinxs/sux)";
 
 const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);
+
+/** Sentinel for a Reddit block on the keyless proxy path (403 / empty / non-JSON
+ * challenge page) — the run() catch maps it to failWith("blocked") rather than the
+ * generic upstream_error, so the caller gets the actionable "try again or set creds". */
+class RedditBlocked extends Error {}
 
 /** Mint a fresh app-only bearer token from the OAuth endpoint and cache it in KV. */
 async function mintToken(env: RtEnv): Promise<string> {
 	const basic = btoa(`${env.REDDIT_CLIENT_ID}:${env.REDDIT_CLIENT_SECRET}`);
 	const resp = await fetch(TOKEN_URL, {
 		method: "POST",
-		headers: { Authorization: `Basic ${basic}`, "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json", "User-Agent": UA },
+		headers: { Authorization: `Basic ${basic}`, "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json", "User-Agent": UA_OAUTH },
 		body: "grant_type=client_credentials",
 	});
 	if (!resp.ok) throw new Error(`OAuth token HTTP ${resp.status}: ${(await resp.text().catch(() => "")).slice(0, 300)}`);
@@ -42,14 +61,14 @@ async function getToken(env: RtEnv): Promise<string> {
 }
 
 /**
- * GET an authed Reddit endpoint, throwing a status-carrying error on failure.
- * Self-heals a revoked/rejected token: on a 401/403 it drops the cached token,
- * re-mints once, and retries. The retry mints directly (not via getToken) so KV
- * read-after-delete eventual consistency can't hand back the rejected token.
- * The descriptive User-Agent rides EVERY request — Reddit blocks default UAs.
+ * OAuth path: GET an authed Reddit endpoint, throwing a status-carrying error on
+ * failure. Self-heals a revoked/rejected token: on a 401/403 it drops the cached
+ * token, re-mints once, and retries. The retry mints directly (not via getToken) so
+ * KV read-after-delete eventual consistency can't hand back the rejected token. The
+ * descriptive User-Agent rides EVERY request — Reddit blocks default UAs.
  */
 async function api(env: RtEnv, path: string): Promise<any> {
-	const get = (token: string) => fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json", "User-Agent": UA } });
+	const get = (token: string) => fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json", "User-Agent": UA_OAUTH } });
 	let resp = await get(await getToken(env));
 	if (resp.status === 401 || resp.status === 403) {
 		await env.OAUTH_KV.delete(TOKEN_KEY);
@@ -57,6 +76,43 @@ async function api(env: RtEnv, path: string): Promise<any> {
 	}
 	if (!resp.ok) throw new Error(`Reddit API HTTP ${resp.status}: ${(await resp.text().catch(() => "")).slice(0, 300)}`);
 	return resp.json();
+}
+
+/** Rewrite an OAuth-style path (`/r/x/hot?limit=25`) into its keyless public-JSON
+ * URL by inserting `.json` before any query string — the `.json` suffix is what
+ * makes Reddit serve public data with no auth. */
+function publicUrl(path: string): string {
+	const qi = path.indexOf("?");
+	const base = qi === -1 ? path : path.slice(0, qi);
+	const query = qi === -1 ? "" : path.slice(qi);
+	return `${PUBLIC}${base}.json${query}`;
+}
+
+/**
+ * Keyless path: fetch a public `.json` endpoint through the RESIDENTIAL proxy
+ * (Reddit blocks datacenter IPs; the residential exit is why this works) with the
+ * descriptive User-Agent. A Reddit block surfaces as a 403, an empty body, or a
+ * non-JSON HTML challenge page — all three throw RedditBlocked so run() can map them
+ * to failWith("blocked"). A non-block non-2xx throws a plain status error.
+ */
+async function fetchPublicJson(env: RtEnv, path: string): Promise<any> {
+	const resp = await smartFetch(env, publicUrl(path), { headers: { "User-Agent": UA_KEYLESS } }, "proxy");
+	const text = (await resp.text().catch(() => "")).trim();
+	if (resp.status === 403 || !text) throw new RedditBlocked();
+	let j: any;
+	try {
+		j = JSON.parse(text);
+	} catch {
+		throw new RedditBlocked(); // HTML block/challenge page, not JSON
+	}
+	if (!resp.ok) throw new Error(`Reddit public JSON HTTP ${resp.status}`);
+	return j;
+}
+
+/** Dispatch a read to the OAuth API (creds set) or the keyless public-JSON proxy
+ * path. Both return the same-shaped JSON, so callers/normalizers don't branch. */
+async function fetchJson(env: RtEnv, path: string, useOAuth: boolean): Promise<any> {
+	return useOAuth ? api(env, path) : fetchPublicJson(env, path);
 }
 
 type RedditPost = {
@@ -109,9 +165,10 @@ function normListing(j: any): RedditPost[] {
 export const reddit: Fn = {
 	name: "reddit",
 	description:
-		"Reddit read-only API (app-only OAuth) — search posts, browse a subreddit, read a post's comments, or look up a user. " +
-		"`action`: search (posts matching `q`, optionally scoped to `subreddit`), subreddit (listing for `subreddit` by `sort`), comments (post + comments for `article_id`), user (about for `username`). " +
-		"Needs REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET (free 'script'/app-only app at reddit.com/prefs/apps). Returns normalized JSON.",
+		"Reddit read-only API — search posts, browse a subreddit, read a post's comments, or look up a user. " +
+		"Works KEYLESS by default: fetches Reddit's public `.json` endpoints through the residential proxy (Reddit blocks datacenter IPs, so the residential exit is what makes this work) — no credentials needed. " +
+		"Auto-upgrades to app-only OAuth (higher rate limits) when REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET are set. " +
+		"`action`: search (posts matching `q`, optionally scoped to `subreddit`), subreddit (listing for `subreddit` by `sort`), comments (post + comments for `article_id`), user (about for `username`). Returns normalized JSON.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -128,8 +185,8 @@ export const reddit: Fn = {
 	cacheable: true,
 	ttl: 300,
 	run: async (env, args) => {
-		if (!env.REDDIT_CLIENT_ID || !env.REDDIT_CLIENT_SECRET)
-			return failWith("not_configured", "Reddit API not configured (REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET). Create a free app-only app at reddit.com/prefs/apps.");
+		// Keyless is the default; OAuth is the optional upgrade when both creds are set.
+		const useOAuth = Boolean(env.REDDIT_CLIENT_ID && env.REDDIT_CLIENT_SECRET);
 
 		const action = String(args?.action ?? "search");
 		const limit = Math.min(100, Math.max(1, Number(args?.limit) || 25));
@@ -139,7 +196,7 @@ export const reddit: Fn = {
 		try {
 			if (action === "subreddit") {
 				if (!subreddit) return failWith("bad_input", "action=subreddit requires a `subreddit`.");
-				const j = await api(env, `/r/${encodeURIComponent(subreddit)}/${encodeURIComponent(sort)}?limit=${limit}`);
+				const j = await fetchJson(env, `/r/${encodeURIComponent(subreddit)}/${encodeURIComponent(sort)}?limit=${limit}`, useOAuth);
 				const items = normListing(j);
 				return ok(JSON.stringify({ service: "reddit", action, count: items.length, items }, null, 2));
 			}
@@ -147,7 +204,7 @@ export const reddit: Fn = {
 			if (action === "comments") {
 				const id = String(args?.article_id ?? "").trim();
 				if (!id) return failWith("bad_input", "action=comments requires an `article_id`.");
-				const j = await api(env, `/comments/${encodeURIComponent(id)}?limit=${limit}`);
+				const j = await fetchJson(env, `/comments/${encodeURIComponent(id)}?limit=${limit}`, useOAuth);
 				// /comments returns [postListing, commentsListing]; normalize the post listing.
 				const postListing = Array.isArray(j) ? j[0] : j;
 				const items = normListing(postListing);
@@ -157,7 +214,7 @@ export const reddit: Fn = {
 			if (action === "user") {
 				const username = String(args?.username ?? "").trim().replace(/^\/?u\//i, "");
 				if (!username) return failWith("bad_input", "action=user requires a `username`.");
-				const j = await api(env, `/user/${encodeURIComponent(username)}/about`);
+				const j = await fetchJson(env, `/user/${encodeURIComponent(username)}/about`, useOAuth);
 				const d = j?.data;
 				if (!d) return failWith("not_found", `No Reddit user found for '${username}'.`);
 				const item = {
@@ -183,10 +240,13 @@ export const reddit: Fn = {
 			} else {
 				path = `/search?${p}`;
 			}
-			const j = await api(env, path);
+			const j = await fetchJson(env, path, useOAuth);
 			const items = normListing(j);
 			return ok(JSON.stringify({ service: "reddit", action, count: items.length, items }, null, 2));
 		} catch (e) {
+			// A keyless proxy block is retryable and hints the OAuth upgrade; everything
+			// else (OAuth HTTP errors, parse failures) is a generic upstream error.
+			if (e instanceof RedditBlocked) return failWith("blocked", "reddit: blocked — try again or set REDDIT_CLIENT_ID/SECRET");
 			return failWith("upstream_error", `reddit (${action}) failed: ${errMsg(e)}`);
 		}
 	},

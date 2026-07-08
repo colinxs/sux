@@ -1,5 +1,12 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// Fully replace the proxy module so the keyless path's smartFetch is a controllable
+// mock (and proxy.ts's github-auth/grafana imports never load).
+vi.mock("../proxy", () => ({
+	smartFetch: vi.fn(async () => new Response("{}", { status: 200 })),
+}));
+
+import { smartFetch } from "../proxy";
 import { reddit } from "./reddit";
 
 // Map-backed KV stub (env.OAUTH_KV) — mirrors the KVNamespace surface reddit uses.
@@ -42,6 +49,9 @@ const LISTING = {
 	},
 };
 
+const UA_KEYLESS = "sux/1.0 (+https://github.com/colinxs/sux)";
+const UA_OAUTH = "sux/1.0 (by /u/sux)";
+
 /** Install a global.fetch mock that routes by URL, records init, and counts token mints. */
 function installFetch() {
 	const calls = { token: 0, urls: [] as string[], inits: [] as any[] };
@@ -61,17 +71,14 @@ function installFetch() {
 }
 
 const keyedEnv = () => ({ REDDIT_CLIENT_ID: "id", REDDIT_CLIENT_SECRET: "sec", OAUTH_KV: kvStub() }) as any;
+const keylessEnv = () => ({}) as any;
 
+beforeEach(() => {
+	vi.mocked(smartFetch).mockReset();
+});
 afterEach(() => vi.restoreAllMocks());
 
-describe("reddit", () => {
-	it("fails clearly when the API keys are not configured", async () => {
-		const r = await reddit.run({ OAUTH_KV: kvStub() } as any, { action: "search", q: "cats" });
-		expect(r.isError).toBe(true);
-		expect(r.errorCode).toBe("not_configured");
-		expect(r.content[0].text).toMatch(/REDDIT_CLIENT_ID/);
-	});
-
+describe("reddit — oauth mode (creds set)", () => {
 	it("search returns normalized posts and sends the descriptive User-Agent + Bearer on the API call", async () => {
 		const { calls } = installFetch();
 		const r = await reddit.run(keyedEnv(), { action: "search", q: "cats" });
@@ -96,10 +103,12 @@ describe("reddit", () => {
 		// The API request carried the descriptive User-Agent and the Bearer token.
 		const apiIdx = calls.urls.findIndex((u) => u.startsWith("https://oauth.reddit.com"));
 		const apiInit = calls.inits[apiIdx];
-		expect(apiInit.headers["User-Agent"]).toBe("sux/1.0 (by /u/sux)");
+		expect(apiInit.headers["User-Agent"]).toBe(UA_OAUTH);
 		expect(apiInit.headers.Authorization).toBe("Bearer TOK");
 		expect(calls.urls[apiIdx]).toContain("/search?");
 		expect(calls.urls[apiIdx]).toContain("q=cats");
+		// OAuth path never touches the keyless proxy.
+		expect(smartFetch).not.toHaveBeenCalled();
 	});
 
 	it("the token POST carries Basic auth and the descriptive User-Agent, and caches the token in KV with expires_in-60 TTL", async () => {
@@ -109,7 +118,7 @@ describe("reddit", () => {
 		const tokIdx = calls.urls.findIndex((u) => u.includes("/api/v1/access_token"));
 		const tokInit = calls.inits[tokIdx];
 		expect(tokInit.method).toBe("POST");
-		expect(tokInit.headers["User-Agent"]).toBe("sux/1.0 (by /u/sux)");
+		expect(tokInit.headers["User-Agent"]).toBe(UA_OAUTH);
 		expect(tokInit.headers.Authorization).toBe(`Basic ${btoa("id:sec")}`);
 		expect(tokInit.body).toBe("grant_type=client_credentials");
 		// Token cached in KV with TTL = expires_in - 60.
@@ -178,5 +187,102 @@ describe("reddit", () => {
 		const r = await reddit.run(keyedEnv(), { action: "search", q: "cats" });
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toMatch(/HTTP 429/);
+	});
+});
+
+describe("reddit — keyless mode (no creds)", () => {
+	// Guard: no OAuth token POST (or any oauth.reddit.com hit) ever happens keyless.
+	// A global.fetch that throws makes any accidental OAuth call blow up loudly.
+	function guardNoFetch() {
+		const f = vi.fn(async () => {
+			throw new Error("keyless mode must not call global fetch (no token POST, no oauth.reddit.com)");
+		});
+		global.fetch = f as any;
+		return f;
+	}
+
+	it("search: no token POST, fetches the public .json via the proxy route with the descriptive UA, and normalizes posts", async () => {
+		const noFetch = guardNoFetch();
+		vi.mocked(smartFetch).mockResolvedValueOnce(json(LISTING));
+		const r = await reddit.run(keylessEnv(), { action: "search", q: "cats" });
+		expect(r.isError).toBeFalsy();
+
+		// (a) no token POST / oauth call happened.
+		expect(noFetch).not.toHaveBeenCalled();
+
+		// (b) smartFetch got the .json URL, the descriptive UA, and the "proxy" route.
+		expect(smartFetch).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.stringContaining("https://www.reddit.com/search.json?"),
+			expect.objectContaining({ headers: expect.objectContaining({ "User-Agent": UA_KEYLESS }) }),
+			"proxy",
+		);
+		const url = vi.mocked(smartFetch).mock.calls[0][1] as string;
+		expect(url).toContain("q=cats");
+
+		// (c) posts normalize identically to the OAuth path.
+		const j = JSON.parse(r.content[0].text);
+		expect(j).toMatchObject({ service: "reddit", action: "search", count: 1 });
+		expect(j.items[0]).toMatchObject({
+			id: "abc123",
+			title: "Test Post",
+			subreddit: "test",
+			author: "alice",
+			permalink: "https://reddit.com/r/test/comments/abc123/test_post/",
+			selftext: "body text",
+		});
+	});
+
+	it("subreddit: hits /r/<name>/<sort>.json with limit via the proxy", async () => {
+		guardNoFetch();
+		vi.mocked(smartFetch).mockResolvedValueOnce(json(LISTING));
+		const r = await reddit.run(keylessEnv(), { action: "subreddit", subreddit: "test", sort: "new", limit: 10 });
+		expect(r.isError).toBeFalsy();
+		const [, url, , route] = vi.mocked(smartFetch).mock.calls[0];
+		expect(url).toContain("https://www.reddit.com/r/test/new.json");
+		expect(url).toContain("limit=10");
+		expect(route).toBe("proxy");
+		expect(JSON.parse(r.content[0].text).count).toBe(1);
+	});
+
+	it("search scoped to a subreddit sets restrict_sr and hits /r/<name>/search.json", async () => {
+		guardNoFetch();
+		vi.mocked(smartFetch).mockResolvedValueOnce(json(LISTING));
+		await reddit.run(keylessEnv(), { action: "search", q: "cats", subreddit: "test" });
+		const url = vi.mocked(smartFetch).mock.calls[0][1] as string;
+		expect(url).toContain("https://www.reddit.com/r/test/search.json?");
+		expect(url).toContain("restrict_sr=1");
+	});
+
+	it("comments: fetches /comments/<id>.json and normalizes the post listing from [post, comments]", async () => {
+		guardNoFetch();
+		vi.mocked(smartFetch).mockResolvedValueOnce(json([LISTING, { kind: "Listing", data: { children: [] } }]));
+		const r = await reddit.run(keylessEnv(), { action: "comments", article_id: "abc123" });
+		expect(r.isError).toBeFalsy();
+		const url = vi.mocked(smartFetch).mock.calls[0][1] as string;
+		expect(url).toContain("https://www.reddit.com/comments/abc123.json");
+		const j = JSON.parse(r.content[0].text);
+		expect(j.count).toBe(1);
+		expect(j.items[0].id).toBe("abc123");
+	});
+
+	it("user: fetches /user/<name>/about.json and normalizes about info", async () => {
+		guardNoFetch();
+		vi.mocked(smartFetch).mockResolvedValueOnce(json({ kind: "t2", data: { id: "u1", name: "alice", created_utc: 1600000000, link_karma: 100, comment_karma: 200, is_mod: true } }));
+		const r = await reddit.run(keylessEnv(), { action: "user", username: "alice" });
+		expect(r.isError).toBeFalsy();
+		const url = vi.mocked(smartFetch).mock.calls[0][1] as string;
+		expect(url).toContain("https://www.reddit.com/user/alice/about.json");
+		const j = JSON.parse(r.content[0].text);
+		expect(j.items[0]).toMatchObject({ name: "alice", link_karma: 100, comment_karma: 200, is_mod: true, url: "https://reddit.com/user/alice" });
+	});
+
+	it("a 403 from the proxy maps to failWith('blocked') with the OAuth-upgrade hint", async () => {
+		guardNoFetch();
+		vi.mocked(smartFetch).mockResolvedValueOnce(new Response("", { status: 403 }));
+		const r = await reddit.run(keylessEnv(), { action: "search", q: "cats" });
+		expect(r.isError).toBe(true);
+		expect(r.errorCode).toBe("blocked");
+		expect(r.content[0].text).toMatch(/REDDIT_CLIENT_ID/);
 	});
 });
