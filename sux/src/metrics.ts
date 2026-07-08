@@ -34,6 +34,13 @@ export type Metrics = {
 
 const RECENT_CAP = 500;
 const ERR_CAP = 200; // keep only the first ~200 chars of an error message
+// Bound per-tool cardinality so the KV doc can't grow without limit if the tool
+// set ever explodes (renames, ad-hoc names, a bug minting keys). The busiest
+// TOOLS_CAP-1 tools keep their own series; everything else rolls up into one
+// reserved OTHER bucket so lifetime totals stay exact. In steady state (~50 real
+// tools) this never triggers — it's a safety valve, not a hot-path cost.
+export const TOOLS_CAP = 100;
+const OTHER_TOOL = "__other__";
 
 export function emptyMetrics(now: number): Metrics {
 	return { since: now, total: 0, cache_hits: 0, errors: 0, tools: {}, routes: {}, recent: [] };
@@ -90,6 +97,35 @@ export function clipErr(err?: string): string | undefined {
 	return err.length > ERR_CAP ? err.slice(0, ERR_CAP) : err;
 }
 
+/**
+ * Bound a metrics doc's on-disk size in place: cap the rolling log to the last
+ * RECENT_CAP entries and roll excess per-tool counters into a single OTHER
+ * aggregate once tool cardinality exceeds TOOLS_CAP. Lifetime totals (m.total,
+ * per-bucket sums) are preserved — nothing is lost, only re-bucketed. Pure over
+ * its output shape; easy to unit-test. Runs on every write via applyEvent.
+ */
+export function rollupMetrics(m: Metrics): Metrics {
+	if (m.recent.length > RECENT_CAP) m.recent.length = RECENT_CAP;
+	const names = Object.keys(m.tools);
+	if (names.length > TOOLS_CAP) {
+		// Rank real tools by call volume; keep the busiest, fold the tail into OTHER
+		// so the total key count lands at exactly TOOLS_CAP (kept + the one bucket).
+		const ranked = names.filter((n) => n !== OTHER_TOOL).sort((a, b) => m.tools[b].calls - m.tools[a].calls);
+		const bucket = m.tools[OTHER_TOOL] ?? { calls: 0, errors: 0, cache_hits: 0, total_ms: 0 };
+		for (const n of ranked.slice(TOOLS_CAP - 1)) {
+			const t = m.tools[n];
+			bucket.calls += t.calls;
+			bucket.errors += t.errors;
+			bucket.cache_hits += t.cache_hits;
+			bucket.total_ms += t.total_ms;
+			if (t.last_error) bucket.last_error = t.last_error;
+			delete m.tools[n];
+		}
+		m.tools[OTHER_TOOL] = bucket;
+	}
+	return m;
+}
+
 /** Fold one tool call into the aggregate + rolling log. Pure — easy to unit-test. */
 export function applyEvent(m: Metrics, e: CallEvent): Metrics {
 	const t = (m.tools[e.tool] ??= { calls: 0, errors: 0, cache_hits: 0, total_ms: 0 });
@@ -112,8 +148,7 @@ export function applyEvent(m: Metrics, e: CallEvent): Metrics {
 		for (const [r, n] of Object.entries(routes)) m.routes[r] = (m.routes[r] ?? 0) + n;
 	}
 	m.recent.unshift({ at: e.at ?? 0, tool: e.tool, ms: e.ms || 0, cache: Boolean(e.cache), error: Boolean(e.error), ...(err ? { err } : {}), ...(routes ? { routes } : {}) });
-	if (m.recent.length > RECENT_CAP) m.recent.length = RECENT_CAP;
-	return m;
+	return rollupMetrics(m);
 }
 
 /**
