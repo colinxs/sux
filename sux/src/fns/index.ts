@@ -71,6 +71,7 @@ import { pdf } from "./pdf";
 import { people } from "./people";
 import { pipe } from "./pipe";
 import { places } from "./places";
+import { preferences } from "./preferences";
 import { product_search } from "./product_search";
 import { reddit } from "./reddit";
 import { render } from "./render";
@@ -159,6 +160,7 @@ export const FUNCTIONS: Fn[] = [
 	people,
 	pipe,
 	places,
+	preferences,
 	product_search,
 	reddit,
 	render,
