@@ -15,8 +15,14 @@ const PATTERNS: Array<{ type: RedactType; re: RegExp }> = [
 	// IPv4 + common IPv6. Runs before phone so the phone regex can't eat the
 	// leading octets of a dotted-quad (e.g. 192.168 out of 192.168.1.100).
 	{ type: "ip", re: /\b(?:(?:\d{1,3}\.){3}\d{1,3}|(?:[A-Fa-f0-9]{1,4}:){2,7}[A-Fa-f0-9]{1,4})\b/g },
-	// Phone: optional +country / (area), then grouped digits with separators.
-	{ type: "phone", re: /(?:\+\d{1,3}[\s.-]?)?(?:\(\d{1,4}\)[\s.-]?)?\d{2,4}[\s.-]\d{3,4}(?:[\s.-]\d{3,4})?\b/g },
+	// Phone: optional +country / (area), then grouped digits with separators, OR
+	// a contiguous 10-digit / +country E.164 run (5551234567, +15551234567). The
+	// contiguous branch is digit-boundary guarded so it can't bite into a longer
+	// run (13–19-digit card candidates stay whole for the credit_card pass).
+	{
+		type: "phone",
+		re: /(?:\+\d{1,3}[\s.-]?)?(?:\(\d{1,4}\)[\s.-]?)?\d{2,4}[\s.-]\d{3,4}(?:[\s.-]\d{3,4})?\b|(?<!\d)(?:\+\d{1,3})?\d{10}(?!\d)/g,
+	},
 ];
 
 /** Luhn check on the digits of a card candidate. */

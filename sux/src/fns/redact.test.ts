@@ -40,6 +40,19 @@ describe("redact", () => {
 		expect(out.redacted).not.toContain(".1.100");
 	});
 
+	it("redacts contiguous 10-digit and E.164 phone numbers without separators", async () => {
+		const out = await run({ text: "call +15551234567 or 5551234567", types: ["phone"] });
+		expect(out.redacted).toBe("call [REDACTED:phone] or [REDACTED:phone]");
+		expect(out.counts.phone).toBe(2);
+		expect(out.redacted).not.toContain("5551234567");
+	});
+
+	it("does not let the contiguous phone branch bite into a Luhn-invalid card run", async () => {
+		const out = await run({ text: "order 1234567890123456 done", types: ["credit_card", "phone"] });
+		expect(out.redacted).toContain("1234567890123456");
+		expect(out.counts.phone).toBeUndefined();
+	});
+
 	it("rejects an unknown type", async () => {
 		const r = await redact.run({} as any, { text: "x", types: ["passport"] });
 		expect(r.isError).toBe(true);
