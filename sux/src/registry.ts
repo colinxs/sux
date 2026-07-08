@@ -54,6 +54,20 @@ export type RtEnv = Env &
 
 		BESTBUY_API_KEY?: string;
 
+		// Reddit app-only OAuth (reddit fn) — client_credentials; read-only API.
+		REDDIT_CLIENT_ID?: string;
+		REDDIT_CLIENT_SECRET?: string;
+
+		// Tailscale API (tailscale fn) — OAuth client-credentials + tailnet id ("-"
+		// = default tailnet for the client). DISTINCT from the TAILSCALE_PROXY_URL/
+		// SECRET funnel secrets (in TailscaleEnv): those drive egress; these read the
+		// control plane.
+		TAILSCALE_OAUTH_CLIENT_ID?: string;
+		TAILSCALE_OAUTH_CLIENT_SECRET?: string;
+		TAILSCALE_TAILNET?: string;
+
+		CONTROLD_API_TOKEN?: string;
+
 		EBAY_CLIENT_ID?: string;
 		EBAY_CLIENT_SECRET?: string;
 

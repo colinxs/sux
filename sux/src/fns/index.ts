@@ -49,6 +49,7 @@ import { amazon } from "./amazon";
 import { arxiv } from "./arxiv";
 import { bestbuy } from "./bestbuy";
 import { coingecko } from "./coingecko";
+import { controld } from "./controld";
 import { costco } from "./costco";
 import { crossref } from "./crossref";
 import { csv } from "./csv";
@@ -71,6 +72,7 @@ import { people } from "./people";
 import { pipe } from "./pipe";
 import { places } from "./places";
 import { product_search } from "./product_search";
+import { reddit } from "./reddit";
 import { render } from "./render";
 import { selftest } from "./selftest";
 import { semantic_scholar } from "./semantic_scholar";
@@ -78,6 +80,7 @@ import { shop } from "./shop";
 import { stackexchange } from "./stackexchange";
 import { store } from "./store";
 import { obsidian } from "./obsidian";
+import { tailscale } from "./tailscale";
 import { tavily } from "./tavily";
 import { walmart } from "./walmart";
 import { webSearch } from "./web_search";
@@ -132,6 +135,7 @@ export const FUNCTIONS: Fn[] = [
 	arxiv,
 	bestbuy,
 	coingecko,
+	controld,
 	costco,
 	crossref,
 	csv,
@@ -154,6 +158,7 @@ export const FUNCTIONS: Fn[] = [
 	pipe,
 	places,
 	product_search,
+	reddit,
 	render,
 	selftest,
 	semantic_scholar,
@@ -161,6 +166,7 @@ export const FUNCTIONS: Fn[] = [
 	stackexchange,
 	store,
 	obsidian,
+	tailscale,
 	tavily,
 	walmart,
 	webSearch,
