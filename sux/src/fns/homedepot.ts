@@ -1,5 +1,5 @@
 import { macRender } from "../mac-render";
-import { type Fn, fail, ok, type RtEnv } from "../registry";
+import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { normalizeMoney, type RetailProduct } from "./_retail";
 
 // Home Depot sits behind an ACTIVE Akamai `_abck` JS challenge a plain fetch can't
@@ -133,7 +133,7 @@ export const homedepot: Fn = {
 	ttl: 300,
 	run: async (env: RtEnv, args) => {
 		const term = String(args?.term ?? "").trim();
-		if (!term) return fail("action=search requires a `term`.");
+		if (!term) return failWith("bad_input", "action=search requires a `term`.");
 		const limit = Math.min(40, Math.max(1, Number(args?.limit) || 15));
 
 		const r = await macRender(env, {
@@ -144,13 +144,13 @@ export const homedepot: Fn = {
 			wait_ms: 6000,
 			timeout_ms: 55000,
 		});
-		if (!r.ok) return fail(`homedepot: blocked or render failed — ${r.error}`);
+		if (!r.ok) return failWith("blocked", `homedepot: blocked or render failed — ${r.error}`);
 
 		// Prefer an embedded state blob (richer), fall back to DOM pod parsing.
 		let products = fromStateBlob(r.body);
 		if (products.length === 0) products = fromPods(r.body);
 		products = products.filter((p) => p.id && p.title).slice(0, limit);
-		if (products.length === 0) return fail(NO_PRODUCTS_MSG);
+		if (products.length === 0) return failWith("layout_change", NO_PRODUCTS_MSG);
 		return ok(JSON.stringify({ retailer: "homedepot", action: "search", count: products.length, products }, null, 2));
 	},
 };

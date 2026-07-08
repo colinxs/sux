@@ -7,6 +7,13 @@
 // fetch is fine everywhere else.
 
 import { githubAuthHeaders } from "./github-auth";
+import { type EgressEvent, shipEgress } from "./grafana";
+
+// Per-tools/call egress-audit context, set by handleRpc (index.ts) on the env
+// before the fn runs so smartFetch — reached through ~20 fns without threading a
+// new positional arg — can ship one correlated Loki line per outbound fetch
+// decision. Absent outside a tools/call (or when Grafana is unconfigured) → no-op.
+export type EgressContext = { ctx: { waitUntil(p: Promise<unknown>): void }; reqId: string };
 
 export type TailscaleEnv = {
 	// Public Funnel URL of the proxy node, e.g. https://box.tailnet-name.ts.net
@@ -19,6 +26,14 @@ export type TailscaleEnv = {
 	// Optional GitHub PAT — attached to GitHub-host fetches to lift the 60/hr
 	// anonymous rate limit to 5000/hr. Never sent to non-GitHub hosts.
 	GITHUB_TOKEN?: string;
+	// Loki push secrets (the real RtEnv carries these) — read by smartFetch's
+	// egress audit; all-optional here so shipEgress no-ops when unconfigured.
+	GRAFANA_LOKI_URL?: string;
+	GRAFANA_LOKI_USER?: string;
+	GRAFANA_LOKI_TOKEN?: string;
+	// Set per tools/call by handleRpc; carries the correlation id + ctx so the
+	// egress audit can tag and fire-and-forget each outbound fetch decision.
+	_egress?: EgressContext;
 };
 
 export type ProxiedResponse = {
@@ -299,6 +314,26 @@ function proxiedToResponse(p: ProxiedResponse): Response {
 /** Decide whether a fetch should go through the residential proxy. `auto`
  * (default) proxies when enabled unless the host is a known direct host;
  * `proxy`/`direct` force it (e.g. egress forces `proxy` to probe the exit). */
+/** Hostname of `url`, or "invalid" when it won't parse — never the full URL, so a
+ * query-string secret can't reach the egress audit log. */
+function egressHost(url: string): string {
+	try {
+		return new URL(url).hostname;
+	} catch {
+		return "invalid";
+	}
+}
+
+/** Ship one egress-audit line for a completed fetch decision, when a per-request
+ * egress context is present on env. No-op otherwise (and shipEgress itself no-ops
+ * when Grafana is unconfigured and never throws), so this is inert on every path
+ * that isn't a tools/call with Grafana wired up. */
+function auditEgress(env: TailscaleEnv, url: string, rung: EgressEvent["rung"], residential: boolean, status?: number): void {
+	const eg = env._egress;
+	if (!eg) return;
+	shipEgress(env, eg.ctx, { reqId: eg.reqId, host: egressHost(url), rung, residential, status });
+}
+
 export function willProxy(env: TailscaleEnv, url: string, route: Route = "auto"): boolean {
 	if (route === "direct") return false;
 	if (!proxyEnabled(env)) return false;
@@ -342,6 +377,7 @@ export async function smartFetch(
 			const p = await fetchViaTailscale(env, url, { method: init.method, headers, body: init.body, redirect: init.redirect });
 			if (p.bodyEncoding === "base64" || isTextualContentType(new Headers(p.headers).get("content-type"))) {
 				tallyRoute("proxied");
+				auditEgress(env, url, "proxied", true, p.status);
 				return proxiedToResponse(p);
 			}
 			// Corrupt bytes are worse than a datacenter-IP fetch: fall through.
@@ -360,7 +396,9 @@ export async function smartFetch(
 	// a flaky site or a momentary hiccup shouldn't fail the whole tool call. Each
 	// attempt gets a fresh 30s signal; the retry is an ADDITIONAL layer over the
 	// proxy→direct fallback above, not a replacement for it.
-	return withRetry(() => fetch(url, { method: init.method, headers, body: init.body, redirect: init.redirect, signal: AbortSignal.timeout(30_000) }));
+	const resp = await withRetry(() => fetch(url, { method: init.method, headers, body: init.body, redirect: init.redirect, signal: AbortSignal.timeout(30_000) }));
+	auditEgress(env, url, directRoute, false, resp.status);
+	return resp;
 }
 
 /**

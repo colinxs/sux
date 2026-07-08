@@ -1,6 +1,6 @@
 import type OAuthProvider from "@cloudflare/workers-oauth-provider";
 import { isAllowedLogin } from "./utils";
-import { cacheKey, deferCacheWrite, type JsonRpc, parseJsonRpc, sseResponse } from "./mcp-util";
+import { type CacheMeta, cacheKey, deferCacheWrite, type JsonRpc, parseJsonRpc, sseResponse } from "./mcp-util";
 import { unpackFromCache } from "./cache-codec";
 import { findFn, type RtEnv, type ToolResult, toolList } from "./registry";
 import { singleFlight } from "./single-flight";
@@ -28,6 +28,98 @@ type CleanResult = ReturnType<typeof deferCacheWrite>;
 // coalesced value is the fully finalized (normalized + optionally summarized +
 // cache-scheduled) result, so followers reuse it without redoing the close path.
 const inflight = new Map<string, Promise<CleanResult>>();
+
+// Dispatch-path safety rails. These sit on the HOT tools/call path and preserve
+// behavior for every normal call — they only engage on pathological inputs or a
+// fn that misbehaves:
+//   • FN_DEADLINE_MS — no single fn.run may hang the isolate indefinitely.
+//   • MAX_OUTPUT_CHARS — a fn result's text can't blow the caller's token budget
+//     (or a giant KV value); byte-exact `raw` fns opt out (their bytes are the
+//     payload and must not gain a marker).
+//   • MAX_ARG_BYTES / MAX_ARG_DEPTH — reject a pathological args blob before it
+//     reaches normalizeArgs/run (memory/CPU DoS, or stack blowup on deep nesting).
+const FN_DEADLINE_MS = 60_000;
+const MAX_OUTPUT_CHARS = 1_000_000;
+const MAX_ARG_BYTES = 256_000;
+const MAX_ARG_DEPTH = 64;
+
+// Race a fn.run against a hard deadline so no fn can hang the isolate. On timeout
+// we RESOLVE (not reject) with a clean isError ToolResult and abandon the run
+// promise (it may finish in the background; its value is dropped). The timer is
+// always cleared so a fast fn doesn't hold the isolate open. A rejection or a
+// resolve from run that arrives first wins the race unchanged, so the normal path
+// is byte-for-byte identical to a bare `await fn.run(...)`.
+export function withDeadline(name: string, ms: number, run: Promise<ToolResult>): Promise<ToolResult> {
+	let timer: ReturnType<typeof setTimeout>;
+	const timeout = new Promise<ToolResult>((resolve) => {
+		timer = setTimeout(() => resolve({ content: [{ type: "text", text: `Tool '${name}' timed out after ${ms}ms` }], isError: true }), ms);
+	});
+	return Promise.race([run, timeout]).finally(() => clearTimeout(timer));
+}
+
+// Clamp the total text length of a fn result so one fn can't return an
+// unbounded payload. Walks the text parts, keeping content up to `max` chars,
+// then appends a single truncation marker. Returns the input untouched (same
+// reference) when it's already within budget, so the common case allocates
+// nothing. Non-text parts pass through unchanged.
+export function clampResult(result: ToolResult, max: number): ToolResult {
+	if (!Array.isArray(result.content)) return result;
+	let total = 0;
+	let clamped = false;
+	const content = result.content.map((part) => {
+		if (part?.type !== "text" || typeof part.text !== "string") return part;
+		if (total >= max) {
+			clamped = true;
+			return { ...part, text: "" };
+		}
+		const remaining = max - total;
+		if (part.text.length > remaining) {
+			clamped = true;
+			total = max;
+			return { ...part, text: part.text.slice(0, remaining) };
+		}
+		total += part.text.length;
+		return part;
+	});
+	if (!clamped) return result;
+	content.push({ type: "text" as const, text: `\n…[sux: output truncated at ${max} chars]` });
+	return { ...result, content };
+}
+
+// Bounded depth probe: returns the greater of the object's nesting depth and
+// (limit + 1) if it's deeper than `limit`. Recursion is capped at `limit`, so a
+// pathologically deep (or cyclic) blob can't blow the stack while we measure it.
+function exceedsDepth(v: unknown, limit: number): boolean {
+	let deep = false;
+	const walk = (node: unknown, d: number): void => {
+		if (deep) return;
+		if (d > limit) {
+			deep = true;
+			return;
+		}
+		if (node === null || typeof node !== "object") return;
+		for (const val of Object.values(node as Record<string, unknown>)) walk(val, d + 1);
+	};
+	walk(v, 0);
+	return deep;
+}
+
+// Reject a pathological args blob before normalizeArgs/run. Depth is checked
+// FIRST (bounded, stack-safe) so a deeply-nested payload can't blow the stack in
+// JSON.stringify below. Returns a reason string to surface, or null when fine.
+export function checkArgs(args: unknown, maxBytes: number, maxDepth: number): string | null {
+	if (args !== null && typeof args === "object" && exceedsDepth(args, maxDepth)) {
+		return `arguments nested too deep (> ${maxDepth} levels)`;
+	}
+	let json: string;
+	try {
+		json = JSON.stringify(args ?? null);
+	} catch {
+		return "arguments are not serializable";
+	}
+	if (json.length > maxBytes) return `arguments too large (${json.length} > ${maxBytes} bytes)`;
+	return null;
+}
 
 // The real tools/call dispatch chain, split out from rtServer.fetch so it can be
 // exercised end-to-end in tests without constructing the module-scope
@@ -87,35 +179,38 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 			delete (rawArgs as Record<string, unknown>).summarize;
 		}
 
+		// Arg-size guard: reject a pathological args blob (oversized JSON, or nested
+		// past a sane depth) BEFORE normalizeArgs/run — a cheap up-front rejection
+		// that protects the recursive normalize walk and the fn from a memory/CPU/
+		// stack DoS. Recorded as an error call so rejections show up in observability.
+		const argErr = checkArgs(rawArgs, MAX_ARG_BYTES, MAX_ARG_DEPTH);
+		if (argErr) {
+			const rejectEvent = { tool: name, ms: 0, error: true, err: argErr };
+			recordCall(env, ctx, rejectEvent);
+			shipToLoki(env, ctx, rejectEvent);
+			return sseResponse({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `Tool '${name}' rejected: ${argErr}` }], isError: true } });
+		}
+
 		// Sane normalization on open: fold styled/fullwidth "font" unicode to ASCII
 		// and strip BOM/zero-width/control chars from string inputs. Byte-exact fns
 		// (hash/encode/compress/qr/kv/…) opt out via `raw` so their bytes are untouched.
 		const args = fn.raw ? rawArgs : normalizeArgs(rawArgs);
 
 		const started = Date.now();
+		// Short per-call correlation id, threaded onto env so every downstream
+		// smartFetch of this tools/call can tag its egress-audit Loki line with the
+		// same reqId — grouping a call's outbound hops in the Loki stream without
+		// touching the ~20 smartFetch call sites. Inert unless Grafana is configured
+		// (shipEgress no-ops otherwise).
+		env._egress = { ctx, reqId: crypto.randomUUID().slice(0, 8) };
 		const key = fn.cacheable ? await cacheKey(summarize ? `${name}::summarize` : name, args) : null;
-		if (key && !fresh) {
-			// Read as bytes so compressed frames (cache-codec) round-trip; unpack
-			// reverses packForCache (plain string, or zstd/brotli frame). Any unpack
-			// failure (corrupt/unknown codec) is treated as a miss and recomputed.
-			try {
-				const raw = await env.OAUTH_KV.get(key, "arrayBuffer");
-				if (raw) {
-					const hitEvent = { tool: name, ms: Date.now() - started, cache: true };
-					recordCall(env, ctx, hitEvent);
-					shipToLoki(env, ctx, hitEvent);
-					return sseResponse({ jsonrpc: "2.0", id, result: JSON.parse(unpackFromCache(raw)) });
-				}
-			} catch (e) {
-				console.warn(`sux cache read failed for '${name}', recomputing: ${String((e as Error).message ?? e)}`);
-			}
-		}
 		// The close path for one successful run: normalize the text output, optionally
 		// summarize it, then schedule the (single) cache write and return the cleaned
-		// result. Folded into the single-flight leader below so a coalesced burst runs
-		// it EXACTLY once for the whole group — N awaiters share one normalize pass and
-		// one KV put instead of each re-normalizing the shared object and scheduling a
-		// byte-identical write.
+		// result. Defined before the read so a stale-while-revalidate hit can drive it as
+		// a background refresh. Folded into the single-flight leader below so a coalesced
+		// burst runs it EXACTLY once for the whole group — N awaiters share one normalize
+		// pass and one KV put instead of each re-normalizing the shared object and
+		// scheduling a byte-identical write.
 		const finalize = async (ran: ToolResult): Promise<CleanResult> => {
 			// Sane normalization on close: same folding/cleanup over text output.
 			if (!fn.raw && !ran.isError && Array.isArray(ran.content)) {
@@ -139,6 +234,12 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 					}
 				}
 			}
+			// Output byte-cap: clamp the (normalized, maybe-summarized) text before it
+			// is returned OR cached, so no fn can blow the caller's token budget or
+			// write a giant KV value. Universal at dispatch — but byte-exact `raw` fns
+			// opt out (they already own their output and must not gain a marker), and
+			// fns that already clamp keep their result unchanged (a no-op when under cap).
+			if (!fn.raw) out = clampResult(out, MAX_OUTPUT_CHARS);
 			// noCache/isError results are returned but never cached; deferCacheWrite
 			// hands back a cleaned clone (noCache stripped) without mutating the shared
 			// run result, so coalesced callers can't poison each other's cache decision.
@@ -146,18 +247,61 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 			// (when set) overrides the global cache lifetime for this fn.
 			return deferCacheWrite(env.OAUTH_KV, ctx, key, out, fn.ttl);
 		};
+		// Each fn.run is wrapped in a hard per-fn deadline so a hung fn resolves to a
+		// clean isError result instead of stalling the isolate (and the group).
+		const runGuarded = () => withDeadline(name, FN_DEADLINE_MS, fn.run(env, args));
+		// One expensive run plus its close path. Coalesce concurrent same-key runs
+		// (cacheable fns only, keyed by the content-addressed cache key) so a burst of
+		// identical calls — or a foreground miss racing a background stale refresh —
+		// runs fn.run AND the shared close path (normalize + the single cache write)
+		// once; non-cacheable fns (no key) always run directly. Every coalesced awaiter
+		// shares the one cleaned result the leader produced.
+		const computeAndCache = (): Promise<CleanResult> =>
+			key ? singleFlight(inflight, key, async () => finalize(await runGuarded())) : (async () => finalize(await runGuarded()))();
+
+		if (key && !fresh) {
+			// Read as bytes so compressed frames (cache-codec) round-trip; unpack
+			// reverses packForCache (plain string, or zstd/brotli frame). getWithMetadata
+			// carries the soft-TTL marker along in the same read (falling back to get for
+			// bindings/mocks without it). Any unpack failure (corrupt/unknown codec) is
+			// treated as a miss and recomputed.
+			try {
+				const kvRead = env.OAUTH_KV as unknown as {
+					getWithMetadata?: (k: string, type: "arrayBuffer") => Promise<{ value: ArrayBuffer | null; metadata: CacheMeta | null }>;
+					get: (k: string, type: "arrayBuffer") => Promise<ArrayBuffer | null>;
+				};
+				let raw: ArrayBuffer | null;
+				let meta: CacheMeta | null = null;
+				if (typeof kvRead.getWithMetadata === "function") {
+					const got = await kvRead.getWithMetadata(key, "arrayBuffer");
+					raw = got.value;
+					meta = got.metadata ?? null;
+				} else {
+					raw = await kvRead.get(key, "arrayBuffer");
+				}
+				if (raw) {
+					// Stale-while-revalidate: an entry past its soft TTL — but still within the
+					// KV hard TTL / stale grace window, since KV would have evicted it otherwise
+					// — is served IMMEDIATELY and refreshed in the background via ctx.waitUntil.
+					// A legacy entry carries no soft marker and is always treated as fresh.
+					// isError/noCache results are never cached, so a stale value is always a
+					// success — "never serve stale for noCache/isError" holds by construction.
+					const stale = typeof meta?.softExpiresAt === "number" && Date.now() >= meta.softExpiresAt;
+					if (stale) ctx.waitUntil(computeAndCache().catch((e) => console.warn(`sux stale refresh failed for '${name}': ${String((e as Error).message ?? e)}`)));
+					const hitEvent = { tool: name, ms: Date.now() - started, cache: true, ...(stale ? { stale: true } : {}) };
+					recordCall(env, ctx, hitEvent);
+					shipToLoki(env, ctx, hitEvent);
+					return sseResponse({ jsonrpc: "2.0", id, result: JSON.parse(unpackFromCache(raw)) });
+				}
+			} catch (e) {
+				console.warn(`sux cache read failed for '${name}', recomputing: ${String((e as Error).message ?? e)}`);
+			}
+		}
 
 		let result: CleanResult;
 		let err: string | undefined;
 		try {
-			// Coalesce concurrent same-key runs (cacheable fns only, keyed by the
-			// content-addressed cache key) so a burst of identical calls runs the
-			// expensive fn.run AND the shared close path (normalize + the single cache
-			// write) once; non-cacheable fns (no key) always run directly. Every
-			// coalesced awaiter shares the one cleaned result the leader produced.
-			result = key
-				? await singleFlight(inflight, key, async () => finalize(await fn.run(env, args)))
-				: await finalize(await fn.run(env, args));
+			result = await computeAndCache();
 		} catch (e) {
 			err = String((e as Error).message ?? e);
 			console.error(`sux tool '${name}' threw: ${(e as Error)?.stack ?? err}`);

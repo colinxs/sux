@@ -15,12 +15,25 @@ const ALLOWED = "octocat";
 // the KVNamespace surface the dispatch chain and recordCall actually touch.
 function makeKv() {
 	const store = new Map<string, string>();
+	// Soft-TTL markers live in KV metadata (not the value), so keep them in a side map
+	// keyed identically. `store` stays a Map<string,string> so existing tests that seed
+	// or read plain-JSON values directly are undisturbed; entries seeded without
+	// metadata read back as legacy (fresh), matching production's backward-compat path.
+	const meta = new Map<string, { softExpiresAt: number }>();
 	const kv = {
 		get: async (key: string) => store.get(key) ?? null,
-		put: async (key: string, value: string) => void store.set(key, value),
-		delete: async (key: string) => void store.delete(key),
+		getWithMetadata: async (key: string) => ({ value: store.get(key) ?? null, metadata: meta.get(key) ?? null }),
+		put: async (key: string, value: string, opts?: { metadata?: { softExpiresAt: number } }) => {
+			store.set(key, value);
+			if (opts?.metadata) meta.set(key, opts.metadata);
+			else meta.delete(key);
+		},
+		delete: async (key: string) => {
+			store.delete(key);
+			meta.delete(key);
+		},
 	};
-	return { store, kv };
+	return { store, meta, kv };
 }
 
 // ctx whose waitUntil captures deferred promises so the test can await the
@@ -121,10 +134,13 @@ describe("handleRpc (index.ts dispatch)", () => {
 		const gate = new Promise<void>((r) => (releaseGet = r));
 		let cachePuts = 0;
 		const kv = {
-			get: async (key: string) => {
+			get: async (key: string) => store.get(key) ?? null,
+			// The dispatch cache read goes through getWithMetadata; gate it so all N
+			// concurrent callers park here BEFORE any reaches singleFlight.
+			getWithMetadata: async (key: string) => {
 				waiting++;
 				await gate;
-				return store.get(key) ?? null;
+				return { value: store.get(key) ?? null, metadata: null };
 			},
 			put: async (key: string, value: string) => {
 				if (key.startsWith("cache:")) cachePuts++;
@@ -299,6 +315,73 @@ describe("handleRpc (index.ts dispatch)", () => {
 			.join("");
 		expect(hZwsp).toBe(expected); // the ZWSP survived to run() unmodified
 		expect(hZwsp).not.toBe(hStripped); // and it materially changed the output
+	});
+});
+
+describe("stale-while-revalidate cache reads", () => {
+	// json is a real cacheable fn: {data:'{"a":1}', from:"json"} -> a result whose
+	// text is JSON.stringify({a:1}). We seed a hand-built cache entry whose SOFT TTL
+	// marker (KV metadata) is either past (stale) or in the future (fresh) and assert
+	// the read path serves it immediately, refreshing in the background only when stale.
+	const args = { data: '{"a":1}', from: "json" };
+	const seedResult = (text: string) => JSON.stringify({ content: [{ type: "text", text }] });
+	// Drain deferred to a fixed point: a background refresh schedules its own nested
+	// KV put via ctx.waitUntil, so one splice isn't enough to settle everything.
+	const drain = async (deferred: Promise<unknown>[]) => {
+		while (deferred.length) await Promise.all(deferred.splice(0));
+	};
+
+	it("serves a stale entry immediately and schedules a background refresh", async () => {
+		const { kv, store, meta } = makeKv();
+		const { ctx, deferred } = makeCtx();
+		const env = makeEnv(kv);
+		const key = await cacheKey("json", args);
+		// A cached entry whose soft TTL already lapsed (but not yet KV-evicted).
+		store.set(key, seedResult("STALE_VALUE"));
+		meta.set(key, { softExpiresAt: Date.now() - 1000 });
+
+		const out = await callRpc(env, ctx, { jsonrpc: "2.0", id: 20, method: "tools/call", params: { name: "json", arguments: { ...args } } });
+		// Served the stale value IMMEDIATELY — not the freshly-recomputed {a:1}.
+		expect(out.result.content[0].text).toBe("STALE_VALUE");
+
+		// The background refresh recomputed and rewrote the SAME entry: the stale value
+		// is gone, replaced by the real conversion, and the soft marker is pushed forward.
+		await drain(deferred);
+		expect(store.get(key)).not.toContain("STALE_VALUE");
+		expect(JSON.parse(JSON.parse(store.get(key)!).content[0].text)).toEqual({ a: 1 });
+		expect(meta.get(key)!.softExpiresAt).toBeGreaterThan(Date.now());
+	});
+
+	it("serves a fresh entry directly with no background refresh", async () => {
+		const { kv, store, meta } = makeKv();
+		const { ctx, deferred } = makeCtx();
+		const env = makeEnv(kv);
+		const key = await cacheKey("json", args);
+		// A cached entry still within its soft TTL.
+		store.set(key, seedResult("FRESH_VALUE"));
+		meta.set(key, { softExpiresAt: Date.now() + 60_000 });
+
+		const out = await callRpc(env, ctx, { jsonrpc: "2.0", id: 21, method: "tools/call", params: { name: "json", arguments: { ...args } } });
+		expect(out.result.content[0].text).toBe("FRESH_VALUE");
+
+		// No refresh ran: the entry is untouched (still the seeded value, not {a:1}).
+		await drain(deferred);
+		expect(JSON.parse(store.get(key)!).content[0].text).toBe("FRESH_VALUE");
+	});
+
+	it("treats a legacy entry with no soft marker as fresh (no refresh)", async () => {
+		const { kv, store } = makeKv();
+		const { ctx, deferred } = makeCtx();
+		const env = makeEnv(kv);
+		const key = await cacheKey("json", args);
+		// Pre-SWR entry: value only, no metadata written.
+		store.set(key, seedResult("LEGACY_VALUE"));
+
+		const out = await callRpc(env, ctx, { jsonrpc: "2.0", id: 22, method: "tools/call", params: { name: "json", arguments: { ...args } } });
+		expect(out.result.content[0].text).toBe("LEGACY_VALUE");
+
+		await drain(deferred);
+		expect(JSON.parse(store.get(key)!).content[0].text).toBe("LEGACY_VALUE");
 	});
 });
 

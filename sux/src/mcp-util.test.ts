@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CACHE_TTL_SECONDS, cacheKey, deferCacheWrite } from "./mcp-util";
+import { CACHE_STALE_GRACE_SECONDS, CACHE_TTL_SECONDS, cacheKey, deferCacheWrite } from "./mcp-util";
 
 // Verifies the content-addressed KV cache mechanism used by index.ts tools/call:
 // key = sha256(tool + stable-stringified args), then a single key drives both the
@@ -35,9 +35,9 @@ describe("deferCacheWrite", () => {
 		return { deferred, ctx: { waitUntil: (p: Promise<unknown>) => void deferred.push(p) } };
 	};
 	const makeKv = () => {
-		const store = new Map<string, { value: string; opts: { expirationTtl: number } }>();
+		const store = new Map<string, { value: string; opts: { expirationTtl: number; metadata?: { softExpiresAt: number } } }>();
 		const kv = {
-			put: async (key: string, value: string | ArrayBufferView | ArrayBuffer, opts: { expirationTtl: number }) => {
+			put: async (key: string, value: string | ArrayBufferView | ArrayBuffer, opts: { expirationTtl: number; metadata?: { softExpiresAt: number } }) => {
 				await Promise.resolve(); // genuinely async, so a blocking (awaited-inline) write would be visible
 				store.set(key, { value: value as string, opts }); // small test payloads stay plain strings (packForCache passthrough)
 			},
@@ -57,17 +57,24 @@ describe("deferCacheWrite", () => {
 		await Promise.all(deferred);
 		const entry = store.get("cache:k1")!;
 		expect(JSON.parse(entry.value)).toEqual(result);
-		expect(entry.opts).toEqual({ expirationTtl: CACHE_TTL_SECONDS });
+		// The KV hard TTL is the soft (fn) lifetime extended by the stale grace window,
+		// and the soft-expiry instant rides in metadata (soft lifetime out from now).
+		expect(entry.opts.expirationTtl).toBe(CACHE_TTL_SECONDS + CACHE_STALE_GRACE_SECONDS);
+		expect(entry.opts.metadata!.softExpiresAt).toBeGreaterThan(Date.now());
+		expect(entry.opts.metadata!.softExpiresAt).toBeLessThanOrEqual(Date.now() + CACHE_TTL_SECONDS * 1000);
 	});
 
 	it("uses a fn's ttl on the KV write when one is passed", async () => {
 		const { ctx, deferred } = makeCtx();
 		const { kv, store } = makeKv();
 
+		const before = Date.now();
 		deferCacheWrite(kv, ctx, "cache:k1", { content: [{ type: "text", text: "hi" }] }, 300);
 
 		await Promise.all(deferred);
-		expect(store.get("cache:k1")!.opts).toEqual({ expirationTtl: 300 });
+		// Soft TTL = the passed 300s; hard KV TTL extends it by the stale grace window.
+		expect(store.get("cache:k1")!.opts.expirationTtl).toBe(300 + CACHE_STALE_GRACE_SECONDS);
+		expect(store.get("cache:k1")!.opts.metadata!.softExpiresAt).toBeGreaterThanOrEqual(before + 300 * 1000);
 	});
 
 	it("falls back to the global default ttl when a fn passes none", async () => {
@@ -77,7 +84,7 @@ describe("deferCacheWrite", () => {
 		deferCacheWrite(kv, ctx, "cache:k1", { content: [{ type: "text", text: "hi" }] });
 
 		await Promise.all(deferred);
-		expect(store.get("cache:k1")!.opts).toEqual({ expirationTtl: CACHE_TTL_SECONDS });
+		expect(store.get("cache:k1")!.opts.expirationTtl).toBe(CACHE_TTL_SECONDS + CACHE_STALE_GRACE_SECONDS);
 	});
 
 	it("ignores a non-positive ttl and falls back to the global default", async () => {
@@ -87,7 +94,7 @@ describe("deferCacheWrite", () => {
 		deferCacheWrite(kv, ctx, "cache:k1", { content: [{ type: "text", text: "hi" }] }, 0);
 
 		await Promise.all(deferred);
-		expect(store.get("cache:k1")!.opts).toEqual({ expirationTtl: CACHE_TTL_SECONDS });
+		expect(store.get("cache:k1")!.opts.expirationTtl).toBe(CACHE_TTL_SECONDS + CACHE_STALE_GRACE_SECONDS);
 	});
 
 	it("never writes isError results", async () => {

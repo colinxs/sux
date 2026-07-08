@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { shipToLoki } from "./grafana";
+import { shipEgress, shipToLoki } from "./grafana";
 import type { CallEvent } from "./metrics";
 import type { RtEnv } from "./registry";
 
@@ -85,5 +85,69 @@ describe("shipToLoki", () => {
 		const line = JSON.parse(payload.streams[0].values[0][1]);
 		expect(Object.keys(line).sort()).toEqual(["cache", "error", "ms", "tool"]);
 		expect(line).toEqual({ tool: "dns", ms: 5, cache: false, error: false });
+	});
+});
+
+describe("shipEgress", () => {
+	it("is a no-op (no fetch) unless all three Grafana secrets are set", () => {
+		const fetchSpy = vi.fn(async (_url: string, _init?: RequestInit) => new Response(null, { status: 204 }));
+		vi.stubGlobal("fetch", fetchSpy);
+		const partials: Partial<RtEnv>[] = [
+			{},
+			{ GRAFANA_LOKI_URL: "https://loki.test/push" },
+			{ GRAFANA_LOKI_USER: "u1" },
+			{ GRAFANA_LOKI_TOKEN: "t1" },
+			{ GRAFANA_LOKI_URL: "https://loki.test/push", GRAFANA_LOKI_USER: "u1" },
+			{ GRAFANA_LOKI_URL: "https://loki.test/push", GRAFANA_LOKI_TOKEN: "t1" },
+			{ GRAFANA_LOKI_USER: "u1", GRAFANA_LOKI_TOKEN: "t1" },
+		];
+		for (const env of partials) {
+			const { ctx, promises } = fakeCtx();
+			shipEgress(env as RtEnv, ctx, { reqId: "abc12345", host: "www.homedepot.com", rung: "proxied", residential: true, status: 200 });
+			expect(promises).toHaveLength(0);
+		}
+		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
+	it("ships one authed egress line: host only, chosen rung, residential flag, status, reqId", async () => {
+		const fetchSpy = vi.fn(async (_url: string, _init?: RequestInit) => new Response(null, { status: 204 }));
+		vi.stubGlobal("fetch", fetchSpy);
+		const { ctx, settle } = fakeCtx();
+		shipEgress(CONFIGURED, ctx, { reqId: "abc12345", host: "www.homedepot.com", rung: "proxied", residential: true, status: 200 });
+		await settle();
+
+		expect(fetchSpy).toHaveBeenCalledTimes(1);
+		const url = fetchSpy.mock.calls[0][0];
+		const init = fetchSpy.mock.calls[0][1]!;
+		expect(url).toBe("https://loki.test/push");
+		expect(init.method).toBe("POST");
+		const headers = init.headers as Record<string, string>;
+		expect(headers["content-type"]).toBe("application/json");
+		expect(headers.authorization).toBe(`Basic ${btoa("u1:t1")}`);
+
+		const payload = JSON.parse(init.body as string);
+		// Low-cardinality stream labels only: service + a fixed kind + residential bool.
+		expect(payload.streams[0].stream).toEqual({ service: "sux", kind: "egress", residential: "true" });
+		const [tsNanos, line] = payload.streams[0].values[0];
+		expect(tsNanos).toMatch(/^\d+000000$/);
+		const parsed = JSON.parse(line);
+		expect(parsed).toEqual({ host: "www.homedepot.com", rung: "proxied", residential: true, status: 200, reqId: "abc12345" });
+		// Forensics discipline: a host, never a full URL that could carry a secret.
+		expect(init.body as string).not.toContain("https://www.homedepot.com");
+		expect(init.body as string).not.toContain("://www.homedepot.com");
+	});
+
+	it("omits optional status/reqId when absent and marks a direct exit residential=false", async () => {
+		const fetchSpy = vi.fn(async (_url: string, _init?: RequestInit) => new Response(null, { status: 204 }));
+		vi.stubGlobal("fetch", fetchSpy);
+		const { ctx, settle } = fakeCtx();
+		shipEgress(CONFIGURED, ctx, { host: "example.com", rung: "direct", residential: false });
+		await settle();
+
+		const payload = JSON.parse(fetchSpy.mock.calls[0][1]!.body as string);
+		expect(payload.streams[0].stream.residential).toBe("false");
+		const line = JSON.parse(payload.streams[0].values[0][1]);
+		expect(Object.keys(line).sort()).toEqual(["host", "residential", "rung"]);
+		expect(line).toEqual({ host: "example.com", rung: "direct", residential: false });
 	});
 });

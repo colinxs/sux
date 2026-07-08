@@ -49,6 +49,19 @@ export function parseJsonRpc(bodyText: string | undefined): JsonRpc | undefined 
 
 export const CACHE_TTL_SECONDS = 3600;
 
+// Stale-while-revalidate grace window. An entry's SOFT TTL is the fn's intended
+// freshness lifetime (fn.ttl or CACHE_TTL_SECONDS); the KV HARD TTL (when the entry
+// is evicted) extends that by this grace so a request landing after soft-expiry —
+// but before hard-expiry — can be served the stale value IMMEDIATELY while a
+// background refresh recomputes and rewrites the entry. The soft-expiry instant
+// rides in KV metadata (see CacheMeta), leaving the stored value byte-identical.
+export const CACHE_STALE_GRACE_SECONDS = 86_400;
+
+// Metadata stored alongside a cache value. `softExpiresAt` is an epoch-ms instant:
+// at/after it, the entry is stale (serve + refresh); before it, fresh (serve as-is).
+// Legacy entries written before SWR carry no metadata and read back as fresh.
+export type CacheMeta = { softExpiresAt: number };
+
 function stableStringify(v: unknown): string {
 	if (v === null || typeof v !== "object") return JSON.stringify(v);
 	if (Array.isArray(v)) return `[${v.map(stableStringify).join(",")}]`;
@@ -88,7 +101,7 @@ export async function cacheKey(toolName: string, args: unknown): Promise<string>
 // poison an upstream 4xx/5xx body into the cache as a success. Cloning keeps the
 // decision identical for all callers and the flag out of both value and response.
 export function deferCacheWrite(
-	kv: { put: (key: string, value: string | ArrayBufferView | ArrayBuffer, opts: { expirationTtl: number }) => Promise<unknown> },
+	kv: { put: (key: string, value: string | ArrayBufferView | ArrayBuffer, opts: { expirationTtl: number; metadata?: CacheMeta }) => Promise<unknown> },
 	ctx: { waitUntil: (promise: Promise<unknown>) => void },
 	key: string | null,
 	result: { isError?: boolean; noCache?: boolean; [k: string]: unknown },
@@ -97,9 +110,16 @@ export function deferCacheWrite(
 	const cacheable = key && !result.isError && !result.noCache;
 	const { noCache, ...clean } = result;
 	void noCache;
-	const expirationTtl = typeof ttl === "number" && ttl > 0 ? ttl : CACHE_TTL_SECONDS;
+	// Soft TTL = the fn's intended freshness lifetime; the KV hard TTL extends it by
+	// the stale grace window so an entry past soft-expiry stays alive to be served
+	// stale (with a background refresh) instead of missing outright. The soft-expiry
+	// instant is written as KV metadata — NOT into the value — so the stored value
+	// stays byte-identical and legacy (metadata-less) entries read back as fresh.
+	const softTtl = typeof ttl === "number" && ttl > 0 ? ttl : CACHE_TTL_SECONDS;
+	const expirationTtl = softTtl + CACHE_STALE_GRACE_SECONDS;
+	const metadata: CacheMeta = { softExpiresAt: Date.now() + softTtl * 1000 };
 	// packForCache transparently compresses large JSON payloads (zstd→brotli) and
 	// returns the plain string for small ones; index.ts reverses it on read.
-	if (cacheable) ctx.waitUntil(kv.put(key, packForCache(JSON.stringify(clean)), { expirationTtl }).catch(() => {}));
+	if (cacheable) ctx.waitUntil(kv.put(key, packForCache(JSON.stringify(clean)), { expirationTtl, metadata }).catch(() => {}));
 	return clean;
 }

@@ -50,14 +50,49 @@ export type MacRenderResult =
 const MAC_TIMEOUT_MARGIN_MS = 15_000;
 const MAC_TIMEOUT_CAP_MS = 80_000;
 
+// Circuit breaker for a down/hung Mac node. Each call that never gets a Response
+// (transport error OR AbortSignal.timeout — the calls that burn the FULL timeout
+// budget) trips the breaker. After MAC_BREAKER_THRESHOLD such consecutive
+// failures the circuit OPENS for MAC_BREAKER_COOLDOWN_MS: subsequent calls
+// short-circuit instantly with `circuit-open` instead of each waiting out the
+// timeout again. Once the cooldown elapses the breaker is half-open — the next
+// call probes the node for real; a Response (node is alive, even a node-side
+// `{error}`) closes it, another timeout re-opens it for a fresh cooldown. Any
+// Response resets the failure count, so isolated blips never accumulate to a trip.
+const MAC_BREAKER_THRESHOLD = 5;
+const MAC_BREAKER_COOLDOWN_MS = 30_000;
+const macBreaker = { failures: 0, openUntil: 0 };
+
+function macBreakerOnResponse(): void {
+	macBreaker.failures = 0;
+	macBreaker.openUntil = 0;
+}
+
+function macBreakerOnFailure(): void {
+	macBreaker.failures += 1;
+	if (macBreaker.failures >= MAC_BREAKER_THRESHOLD) {
+		macBreaker.openUntil = Date.now() + MAC_BREAKER_COOLDOWN_MS;
+	}
+}
+
+/** Test-only: clear the module-level circuit-breaker state between cases. */
+export function __resetMacRenderBreaker(): void {
+	macBreaker.failures = 0;
+	macBreaker.openUntil = 0;
+}
+
 /**
  * POST a render spec to the Mac service and return the rendered result. Never
  * throws: unconfigured backend, transport error, non-200, unreadable body, or a
- * node-side `{ error }` all resolve to `{ ok:false, error }`.
+ * node-side `{ error }` all resolve to `{ ok:false, error }`. A tripped circuit
+ * (see macBreaker) fast-fails with `circuit-open` without touching the network.
  */
 export async function macRender(env: RtEnv, spec: MacRenderSpec): Promise<MacRenderResult> {
 	if (!env.MAC_RENDER_URL || !env.MAC_RENDER_SECRET) {
 		return { ok: false, error: "Mac render backend not configured." };
+	}
+	if (macBreaker.openUntil > Date.now()) {
+		return { ok: false, error: "mac render backend circuit-open" };
 	}
 	const payload = JSON.stringify({ as: "html", ...spec });
 	const ts = String(Date.now());
@@ -76,8 +111,12 @@ export async function macRender(env: RtEnv, spec: MacRenderSpec): Promise<MacRen
 			signal: AbortSignal.timeout(timeout),
 		});
 	} catch (e) {
+		macBreakerOnFailure();
 		return { ok: false, error: `mac render failed: ${String((e as Error).message ?? e)}` };
 	}
+	// The node answered (even a non-2xx or `{error}` body), so it is alive — clear
+	// the breaker regardless of how the response body ultimately maps.
+	macBreakerOnResponse();
 	let data: MacRenderResponse;
 	try {
 		data = (await resp.json()) as MacRenderResponse;

@@ -1,4 +1,4 @@
-import { type Fn, fail, ok } from "../registry";
+import { type Fn, failWith, ok } from "../registry";
 import { smartFetch } from "../proxy";
 import { isHttpUrl, noCacheOn4xx, noCacheOnMutation, toB64 } from "./_util";
 
@@ -21,7 +21,7 @@ export const proxyFn: Fn = {
 	cacheable: true,
 	run: async (env, args) => {
 		const url = String(args?.url ?? "");
-		if (!isHttpUrl(url)) return fail("url must be absolute http(s).");
+		if (!isHttpUrl(url)) return failWith("bad_input", "url must be absolute http(s).");
 		const resp = await smartFetch(env, url, {
 			method: args?.method,
 			headers: args?.headers,

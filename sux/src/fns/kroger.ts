@@ -1,4 +1,4 @@
-import { type Fn, fail, ok, type RtEnv } from "../registry";
+import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { normalizeMoney, type RetailProduct } from "./_retail";
 
 // Kroger Public API (api.kroger.com) — official, free, clean REST, no bot wall.
@@ -136,7 +136,7 @@ export const kroger: Fn = {
 	ttl: 300,
 	run: async (env, args) => {
 		if (!env.KROGER_CLIENT_ID || !env.KROGER_CLIENT_SECRET)
-			return fail("Kroger API not configured (KROGER_CLIENT_ID/KROGER_CLIENT_SECRET). Get a free key at developer.kroger.com.");
+			return failWith("not_configured", "Kroger API not configured (KROGER_CLIENT_ID/KROGER_CLIENT_SECRET). Get a free key at developer.kroger.com.");
 
 		const action = String(args?.action ?? "search");
 		const limit = Math.min(50, Math.max(1, Number(args?.limit) || 15));
@@ -145,7 +145,7 @@ export const kroger: Fn = {
 
 		try {
 			if (action === "locations") {
-				if (!zip) return fail("action=locations requires a `zip`.");
+				if (!zip) return failWith("bad_input", "action=locations requires a `zip`.");
 				const j = await api(env, locationsPath(zip, limit, chain));
 				const locations = (j?.data ?? []).map(normLocation);
 				return ok(JSON.stringify({ retailer: "kroger", action, count: locations.length, locations }, null, 2));
@@ -153,19 +153,19 @@ export const kroger: Fn = {
 
 			if (action === "product") {
 				const id = String(args?.product_id ?? "").trim();
-				if (!id) return fail("action=product requires a `product_id`.");
+				if (!id) return failWith("bad_input", "action=product requires a `product_id`.");
 				let locationId = args?.location_id ? String(args.location_id).trim() : "";
 				if (!locationId && zip) locationId = (await resolveLocationId(env, zip, chain)) ?? "";
 				const q = locationId ? `?filter.locationId=${encodeURIComponent(locationId)}` : "";
 				const j = await api(env, `/products/${encodeURIComponent(id)}${q}`);
 				const d = Array.isArray(j?.data) ? j.data[0] : j?.data;
-				if (!d) return fail(`No Kroger product found for '${id}'.`);
+				if (!d) return failWith("not_found", `No Kroger product found for '${id}'.`);
 				return ok(JSON.stringify({ retailer: "kroger", action, count: 1, products: [normProduct(d)] }, null, 2));
 			}
 
 			// action === "search"
 			const term = String(args?.term ?? "").trim();
-			if (!term) return fail("action=search requires a `term`.");
+			if (!term) return failWith("bad_input", "action=search requires a `term`.");
 			let locationId = args?.location_id ? String(args.location_id).trim() : "";
 			if (!locationId && zip) locationId = (await resolveLocationId(env, zip, chain)) ?? "";
 			const p = new URLSearchParams({ "filter.term": term, "filter.limit": String(limit) });
@@ -174,7 +174,7 @@ export const kroger: Fn = {
 			const products = normProducts(j?.data);
 			return ok(JSON.stringify({ retailer: "kroger", action, location_id: locationId || undefined, count: products.length, products }, null, 2));
 		} catch (e) {
-			return fail(`kroger (${action}) failed: ${errMsg(e)}`);
+			return failWith("upstream_error", `kroger (${action}) failed: ${errMsg(e)}`);
 		}
 	},
 };

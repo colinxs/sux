@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { macRender } from "./mac-render";
+import { __resetMacRenderBreaker, macRender } from "./mac-render";
 import { hmacHex } from "./proxy";
 
 // macRender is the HMAC-signed client for the Mac patchright render node — the
@@ -18,9 +18,11 @@ describe("macRender", () => {
 	let fetchSpy: ReturnType<typeof vi.spyOn>;
 	beforeEach(() => {
 		fetchSpy = vi.spyOn(globalThis, "fetch") as any;
+		__resetMacRenderBreaker();
 	});
 	afterEach(() => {
 		fetchSpy.mockRestore();
+		__resetMacRenderBreaker();
 	});
 
 	it("returns ok:false and never fetches when the backend is unconfigured", async () => {
@@ -101,5 +103,74 @@ describe("macRender", () => {
 	it("defaults content_type to text/html and body to '' when the node omits them", async () => {
 		fetchSpy.mockResolvedValueOnce(macJson({ status: 200 }));
 		expect(await macRender(ENV, { url: "https://x" })).toMatchObject({ ok: true, contentType: "text/html", body: "" });
+	});
+
+	// Circuit breaker: a down/hung node makes every call wait out the full timeout.
+	// After N consecutive transport failures the breaker OPENS and short-circuits
+	// instantly (no fetch), then half-opens after the cooldown to probe recovery.
+	describe("circuit breaker", () => {
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		it("fast-fails the next call WITHOUT fetching after 5 consecutive failures, then recovers after the cooldown", async () => {
+			vi.useFakeTimers();
+			vi.setSystemTime(0);
+
+			// Five straight transport failures trip the breaker. Each one DOES fetch.
+			fetchSpy.mockRejectedValue(new Error("tunnel down"));
+			for (let i = 0; i < 5; i++) {
+				expect(await macRender(ENV, { url: "https://x" })).toEqual({ ok: false, error: expect.stringMatching(/tunnel down/) });
+			}
+			expect(fetchSpy).toHaveBeenCalledTimes(5);
+
+			// Circuit now OPEN: the next call is fast-failed with circuit-open and never
+			// reaches fetch — no full-timeout wait.
+			fetchSpy.mockClear();
+			expect(await macRender(ENV, { url: "https://x" })).toEqual({ ok: false, error: "mac render backend circuit-open" });
+			expect(fetchSpy).not.toHaveBeenCalled();
+
+			// Still open just before the cooldown elapses.
+			vi.setSystemTime(29_999);
+			expect(await macRender(ENV, { url: "https://x" })).toEqual({ ok: false, error: "mac render backend circuit-open" });
+			expect(fetchSpy).not.toHaveBeenCalled();
+
+			// After the cooldown the breaker is half-open: the probe call reaches the
+			// node again, and a healthy Response closes the circuit for good.
+			vi.setSystemTime(30_001);
+			fetchSpy.mockResolvedValueOnce(macJson({ status: 200, content_type: "text/html", body: "<html>back</html>" }));
+			expect(await macRender(ENV, { url: "https://x" })).toMatchObject({ ok: true, body: "<html>back</html>" });
+			expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+			// Recovered: the failure count reset, so subsequent calls flow normally.
+			fetchSpy.mockResolvedValueOnce(macJson({ status: 200, content_type: "text/html", body: "<html>ok</html>" }));
+			expect(await macRender(ENV, { url: "https://x" })).toMatchObject({ ok: true, body: "<html>ok</html>" });
+		});
+
+		it("half-open probe that fails re-opens the circuit for another cooldown", async () => {
+			vi.useFakeTimers();
+			vi.setSystemTime(0);
+			fetchSpy.mockRejectedValue(new Error("tunnel down"));
+			for (let i = 0; i < 5; i++) await macRender(ENV, { url: "https://x" });
+
+			// Cooldown elapses → half-open → probe still fails → re-open.
+			vi.setSystemTime(30_001);
+			expect(await macRender(ENV, { url: "https://x" })).toEqual({ ok: false, error: expect.stringMatching(/tunnel down/) });
+
+			fetchSpy.mockClear();
+			expect(await macRender(ENV, { url: "https://x" })).toEqual({ ok: false, error: "mac render backend circuit-open" });
+			expect(fetchSpy).not.toHaveBeenCalled();
+		});
+
+		it("does not trip on a node that keeps ANSWERING — any Response resets the failure count", async () => {
+			// Node-side {error} envelopes mean the node is alive (just a hard page), so
+			// they must never open the circuit against unrelated URLs.
+			fetchSpy.mockImplementation(async () => macJson({ error: "challenge unsolved" }));
+			for (let i = 0; i < 8; i++) {
+				expect(await macRender(ENV, { url: "https://x" })).toEqual({ ok: false, error: expect.stringMatching(/challenge unsolved/) });
+			}
+			// Still closed: the 9th call fetches rather than fast-failing.
+			expect(fetchSpy).toHaveBeenCalledTimes(8);
+		});
 	});
 });

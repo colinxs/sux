@@ -1,5 +1,5 @@
 import { macRender } from "../mac-render";
-import { type Fn, fail, ok, type RtEnv } from "../registry";
+import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { normalizeMoney, type RetailProduct } from "./_retail";
 
 // Walmart sits behind an ACTIVE PerimeterX JS challenge a plain fetch can't pass.
@@ -65,7 +65,7 @@ export const walmart: Fn = {
 
 		if (action === "product") {
 			const itemId = String(args?.item_id ?? "").trim();
-			if (!itemId) return fail("action=product requires an `item_id`.");
+			if (!itemId) return failWith("bad_input", "action=product requires an `item_id`.");
 			const r = await macRender(env, {
 				url: `https://www.walmart.com/ip/${encodeURIComponent(itemId)}`,
 				as: "html",
@@ -74,10 +74,10 @@ export const walmart: Fn = {
 				wait_ms: 4000,
 				solve: true,
 			});
-			if (!r.ok) return fail(`${BLOCKED_MSG} (${r.error})`);
+			if (!r.ok) return failWith("blocked", `${BLOCKED_MSG} (${r.error})`);
 			const data = extractNextData(r.body);
 			const product = data?.props?.pageProps?.initialData?.data?.product;
-			if (!product) return fail(BLOCKED_MSG);
+			if (!product) return failWith("blocked", BLOCKED_MSG);
 			const id = String(product?.usItemId ?? product?.id ?? itemId);
 			const norm: RetailProduct = {
 				id,
@@ -94,7 +94,7 @@ export const walmart: Fn = {
 
 		// action === "search"
 		const term = String(args?.term ?? "").trim();
-		if (!term) return fail("action=search requires a `term`.");
+		if (!term) return failWith("bad_input", "action=search requires a `term`.");
 		const r = await macRender(env, {
 			url: `https://www.walmart.com/search?q=${encodeURIComponent(term)}`,
 			as: "html",
@@ -103,11 +103,11 @@ export const walmart: Fn = {
 			wait_ms: 4000,
 			solve: true,
 		});
-		if (!r.ok) return fail(`${BLOCKED_MSG} (${r.error})`);
+		if (!r.ok) return failWith("blocked", `${BLOCKED_MSG} (${r.error})`);
 		const data = extractNextData(r.body);
-		if (!data) return fail(BLOCKED_MSG);
+		if (!data) return failWith("blocked", BLOCKED_MSG);
 		const items = data?.props?.pageProps?.initialData?.searchResult?.itemStacks?.[0]?.items;
-		if (!Array.isArray(items)) return fail(BLOCKED_MSG);
+		if (!Array.isArray(items)) return failWith("blocked", BLOCKED_MSG);
 		// itemStacks can carry non-product tiles (ads/placeholders) with no id — keep
 		// only real products, then cap to the requested limit.
 		const products = items

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyEvent, clipErr, emptyMetrics, mergeMetrics, percentile, readMetrics, recordCall, sloReport, toPrometheus } from "./metrics";
+import { applyEvent, clipErr, emptyMetrics, mergeMetrics, percentile, readMetrics, recordCall, sloReport, TOOLS_CAP, toPrometheus } from "./metrics";
 
 describe("metrics", () => {
 	it("folds events into per-tool + global aggregates", () => {
@@ -42,6 +42,42 @@ describe("metrics", () => {
 		for (let i = 0; i < 510; i++) applyEvent(m, { tool: "t", ms: 1 });
 		expect(m.recent).toHaveLength(500);
 		expect(m.total).toBe(510); // lifetime counter unaffected by the cap
+	});
+
+	it("rolls up per-tool counters so the doc stays bounded, preserving totals", () => {
+		const m = emptyMetrics(0);
+		// A hot tool that must survive as its own series...
+		for (let i = 0; i < 50; i++) applyEvent(m, { tool: "search", ms: 10, cache: true });
+		// ...plus a flood of distinct one-off tool names that must be rolled up.
+		for (let i = 0; i < 1000; i++) applyEvent(m, { tool: `oneoff-${i}`, ms: 2, error: i % 2 === 0, cache: i % 3 === 0 });
+
+		const names = Object.keys(m.tools);
+		// Cardinality is capped and the excess collapsed into the reserved bucket.
+		expect(names.length).toBeLessThanOrEqual(TOOLS_CAP);
+		expect(names).toContain("__other__");
+		expect(m.tools.search.calls).toBe(50); // busy tool survives intact
+		// Rolling log stays bounded regardless of how many events landed.
+		expect(m.recent.length).toBeLessThanOrEqual(500);
+
+		// Lifetime totals are exact: nothing lost, only re-bucketed.
+		expect(m.total).toBe(1050);
+		const sum = (pick: (t: { calls: number; errors: number; cache_hits: number; total_ms: number }) => number) => Object.values(m.tools).reduce((a, t) => a + pick(t), 0);
+		expect(sum((t) => t.calls)).toBe(1050);
+		expect(sum((t) => t.errors)).toBe(m.errors);
+		expect(sum((t) => t.cache_hits)).toBe(m.cache_hits);
+		// 50 hot (10ms) + 1000 oneoff (2ms) = 500 + 2000 = 2500ms of latency, all retained.
+		expect(sum((t) => t.total_ms)).toBe(2500);
+	});
+
+	it("keeps rolling up idempotently across further writes once at the cap", () => {
+		const m = emptyMetrics(0);
+		for (let i = 0; i < 1000; i++) applyEvent(m, { tool: `t${i}`, ms: 1 });
+		expect(Object.keys(m.tools).length).toBeLessThanOrEqual(TOOLS_CAP);
+		// More distinct tools after the cap is reached: still bounded, still exact.
+		for (let i = 1000; i < 1200; i++) applyEvent(m, { tool: `t${i}`, ms: 1 });
+		expect(Object.keys(m.tools).length).toBeLessThanOrEqual(TOOLS_CAP);
+		expect(m.total).toBe(1200);
+		expect(Object.values(m.tools).reduce((a, t) => a + t.calls, 0)).toBe(1200);
 	});
 
 	it("folds per-route fetch tallies into the aggregate and the log entry", () => {
