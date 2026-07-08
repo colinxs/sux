@@ -60,6 +60,21 @@ async function profileGuidance(env: RtEnv, profile: string): Promise<string[]> {
 	return lines;
 }
 
+// The default "house voice", distilled from the PRINCIPLES of Strunk's Elements of
+// Style (the rules, not the book's own prose). Applied when a caller gives no
+// explicit `style` and no usable `profile`, so `voice(text)` alone rewrites toward
+// vigorous, concise, concrete English.
+const DEFAULT_VOICE_SPEC = [
+	"Rewrite in clear, vigorous, plain English, following these principles:",
+	'- Omit needless words — every word must tell. Cut padding ("the fact that", "in order to", "there is/are", "it should be noted that") and hollow qualifiers ("very", "rather", "quite", "really", "actually", "certainly").',
+	'- Prefer the active voice: "I will remember", not "it will be remembered by me"; use the passive only when the thing acted upon must be the subject.',
+	'- Put statements in positive form — make definite assertions. Prefer "forgot" to "did not remember", "dishonest" to "not honest"; avoid noncommittal hedging.',
+	'- Use specific, concrete, definite language over the vague and abstract: "it rained every day", not "a period of unfavorable weather".',
+	"- Express coordinate ideas in parallel grammatical form; keep related words together; place the emphatic word at the sentence's end.",
+	'- Prefer short, direct sentences and vary their length; avoid a long string of clauses strung together with "and", "but", "which", "so".',
+	"- Do not overstate, and do not hedge into mush. Say it plainly, once.",
+].join("\n");
+
 export const voice: Fn = {
 	name: "voice",
 	cost: 2,
@@ -67,7 +82,7 @@ export const voice: Fn = {
 		"AI text-restyler. Rewrites `text` into a target `style` and/or a learned preference `profile`, preserving meaning, names, facts, numbers, and links — returns only the rewritten text, no preamble. " +
 		"`style`: free-form — any descriptor works (common ones: professional, non-violent, brief, casual, academic, friendly, formal, plain, warm). " +
 		"`profile`: name of a learned voice profile (see the `preferences` fn) whose distilled spec + example samples are folded in from KV; skipped gracefully if absent. " +
-		"At least one of `style`/`profile` is required. `strength`: light (a gentle touch, keep most original phrasing) | strong (fully recast; default). `instructions`: optional extra guidance.",
+		"With NO `style` and no usable `profile`, `voice(text)` rewrites in the default house voice — concise, active, concrete English distilled from the principles of Strunk's Elements of Style (omit needless words, active voice, positive form, specific/definite language). `strength`: light (a gentle touch, keep most original phrasing) | strong (fully recast; default). `instructions`: optional extra guidance.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -92,8 +107,6 @@ export const voice: Fn = {
 		const instructions = String(args?.instructions ?? "").trim();
 
 		if (!text.trim()) return failWith("bad_input", "Provide `text` to restyle.");
-		// The restyle needs a target: a style, a profile, or both. Neither is a no-op.
-		if (!style && !profile) return failWith("bad_input", "Provide a `style` and/or a `profile` — at least one is required.");
 
 		try {
 			// Fold the learned profile (if any) into system guidance. Absent/unparseable
@@ -106,7 +119,10 @@ export const voice: Fn = {
 			if (instructions) guidance.push(`Additional guidance: ${instructions}`);
 			// A profile named but not found leaves only a placeholder line so the model
 			// still restyles on whatever style was given (or, if none, does a faithful copy).
-			if (profile && profileLines.length === 0) guidance.push(`(Voice profile "${profile}" was not found — restyle on the style/guidance above.)`);
+			if (profile && profileLines.length === 0) guidance.push(`(Voice profile "${profile}" was not found.)`);
+			// Default voice: with no explicit style and no usable profile, restyle toward
+			// the house voice distilled from Strunk's Elements of Style.
+			if (!style && profileLines.length === 0) guidance.push(`Target voice (default house style):\n${DEFAULT_VOICE_SPEC}`);
 
 			const touch =
 				strength === "light"

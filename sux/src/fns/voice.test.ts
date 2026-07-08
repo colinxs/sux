@@ -36,13 +36,14 @@ describe("voice", () => {
 		expect(run).not.toHaveBeenCalled();
 	});
 
-	it("fails bad_input when neither style nor profile is given", async () => {
+	it("applies the default house voice (Elements of Style) when no style or profile is given", async () => {
 		const { env, run } = makeEnv();
 		const r = await voice.run(env, { text: "some text to restyle" });
-		expect(r.isError).toBe(true);
-		expect(r.errorCode).toBe("bad_input");
-		expect(r.content[0].text).toMatch(/style.*profile|profile.*style/);
-		expect(run).not.toHaveBeenCalled();
+		expect(r.isError).toBeFalsy();
+		expect(run).toHaveBeenCalledTimes(1);
+		const { system } = messages(run);
+		expect(system).toMatch(/Omit needless words/);
+		expect(system).toMatch(/active voice/);
 	});
 
 	it("builds a restyle prompt with the style and fences the untrusted text as DATA", async () => {
