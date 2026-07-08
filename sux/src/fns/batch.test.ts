@@ -72,6 +72,19 @@ describe("batch", () => {
 		expect(out.results[0].ok).toBe(true);
 	});
 
+	it("bounds the fan-out product when mapping batch_fetch or crawl (multi-fetch tools)", async () => {
+		// batch_fetch and crawl are themselves ~100-wide fan-outs, so mapping them
+		// over MAX_CALLS would multiply unbounded (100 × 100 = 10 000 node fetches).
+		// The nested cap must apply to them too — not just pipe. The check fires
+		// before any tool runs, so no network is touched.
+		for (const tool of ["batch_fetch", "crawl"]) {
+			const calls = Array.from({ length: 26 }, () => ({ urls: ["https://example.com"] }));
+			const r = await batch.run({} as any, { tool, calls });
+			expect(r.isError).toBe(true);
+			expect(r.content[0].text).toMatch(new RegExp(`Too many calls for nested fan-out tool '${tool}': 26 \\(max 25`));
+		}
+	});
+
 	it("reduce defaults to none — output is unchanged", async () => {
 		const base = await batch.run({} as any, { tool: "hash", calls: [{ text: "a" }, { text: "b" }] });
 		const explicit = await batch.run({} as any, { tool: "hash", calls: [{ text: "a" }, { text: "b" }], reduce: "none" });

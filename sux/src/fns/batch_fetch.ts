@@ -1,5 +1,5 @@
 import { type Fn, type RtEnv, fail, ok } from "../registry";
-import { type BlobRef, fetchText, getBlob, isHttpUrl, noCacheOn4xx, pool, putBlob, storeRefUuid } from "./_util";
+import { type BlobRef, fetchText, getBlob, isHttpUrl, noCacheOn4xx, noCacheOnMutation, pool, putBlob, storeRefUuid } from "./_util";
 import { smartFetch } from "../proxy";
 
 // Fetch many URLs concurrently through the residential proxy (direct fallback).
@@ -116,6 +116,6 @@ export const batch_fetch: Fn = {
 		// Worst status across the batch decides cacheability — a per-URL `error`
 		// (network blip) counts as a 5xx so one bad URL never poisons the cache.
 		const worst = results.reduce((m, r) => Math.max(m, r.error !== undefined ? 599 : r.status ?? 0), 0);
-		return noCacheOn4xx(ok(JSON.stringify(results, null, 2)), worst);
+		return noCacheOnMutation(noCacheOn4xx(ok(JSON.stringify(results, null, 2)), worst), method);
 	},
 };

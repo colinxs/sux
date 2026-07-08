@@ -22,6 +22,13 @@ type Step = { tool: string; args?: Record<string, unknown> };
 const STEP_PREVIEW_BYTES = 500;
 // Amplification cap: one pipe call may fan into at most this many tool runs.
 const MAX_STEPS = 25;
+// Steps refused inside a pipe. pipe/batch would recurse; batch_fetch/crawl are
+// themselves ~100-wide fan-out fetchers, so a pipe of them multiplies outbound
+// node fetches (25 steps × 100 URLs) and, worse, batch-over-pipe compounds it
+// (MAX_NESTED_CALLS × 25 steps × 100) — the exact product batch.ts's nested cap
+// assumes pipe cannot produce. Keep pipe steps single-fetch; map wide fetches
+// with batch instead (which enforces MAX_NESTED_CALLS).
+const BLOCKED_STEP_TOOLS = new Set(["pipe", "batch", "batch_fetch", "crawl"]);
 type StepResult = { step: number; tool: string; ok: boolean; text?: string; error?: string };
 
 /** Resolve a dotted path against a parsed value (best-effort; undefined on miss). */
@@ -118,7 +125,7 @@ export const pipe: Fn = {
 			const step = steps[i];
 			const toolName = typeof step?.tool === "string" ? step.tool.trim() : "";
 			if (!toolName) return fail(`steps[${i}] is missing a tool name.`);
-			if (toolName === "pipe" || toolName === "batch") return fail(`steps[${i}]: refusing to run '${toolName}' inside a pipe.`);
+			if (BLOCKED_STEP_TOOLS.has(toolName)) return fail(`steps[${i}]: refusing to run '${toolName}' inside a pipe.`);
 			const target = FUNCTIONS.find((f) => f.name === toolName);
 			if (!target) return fail(`steps[${i}]: unknown tool '${toolName}'.`);
 

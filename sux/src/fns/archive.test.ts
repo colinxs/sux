@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { gzipSync, zipSync } from "fflate";
 import { archive } from "./archive";
 
 describe("archive", () => {
@@ -55,6 +56,23 @@ describe("archive", () => {
 		expect(ref.url).toMatch(/\/s\/[0-9a-f-]{36}$/);
 		expect(ref.content_type).toBe("application/zip");
 		expect(ref.size).toBeGreaterThan(0);
+	});
+
+	it("fails a gzip bomb instead of OOM-ing (decompressed-size cap)", async () => {
+		// ~21MB of zeros compresses to a few KB but blows past the 20MB unpack budget.
+		const bomb = gzipSync(new Uint8Array(21_000_000), { level: 9 });
+		const b64 = Buffer.from(bomb).toString("base64");
+		const r = await archive.run({} as any, { op: "unpack", format: "gzip", base64: b64 });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/bomb guard/);
+	});
+
+	it("fails a zip bomb whose declared entry size exceeds the cap", async () => {
+		const packed = zipSync({ "big.bin": new Uint8Array(21_000_000) }, { level: 9 });
+		const b64 = Buffer.from(packed).toString("base64");
+		const r = await archive.run({} as any, { op: "unpack", format: "zip", base64: b64 });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/bomb guard/);
 	});
 
 	it('unpack as:"url" returns a consumable CAS ref per entry, including binary ones', async () => {

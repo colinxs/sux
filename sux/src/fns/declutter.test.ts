@@ -44,6 +44,22 @@ describe("declutter", () => {
 		expect((await declutter.run({} as any, {})).isError).toBe(true);
 	});
 
+	it("removes a 1x1 tracking pixel regardless of attr order", async () => {
+		const out = await run({ html: '<p>keep</p><img height="1" src="x" width="1">' });
+		expect(out).toContain("keep");
+		expect(out).not.toMatch(/<img/i);
+	});
+
+	it("does not backtrack on an adversarial unterminated <img> tag", async () => {
+		// ~250k 'width=1 ' tokens with no closing '>' — the old three-run regex
+		// backtracked polynomially here; the isolate-then-test form is linear.
+		const evil = `<img ${"width=1 ".repeat(250_000)}`;
+		const start = Date.now();
+		const out = await run({ html: evil });
+		expect(Date.now() - start).toBeLessThan(2000);
+		expect(typeof out).toBe("string");
+	});
+
 	it("fails on an upstream error page instead of cleaning it", async () => {
 		const r = await declutter.run({} as any, { url: "https://example.com" });
 		expect(r.isError).toBe(true); // errors never enter the KV cache

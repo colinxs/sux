@@ -46,4 +46,17 @@ describe("proxy", () => {
 		const good = await proxyFn.run({} as any, { url: "https://x.com" });
 		expect(good.noCache).toBeUndefined();
 	});
+
+	it("marks non-idempotent methods noCache (a mutating POST must never be memoized)", async () => {
+		const post = await proxyFn.run({} as any, { url: "https://x.com/mutate", method: "POST", body: "x" });
+		expect(post.isError).toBeFalsy();
+		expect(post.noCache).toBe(true);
+		const del = await proxyFn.run({} as any, { url: "https://x.com/mutate", method: "delete" });
+		expect(del.noCache).toBe(true);
+		// GET/HEAD stay cacheable.
+		const get = await proxyFn.run({} as any, { url: "https://x.com", method: "GET" });
+		expect(get.noCache).toBeUndefined();
+		const head = await proxyFn.run({} as any, { url: "https://x.com", method: "HEAD" });
+		expect(head.noCache).toBeUndefined();
+	});
 });
