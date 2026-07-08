@@ -53,6 +53,14 @@ describe("redact", () => {
 		expect(out.counts.phone).toBeUndefined();
 	});
 
+	it("redacts compressed IPv6 addresses (:: zero-compression)", async () => {
+		const out = await run({ text: "ipv6 host 2001:db8::1 and ::1", types: ["ip"] });
+		expect(out.redacted).toBe("ipv6 host [REDACTED:ip] and [REDACTED:ip]");
+		expect(out.counts.ip).toBe(2);
+		expect(out.redacted).not.toContain("2001:db8");
+		expect(out.redacted).not.toContain("::1");
+	});
+
 	it("rejects an unknown type", async () => {
 		const r = await redact.run({} as any, { text: "x", types: ["passport"] });
 		expect(r.isError).toBe(true);
