@@ -338,6 +338,12 @@ export const rtServer = {
 
 		const isBodyless = request.method === "GET" || request.method === "HEAD";
 		const rpc = parseJsonRpc(isBodyless ? undefined : await request.text());
+		// The vault MCP server (fns/vault tools over the cloud git store) rides the
+		// same OAuth gate at its own path — a second connector, no second provider.
+		if (new URL(request.url).pathname === "/vault/mcp") {
+			const { handleVaultRpc } = await import("./vault-mcp");
+			return handleVaultRpc(env, ctx, rpc);
+		}
 		// Weighted rate limit: expensive tools (render/Kagi/SerpAPI/Workers AI)
 		// consume extra tokens beyond the base 1 charged above, so a burst of paid
 		// calls drains the budget faster than free deterministic fns (see Fn.cost).
@@ -360,7 +366,7 @@ async function getOAuthProvider(): Promise<OAuthProvider> {
 		]);
 		oauthProvider = new OAuthProviderCtor({
 			apiHandler: rtServer as any,
-			apiRoute: "/mcp",
+			apiRoute: ["/mcp", "/vault/mcp"],
 			authorizeEndpoint: "/authorize",
 			clientRegistrationEndpoint: "/register",
 			defaultHandler: GitHubHandler as any,
