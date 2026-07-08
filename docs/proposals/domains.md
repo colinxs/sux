@@ -103,6 +103,8 @@ Per SUX.md: a separate engine, parked corpus and all. The **retrieve** verb may 
 
 The verbs don't multiply per domain — each verb gains *sources*. This is the whole point of hub-and-spoke: N domains × 6 verbs stays 6 verbs.
 
+**Capture's transport half is a worker fn: `ingest`** (Colin, 2026-07-08; shipped with the `dropbox` fn in [PR #28](https://github.com/colinxs/sux/pull/28)). `ingest(url | text | query)` fetches and converts (HTML → markdown), stamps provenance frontmatter (`type/created/source/tags`), and commits the note to `Inbox/` through the shared vault-write path — git as truth, KV cache warmed. **Blob routing:** a non-markdown source ≤1MB is committed into the vault repo as an attachment (`![[Attachments/…]]` — a vault may hold small binaries); larger — or `blobs:'dropbox'` — uploads to the Dropbox app folder and the note carries the shared link (R2 fallback until `DROPBOX_TOKEN` lands). The capture *skill* keeps the judgment half — what to capture, titling, tagging, which daily — and calls `ingest` as its mechanical arm.
+
 | Verb | With spokes attached |
 |---|---|
 | **capture** | from thought (as today) · from email/thread (jmap → note, message-id provenance) · from a quick Apple-Note (= Fastmail Notes mailbox via jmap — the mobile jot surface) · from iMessage exchange · from web page (existing readability/markdown chain) · from a file dropped in the Dropbox app folder (the human-writable inbox). Always → `Inbox/` or today's daily, always with provenance, never polished. |
@@ -135,9 +137,10 @@ The verbs don't multiply per domain — each verb gains *sources*. This is the w
 
 Knowledge-core's deferred order (capture/remember → consolidate → ladder) survives intact; the spokes and storage semantics slot around it. Phases are dependency-ordered; items inside a phase are independent.
 
-**Phase 0 — store primitive + storage semantics** *(everything composes onto this)*
-1. `obsidian` fn: add `write`/`edit`/`delete` as **stateless REST ops** (never the stateful `/mcp/` path), mirrored on the git backend. Git-as-truth discipline: git-backend writes commit directly; REST-path writes ride obsidian-git auto-backup (verify the cadence, tighten if loose).
-2. **KV read-through cache** inside the obsidian fn (no new fn — the compress-to-KV algebra already exists): `vault:<path>` entries + a `vault:head` HEAD-SHA validator (throttled GitHub check); fn-side writes invalidate inline. Cloud reads get fast; Mac-asleep reads serve hot from KV before falling to git.
+**Phase 0 — store primitive + storage semantics** *(✅ shipped, [PR #28](https://github.com/colinxs/sux/pull/28))*
+1. ✅ `obsidian` fn: `write`/`edit`/`delete` as **stateless REST ops** (never the stateful `/mcp/` path), mirrored on the git backend; `edit` = surgical find/replace, unique match unless `all`.
+2. ✅ **KV read-through cache** inside the obsidian fn: `cache:vault:*` entries + a HEAD-SHA validator (≤1 GitHub recheck/min); git writes warm the cache with the returned commit sha (= new HEAD); remote reads write through and `read` falls back to KV when the Mac is unreachable.
+2b. ✅ **`ingest` fn** (capture's transport half, §3) + **`dropbox` fn** (pulled forward from Phase 4) — 89→91 fns. Remaining setup: register the App-folder Dropbox app, `DROPBOX_TOKEN` → worker secret; merge + deploy.
 
 **Phase 1 — the two skills** *(vault-only sources first)*
 3. Capture/remember skill: auto-creates today's daily, Inbox convention, provenance rules, task ops (add/list/complete as recipes over append/search/edit — surgical patches only).
