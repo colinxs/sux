@@ -54,6 +54,12 @@ export type RtEnv = Env &
 
 		BESTBUY_API_KEY?: string;
 
+		// Tailscale API (tailscale fn) — Bearer PAT + tailnet id ("-" = default
+		// tailnet for the token). DISTINCT from the TAILSCALE_PROXY_URL/SECRET funnel
+		// secrets (in TailscaleEnv): those drive egress; these read the control plane.
+		TAILSCALE_API_KEY?: string;
+		TAILSCALE_TAILNET?: string;
+
 		CONTROLD_API_TOKEN?: string;
 
 		EBAY_CLIENT_ID?: string;
