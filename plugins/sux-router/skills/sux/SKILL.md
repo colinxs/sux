@@ -5,7 +5,7 @@ description: Route a task to the right sux edge function and chain them when nee
 
 # sux — the edge function engine
 
-sux is one personal Cloudflare Worker exposing **~85 composable functions** as MCP
+sux is one personal Cloudflare Worker exposing **~88 composable functions** as MCP
 tools (Julia-style generic verbs + multiple dispatch). **Kagi is just one function
 (`search`).** The full inventory, status, and per-function summaries live in
 **`sux/FUNCTIONS.md`** — that file is the source of truth (run `npm run docs` to
@@ -95,6 +95,7 @@ Overlap rule: papers-in-general → `openalex` or `semantic_scholar`;
 | Grocery weekly-ad / flyer deals by ZIP | `weekly_ad` (Flipp, keyless) |
 | Local businesses / points of interest | `places` (free-text, e.g. "hardware store near 98133") |
 | Who is X / org directory | `people` (`extract_contacts: true` pulls emails/phones from the top hit; `source: usagov` for federal agencies) |
+| Deep-dig one named person across public sources | `people_finder` (fans UW directory + `linkedin` + `facebook` + `web_search` into one deduped profile; public-listed data only) |
 | LinkedIn profile/company (URL in hand) | `linkedin` |
 | Facebook Graph node/edge | `facebook` |
 
@@ -125,6 +126,8 @@ call `json` with CSV or YAML in, `csv` with JSON in.
 | Zero-shot label text | `classify` |
 | Dates/money/emails/URLs/phones from text | `entities` (regex, no model) |
 | Scrub PII | `redact` |
+| Restyle text into a tone or a learned voice | `voice` (rewrites into a `style` and/or a saved `profile`, preserving facts/names/links) |
+| Teach / persist a preferred writing voice | `preferences` (`action: learn` appends an exemplar and re-distills a style spec in KV; `voice` folds it back) |
 | Case/unicode-font conversion | `fontcase` |
 | base64/hex/url, hashes, compression, zip/gzip | `encode`, `hash`, `compress`, `archive` |
 | JSON rows → token-cheap TSV | `pack` |
