@@ -1,6 +1,18 @@
 import { type Fn, fail, ok } from "../registry";
 import { loadHtml, stripHtml } from "./_util";
 
+/** Resolve `href` against `base`, tolerating a junk base (e.g. a non-URL `url`
+ * arg passed alongside raw `html`) — a bad base leaves `href` unchanged instead
+ * of throwing "Invalid URL". */
+function resolveAgainst(href: string, base: string): string {
+	if (!base) return href;
+	try {
+		return new URL(href, base).href;
+	} catch {
+		return href;
+	}
+}
+
 export const metadata: Fn = {
 	name: "metadata",
 	description:
@@ -39,14 +51,13 @@ export const metadata: Fn = {
 		}
 
 		let canonical = head.match(/<link[^>]+rel=["']canonical["'][^>]*href=["']([^"']+)["']/i)?.[1];
-		if (canonical && base) canonical = new URL(canonical, base).href;
-		if (canonical) out.canonical = canonical;
+		if (canonical) out.canonical = resolveAgainst(canonical, base);
 
 		let favicon =
 			head.match(/<link[^>]+rel=["'][^"']*\bicon\b[^"']*["'][^>]*href=["']([^"']+)["']/i)?.[1] ??
 			head.match(/<link[^>]+href=["']([^"']+)["'][^>]*rel=["'][^"']*\bicon\b[^"']*["']/i)?.[1];
-		if (favicon && base) favicon = new URL(favicon, base).href;
-		else if (!favicon && base) favicon = new URL("/favicon.ico", base).href;
+		if (favicon) favicon = resolveAgainst(favicon, base);
+		else if (base) favicon = resolveAgainst("/favicon.ico", base);
 		if (favicon) out.favicon = favicon;
 
 		if (!Object.keys(out).length) return ok("(no metadata found)");

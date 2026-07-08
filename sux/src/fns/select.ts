@@ -79,8 +79,18 @@ function findByTag(html: string, tag: string | null): string[] {
 	return out;
 }
 
-/** Evaluate one comma-free selector (space-separated descendant steps). */
+/** Evaluate one comma-free selector (space-separated descendant steps). A
+ * pathological input (e.g. a 100k-char "tag" that overflows the regex engine)
+ * can't match any real element, so degrade to no matches rather than throwing. */
 function selectOne(html: string, selector: string): string[] {
+	try {
+		return selectOneUnsafe(html, selector);
+	} catch {
+		return [];
+	}
+}
+
+function selectOneUnsafe(html: string, selector: string): string[] {
 	const steps = selector.trim().split(/\s+/).map(parseSimple);
 	if (steps.some((s) => s === null)) return [];
 	let scopes = [html];
@@ -144,7 +154,14 @@ export const select: Fn = {
 		for (const el of els) {
 			if (attr) {
 				const open = el.match(/^<[a-z0-9]+\b([^>]*)>/i);
-				const v = open?.[1].match(new RegExp(`\\b${escapeRegex(attr)}=["']([^"']*)["']`, "i"))?.[1];
+				// A junk `attr` (e.g. a 100k-char string) can overflow the regex
+				// engine — treat it as no match instead of letting it throw.
+				let v: string | undefined;
+				try {
+					v = open?.[1].match(new RegExp(`\\b${escapeRegex(attr)}=["']([^"']*)["']`, "i"))?.[1];
+				} catch {
+					v = undefined;
+				}
 				if (v != null) out.push(v);
 			} else {
 				out.push(el.replace(/<[^>]+>/g, " ").replace(/&nbsp;/gi, " ").replace(/\s+/g, " ").trim());
