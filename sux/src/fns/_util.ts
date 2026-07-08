@@ -366,18 +366,29 @@ export function storeRefUuid(u: unknown): string | null {
 	}
 }
 
+/** True when a handle's absolute unix-seconds `expiry` is set and in the past. */
+export function isExpired(ref: { expiry?: number }, now = Date.now()): boolean {
+	return typeof ref.expiry === "number" && ref.expiry * 1000 <= now;
+}
+
 /** Resolve a /s/<uuid> handle to its bytes via KV→R2 directly (no HTTP hop). */
 export async function getBlob(env: RtEnv, uuid: string): Promise<{ bytes: Uint8Array; contentType: string } | null> {
 	if (!env.R2) return null;
 	const raw = await env.OAUTH_KV.get(`${STORE_KV_PREFIX}${uuid}`);
 	if (!raw) return null;
-	const ref = JSON.parse(raw) as { key: string; content_type?: string };
+	const ref = JSON.parse(raw) as { key: string; content_type?: string; expiry?: number };
+	// An expired handle is a not-found (KV's own expirationTtl usually evicts it,
+	// but enforce it here too and best-effort delete a handle KV hasn't reaped yet).
+	if (isExpired(ref)) {
+		await env.OAUTH_KV.delete(`${STORE_KV_PREFIX}${uuid}`).catch(() => {});
+		return null;
+	}
 	const obj = await env.R2.get(ref.key);
 	if (!obj) return null;
 	return { bytes: new Uint8Array(await obj.arrayBuffer()), contentType: ref.content_type ?? obj.httpMetadata?.contentType ?? "application/octet-stream" };
 }
 
-export type BlobRef = { uuid: string; url: string; key: string; sha256: string; size: number; content_type: string };
+export type BlobRef = { uuid: string; url: string; key: string; sha256: string; size: number; content_type: string; expiry?: number };
 
 export async function sha256Hex(bytes: Uint8Array): Promise<string> {
 	const buf = await crypto.subtle.digest("SHA-256", bytes);
@@ -392,17 +403,27 @@ export async function sha256Hex(bytes: Uint8Array): Promise<string> {
  * any fn's binary output becomes a ~100-token reference every other fn can take
  * as a `url` input. Throws when R2 is unbound.
  */
-export async function putBlob(env: RtEnv, bytes: Uint8Array, contentType: string): Promise<BlobRef> {
+export async function putBlob(env: RtEnv, bytes: Uint8Array, contentType: string, opts?: { ttlSeconds?: number }): Promise<BlobRef> {
 	if (!env.R2) throw new Error("R2 is not available (bucket binding missing).");
 	const sha256 = await sha256Hex(bytes);
 	const key = `cas/${sha256}`;
 	const uuid = crypto.randomUUID();
+	// Optional expiry (ephemeral artifacts — render screenshots/pdfs). Record an
+	// absolute unix-seconds `expiry` in the handle JSON so any reader can enforce
+	// it, and set KV's own expirationTtl so the handle self-evicts. KV rejects an
+	// expirationTtl under 60s, so below that we lean on the JSON expiry alone — the
+	// reader still treats it as not-found once past. No ttl = permanent handle.
+	const ttl = typeof opts?.ttlSeconds === "number" && opts.ttlSeconds > 0 ? Math.floor(opts.ttlSeconds) : undefined;
+	const expiry = ttl ? Math.floor(Date.now() / 1000) + ttl : undefined;
+	const handle: Record<string, unknown> = { key, content_type: contentType, size: bytes.length, sha256 };
+	if (expiry) handle.expiry = expiry;
+	const kvOpts = ttl && ttl >= 60 ? { expirationTtl: ttl } : undefined;
 	// The R2 object and KV handle are independent writes — run them concurrently.
 	await Promise.all([
 		env.R2.put(key, bytes, { httpMetadata: { contentType }, customMetadata: { sha256 } }),
-		env.OAUTH_KV.put(`${STORE_KV_PREFIX}${uuid}`, JSON.stringify({ key, content_type: contentType, size: bytes.length, sha256 })),
+		env.OAUTH_KV.put(`${STORE_KV_PREFIX}${uuid}`, JSON.stringify(handle), kvOpts),
 	]);
-	return { uuid, url: `${storeBase(env)}/s/${uuid}`, key, sha256, size: bytes.length, content_type: contentType };
+	return { uuid, url: `${storeBase(env)}/s/${uuid}`, key, sha256, size: bytes.length, content_type: contentType, ...(expiry ? { expiry } : {}) };
 }
 
 /**

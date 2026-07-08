@@ -8,6 +8,7 @@
 // ours so index.ts can fall through to OAuth.
 
 import { type FeedbackKind, readFeedback } from "./fns/_feedback";
+import { isExpired } from "./fns/_util";
 import { readMetrics, sloReport, toPrometheus } from "./metrics";
 import type { RtEnv } from "./registry";
 
@@ -25,11 +26,16 @@ export async function handleObservability(url: URL, request: Request, env: RtEnv
 		if (!env.R2) return new Response("R2 not enabled", { status: 503 });
 		const raw = await env.OAUTH_KV.get(`store:${uuid}`);
 		if (!raw) return new Response("not found", { status: 404 });
-		let ref: { key: string; content_type?: string };
+		let ref: { key: string; content_type?: string; expiry?: number };
 		try {
 			ref = JSON.parse(raw);
 		} catch {
 			return new Response("bad handle", { status: 500 });
+		}
+		// Expired handle → not-found; best-effort reap any handle KV hasn't evicted.
+		if (isExpired(ref)) {
+			await env.OAUTH_KV.delete(`store:${uuid}`).catch(() => {});
+			return new Response("not found", { status: 404 });
 		}
 		const obj = await env.R2.get(ref.key);
 		if (!obj) return new Response("object missing", { status: 404 });

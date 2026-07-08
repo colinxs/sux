@@ -207,6 +207,66 @@ describe("store", () => {
 		expect(await resp!.text()).toBe("page body");
 	});
 
+	it("put with no ttl_seconds mints a permanent handle (no expiry) — backward compatible", async () => {
+		const env = mkEnv();
+		const put = j(await store.run(env, { data: "forever" }));
+		expect(put.expiry).toBeUndefined();
+		expect(JSON.parse(env.OAUTH_KV._m.get(`store:${put.uuid}`)!).expiry).toBeUndefined();
+	});
+
+	it("put with ttl_seconds records an absolute expiry and sets KV expirationTtl; still readable before it lapses", async () => {
+		const env = mkEnv();
+		const spy = vi.spyOn(env.OAUTH_KV, "put");
+		const put = j(await store.run(env, { data: "ephemeral", ttl_seconds: 3600 }));
+		expect(put.expiry).toBeGreaterThan(Math.floor(Date.now() / 1000));
+		// The handle JSON carries the same expiry, and KV self-evicts via expirationTtl.
+		expect(JSON.parse(env.OAUTH_KV._m.get(`store:${put.uuid}`)!).expiry).toBe(put.expiry);
+		expect(spy).toHaveBeenCalledWith(`store:${put.uuid}`, expect.any(String), expect.objectContaining({ expirationTtl: 3600 }));
+		expect(j(await store.run(env, { op: "get", id: put.uuid })).text).toBe("ephemeral");
+	});
+
+	it("rejects a non-positive ttl_seconds", async () => {
+		const r = await store.run(mkEnv(), { data: "x", ttl_seconds: 0 });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/ttl_seconds must be a positive integer/);
+	});
+
+	it("sub-60s ttl_seconds records the expiry but skips expirationTtl (KV's 60s floor)", async () => {
+		const env = mkEnv();
+		const spy = vi.spyOn(env.OAUTH_KV, "put");
+		const put = j(await store.run(env, { data: "blink", ttl_seconds: 30 }));
+		expect(put.expiry).toBe(Math.floor(Date.now() / 1000) + 30);
+		expect(spy).toHaveBeenCalledWith(`store:${put.uuid}`, expect.any(String), undefined);
+	});
+
+	it("get of an expired handle is not-found and best-effort deletes the handle", async () => {
+		const env = mkEnv();
+		const put = j(await store.run(env, { data: "gone soon", ttl_seconds: 60 }));
+		// Simulate KV expiry lapsing: rewind the handle's absolute expiry into the past.
+		const key = `store:${put.uuid}`;
+		const handle = JSON.parse(env.OAUTH_KV._m.get(key)!);
+		handle.expiry = Math.floor(Date.now() / 1000) - 1;
+		env.OAUTH_KV._m.set(key, JSON.stringify(handle));
+		const r = await store.run(env, { op: "get", id: put.uuid });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/expired/);
+		expect(env.OAUTH_KV._m.has(key)).toBe(false); // best-effort deleted
+		// The content-addressed blob itself is retained (may be shared).
+		expect(env.R2._m.size).toBe(1);
+	});
+
+	it("GET /s/<uuid> of an expired handle is 404 and reaps the handle", async () => {
+		const env = mkEnv();
+		const put = j(await store.run(env, { data: "expiring page", ttl_seconds: 60 }));
+		const key = `store:${put.uuid}`;
+		const handle = JSON.parse(env.OAUTH_KV._m.get(key)!);
+		handle.expiry = Math.floor(Date.now() / 1000) - 1;
+		env.OAUTH_KV._m.set(key, JSON.stringify(handle));
+		const resp = await handleObservability(new URL(put.url), new Request(put.url), env);
+		expect(resp!.status).toBe(404);
+		expect(env.OAUTH_KV._m.has(key)).toBe(false);
+	});
+
 	it("GET /s/<unknown> is 404", async () => {
 		const env = mkEnv();
 		const resp = await handleObservability(new URL("https://x/s/does-not-exist"), new Request("https://x/s/does-not-exist"), env);
