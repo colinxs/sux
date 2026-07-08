@@ -23,13 +23,15 @@ export const grep: Fn = {
 		const pattern = String(args?.pattern ?? "");
 		if (!pattern) return fail("Provide a regex `pattern`.");
 		// ReDoS guardrails: cap the pattern size and reject the classic
-		// catastrophic-backtracking shape — a quantified group whose body itself
-		// contains a quantifier ((a+)+, (a*)*, (.*)+ …). Heuristic, not exhaustive;
+		// catastrophic-backtracking shapes — an outer quantifier (+, *, {n,})
+		// applied to a group whose body already contains a quantifier ((a+)+,
+		// (a*)*, (.*)+, (a{2,})+ …) or a top-level alternation ((a|aa)+ …).
+		// Both make matching backtrack exponentially. Heuristic, not exhaustive;
 		// grep is OAuth-gated so this bounds self-inflicted stalls, and a rejected
-		// pattern can be rewritten without nested quantifiers.
+		// pattern can be rewritten without an outer quantifier over such a group.
 		if (pattern.length > 1000) return fail("Pattern too long (max 1000 chars).");
-		if (/\([^)]*[+*][^)]*\)\s*[+*]|\([^)]*[+*][^)]*\)\{/.test(pattern)) {
-			return fail("Pattern rejected: nested quantifiers ((x+)+, (x*)*, (.*)+ …) risk catastrophic backtracking. Rewrite without a quantifier applied to a group that already contains one.");
+		if (/\([^)]*[+*{|][^)]*\)\s*[+*{]/.test(pattern)) {
+			return fail("Pattern rejected: an outer quantifier over a group that itself contains a quantifier or alternation ((x+)+, (x*)*, (.*)+, (x{2,})+, (a|aa)+ …) risks catastrophic backtracking. Rewrite without a quantifier applied to such a group.");
 		}
 
 		let re: RegExp;

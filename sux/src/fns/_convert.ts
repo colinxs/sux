@@ -14,8 +14,17 @@ export function detectFormat(s: string): Format {
 	if (t.startsWith("{") || t.startsWith("[")) return "json";
 	// A YAML document usually has `key:` lines or `- ` sequences early on.
 	if (/^\s*[\w.-]+\s*:(\s|$)/m.test(t) || /^\s*-\s/m.test(t)) return "yaml";
-	// Otherwise, comma-separated columns across lines looks like CSV.
-	if (/^[^\n]*,[^\n]*\n/.test(t)) return "csv";
+	// A bare JSON scalar (42, "hi", true, null) is unambiguous; without this it
+	// falls through to yaml, where parseYaml maps it to {} instead of the value.
+	try {
+		const v = JSON.parse(t);
+		if (v === null || typeof v !== "object") return "json";
+	} catch {
+		/* not a JSON scalar — fall through */
+	}
+	// Otherwise, comma-separated columns look like CSV. A header-only or one-line
+	// CSV carries no trailing newline, so don't require one.
+	if (/^[^\n]*,[^\n]*(\n|$)/.test(t)) return "csv";
 	return "yaml";
 }
 
@@ -35,6 +44,13 @@ function yamlScalar(v: unknown): string {
 	if (typeof v === "object") return "{}";
 	const s = String(v);
 	return needsQuote(s) ? JSON.stringify(s) : s;
+}
+
+// A map key gets the same quoting as a scalar value: an unquoted key containing
+// `:`, `#`, a leading `-`, or the empty string re-parses as a different key (or,
+// for the empty key, is lost entirely), so emit it quoted when needsQuote flags it.
+function yamlKey(k: string): string {
+	return needsQuote(k) ? JSON.stringify(k) : k;
 }
 
 export function toYaml(v: unknown, indent = 0): string {
@@ -58,9 +74,9 @@ export function toYaml(v: unknown, indent = 0): string {
 			.map((k) => {
 				const val = (v as Record<string, unknown>)[k];
 				if (val !== null && typeof val === "object" && Object.keys(val as object).length) {
-					return `${pad}${k}:\n${toYaml(val, indent + 1)}`;
+					return `${pad}${yamlKey(k)}:\n${toYaml(val, indent + 1)}`;
 				}
-				return `${pad}${k}: ${yamlScalar(val)}`;
+				return `${pad}${yamlKey(k)}: ${yamlScalar(val)}`;
 			})
 			.join("\n");
 	}
@@ -72,7 +88,13 @@ function parseScalar(raw: string): unknown {
 	if (s === "" || s === "~" || s === "null") return null;
 	if (s === "true") return true;
 	if (s === "false") return false;
-	if (/^-?\d+$/.test(s)) return parseInt(s, 10);
+	// Only coerce integers with no leading zeros (YAML 1.2 treats "01234" as a
+	// string, so zip codes / phone fragments keep their zeros) and that survive
+	// the round-trip through Number without losing precision.
+	if (/^-?(0|[1-9]\d*)$/.test(s)) {
+		const n = parseInt(s, 10);
+		if (Number.isSafeInteger(n)) return n;
+	}
 	if (/^-?\d*\.\d+$/.test(s)) return parseFloat(s);
 	if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
 		if (s[0] === '"') {
@@ -139,22 +161,45 @@ export function parseYaml(text: string): unknown {
 		mergeMap(obj, minIndent);
 		return obj;
 	}
+	// Split a `key: value` line into its key and the remaining value text. A
+	// quoted key (emitted by toYaml when the key contains `:`, `#`, a leading `-`,
+	// or is empty) is scanned to its matching close quote so an embedded `:` is not
+	// mistaken for the key/value separator, then unquoted via parseScalar.
+	function splitKey(line: string): { key: string; rest: string } | null {
+		const body = line.slice(indentOf(line));
+		const q = body[0];
+		if (q === '"' || q === "'") {
+			let j = 1;
+			for (; j < body.length; j++) {
+				if (q === '"' && body[j] === "\\") j++;
+				else if (body[j] === q) {
+					if (q === "'" && body[j + 1] === "'") j++;
+					else break;
+				}
+			}
+			const after = body.slice(j + 1).replace(/^\s*/, "");
+			if (after[0] !== ":") return null;
+			return { key: String(parseScalar(body.slice(0, j + 1))), rest: after.slice(1) };
+		}
+		const m = body.match(/^([^:]+?):\s*(.*)$/);
+		return m ? { key: m[1].trim(), rest: m[2] } : null;
+	}
 	function mergeMap(obj: Record<string, unknown>, minIndent: number) {
 		while (i < lines.length) {
 			const line = lines[i];
 			const ind = indentOf(line);
 			if (ind < minIndent || /^\s*-(\s|$)/.test(line.slice(ind))) break;
-			const m = line.match(/^\s*([^:]+?):\s*(.*)$/);
-			if (!m) break;
+			const kv = splitKey(line);
+			if (!kv) break;
 			i++;
-			const key = m[1].trim();
-			if (m[2].trim() === "") {
+			const key = kv.key;
+			if (kv.rest.trim() === "") {
 				// Zero-relative-indent sequences (kubernetes/GitHub-Actions style):
 				// a `- ` item at the key's own indent belongs to the key.
 				const next = lines[i];
 				const seqAtKeyIndent = next !== undefined && indentOf(next) === ind && /^\s*-(\s|$)/.test(next);
 				obj[key] = parseBlock(seqAtKeyIndent ? ind : ind + 1);
-			} else obj[key] = parseScalar(m[2]);
+			} else obj[key] = parseScalar(kv.rest);
 		}
 	}
 	return parseBlock(0);
@@ -164,6 +209,10 @@ export function parseYaml(text: string): unknown {
 
 export function parseCsv(text: string, delim: string): string[][] {
 	const rows: string[][] = [];
+	// Parallel to `rows`: true where the row had real syntax (a quote, delimiter,
+	// or content) so a quoted-empty line `""` is kept while a truly blank line is
+	// dropped by the trailing filter.
+	const nonBlank: boolean[] = [];
 	let row: string[] = [];
 	let field = "";
 	let inQ = false;
@@ -175,6 +224,7 @@ export function parseCsv(text: string, delim: string): string[][] {
 	const pushRow = () => {
 		pushField();
 		rows.push(row);
+		nonBlank.push(started);
 		row = [];
 		started = false;
 	};
@@ -205,14 +255,22 @@ export function parseCsv(text: string, delim: string): string[][] {
 		}
 	}
 	if (started || field.length || row.length) pushRow();
-	return rows.filter((r) => !(r.length === 1 && r[0] === ""));
+	return rows.filter((r, i) => !(r.length === 1 && r[0] === "" && !nonBlank[i]));
 }
 
 /** CSV text -> array of row objects (first row = headers). */
 export function csvToRows(text: string, delim: string): Record<string, string>[] {
 	const rows = parseCsv(text, delim);
 	if (!rows.length) return [];
-	const headers = rows[0];
+	// Dedupe duplicate header names so Object.fromEntries doesn't silently
+	// collapse repeated columns (last-column-wins). Repeats get an _N suffix:
+	// [a, a, a] -> [a, a_2, a_3].
+	const seen = new Map<string, number>();
+	const headers = rows[0].map((h) => {
+		const n = (seen.get(h) ?? 0) + 1;
+		seen.set(h, n);
+		return n === 1 ? h : `${h}_${n}`;
+	});
 	return rows.slice(1).map((r) => Object.fromEntries(headers.map((h, i) => [h, r[i] ?? ""])));
 }
 
@@ -220,7 +278,13 @@ export function toCsv(arr: unknown[], delim: string): string {
 	if (!arr.length) return "";
 	const headers = [...new Set(arr.flatMap((o) => (o && typeof o === "object" ? Object.keys(o as object) : [])))];
 	const esc = (v: unknown): string => {
-		const s = v == null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v);
+		let s = v == null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v);
+		// CSV formula injection: a string cell beginning with = + - @ (or a leading
+		// TAB/CR) is evaluated as a formula when the file is opened in Excel/Sheets/
+		// LibreOffice (DDE -> data exfiltration / command execution). Prefix such
+		// string values with a single quote so the spreadsheet treats them as text.
+		// Genuine numbers/booleans arrive non-string and are never neutralised.
+		if (typeof v === "string" && /^[=+\-@\t\r]/.test(s)) s = `'${s}`;
 		return new RegExp(`["${delim.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\r\\n]`).test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 	};
 	const lines = [headers.join(delim)];
@@ -256,6 +320,25 @@ function collapse(node: Record<string, unknown>): unknown {
 	return node;
 }
 
+/** Find the `>` that closes the tag opened at `lt`, skipping any `>` that sits
+ * inside a quoted attribute value (legal XML, e.g. `<a href="x>y">`). A bare
+ * indexOf(">") would truncate the tag there, dropping the attribute and leaking
+ * the remainder into the text node. */
+function tagEnd(s: string, lt: number): number {
+	let quote = "";
+	for (let i = lt + 1; i < s.length; i++) {
+		const c = s[i];
+		if (quote) {
+			if (c === quote) quote = "";
+		} else if (c === '"' || c === "'") {
+			quote = c;
+		} else if (c === ">") {
+			return i;
+		}
+	}
+	return -1;
+}
+
 export function parseXml(xml: string): unknown {
 	const src = xml
 		.replace(/<\?[\s\S]*?\?>/g, "")
@@ -274,7 +357,7 @@ export function parseXml(xml: string): unknown {
 			const top = nodes[nodes.length - 1];
 			top["#text"] = ((top["#text"] as string) ?? "") + decodeEntities(text).trim();
 		}
-		const gt = src.indexOf(">", lt);
+		const gt = tagEnd(src, lt);
 		if (gt === -1) throw new Error("unterminated tag");
 		let tag = src.slice(lt + 1, gt).trim();
 		if (tag.startsWith("/")) {

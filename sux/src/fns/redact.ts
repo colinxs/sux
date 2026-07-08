@@ -12,10 +12,23 @@ const PATTERNS: Array<{ type: RedactType; re: RegExp }> = [
 	{ type: "ssn", re: /\b\d{3}[-\s]\d{2}[-\s]\d{4}\b/g },
 	// Card-shaped digit groups (13–19 digits, optional space/dash groupings).
 	{ type: "credit_card", re: /\b(?:\d[ -]?){13,19}\b/g },
-	// Phone: optional +country / (area), then grouped digits with separators.
-	{ type: "phone", re: /(?:\+\d{1,3}[\s.-]?)?(?:\(\d{1,4}\)[\s.-]?)?\d{2,4}[\s.-]\d{3,4}(?:[\s.-]\d{3,4})?\b/g },
-	// IPv4 + common IPv6.
-	{ type: "ip", re: /\b(?:(?:\d{1,3}\.){3}\d{1,3}|(?:[A-Fa-f0-9]{1,4}:){2,7}[A-Fa-f0-9]{1,4})\b/g },
+	// IPv4 + IPv6, including '::' zero-compression (2001:db8::1, ::1, ::). Runs
+	// before phone so the phone regex can't eat the leading octets of a dotted-
+	// quad (e.g. 192.168 out of 192.168.1.100). The IPv6 alternation uses
+	// lookaround boundaries because '\b' won't fire adjacent to a leading or
+	// trailing ':'.
+	{
+		type: "ip",
+		re: /\b(?:\d{1,3}\.){3}\d{1,3}\b|(?<![0-9A-Fa-f:.])(?:(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}|(?:[0-9A-Fa-f]{1,4}:){1,7}:|(?:[0-9A-Fa-f]{1,4}:){1,6}:[0-9A-Fa-f]{1,4}|(?:[0-9A-Fa-f]{1,4}:){1,5}(?::[0-9A-Fa-f]{1,4}){1,2}|(?:[0-9A-Fa-f]{1,4}:){1,4}(?::[0-9A-Fa-f]{1,4}){1,3}|(?:[0-9A-Fa-f]{1,4}:){1,3}(?::[0-9A-Fa-f]{1,4}){1,4}|(?:[0-9A-Fa-f]{1,4}:){1,2}(?::[0-9A-Fa-f]{1,4}){1,5}|[0-9A-Fa-f]{1,4}:(?::[0-9A-Fa-f]{1,4}){1,6}|:(?:(?::[0-9A-Fa-f]{1,4}){1,7}|:))(?![0-9A-Fa-f:.])/g,
+	},
+	// Phone: optional +country / (area), then grouped digits with separators, OR
+	// a contiguous 10-digit / +country E.164 run (5551234567, +15551234567). The
+	// contiguous branch is digit-boundary guarded so it can't bite into a longer
+	// run (13–19-digit card candidates stay whole for the credit_card pass).
+	{
+		type: "phone",
+		re: /(?:\+\d{1,3}[\s.-]?)?(?:\(\d{1,4}\)[\s.-]?)?\d{2,4}[\s.-]\d{3,4}(?:[\s.-]\d{3,4})?\b|(?<!\d)(?:\+\d{1,3})?\d{10}(?!\d)/g,
+	},
 ];
 
 /** Luhn check on the digits of a card candidate. */

@@ -1,6 +1,22 @@
 import { type Fn, fail, ok } from "../registry";
 import { smartFetch } from "../proxy";
 
+// Translate a robots.txt path rule to a regex: `*` → `.*`, a trailing `$`
+// anchors the end of the path, and every other character is matched literally.
+const pathMatches = (rule: string, path: string): boolean => {
+	let pat = rule;
+	let anchored = false;
+	if (pat.endsWith("$")) {
+		anchored = true;
+		pat = pat.slice(0, -1);
+	}
+	const re = pat
+		.split("*")
+		.map((seg) => seg.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+		.join(".*");
+	return new RegExp(`^${re}${anchored ? "$" : ""}`).test(path);
+};
+
 export const robots: Fn = {
 	name: "robots",
 	description: "Fetch and parse a site's robots.txt. Returns agent groups (allow/disallow), crawl-delay, and sitemaps. Pass `path` to test whether the default agent may fetch it.",
@@ -62,9 +78,13 @@ export const robots: Fn = {
 				...(star?.disallow ?? []).map((r) => ({ r, allow: false })),
 				...(star?.allow ?? []).map((r) => ({ r, allow: true })),
 			].filter((x) => x.r);
+			// Per RFC 9309: `*` matches any run of characters, a trailing `$` anchors the
+			// end of the path, everything else is literal. Longest matching rule wins; on
+			// an equal-length tie the Allow beats the Disallow.
 			let best: { len: number; allow: boolean } | null = null;
 			for (const { r, allow } of rules) {
-				if (p.startsWith(r) && (!best || r.length > best.len)) best = { len: r.length, allow };
+				if (!pathMatches(r, p)) continue;
+				if (!best || r.length > best.len || (r.length === best.len && allow)) best = { len: r.length, allow };
 			}
 			allowed = best ? best.allow : true;
 		}

@@ -17,6 +17,10 @@ describe("html (Markdown -> HTML)", () => {
 		expect(await hrun({ data: "see [x](http://y) and `code`" })).toBe('<p>see <a href="http://y">x</a> and <code>code</code></p>');
 	});
 
+	it("keeps markdown syntax inside inline code literal", async () => {
+		expect(await hrun({ data: "`**bold** [x](y)`" })).toBe("<p><code>**bold** [x](y)</code></p>");
+	});
+
 	it("errors on empty data", async () => {
 		expect((await html.run({} as any, { data: "  " })).isError).toBe(true);
 	});

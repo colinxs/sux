@@ -9,6 +9,9 @@
 // Zero dependencies — Node 20+ (built-in fetch, node:http, node:dns).
 
 import { createServer } from "node:http";
+import http from "node:http";
+import https from "node:https";
+import { Readable } from "node:stream";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { createHmac, timingSafeEqual } from "node:crypto";
@@ -128,7 +131,72 @@ export async function assertPublicTarget(url, lookupImpl = lookup) {
 	for (const { address } of addrs) {
 		if (isPrivateIp(address)) throw new Error(`target resolves to a private address (${address})`);
 	}
-	return u;
+	// Hand back a vetted address so the caller connects to THAT exact IP (pinnedFetch)
+	// rather than letting undici/fetch re-resolve the hostname at connect time — the
+	// DNS-rebinding TOCTOU where a TTL-0 attacker answers public here and private on
+	// the second lookup. The check above and the connection must share one resolution.
+	return { url: u, address: addrs[0].address };
+}
+
+/**
+ * DNS-pinned fetch. Connects to the exact `address` that assertPublicTarget just
+ * vetted while keeping the original hostname for the Host header and TLS SNI/cert
+ * check. Built on node:http/https (not undici's fetch) because only the low-level
+ * `lookup` hook can force the socket onto the pre-validated IP — global fetch would
+ * re-resolve the hostname itself at connect time, reopening the DNS-rebinding TOCTOU
+ * that assertPublicTarget is meant to close (public A record on our lookup, then a
+ * TTL-0 rebind to 127.0.0.1 / 169.254.169.254 / 192.168.x on undici's). No compression
+ * is advertised, so responses arrive identity-encoded — matching what the Worker's
+ * proxy.ts expects (it strips content-encoding, assuming the body is already decoded).
+ * `requestImpl` is an injectable transport seam for tests.
+ * @param {string|URL} url
+ * @param {{ method?: string, headers?: Record<string, string>, body?: string, signal?: AbortSignal }} [init]
+ * @param {string} address  vetted IP literal from assertPublicTarget
+ */
+export function pinnedFetch(url, init = {}, address, { requestImpl } = {}) {
+	if (!address) throw new Error("pinnedFetch requires a vetted address");
+	const u = url instanceof URL ? url : new URL(String(url));
+	const isHttps = u.protocol === "https:";
+	const request = requestImpl || (isHttps ? https.request : http.request);
+	const family = isIP(address) || 4;
+	return new Promise((resolve, reject) => {
+		let settled = false;
+		const abort = () => req.destroy(init.signal?.reason || new Error("aborted"));
+		const req = request(
+			u,
+			{
+				method: init.method || "GET",
+				headers: init.headers || {},
+				// Pin the socket to the vetted IP; the hostname still drives Host + TLS SNI.
+				// net.connect may request `all` (array form) or the single-address form.
+				lookup: (_host, opts, cb) => (opts?.all ? cb(null, [{ address, family }]) : cb(null, address, family)),
+				servername: isHttps ? u.hostname : undefined,
+			},
+			(res) => {
+				if (settled) return;
+				const headers = new Headers();
+				for (const [k, v] of Object.entries(res.headers)) {
+					if (Array.isArray(v)) for (const item of v) headers.append(k, item);
+					else if (v != null) headers.set(k, String(v));
+				}
+				const status = res.statusCode || 502;
+				const nullBody = status < 200 || status === 204 || status === 304;
+				settled = true;
+				resolve(new Response(nullBody ? null : Readable.toWeb(res), { status, statusText: res.statusMessage || "", headers }));
+			},
+		);
+		req.on("error", (e) => {
+			if (settled) return;
+			settled = true;
+			reject(e);
+		});
+		if (init.signal) {
+			if (init.signal.aborted) abort();
+			else init.signal.addEventListener("abort", abort, { once: true });
+		}
+		if (init.body != null) req.write(init.body);
+		req.end();
+	});
 }
 
 const MAX_REDIRECTS = 8;
@@ -146,16 +214,19 @@ const MAX_REDIRECTS = 8;
  * `redirects` fn tracing a hop chain) never reach here — they get the single
  * 3xx back unchanged. `fetchImpl`/`assertTarget` are injectable seams for tests.
  */
-export async function fetchFollowingSafely(startUrl, init, { fetchImpl = fetch, assertTarget = assertPublicTarget, maxHops = MAX_REDIRECTS } = {}) {
+export async function fetchFollowingSafely(startUrl, init, { fetchImpl = pinnedFetch, assertTarget = assertPublicTarget, maxHops = MAX_REDIRECTS, startAddress } = {}) {
 	let current = startUrl;
+	let address = startAddress; // vetted IP to pin THIS hop's connection to (from assertTarget)
 	for (let hop = 0; ; hop++) {
-		const resp = await fetchImpl(current, { ...init, redirect: "manual" });
+		const resp = await fetchImpl(current, { ...init, redirect: "manual" }, address);
 		const location = resp.headers.get("location");
 		if (resp.status >= 300 && resp.status < 400 && location) {
 			if (hop >= maxHops) throw new Error("too many redirects");
+			await resp.body?.cancel(); // release the socket — we only chase the Location
 			const next = new URL(location, String(current)); // resolve a relative Location against the current hop
-			await assertTarget(next.href); // SSRF re-check EACH hop — refuses a redirect that lands on the LAN
-			current = next;
+			// SSRF re-check EACH hop — refuses a redirect that lands on the LAN — and pin
+			// the next connection to the address it just vetted (same DNS-rebinding guard).
+			({ url: current, address } = await assertTarget(next.href));
 			continue;
 		}
 		return resp;
@@ -236,9 +307,10 @@ const server = createServer(async (req, res) => {
 	}
 	if (!spec?.url || typeof spec.url !== "string") return json(res, 400, { error: "missing_url" });
 
-	let target;
+	let targetUrl;
+	let targetAddress;
 	try {
-		target = await assertPublicTarget(spec.url);
+		({ url: targetUrl, address: targetAddress } = await assertPublicTarget(spec.url));
 	} catch (e) {
 		return json(res, 400, { error: "blocked_target", detail: String(e.message || e) });
 	}
@@ -253,7 +325,8 @@ const server = createServer(async (req, res) => {
 		// "manual" lets the Worker's `redirects` fn trace the hop chain itself (single
 		// 3xx back, unfollowed). Otherwise follow redirects the SSRF-safe way:
 		// re-validate every hop's Location so a public URL can't 302 us into the LAN.
-		const upstream = spec.redirect === "manual" ? await fetch(target, { ...fetchInit, redirect: "manual" }) : await fetchFollowingSafely(target, fetchInit);
+		// Both connect through pinnedFetch so the socket lands on the vetted IP.
+		const upstream = spec.redirect === "manual" ? await pinnedFetch(targetUrl, fetchInit, targetAddress) : await fetchFollowingSafely(targetUrl, fetchInit, { startAddress: targetAddress });
 
 		// Read up to MAX_BYTES so a huge page can't OOM the box.
 		const reader = upstream.body?.getReader();
@@ -271,7 +344,7 @@ const server = createServer(async (req, res) => {
 				parts.push(Buffer.from(value));
 			}
 		}
-		console.log(`${new Date().toISOString()} fetch ${target.host} -> ${upstream.status} ${total}b`);
+		console.log(`${new Date().toISOString()} fetch ${targetUrl.host} -> ${upstream.status} ${total}b`);
 		json(res, 200, {
 			status: upstream.status,
 			statusText: upstream.statusText,

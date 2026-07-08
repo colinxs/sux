@@ -39,6 +39,26 @@ describe("redirects", () => {
 		expect(r.content[0].text).toMatch(/Fetch failed/);
 	});
 
+	it("returns the chain gathered so far when a hop emits a malformed Location", async () => {
+		// A malformed Location header (301 -> `https://[invalid`) makes `new URL` throw.
+		// That resolution is now inside a try/catch, so the trace stops at the bad hop and
+		// returns the chain already collected instead of failing the whole tool.
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string) => {
+				if (url === "http://a.com/") return new Response(null, { status: 301, headers: { location: "https://[invalid" } });
+				return new Response(null, { status: 200 });
+			}),
+		);
+		const r = await redirects.run({} as any, { url: "http://a.com/" });
+		expect(r.isError).toBeFalsy();
+		const j = JSON.parse(r.content[0].text);
+		expect(j.hops).toBe(1);
+		expect(j.chain[0].status).toBe(301);
+		expect(j.chain[0].location).toBe("https://[invalid");
+		expect(j.final).toBe("http://a.com/");
+	});
+
 	it("refuses to follow a redirect into a private/metadata address (SSRF guard runs on every hop)", async () => {
 		// The fn follows a redirect chain hop by hop on the Worker; each hop re-enters
 		// the REAL smartFetch, whose isBlockedTarget guard is the SSRF defense. A public

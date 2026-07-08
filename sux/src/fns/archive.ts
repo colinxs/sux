@@ -1,8 +1,29 @@
 import { type Fn, fail, ok } from "../registry";
-import { gunzipSync, gzipSync, strFromU8, strToU8, unzipSync, zipSync } from "fflate";
+import { Gunzip, gzipSync, strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import { deliverBytes, fromB64, putBlob, toB64 } from "./_util";
 
 const MAX_TEXT = 100_000; // don't inline megabytes of decoded text per entry
+const MAX_UNPACK_BYTES = 20_000_000; // cap total decompressed output so a zip/gzip bomb can't OOM the isolate
+const MAX_ENTRIES = 2_000; // cap entry count so a many-file archive can't exhaust memory / the response
+
+/** Gunzip with a hard budget: stream-inflate and abort the moment output passes MAX_UNPACK_BYTES. */
+function gunzipCapped(bytes: Uint8Array): Uint8Array {
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	const gz = new Gunzip((chunk) => {
+		total += chunk.length;
+		if (total > MAX_UNPACK_BYTES) throw new Error(`gzip decompresses to more than ${MAX_UNPACK_BYTES} bytes (bomb guard).`);
+		chunks.push(chunk);
+	});
+	gz.push(bytes, true);
+	const out = new Uint8Array(total);
+	let off = 0;
+	for (const c of chunks) {
+		out.set(c, off);
+		off += c.length;
+	}
+	return out;
+}
 
 /** Heuristic: does this byte run decode cleanly as UTF-8 without binary control noise? */
 function looksUtf8(bytes: Uint8Array): boolean {
@@ -98,10 +119,23 @@ export const archive: Fn = {
 				const bytes = fromB64(String(args.base64));
 				const raw: Array<{ name: string; data: Uint8Array }> = [];
 				if (format === "zip") {
-					const files = unzipSync(bytes);
+					// Bound decompression before it happens: the filter runs per central-directory
+						// entry with the declared uncompressed size, so we reject bombs / entry floods
+						// up front instead of inflating everything into memory.
+						let count = 0;
+						let declared = 0;
+						const files = unzipSync(bytes, {
+							filter(f) {
+								if (++count > MAX_ENTRIES) throw new Error(`archive has more than ${MAX_ENTRIES} entries (bomb guard).`);
+								declared += f.originalSize; // fflate: originalSize = uncompressed, size = compressed
+
+								if (declared > MAX_UNPACK_BYTES) throw new Error(`archive decompresses to more than ${MAX_UNPACK_BYTES} bytes (bomb guard).`);
+								return true;
+							},
+						});
 					for (const [name, data] of Object.entries(files)) raw.push({ name, data });
 				} else {
-					raw.push({ name: "data", data: gunzipSync(bytes) });
+					raw.push({ name: "data", data: gunzipCapped(bytes) });
 				}
 				const entries: Entry[] = [];
 				for (const { name, data } of raw) {

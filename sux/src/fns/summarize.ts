@@ -54,8 +54,11 @@ export const summarize: Fn = {
 				input.slice(0, 24_000),
 				Math.ceil(maxWords * 2),
 			);
+			// An empty model output is a failure, not a summary — fail() (never cached)
+			// instead of serving "(empty summary)" for the next hour on a transient hiccup.
+			if (!out?.trim()) return fail("summarize produced an empty result — retry.");
 			console.log(`summarize: backend=workers-ai${url ? ` url=${url}` : ""}`);
-			return ok(out || "(empty summary)");
+			return ok(out);
 		} catch (e) {
 			return fail(String((e as Error).message ?? e));
 		}

@@ -1,6 +1,8 @@
 import { createHmac } from "node:crypto";
+import { EventEmitter } from "node:events";
+import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
-import { assertPublicTarget, encodeBody, fetchFollowingSafely, hostAllowed, isPrivateIp, verifySignature } from "./server.mjs";
+import { assertPublicTarget, encodeBody, fetchFollowingSafely, hostAllowed, isPrivateIp, pinnedFetch, verifySignature } from "./server.mjs";
 
 // Guards the residential-proxy binary-egress contract: the node must base64 the
 // upstream body and flag bodyEncoding:"base64" so arbitrary bytes survive the
@@ -87,8 +89,9 @@ describe("assertPublicTarget (entry SSRF gate)", () => {
 	});
 
 	it("accepts a public IPv6 literal (previously rejected as unresolvable)", async () => {
-		const u = await assertPublicTarget("http://[2606:4700:4700::1111]/", noLookup);
-		expect(u.hostname).toBe("[2606:4700:4700::1111]");
+		const { url, address } = await assertPublicTarget("http://[2606:4700:4700::1111]/", noLookup);
+		expect(url.hostname).toBe("[2606:4700:4700::1111]");
+		expect(address).toBe("2606:4700:4700::1111"); // bracket-stripped literal is the pin target
 	});
 
 	it("re-checks every DNS-resolved address and rejects a host that resolves private (rebinding)", async () => {
@@ -96,10 +99,64 @@ describe("assertPublicTarget (entry SSRF gate)", () => {
 		await expect(assertPublicTarget("http://rebind.example/", lookupPrivate)).rejects.toThrow(/private address \(10\.1\.2\.3\)/);
 	});
 
-	it("accepts a hostname that resolves to only public addresses", async () => {
+	it("accepts a hostname that resolves to only public addresses and pins the first vetted address", async () => {
 		const lookupPublic = async () => [{ address: "93.184.216.34" }, { address: "2606:4700::1" }];
-		const u = await assertPublicTarget("https://public.example/path", lookupPublic);
-		expect(u.href).toBe("https://public.example/path");
+		const { url, address } = await assertPublicTarget("https://public.example/path", lookupPublic);
+		expect(url.href).toBe("https://public.example/path");
+		// The connection must go to an address we actually checked, not a re-resolution.
+		expect(address).toBe("93.184.216.34");
+	});
+});
+
+// The DNS-rebinding TOCTOU fix: vetting an address is worthless if the connection
+// re-resolves the hostname. pinnedFetch forces the socket onto the vetted IP via
+// node's low-level `lookup` hook while keeping the hostname for the Host header and
+// TLS SNI/cert check — so a TTL-0 rebind after assertPublicTarget's check can't
+// steer the connection to 127.0.0.1 / 169.254.169.254 / the LAN.
+describe("pinnedFetch (DNS-pinned connection)", () => {
+	// Fake node http(s).request that captures the options and streams a canned response.
+	function fakeTransport(bodyChunks: string[] = ["OK"], resHeaders: Record<string, unknown> = { "content-type": "text/plain" }, status = 200) {
+		const captured: { url?: unknown; options?: any } = {};
+		const req = new EventEmitter() as EventEmitter & { write: () => void; end: () => void; destroy: () => void };
+		req.write = () => {};
+		req.end = () => {};
+		req.destroy = () => {};
+		const requestImpl = (urlArg: unknown, options: any, cb: (res: unknown) => void) => {
+			captured.url = urlArg;
+			captured.options = options;
+			const res = Readable.from(bodyChunks.map((c) => Buffer.from(c))) as Readable & { statusCode: number; statusMessage: string; headers: Record<string, unknown> };
+			res.statusCode = status;
+			res.statusMessage = "OK";
+			res.headers = resHeaders;
+			queueMicrotask(() => cb(res));
+			return req;
+		};
+		return { captured, requestImpl };
+	}
+
+	it("pins the socket to the vetted IP (lookup ignores the hostname) and keeps SNI = hostname", async () => {
+		const { captured, requestImpl } = fakeTransport(["OK"]);
+		const resp = await pinnedFetch("https://shop.example/p", { method: "GET", headers: {} }, "93.184.216.34", { requestImpl });
+		expect(resp.status).toBe(200);
+		expect(await resp.text()).toBe("OK");
+		// lookup yields the vetted IP no matter what host it's asked to resolve.
+		const seen = await new Promise<{ addr: string; fam: number }>((res) => captured.options.lookup("shop.example", {}, (_e: unknown, addr: string, fam: number) => res({ addr, fam })));
+		expect(seen.addr).toBe("93.184.216.34");
+		expect(seen.fam).toBe(4);
+		// SNI/cert still validated against the real hostname, not the literal IP.
+		expect(captured.options.servername).toBe("shop.example");
+	});
+
+	it("pins an IPv6 address with family 6 and sets no servername for plain http", async () => {
+		const { captured, requestImpl } = fakeTransport(["hi"]);
+		await pinnedFetch("http://ipv6.example/", { headers: {} }, "2606:4700::1", { requestImpl });
+		const fam = await new Promise<number>((res) => captured.options.lookup("ipv6.example", {}, (_e: unknown, _a: string, f: number) => res(f)));
+		expect(fam).toBe(6);
+		expect(captured.options.servername).toBeUndefined();
+	});
+
+	it("refuses to connect without a vetted address (no unpinned fetch fallback)", () => {
+		expect(() => pinnedFetch("https://x.example/", {}, undefined as unknown as string, {})).toThrow(/vetted address/);
 	});
 });
 
@@ -147,11 +204,12 @@ describe("verifySignature (HMAC auth)", () => {
 // metadata IP would be fetched from inside the home LAN. fetchFollowingSafely
 // re-validates every hop; these pin that the guard runs on redirect targets too.
 describe("fetchFollowingSafely (SSRF-safe redirect follower)", () => {
-	// Stand-in for assertPublicTarget: throws for the known-private hosts, else OK.
+	// Stand-in for assertPublicTarget: throws for the known-private hosts, else returns
+	// the { url, address } shape the real guard hands back (address pins the connection).
 	const assertTarget = async (href: string) => {
 		const h = new URL(href).hostname;
 		if (h === "169.254.169.254" || h === "192.168.1.1") throw new Error(`target resolves to a private address (${h})`);
-		return new URL(href);
+		return { url: new URL(href), address: "203.0.113.5" };
 	};
 
 	it("re-runs the SSRF guard on a redirect hop and refuses a redirect into the LAN", async () => {
@@ -177,14 +235,14 @@ describe("fetchFollowingSafely (SSRF-safe redirect follower)", () => {
 				? new Response("OK", { status: 200 })
 				: new Response(null, { status: 302, headers: { location: "/next" } });
 		};
-		const resp = await fetchFollowingSafely("https://pub.example/start", {}, { fetchImpl, assertTarget: async (h) => new URL(h) });
+		const resp = await fetchFollowingSafely("https://pub.example/start", {}, { fetchImpl, assertTarget: async (h) => ({ url: new URL(h), address: "203.0.113.5" }) });
 		expect(resp.status).toBe(200);
 		// The relative "/next" resolved to the redirecting host, not some bare path.
 		expect(seen).toEqual(["https://pub.example/start", "https://pub.example/next"]);
 	});
 
 	it("follows a redirect to another public host and returns the final response", async () => {
-		const pass = async (href: string) => new URL(href);
+		const pass = async (href: string) => ({ url: new URL(href), address: "203.0.113.5" });
 		const fetchImpl = async (url: Parameters<typeof fetch>[0]) =>
 			String(url).includes("start.example")
 				? new Response(null, { status: 301, headers: { location: "https://final.example/ok" } })
@@ -195,7 +253,7 @@ describe("fetchFollowingSafely (SSRF-safe redirect follower)", () => {
 	});
 
 	it("caps the redirect chain instead of looping forever", async () => {
-		const pass = async (href: string) => new URL(href);
+		const pass = async (href: string) => ({ url: new URL(href), address: "203.0.113.5" });
 		const fetchImpl = async () => new Response(null, { status: 302, headers: { location: "https://loop.example/next" } });
 		await expect(fetchFollowingSafely("https://loop.example/", {}, { fetchImpl, assertTarget: pass, maxHops: 3 })).rejects.toThrow(/too many redirects/);
 	});

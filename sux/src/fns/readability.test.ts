@@ -36,6 +36,17 @@ describe("readability", () => {
 		expect(out.text).toContain("Substantial paragraph content");
 	});
 
+	it("does not let custom elements sharing a tag prefix eat the main content", async () => {
+		const html = `<html><body>
+			<form-field>label</form-field>
+			<article><p>${"The whole story lives right here in the article. ".repeat(4)}</p></article>
+			<form><input name="q"></form>
+		</body></html>`;
+		const r = await readability.run({} as any, { html });
+		const out = JSON.parse(r.content[0].text);
+		expect(out.text).toContain("The whole story lives right here");
+	});
+
 	it("errors when neither html nor url is given", async () => {
 		const r = await readability.run({} as any, {});
 		expect(r.isError).toBe(true);

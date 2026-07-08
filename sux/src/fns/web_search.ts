@@ -31,13 +31,17 @@ export function parseGoogleSerp(html: string, limit: number): Hit[] {
 	while ((m = re.exec(html)) && hits.length < limit) {
 		const url = unwrapGoogleUrl(m[1]);
 		if (!url) continue;
-		let host = "";
+		let u: URL;
 		try {
-			host = new URL(url).hostname;
+			u = new URL(url);
 		} catch {
 			continue;
 		}
-		if (!host || /(^|\.)(google\.[a-z.]+|gstatic\.com|googleusercontent\.com|youtube\.com\/redirect)$/i.test(host)) continue;
+		const host = u.hostname;
+		if (!host || /(^|\.)(google\.[a-z.]+|gstatic\.com|googleusercontent\.com)$/i.test(host)) continue;
+		// YouTube's off-site redirect wrapper (youtube.com/redirect?q=…) — the
+		// /redirect lives in the path, never the hostname, so match host + pathname.
+		if (/(^|\.)youtube\.com$/i.test(host) && u.pathname === "/redirect") continue;
 		const title = stripHtml(m[2]).trim();
 		if (!title) continue;
 		const key = normUrl(url);
@@ -57,7 +61,16 @@ export function parseDdg(html: string, limit: number): Hit[] {
 	let m: RegExpExecArray | null;
 	while ((m = re.exec(html)) && hits.length < limit) {
 		const uddg = m[1].match(/[?&]uddg=([^&]+)/);
-		const url = uddg ? decodeURIComponent(uddg[1]) : m[1].startsWith("//") ? `https:${m[1]}` : m[1];
+		let url: string;
+		if (uddg) {
+			try {
+				url = decodeURIComponent(uddg[1]);
+			} catch {
+				continue; // truncated/invalid percent-escape in the redirect param — skip this anchor, keep the rest
+			}
+		} else {
+			url = m[1].startsWith("//") ? `https:${m[1]}` : m[1];
+		}
 		if (!/^https?:\/\//.test(url)) continue;
 		const title = stripHtml(m[2]).trim();
 		if (!title || seen.has(url)) continue;
@@ -83,7 +96,10 @@ async function ddg(env: any, q: string, limit: number, route: Route): Promise<Hi
 // the bot wall) and parse the post-JS HTML. Real Google results, no third-party
 // SERP API — but heavier than an API call, so google is an opt-in engine.
 async function googleDirect(env: any, q: string, limit: number, _route: Route): Promise<Hit[]> {
-	const url = `https://www.google.com/search?q=${encodeURIComponent(q)}&num=${Math.min(20, limit + 5)}&hl=en`;
+	// Over-request: Google's SERP host drops (google/gstatic) and dedupe shrink the
+	// parsed hit count, so ask for more than `limit` (up to Google's ~40 ceiling) or
+	// a high limit can never be honored.
+	const url = `https://www.google.com/search?q=${encodeURIComponent(q)}&num=${Math.min(40, limit + 10)}&hl=en`;
 	return parseGoogleSerp(await renderHtml(env, url), limit);
 }
 
@@ -198,8 +214,18 @@ export const webSearch: Fn = {
 		const settled = await Promise.allSettled(engines.map((name) => ENGINES[name].run(env, q, limit, route)));
 		const lists = settled.map((s) => (s.status === "fulfilled" ? s.value : []));
 		const ranAll = engine === "all";
+		// Don't swallow engine errors: log every rejection so a silently-dead engine
+		// is traceable, and surface the reason for a single named engine (an expired
+		// key or a downed backend errors, it doesn't just "return no results").
+		const reason = (s: PromiseSettledResult<Hit[]>): string => String(((s as PromiseRejectedResult).reason as Error)?.message ?? (s as PromiseRejectedResult).reason);
+		settled.forEach((s, i) => {
+			if (s.status === "rejected") console.warn(`web_search engine '${engines[i]}' failed: ${reason(s)}`);
+		});
 		const hits = ranAll ? merge(lists, limit) : lists[0] ?? [];
-		if (!hits.length) return fail(`No results for "${q}"${ranAll ? ` across: ${engines.join(", ")}` : ""}.`);
+		if (!hits.length) {
+			if (!ranAll && settled[0]?.status === "rejected") return fail(`Engine '${engine}' failed: ${reason(settled[0])}`);
+			return fail(`No results for "${q}"${ranAll ? ` across: ${engines.join(", ")}` : ""}.`);
+		}
 
 		const body = fmt(hits);
 		const header = ranAll ? `Merged ${hits.length} results from: ${engines.join(", ")}\n\n` : "";

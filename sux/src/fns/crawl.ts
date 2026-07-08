@@ -26,8 +26,13 @@ export const crawl: Fn = {
 	run: async (env, args) => {
 		const seed = String(args?.url ?? "");
 		if (!isHttpUrl(seed)) return fail("url must be absolute http(s).");
-		const maxDepth = Math.min(Number(args?.depth ?? 1), 3);
-		const maxPages = Math.min(Number(args?.max ?? 25), 100);
+		// Clamp to the schema bounds and fall back to the defaults on non-numeric
+		// input — a NaN depth would disable the depth cap and a NaN max would
+		// return (and cache) an empty crawl. isFinite keeps a legitimate depth 0.
+		const depthRaw = Number(args?.depth ?? 1);
+		const maxDepth = Math.min(3, Math.max(0, Number.isFinite(depthRaw) ? depthRaw : 1));
+		const maxRaw = Number(args?.max ?? 25);
+		const maxPages = Math.min(100, Math.max(1, Number.isFinite(maxRaw) ? maxRaw : 25));
 		const sameOrigin = args?.same_origin !== false;
 		const origin = new URL(seed).origin;
 

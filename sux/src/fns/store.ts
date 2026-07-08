@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { extractStoreId, fromB64, putBlob, STORE_KV_PREFIX, storeBase, toB64 } from "./_util";
+import { extractStoreId, fromB64, isExpired, putBlob, STORE_KV_PREFIX, storeBase, toB64 } from "./_util";
 
 // Object storage in sux's R2. Bytes are content-addressed (key = sha256, so
 // identical content dedupes to one immutable object — Nix-store style). Each put
@@ -7,7 +7,7 @@ import { extractStoreId, fromB64, putBlob, STORE_KV_PREFIX, storeBase, toB64 } f
 // and returns a resolvable URL ending in that uuid: GET /s/<uuid> streams it back.
 // The put path itself lives in _util.putBlob, shared with every binary-output fn.
 
-export type StoreRef = { key: string; content_type: string; size: number; sha256: string };
+export type StoreRef = { key: string; content_type: string; size: number; sha256: string; expiry?: number };
 
 /** Above this, get won't inline text/base64 — it returns the streaming URL ref instead. */
 const MAX_INLINE_BYTES = 4 * 1024 * 1024;
@@ -18,7 +18,7 @@ export const store: Fn = {
 	name: "store",
 	description:
 		"Store and retrieve arbitrary content in sux's R2. Bytes are content-addressed (sha256 — identical content dedupes; Nix-store style); each put also mints a short uuid handle (kept in KV) and returns a resolvable URL ending in that uuid — GET /s/<uuid> streams the object back. " +
-		"`op`: put (default) | get | list | delete. put takes `data` (utf-8 text) or `base64` (binary) + optional `content_type`; returns { uuid, url, key, sha256, size }. get takes `id` (uuid or url) or `key`; returns text for textual types else base64. delete takes the uuid `id` (removes the handle; the deduped blob is retained). list takes `prefix`/`limit` over raw R2 keys.",
+		"`op`: put (default) | get | list | delete. put takes `data` (utf-8 text) or `base64` (binary) + optional `content_type` and optional `ttl_seconds` (positive int — the uuid handle self-expires after that many seconds, for ephemeral artifacts; omit for a permanent handle); returns { uuid, url, key, sha256, size, expiry? }. get takes `id` (uuid or url) or `key`; returns text for textual types else base64 (an expired/absent handle is not-found). delete takes the uuid `id` (removes the handle; the deduped blob is retained). list takes `prefix`/`limit` over raw R2 keys.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -27,6 +27,7 @@ export const store: Fn = {
 			data: { type: "string", description: "put: UTF-8 text to store." },
 			base64: { type: "string", description: "put: base64 bytes to store (binary)." },
 			content_type: { type: "string", description: "put: MIME type (default text/plain or application/octet-stream)." },
+			ttl_seconds: { type: "integer", minimum: 1, description: "put: optional seconds until the uuid handle self-expires (ephemeral artifacts); omit for a permanent handle." },
 			id: { type: "string", description: "get/delete: the uuid handle or the /s/<uuid> URL." },
 			key: { type: "string", description: "get: a raw R2 object key (alternative to id)." },
 			prefix: { type: "string", description: "list: R2 key prefix filter." },
@@ -52,7 +53,12 @@ export const store: Fn = {
 				} else {
 					return fail("put needs `data` (text) or `base64` (binary).");
 				}
-				const ref = await putBlob(env, bytes, ct);
+				let ttlSeconds: number | undefined;
+				if (args?.ttl_seconds !== undefined) {
+					ttlSeconds = Number(args.ttl_seconds);
+					if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0) return fail("ttl_seconds must be a positive integer.");
+				}
+				const ref = await putBlob(env, bytes, ct, ttlSeconds !== undefined ? { ttlSeconds } : undefined);
 				return ok(JSON.stringify(ref, null, 2));
 			}
 
@@ -66,6 +72,11 @@ export const store: Fn = {
 					const raw = await env.OAUTH_KV.get(`${STORE_KV_PREFIX}${uuid}`);
 					if (!raw) return fail(`No stored object for id '${uuid}'.`);
 					const ref = JSON.parse(raw) as StoreRef;
+					// Expired handle → not-found; best-effort delete any handle KV hasn't reaped.
+					if (isExpired(ref)) {
+						await env.OAUTH_KV.delete(`${STORE_KV_PREFIX}${uuid}`).catch(() => {});
+						return fail(`No stored object for id '${uuid}' (expired).`);
+					}
 					r2key = ref.key;
 					ct = ref.content_type;
 					sha = ref.sha256;

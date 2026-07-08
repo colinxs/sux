@@ -61,7 +61,14 @@ export function htmlToMd(html: string): string {
 	s = s.replace(/<ul\b[^>]*>([\s\S]*?)<\/ul>/gi, (_m, txt) => `\x00${listItems(txt, false)}\x00`);
 	s = s.replace(/<ol\b[^>]*>([\s\S]*?)<\/ol>/gi, (_m, txt) => `\x00${listItems(txt, true)}\x00`);
 	s = s.replace(/<p\b[^>]*>([\s\S]*?)<\/p>/gi, (_m, txt) => `\x00${inlineToMd(txt)}\x00`);
-	s = inlineToMd(s.replace(/\x00/g, "\n\n"));
+	// Block bodies above were already run through inlineToMd; only the leftover
+	// text outside the \x00 sentinels still needs inline conversion. Splitting on
+	// \x00 leaves block bodies at odd indices — running inlineToMd over the whole
+	// document again would double-decode entities and strip decoded angle brackets.
+	s = s
+		.split("\x00")
+		.map((part, idx) => (idx % 2 === 1 ? part : inlineToMd(part)))
+		.join("\n\n");
 	return s
 		.split(/\n{2,}/)
 		.map((b) => b.trim())
@@ -70,8 +77,12 @@ export function htmlToMd(html: string): string {
 }
 
 function inlineMdToHtml(s: string): string {
+	// Pull code spans out to \x00N\x00 placeholders before the link/emphasis
+	// passes so markdown syntax inside inline `code` stays literal instead of
+	// being formatted — the same sentinel trick htmlToMd uses for blocks.
+	const codes: string[] = [];
 	return encodeEntities(s)
-		.replace(/`([^`]+)`/g, (_m, c) => `<code>${c}</code>`)
+		.replace(/`([^`]+)`/g, (_m, c) => `\x00${codes.push(`<code>${c}</code>`) - 1}\x00`)
 		// href lands inside a double-quoted attribute; encodeEntities above only
 		// escapes &<>, so a link URL carrying a quote (`[x](" onclick="…)`) would
 		// break out of the attribute and inject event handlers. Escape the quote so
@@ -80,7 +91,8 @@ function inlineMdToHtml(s: string): string {
 		.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
 		.replace(/__([^_]+)__/g, "<strong>$1</strong>")
 		.replace(/\*([^*]+)\*/g, "<em>$1</em>")
-		.replace(/_([^_]+)_/g, "<em>$1</em>");
+		.replace(/_([^_]+)_/g, "<em>$1</em>")
+		.replace(/\x00(\d+)\x00/g, (_m, i) => codes[Number(i)]);
 }
 
 export function mdToHtml(md: string): string {

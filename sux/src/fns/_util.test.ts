@@ -5,6 +5,7 @@ vi.mock("../proxy", () => ({
 		if (String(url).includes("blocked")) return new Response("Access denied", { status: 403 });
 		if (String(url).includes("boom")) throw new Error("socket hang up");
 		if (String(url).includes("huge")) return new Response("x".repeat(50_000), { status: 200 });
+		if (String(url).includes("toobig")) return new Response(new Uint8Array(500_000), { status: 200, headers: { "content-type": "application/octet-stream" } });
 		if (String(url).includes("binary")) return new Response(new Uint8Array([0, 1, 0xff, 0x80, 0xd9]), { status: 200, headers: { "content-type": "image/jpeg" } });
 		return new Response("<p>content</p>", { status: 200 });
 	}),
@@ -102,6 +103,16 @@ describe("loadBytes (shared binary loader)", () => {
 
 	it("rejects HTTP >= 400", async () => {
 		await expect(loadBytes({} as any, { url: "https://blocked.example/x" })).rejects.toThrow(/HTTP 403/);
+	});
+
+	it("caps the fetched body — a body over maxBytes is rejected, not buffered whole", async () => {
+		// 500KB response with a 1KB cap: the stream must abort past the cap.
+		await expect(loadBytes({} as any, { url: "https://example.com/toobig.bin" }, 1_000)).rejects.toThrow(/too large/i);
+	});
+
+	it("allows a body within the cap", async () => {
+		const { bytes } = await loadBytes({} as any, { url: "https://example.com/toobig.bin" }, 1_000_000);
+		expect(bytes.byteLength).toBe(500_000);
 	});
 
 	it("rejects when neither base64 nor a valid url is given", async () => {
@@ -327,6 +338,24 @@ describe("in-isolate fetch dedup cache", () => {
 			await fetchText({} as any, "https://post-nocache.example", { method: "POST", body: "x" });
 			await fetchText({} as any, "https://post-nocache.example", { method: "POST", body: "x" });
 			expect(smartFetch).toHaveBeenCalledTimes(2); // never dedup non-GET
+		} finally {
+			setFetchDedup(null);
+			clearFetchCache();
+		}
+	});
+
+	it("keys the dedup on request headers so a differing header (e.g. geo) is not collapsed", async () => {
+		clearFetchCache();
+		setFetchDedup(true);
+		try {
+			const { smartFetch } = await import("../proxy");
+			vi.mocked(smartFetch as any).mockClear();
+			await fetchText({} as any, "https://geo.example/page", { headers: { "x-exit-geo": "us-ca" } });
+			await fetchText({} as any, "https://geo.example/page", { headers: { "x-exit-geo": "de" } });
+			expect(smartFetch).toHaveBeenCalledTimes(2); // different header ⇒ distinct fetch
+			// Identical headers still hit the cache (one round-trip).
+			await fetchText({} as any, "https://geo.example/page", { headers: { "x-exit-geo": "de" } });
+			expect(smartFetch).toHaveBeenCalledTimes(2);
 		} finally {
 			setFetchDedup(null);
 			clearFetchCache();

@@ -29,7 +29,9 @@ export const encode: Fn = {
 			}
 			if (codec === "hex") {
 				if (decode) {
-					const bytes = text.match(/.{1,2}/g)?.map((h) => parseInt(h, 16)) ?? [];
+					const clean = text.replace(/\s+/g, "");
+						if (!/^([0-9a-f]{2})*$/i.test(clean)) return fail("hex decode input must be whitespace-separated pairs of hex digits");
+						const bytes = clean.match(/.{2}/g)?.map((h) => parseInt(h, 16)) ?? [];
 					return ok(new TextDecoder().decode(Uint8Array.from(bytes)));
 				}
 				return ok(Array.from(new TextEncoder().encode(text)).map((b) => b.toString(16).padStart(2, "0")).join(""));

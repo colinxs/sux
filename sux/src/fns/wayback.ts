@@ -21,7 +21,7 @@ export const wayback: Fn = {
 		if (!/^https?:\/\//i.test(url)) return fail("url must be absolute http(s).");
 
 		if (String(args?.mode ?? "snapshot") === "history") {
-			const limit = Number(args?.limit) || 50;
+			const limit = Math.min(500, Math.max(1, Number(args?.limit) || 50));
 			const cdx = `https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(url)}&output=json&collapse=digest&limit=${limit}&fl=timestamp,original,statuscode,digest`;
 			const resp = await fetch(cdx, { signal: AbortSignal.timeout(20_000) });
 			if (!resp.ok) return fail(`CDX query failed: HTTP ${resp.status}`);

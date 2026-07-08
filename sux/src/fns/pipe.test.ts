@@ -74,6 +74,15 @@ describe("pipe", () => {
 		expect((await pipe.run({} as any, { steps: [] })).isError).toBe(true);
 	});
 
+	it("refuses wide fan-out fetch tools (batch_fetch/crawl) as steps to bound amplification", async () => {
+		const bf = await pipe.run({} as any, { steps: [{ tool: "echo", args: { text: "x" } }, { tool: "batch_fetch", args: { urls: ["a"] } }] });
+		expect(bf.isError).toBe(true);
+		expect(bf.content[0].text).toMatch(/refusing to run 'batch_fetch'/);
+		const cr = await pipe.run({} as any, { steps: [{ tool: "crawl", args: { url: "a" } }] });
+		expect(cr.isError).toBe(true);
+		expect(cr.content[0].text).toMatch(/refusing to run 'crawl'/);
+	});
+
 	it("rejects more than 25 steps (amplification cap) but accepts exactly 25", async () => {
 		const step = { tool: "echo", args: { text: "x" } };
 		const over = await pipe.run({} as any, { steps: Array.from({ length: 26 }, () => step) });

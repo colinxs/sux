@@ -38,6 +38,12 @@ describe("contacts", () => {
 		expect(out.phones).toContain("(415) 555-2671");
 	});
 
+	it("does not report a 10-digit tail buried inside a longer digit run as a phone", async () => {
+		const text = "Card on file 4111111111111111 was declined.";
+		const out = JSON.parse((await contacts.run({} as any, { text })).content[0].text);
+		expect(out.phones).toEqual([]);
+	});
+
 	it("extracts social profiles from hrefs and skips non-profile paths", async () => {
 		const html = `<a href="https://twitter.com/jane_dev">tw</a>
 			<a href="https://github.com/janedev">gh</a>

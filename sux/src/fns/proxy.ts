@@ -1,6 +1,6 @@
 import { type Fn, fail, ok } from "../registry";
 import { smartFetch } from "../proxy";
-import { isHttpUrl, noCacheOn4xx, toB64 } from "./_util";
+import { isHttpUrl, noCacheOn4xx, noCacheOnMutation, toB64 } from "./_util";
 
 export const proxyFn: Fn = {
 	name: "proxy",
@@ -35,6 +35,6 @@ export const proxyFn: Fn = {
 		} else {
 			body = new TextDecoder().decode(buf);
 		}
-		return noCacheOn4xx(ok(JSON.stringify({ status: resp.status, statusText: resp.statusText, bytes: buf.length, headers: hdrs, body })), resp.status);
+		return noCacheOnMutation(noCacheOn4xx(ok(JSON.stringify({ status: resp.status, statusText: resp.statusText, bytes: buf.length, headers: hdrs, body })), resp.status), args?.method);
 	},
 };

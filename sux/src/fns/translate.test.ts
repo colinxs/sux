@@ -31,6 +31,13 @@ describe("translate", () => {
 		expect(run).toHaveBeenCalledWith("@cf/meta/m2m100-1.2b", expect.objectContaining({ text: "hi", target_lang: "es", source_lang: "en" }));
 	});
 
+	it("fails (uncacheable) when the model returns an empty translation instead of caching a sentinel", async () => {
+		const env = { AI: { run: vi.fn(async () => ({ translated_text: "   " })) } } as any;
+		const r = await translate.run(env, { text: "hi", to: "es" });
+		expect(r.isError).toBe(true); // isError results never enter the KV cache
+		expect(r.content[0].text).toMatch(/empty result/);
+	});
+
 	it("surfaces model errors", async () => {
 		const env = { AI: { run: vi.fn(async () => { throw new Error("boom"); }) } } as any;
 		const r = await translate.run(env, { text: "hi", to: "es" });

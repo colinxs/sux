@@ -70,7 +70,9 @@ import { pdf } from "./pdf";
 import { people } from "./people";
 import { pipe } from "./pipe";
 import { places } from "./places";
+import { product_search } from "./product_search";
 import { render } from "./render";
+import { selftest } from "./selftest";
 import { semantic_scholar } from "./semantic_scholar";
 import { shop } from "./shop";
 import { stackexchange } from "./stackexchange";
@@ -79,6 +81,7 @@ import { obsidian } from "./obsidian";
 import { tavily } from "./tavily";
 import { walmart } from "./walmart";
 import { webSearch } from "./web_search";
+import { weekly_ad } from "./weekly_ad";
 import { winco } from "./winco";
 import { xml } from "./xml";
 import { yaml } from "./yaml";
@@ -150,7 +153,9 @@ export const FUNCTIONS: Fn[] = [
 	people,
 	pipe,
 	places,
+	product_search,
 	render,
+	selftest,
 	semantic_scholar,
 	shop,
 	stackexchange,
@@ -159,6 +164,7 @@ export const FUNCTIONS: Fn[] = [
 	tavily,
 	walmart,
 	webSearch,
+	weekly_ad,
 	winco,
 	xml,
 	yaml,

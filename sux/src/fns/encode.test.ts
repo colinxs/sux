@@ -31,6 +31,24 @@ describe("encode", () => {
 		expect(dec.content[0].text).toBe(text);
 	});
 
+	it("rejects non-hex characters in a hex decode instead of silently emitting NUL bytes", async () => {
+		const r = await encode.run({} as any, { text: "zz41", codec: "hex", direction: "decode" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/hex decode input must be/);
+	});
+
+	it("rejects odd-length hex input instead of decoding a dangling nibble", async () => {
+		const r = await encode.run({} as any, { text: "abc", codec: "hex", direction: "decode" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/hex decode input must be/);
+	});
+
+	it("decodes whitespace-separated hex pairs (a common paste format)", async () => {
+		const r = await encode.run({} as any, { text: "68 65 6c 6c 6f", codec: "hex", direction: "decode" });
+		expect(r.isError).toBeFalsy();
+		expect(r.content[0].text).toBe("hello");
+	});
+
 	it("surfaces a failed base64 decode", async () => {
 		const r = await encode.run({} as any, { text: "!!!not base64!!!", codec: "base64", direction: "decode" });
 		expect(r.isError).toBe(true);
