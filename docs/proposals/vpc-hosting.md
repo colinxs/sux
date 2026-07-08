@@ -251,3 +251,20 @@ The cleanest working path reuses what already works: **the sux Worker is itself 
 2. Web UI from anywhere: `cloudflared` public hostname on the existing zone (e.g. `vault.<zone>`) → KasmVNC `:8080`, wrapped in an **Access self-hosted app** (SSO, your identity only). This is human-browser traffic — the Access-Managed-OAuth MCP bug (#410) is irrelevant here.
 
 **Write-master rule (3 writers exist):** the home box is the sole interactive-write master; cloud mirrors; the Worker writes via git (tier 1) or the home box's REST (tier 2) only — never to the cloud node.
+
+### §8 addendum — decided: rolled our own (2026-07-08, built as `sux/src/vault-mcp.ts`)
+
+Compared the prior art against keeping our Workers implementation; **rolled our own** on the Worker rather than adopting the Python service as a dependency:
+
+| | `jimprosser/obsidian-web-mcp` (prior art) | **ours: `/vault/mcp` on the sux Worker** |
+|---|---|---|
+| Runtime | Python 3.12 service on the vault box | ~170 lines in the existing Worker — no new infra |
+| Storage | direct files on that box (box down = connector down) | **cloud truth**: git store + KV cache — works with no box awake |
+| OAuth | its own OAuth server (PKCE, DCR, password gate) to run | `workers-oauth-provider`, already proven with claude.ai (`apiRoute: ["/mcp","/vault/mcp"]`) |
+| Public surface | new public hostname (cloudflared) | none new — the existing Worker URL |
+| Write safety | atomic temp+rename (Sync-safe) | git commits (atomic + revertible); REST writes via Obsidian's adapter |
+| Path safety | traversal/dotfile guards | `badVaultPath` (verified through the MCP surface by test) |
+| Tools | 18 (incl. canvas, analytics) | v1: 9 **cloud-only** tools — read/list/write/append/edit/delete(confirm)/capture/daily×2 |
+| Stolen | — | confirm-gated delete, daily-note verbs, closed schemas |
+
+**v1 is cloud tools only** (Colin): no live-vault dependency — full-text search arrives with the tier-2 `vpc` backend; **desktop keeps the live Obsidian MCP through the local mcp-gate wrapper** meanwhile. Consequence for §9: the vault connector no longer waits for Phase B/C — it ships with **Phase A** (it needs only the git store, which is already live).
