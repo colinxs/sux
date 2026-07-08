@@ -1,12 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { macRender } from "../mac-render";
 import { parseUwDirectory, people_finder } from "./people_finder";
 
-// The uw source renders the directory through the mac backend; mock it so we can
-// feed canned directory HTML without a real render.
-vi.mock("../mac-render", () => ({ macRender: vi.fn() }));
-const macMock = vi.mocked(macRender);
+// The uw source POSTs the search form to directory.uw.edu; stub global fetch to
+// feed canned directory HTML without a real request.
+const fetchMock = vi.fn();
+vi.stubGlobal("fetch", fetchMock);
 
 // linkedin/facebook/web_search are invoked through the FUNCTIONS registry; mock it
 // so each returns a canned result (facebook fails, to exercise error isolation).
@@ -57,7 +56,7 @@ const WEB_TEXT = `1. Arden Hellmann — LinkedIn
    Tweets`;
 
 function setMocks() {
-	macMock.mockResolvedValue({ ok: true, contentType: "text/html", body: UW_HTML });
+	fetchMock.mockResolvedValue(new Response(UW_HTML, { status: 200 }));
 	linkedinRun.mockResolvedValue({ content: [{ text: LINKEDIN_JSON }] });
 	webRun.mockResolvedValue({ content: [{ text: WEB_TEXT }] });
 	facebookRun.mockResolvedValue({ content: [{ text: "Facebook not configured (FACEBOOK_TOKEN)." }], isError: true });
@@ -124,7 +123,7 @@ describe("people_finder fn", () => {
 		setMocks();
 		const r = await people_finder.run({} as any, { name: "Arden Hellmann", sources: ["web"] });
 		const p = JSON.parse(r.content[0].text);
-		expect(macMock).not.toHaveBeenCalled();
+		expect(fetchMock).not.toHaveBeenCalled();
 		expect(linkedinRun).not.toHaveBeenCalled();
 		expect(facebookRun).not.toHaveBeenCalled();
 		expect(webRun).toHaveBeenCalledTimes(1);
@@ -134,7 +133,7 @@ describe("people_finder fn", () => {
 	it("opts the uw source in when org names 'uw' even under a narrowed sources list", async () => {
 		setMocks();
 		await people_finder.run({} as any, { name: "Arden Hellmann", sources: ["web"], org: "uw" });
-		expect(macMock).toHaveBeenCalledTimes(1);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
 		expect(webRun).toHaveBeenCalledTimes(1);
 		expect(linkedinRun).not.toHaveBeenCalled();
 	});

@@ -1,4 +1,3 @@
-import { macRender } from "../mac-render";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { stripHtml } from "./_util";
 
@@ -13,26 +12,19 @@ import { stripHtml } from "./_util";
 //
 // Sources:
 //   uw       — the UW Enterprise Directory Service (directory.uw.edu), a public
-//              employee directory. Rendered via the residential `mac` backend and
-//              parsed from the returned HTML (server-rendered person-cards).
+//              faculty/staff directory. It is a server-rendered Django form whose
+//              search is an HTTP POST (query/method/population/length; a GET ignores
+//              the query). The POST is un-blocked (no bot wall), so runUw hits it
+//              directly and parses the server-rendered person-cards.
 //   linkedin — the `linkedin` fn (public profile scrape) via the registry.
 //   facebook — the `facebook` Graph fn via the registry.
 //   web      — the `web_search` fn via the registry (general public web presence).
 
-// The public UW directory. NOTE (live behaviour + extension point): the EDS app is
-// a server-rendered Django form whose search is submitted as an HTTP POST
-// (query/method/population/length) — a GET ignores the query and returns the empty
-// form. `macRender` navigates via GET, so live it drives the base page; the query
-// is encoded here for descriptiveness and forward-compatibility.
-//
-// TODO(auth): an AUTHENTICATED UW session driven through the render:mac profile
-// (a POST-capable, cookie-bearing render) would both submit the real search form
-// AND unlock the gated `population`/phone/address fields the public tier hides.
-// Wire that here — do NOT add credentials/auth to this public-only aggregator now.
+// TODO(auth): STUDENT records + suppressed phone/box are gated behind a UW-NetID
+// SAML session (population=students). An authenticated, cookie-bearing fetch would
+// unlock them — deliberately NOT wired here; this stays a public-only aggregator.
 const UW_DIRECTORY = "https://directory.uw.edu/";
-function uwSearchUrl(name: string): string {
-	return `${UW_DIRECTORY}?query=${encodeURIComponent(name)}&method=name&population=employees&length=full`;
-}
+const UW_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 /** One person parsed out of a length=full UW directory page. Public fields only. */
 export type UwPerson = { name?: string; emails: string[]; phones: string[]; addresses: string[]; work: Array<{ title?: string; org?: string }> };
@@ -123,9 +115,18 @@ function personMatches(personName: string, queryName: string): boolean {
 
 /** Render + parse the public UW directory for `name`, merged into one contribution. */
 async function runUw(env: RtEnv, name: string, limit: number): Promise<Contribution> {
-	const r = await macRender(env, { url: uwSearchUrl(name), as: "html", wait_until: "domcontentloaded", wait_ms: 3000 });
-	if (!r.ok) throw new Error(r.error || "mac render failed");
-	const people = parseUwDirectory(r.body);
+	// directory.uw.edu is a server-rendered Django form: search is an HTTP POST
+	// (GET ignores the query). A plain POST is un-blocked (no bot wall), so hit it
+	// directly rather than through a browser render. Public faculty/staff tier only.
+	const body = new URLSearchParams({ query: name, method: "name", population: "employees", length: "full" }).toString();
+	const resp = await fetch(UW_DIRECTORY, {
+		method: "POST",
+		headers: { "content-type": "application/x-www-form-urlencoded", "user-agent": UW_UA, accept: "text/html" },
+		body,
+		signal: AbortSignal.timeout(20000),
+	});
+	if (!resp.ok) throw new Error(`UW directory HTTP ${resp.status}`);
+	const people = parseUwDirectory(await resp.text());
 	if (!people.length) return { source: "uw" };
 	// A name search can return many people (e.g. 205 for "smith"); keep only cards
 	// whose name matches the query (fall back to the first few) and merge those.
@@ -219,7 +220,7 @@ export const people_finder: Fn = {
 		"Public-source person aggregator — find publicly-listed information about a person by fanning out across a public institutional directory and public social/web sources, then merging into one deduped profile. " +
 		"PUBLIC SOURCES ONLY: no login/auth bypass, no private records, no data brokers — every field is one the person could find on the same public pages. " +
 		"`name` (required) is the person; `org` (e.g. 'uw'), `email`, `employer`, `location` are optional disambiguators; `sources` narrows the fan-out to a subset of ['uw','linkedin','facebook','web'] (default all); `limit` caps each list (default 10). " +
-		"Sources: uw = the public UW directory rendered via the mac backend; linkedin/facebook/web = the `linkedin`, `facebook`, and `web_search` fns via the registry. " +
+		"Sources: uw = the public UW faculty/staff directory (directory.uw.edu) via a direct POST; linkedin/facebook/web = the `linkedin`, `facebook`, and `web_search` fns via the registry. " +
 		"Per-source failure is isolated into `errors` and never aborts the rest. " +
 		"Returns JSON { name, emails, phones, addresses, work:[{title,org,source}], profiles:[{network,url}], sources:[], errors:[{source,error}] }.",
 	inputSchema: {
