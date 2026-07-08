@@ -218,3 +218,36 @@ The cleanest working path reuses what already works: **the sux Worker is itself 
 **Fallback if you want a *dedicated* Obsidian connector** (separate from sux), accepting a public endpoint: run a spec-correct OAuth MCP on the box behind a plain cloudflared tunnel — [`jimprosser/obsidian-web-mcp`](https://github.com/jimprosser/obsidian-web-mcp) is purpose-built prior art (OAuth 2.0 + PKCE, cloudflared outbound-only, path-traversal-guarded, **atomic writes explicitly safe for Obsidian Sync**). It implements the handshake claude.ai needs, so it works where CF Access Managed OAuth doesn't. Trade-off: a second OAuth system to run and a public (OAuth-gated) Obsidian surface.
 
 **Revisit CF Access Managed OAuth** once #410's `WWW-Authenticate` gap is fixed on either side — then it becomes the lowest-maintenance dedicated-connector path (Cloudflare handles the OAuth, you just validate the JWT). Track it; don't build on it yet.
+
+---
+
+## 9. The implementation plan (locked 2026-07-08 — all gating answers in)
+
+**Answers baked in:** home box = x86_64, Docker-ready · CF zone exists · Obsidian Sync subscribed (box joins the existing ring) · tier-3 = second MCP endpoint on the sux Worker. Funnel/ACL fact (verified): tailnet ACLs gate which nodes may *enable* Funnel (`nodeAttrs` `funnel`), never who may *visit* — Funnel visitors are the anonymous public internet, which is why tier 3 cannot be Funnel.
+
+### Phase A — ship tier 1 (no hardware; release mechanics only)
+1. Unlock 1Password → push `feat/obsidian-store-ops` (`1c2b3ba`) + `docs/knowledge-core`.
+2. Merge PR #28 (code) and #29 (docs). `wrangler deploy --config sux/wrangler.jsonc`.
+3. `wrangler secret put DROPBOX_TOKEN` (App-folder app). Post-deploy: selftest + obsidian write→read→edit→delete round-trip + one real `ingest`.
+
+### Phase B — the home box (hardware; no Worker changes)
+1. Docker up → `ghcr.io/sytone/obsidian-remote` (KasmVNC) with `/vaults` = a fresh `colinxs/vault` clone, `/config` persisted; `DOCKER_MODS=linuxserver/mods:universal-git`.
+2. In the browser UI: install + enable **Local REST API (with MCP)** and **obsidian-git**; set REST **Binding Host = 0.0.0.0**; publish `:27124`; note the API key. Log in to **Obsidian Sync** — the box joins the Mac/iPhone ring. obsidian-git keeps `colinxs/vault` = truth.
+3. `cloudflared` on the box → named tunnel (Workers VPC dashboard → Tunnels) → `npx wrangler vpc service create obsidian-vault-home --type http --tunnel-id <ID> --hostname localhost --https-port 27124 --cert-verification-mode disabled` → note `service_id`.
+4. `tailscale serve` for your own devices (identity-gated, tailnet-only) — replaces nothing yet; the Mac stays live until Phase C cutover.
+
+### Phase C — the `vpc` backend + cutover (code; the ultracode loop)
+1. `wrangler.jsonc`: `"vpc_services": [{ "binding": "OBSIDIAN_HOME", "service_id": "…", "remote": true }]` (+ `OBSIDIAN_CLOUD` later). Registry `Env` gains the binding type.
+2. `obsidian` fn: `backend: "vpc"` — same runRemote surface with `remoteFetch` swapped for `env.OBSIDIAN_HOME.fetch()` (bearer still injected); ladder home → (cloud) → KV fallback → suggest git. Make `vpc` the default when the binding exists.
+3. Implement → adversarial review workflow → fix → verify (the store-work loop). Deploy, run parallel against `remote` briefly, cut over, then `tailscale funnel --https=8443 off` and drop `OBSIDIAN_REMOTE_URL/KEY` from Worker secrets (key stays box-side only).
+
+### Phase D — tier 3: the `vault` connector (code, small)
+1. `apiRoute: "/mcp"` → `apiRoute: ["/mcp", "/vault/mcp"]` in the OAuthProvider config (verified: the sux Worker already uses `workers-oauth-provider` this way).
+2. `/vault/mcp` handler = stateless reverse proxy: OAuth already validated by the provider → inject the Obsidian bearer → forward method/headers/body (incl. `Mcp-Session-Id`, SSE stream) to the box's `/mcp/` over `env.OBSIDIAN_HOME`. Session state lives on the box; the Worker stays stateless. Box down → 502 to the client (honest; tier 1 is the always-on surface).
+3. Add `https://sux.<workers-domain>/vault/mcp` as a **new custom connector** in claude.ai — appears as its own "vault" connector (~15 tools incl. `search_query`) in web/mobile/desktop, riding the Worker's proven OAuth. Funnel stays untouched; mcp-gate public tier retires when this lands.
+
+### Phase E — failover + web UI (independent, anytime after B)
+1. Hetzner CX22 → same container, **pull/mirror-only** (git pull loop; no auto-commit; Sync optional-off) → second tunnel → `obsidian-vault-cloud` VPC service → `OBSIDIAN_CLOUD` in the ladder.
+2. Web UI from anywhere: `cloudflared` public hostname on the existing zone (e.g. `vault.<zone>`) → KasmVNC `:8080`, wrapped in an **Access self-hosted app** (SSO, your identity only). This is human-browser traffic — the Access-Managed-OAuth MCP bug (#410) is irrelevant here.
+
+**Write-master rule (3 writers exist):** the home box is the sole interactive-write master; cloud mirrors; the Worker writes via git (tier 1) or the home box's REST (tier 2) only — never to the cloud node.
