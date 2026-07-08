@@ -70,6 +70,7 @@ import { pdf } from "./pdf";
 import { people } from "./people";
 import { pipe } from "./pipe";
 import { places } from "./places";
+import { product_search } from "./product_search";
 import { render } from "./render";
 import { semantic_scholar } from "./semantic_scholar";
 import { shop } from "./shop";
@@ -151,6 +152,7 @@ export const FUNCTIONS: Fn[] = [
 	people,
 	pipe,
 	places,
+	product_search,
 	render,
 	semantic_scholar,
 	shop,
