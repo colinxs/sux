@@ -79,6 +79,7 @@ import { obsidian } from "./obsidian";
 import { tavily } from "./tavily";
 import { walmart } from "./walmart";
 import { webSearch } from "./web_search";
+import { weekly_ad } from "./weekly_ad";
 import { winco } from "./winco";
 import { xml } from "./xml";
 import { yaml } from "./yaml";
@@ -159,6 +160,7 @@ export const FUNCTIONS: Fn[] = [
 	tavily,
 	walmart,
 	webSearch,
+	weekly_ad,
 	winco,
 	xml,
 	yaml,
