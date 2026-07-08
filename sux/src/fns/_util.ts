@@ -127,6 +127,46 @@ export function clearFetchCache(): void {
  * (feeds, sitemaps) aren't silently truncated, small enough to bound memory. */
 export const FETCH_TEXT_MAX_BYTES = 2_000_000;
 
+/** Default byte cap for binary (bytes) fetches — larger than the text cap since
+ * binary consumers (pdf, image, ocr) legitimately handle bigger inputs, but still
+ * bounded so a hostile/huge remote file can't OOM the isolate. */
+export const FETCH_BYTES_MAX_BYTES = 32_000_000;
+
+/** Read a response body as raw bytes, streaming, and abort once `maxBytes` have
+ * been consumed — so a huge/hostile body is never fully buffered (the bytes
+ * analogue of readBodyText). Rejects up front on an oversized Content-Length and
+ * mid-stream once the running total exceeds the cap; throws rather than truncate
+ * (a partial binary is not usable input). */
+async function readBodyBytes(resp: Response, maxBytes: number): Promise<Uint8Array> {
+	const declared = Number(resp.headers.get("content-length"));
+	if (Number.isFinite(declared) && declared > maxBytes) throw new Error(`Response too large: ${declared} bytes exceeds ${maxBytes}-byte cap`);
+	if (!resp.body) {
+		const buf = new Uint8Array(await resp.arrayBuffer());
+		if (buf.byteLength > maxBytes) throw new Error(`Response too large: ${buf.byteLength} bytes exceeds ${maxBytes}-byte cap`);
+		return buf;
+	}
+	const reader = resp.body.getReader();
+	const chunks: Uint8Array[] = [];
+	let consumed = 0;
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		consumed += value.byteLength;
+		if (consumed > maxBytes) {
+			await reader.cancel().catch(() => {});
+			throw new Error(`Response too large: exceeds ${maxBytes}-byte cap`);
+		}
+		chunks.push(value);
+	}
+	const out = new Uint8Array(consumed);
+	let off = 0;
+	for (const c of chunks) {
+		out.set(c, off);
+		off += c.byteLength;
+	}
+	return out;
+}
+
 /** Read a response body as text, streaming, and cancel the stream once
  * `maxBytes` have been consumed — so a huge body is never fully buffered. */
 async function readBodyText(resp: Response, maxBytes: number): Promise<string> {
@@ -241,10 +281,12 @@ export function noCacheOnMutation<T extends { noCache?: boolean }>(result: T, me
  * shared by every bytes-consuming fn. URL fetches go through the residential
  * proxy binary-safely (the proxy transports binary bodies base64-encoded, see
  * proxy.ts bodyEncoding), reject HTTP >= 400 consistently, and the worker's own
- * /s/<uuid> CAS refs short-circuit to a direct KV→R2 read. Throws on failure —
+ * /s/<uuid> CAS refs short-circuit to a direct KV→R2 read. URL bodies are
+ * streamed and capped at `maxBytes` (default 32MB) — a huge/hostile remote file
+ * is aborted mid-stream, never fully buffered into an OOM. Throws on failure —
  * callers wrap with their own fail() message.
  */
-export async function loadBytes(env: RtEnv, src: { url?: string; base64?: string }): Promise<{ bytes: Uint8Array; contentType?: string }> {
+export async function loadBytes(env: RtEnv, src: { url?: string; base64?: string }, maxBytes = FETCH_BYTES_MAX_BYTES): Promise<{ bytes: Uint8Array; contentType?: string }> {
 	if (typeof src.base64 === "string" && src.base64) return { bytes: fromB64(src.base64) };
 	if (!isHttpUrl(src.url)) throw new Error("provide `base64` bytes or an absolute http(s) `url`");
 	const url = String(src.url);
@@ -256,7 +298,7 @@ export async function loadBytes(env: RtEnv, src: { url?: string; base64?: string
 	}
 	const resp = await smartFetch(env, url, {});
 	if (resp.status >= 400) throw new Error(`Fetch failed: HTTP ${resp.status} for ${url}`);
-	return { bytes: new Uint8Array(await resp.arrayBuffer()), contentType: resp.headers.get("content-type") ?? undefined };
+	return { bytes: await readBodyBytes(resp, maxBytes), contentType: resp.headers.get("content-type") ?? undefined };
 }
 
 /**
