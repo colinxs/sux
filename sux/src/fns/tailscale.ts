@@ -1,8 +1,11 @@
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 
 // Tailscale API (api.tailscale.com/api/v2) — official REST control-plane read.
-// Bearer auth with a personal access token (TAILSCALE_API_KEY); the tailnet is
-// TAILSCALE_TAILNET, defaulting to "-" (the token's own default tailnet).
+// Auth is OAuth2 client-credentials (TAILSCALE_OAUTH_CLIENT_ID/SECRET); the
+// bearer token is minted once and cached in KV (env.OAUTH_KV) until just before
+// it expires, so we never re-mint per call. Tailscale recommends OAuth clients
+// over personal access tokens (which expire in ≤90 days). The tailnet is
+// TAILSCALE_TAILNET, defaulting to "-" (the client's own default tailnet).
 //
 // This is DISTINCT from the TAILSCALE_PROXY_URL/TAILSCALE_PROXY_SECRET funnel
 // secrets that drive sux egress — those move traffic, this reads the control
@@ -10,12 +13,55 @@ import { type Fn, failWith, ok, type RtEnv } from "../registry";
 // key secrets.
 
 const API = "https://api.tailscale.com/api/v2";
+const TOKEN_URL = `${API}/oauth/token`;
+const TOKEN_KEY = "sux:tailscale:token";
 
 const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);
 
-/** GET an authed Tailscale endpoint, throwing a status-carrying error on failure. */
+/** Mint a fresh bearer token from the OAuth endpoint and cache it in KV. */
+async function mintToken(env: RtEnv): Promise<string> {
+	const body = new URLSearchParams({
+		grant_type: "client_credentials",
+		client_id: String(env.TAILSCALE_OAUTH_CLIENT_ID ?? ""),
+		client_secret: String(env.TAILSCALE_OAUTH_CLIENT_SECRET ?? ""),
+	});
+	const resp = await fetch(TOKEN_URL, {
+		method: "POST",
+		headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+		body,
+	});
+	if (!resp.ok) throw new Error(`OAuth token HTTP ${resp.status}: ${(await resp.text().catch(() => "")).slice(0, 300)}`);
+	const j: any = await resp.json();
+	const token = String(j?.access_token ?? "");
+	if (!token) throw new Error("OAuth token response had no access_token.");
+	// TTL = expires_in - 60 so the cached token is never used in its final minute;
+	// clamp to Cloudflare KV's 60s floor.
+	const ttl = Math.max(60, (Number(j?.expires_in) || 3600) - 60);
+	await env.OAUTH_KV.put(TOKEN_KEY, token, { expirationTtl: ttl });
+	return token;
+}
+
+/** Get a valid bearer token — from KV if present, else mint one and cache it. */
+async function getToken(env: RtEnv): Promise<string> {
+	const cached = await env.OAUTH_KV.get(TOKEN_KEY);
+	if (cached) return cached;
+	return mintToken(env);
+}
+
+/**
+ * GET an authed Tailscale endpoint, throwing a status-carrying error on failure.
+ * Self-heals a revoked/rejected token: on a 401/403 it drops the cached token,
+ * re-mints once, and retries — so a token invalidated before its TTL recovers
+ * without waiting out the cache. The retry mints directly (not via getToken) so
+ * KV read-after-delete eventual consistency can't hand back the rejected token.
+ */
 async function api(env: RtEnv, path: string): Promise<any> {
-	const resp = await fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${env.TAILSCALE_API_KEY}`, Accept: "application/json" } });
+	const get = (token: string) => fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } });
+	let resp = await get(await getToken(env));
+	if (resp.status === 401 || resp.status === 403) {
+		await env.OAUTH_KV.delete(TOKEN_KEY);
+		resp = await get(await mintToken(env));
+	}
 	if (!resp.ok) throw new Error(`Tailscale API HTTP ${resp.status}: ${(await resp.text().catch(() => "")).slice(0, 300)}`);
 	return resp.json();
 }
@@ -57,7 +103,7 @@ export const tailscale: Fn = {
 		"Tailscale API (official) — read your tailnet's control plane. " +
 		"`action`: devices (all machines: name, hostname, addresses, os, version, lastSeen, online, tags), " +
 		"device (one machine by device_id), dns (nameservers + preferences), keys (auth-key ids + capabilities, never secrets). " +
-		"Tailnet comes from TAILSCALE_TAILNET (default '-' = the token's tailnet). Needs TAILSCALE_API_KEY (a PAT from the admin console). Read-only. Returns JSON.",
+		"Tailnet comes from TAILSCALE_TAILNET (default '-' = the client's tailnet). Needs TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET (an OAuth client with read scopes from the admin console). Read-only. Returns JSON.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -69,7 +115,8 @@ export const tailscale: Fn = {
 	cacheable: true,
 	ttl: 120,
 	run: async (env, args) => {
-		if (!env.TAILSCALE_API_KEY) return failWith("not_configured", "Tailscale API not configured (TAILSCALE_API_KEY). Create a personal access token in the Tailscale admin console.");
+		if (!env.TAILSCALE_OAUTH_CLIENT_ID || !env.TAILSCALE_OAUTH_CLIENT_SECRET)
+			return failWith("not_configured", "Tailscale API not configured (TAILSCALE_OAUTH_CLIENT_ID / TAILSCALE_OAUTH_CLIENT_SECRET). Create an OAuth client in the admin console with read scopes.");
 
 		const action = String(args?.action ?? "devices");
 		const tailnet = String(env.TAILSCALE_TAILNET ?? "-").trim() || "-";
