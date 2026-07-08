@@ -12,6 +12,10 @@ const TEXT_EXT = /\.(md|txt|json|csv|tsv|ya?ml|xml|html?|js|ts|css)$/i;
 /** Above this, get returns metadata + a share hint instead of inlining bytes. */
 const MAX_INLINE_BYTES = 4 * 1024 * 1024;
 
+// Dropbox requires the Dropbox-API-Arg header to be HTTP-header-safe JSON:
+// every char >= 0x7F escaped as \uXXXX (raw UTF-8 header bytes get a 400).
+const headerSafeJson = (v: unknown): string => JSON.stringify(v).replace(/[\u007f-\uffff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+
 const norm = (p: unknown): string => {
 	const s = String(p ?? "")
 		.trim()
@@ -50,7 +54,7 @@ export async function dropboxPut(env: any, path: string, bytes: Uint8Array): Pro
 		headers: {
 			Authorization: `Bearer ${env.DROPBOX_TOKEN}`,
 			"Content-Type": "application/octet-stream",
-			"Dropbox-API-Arg": JSON.stringify({ path, mode: "overwrite", autorename: false, mute: true }),
+			"Dropbox-API-Arg": headerSafeJson({ path, mode: "overwrite", autorename: false, mute: true }),
 		},
 		body: bytes as BodyInit,
 		signal: AbortSignal.timeout(60_000),
@@ -65,7 +69,7 @@ export const dropbox: Fn = {
 	name: "dropbox",
 	cost: 2,
 	description:
-		"Dropbox app-folder blob store — the human-facing twin of R2 `store`: files land in /Apps/<app>/ and sync to every device (the App-folder token cannot see the rest of Dropbox). op: put (`path` + `data` utf-8 or `base64` binary → uploads and returns the shared link) | get (`path` → text for textual extensions, else base64; large files return metadata + shared link) | list (`path` folder, default root) | delete (`path`) | share (`path` → shared link, created or reused). Paths are relative to the app-folder root. Needs DROPBOX_TOKEN (App-folder scoped access token).",
+		"Dropbox app-folder blob store — the human-facing twin of R2 `store`: files land in /Apps/<app>/ and sync to every device (the App-folder token cannot see the rest of Dropbox). op: put (`path` + `data` utf-8 or `base64` binary → uploads and returns the shared link) | get (`path` → text for textual extensions, else base64; large files return metadata + shared link) | list (`path` folder, default root; paginate with `cursor`) | delete (`path`) | share (`path` → shared link, created or reused). Shared links are PUBLIC 'anyone with the link' URLs. Paths are relative to the app-folder root. Needs DROPBOX_TOKEN (App-folder scoped access token).",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -73,6 +77,7 @@ export const dropbox: Fn = {
 		properties: {
 			op: { type: "string", enum: ["put", "get", "list", "delete", "share"] },
 			path: { type: "string", description: "Path relative to the app-folder root (folder path for list; file path otherwise)." },
+			cursor: { type: "string", description: "list: continue a paginated listing (returned as `cursor` when has_more)." },
 			data: { type: "string", description: "put: UTF-8 text to upload." },
 			base64: { type: "string", description: "put: base64 bytes to upload (binary)." },
 		},
@@ -94,35 +99,42 @@ export const dropbox: Fn = {
 				else return fail("op=put requires `data` (utf-8) or `base64` (binary).");
 				const r = await dropboxPut(env, path, bytes);
 				if ("error" in r) return fail(r.error);
-				return ok(JSON.stringify({ ok: true, ...r }, null, 2));
+				return ok(JSON.stringify({ ok: true, ...r, ...(r.url ? {} : { warning: "uploaded, but no shared link minted — check the token's sharing scope" }) }, null, 2));
 			}
 			if (op === "get") {
 				if (!path) return fail("op=get requires a `path`.");
+				// Metadata first: an oversize file must never be buffered into the
+				// isolate (128MB limit) just to learn it is too big.
+				const meta = await rpc(env, "/files/get_metadata", { path });
+				if (meta.status >= 400) return fail(`Dropbox error: ${meta.json?.error_summary ?? `HTTP ${meta.status}`} (${path})`);
+				if (meta.json?.[".tag"] === "folder") return fail(`'${path}' is a folder — use op=list.`);
+				const size = Number(meta.json?.size ?? 0);
+				if (size > MAX_INLINE_BYTES) {
+					return ok(JSON.stringify({ path, size, too_large_to_inline: true, url: await sharedLink(env, path) }, null, 2));
+				}
 				const resp = await fetch(`${CONTENT}/files/download`, {
 					method: "POST",
-					headers: { Authorization: `Bearer ${env.DROPBOX_TOKEN}`, "Dropbox-API-Arg": JSON.stringify({ path }) },
+					headers: { Authorization: `Bearer ${env.DROPBOX_TOKEN}`, "Dropbox-API-Arg": headerSafeJson({ path }) },
 					signal: AbortSignal.timeout(60_000),
 				});
-				if (resp.status === 409) return fail(`Not found: ${path}`);
-				if (resp.status >= 400) return fail(`Dropbox download error: HTTP ${resp.status}`);
+				if (resp.status >= 400) return fail(`Dropbox download error: ${(await resp.text().catch(() => "")).slice(0, 200) || `HTTP ${resp.status}`}`);
 				const bytes = new Uint8Array(await resp.arrayBuffer());
-				if (bytes.length > MAX_INLINE_BYTES) {
-					return ok(JSON.stringify({ path, size: bytes.length, too_large_to_inline: true, url: await sharedLink(env, path) }, null, 2));
-				}
 				if (TEXT_EXT.test(path)) return ok(new TextDecoder().decode(bytes));
 				return ok(JSON.stringify({ path, size: bytes.length, base64: toB64(bytes) }, null, 2));
 			}
 			if (op === "list") {
-				const { status, json } = await rpc(env, "/files/list_folder", { path, recursive: false, limit: 500 });
+				const { status, json } = args?.cursor
+					? await rpc(env, "/files/list_folder/continue", { cursor: String(args.cursor) })
+					: await rpc(env, "/files/list_folder", { path, recursive: false, limit: 500 });
 				if (status >= 400) return fail(`Dropbox list error: ${json?.error_summary ?? `HTTP ${status}`}`);
 				const entries = (json?.entries ?? []).map((e: any) => ({ kind: e?.[".tag"], name: e?.name, path: e?.path_display, size: e?.size }));
-				return ok(JSON.stringify({ dir: path || "/", count: entries.length, has_more: json?.has_more === true, entries }, null, 2));
+				const hasMore = json?.has_more === true;
+				return ok(JSON.stringify({ dir: path || "/", count: entries.length, has_more: hasMore, ...(hasMore ? { cursor: json?.cursor } : {}), entries }, null, 2));
 			}
 			if (op === "delete") {
 				if (!path) return fail("op=delete requires a `path`.");
 				const { status, json } = await rpc(env, "/files/delete_v2", { path });
-				if (status === 409) return fail(`Not found: ${path}`);
-				if (status >= 400) return fail(`Dropbox delete error: ${json?.error_summary ?? `HTTP ${status}`}`);
+				if (status >= 400) return fail(`Dropbox delete error: ${json?.error_summary ?? `HTTP ${status}`} (${path})`);
 				return ok(JSON.stringify({ ok: true, deleted: json?.metadata?.path_display ?? path }, null, 2));
 			}
 			if (op === "share") {

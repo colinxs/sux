@@ -42,9 +42,11 @@ describe("dropbox (app-folder blob store)", () => {
 		expect(JSON.parse(r.content[0].text).url).toBe("https://www.dropbox.com/s/old/a.txt");
 	});
 
-	it("get returns text for textual extensions", async () => {
+	it("get checks metadata first, then returns text for textual extensions", async () => {
 		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
-			expect(String(u)).toContain("/files/download");
+			const url = String(u);
+			if (url.endsWith("/files/get_metadata")) return new Response(JSON.stringify({ ".tag": "file", size: 7 }), { status: 200 });
+			expect(url).toContain("/files/download");
 			expect(JSON.parse(init.headers["Dropbox-API-Arg"]).path).toBe("/notes/x.md");
 			return new Response("# hello", { status: 200 });
 		}));
@@ -53,10 +55,47 @@ describe("dropbox (app-folder blob store)", () => {
 	});
 
 	it("get returns base64 for binary extensions", async () => {
-		vi.stubGlobal("fetch", vi.fn(async () => new Response(Buffer.from([1, 2, 3]), { status: 200 })));
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL) => {
+			if (String(u).endsWith("/files/get_metadata")) return new Response(JSON.stringify({ ".tag": "file", size: 3 }), { status: 200 });
+			return new Response(Buffer.from([1, 2, 3]), { status: 200 });
+		}));
 		const r = await dropbox.run(ENV, { op: "get", path: "img.png" });
 		const out = JSON.parse(r.content[0].text);
 		expect(Buffer.from(out.base64, "base64")).toEqual(Buffer.from([1, 2, 3]));
+	});
+
+	it("get on an oversize file returns metadata + link without downloading", async () => {
+		const fetchMock = vi.fn(async (u: string | URL) => {
+			const url = String(u);
+			if (url.endsWith("/files/get_metadata")) return new Response(JSON.stringify({ ".tag": "file", size: 500_000_000 }), { status: 200 });
+			if (url.includes("/sharing/")) return new Response(JSON.stringify({ url: "https://www.dropbox.com/s/x/big.mov" }), { status: 200 });
+			throw new Error("download must not be attempted");
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		const r = await dropbox.run(ENV, { op: "get", path: "big.mov" });
+		expect(JSON.parse(r.content[0].text)).toMatchObject({ too_large_to_inline: true, size: 500_000_000, url: "https://www.dropbox.com/s/x/big.mov" });
+	});
+
+	it("get on a folder reports the real error, not 'not found'", async () => {
+		vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ ".tag": "folder", size: undefined }), { status: 200 })));
+		const r = await dropbox.run(ENV, { op: "get", path: "attachments" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/is a folder/);
+	});
+
+	it("unicode paths ride a header-safe Dropbox-API-Arg", async () => {
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
+			const url = String(u);
+			if (url.endsWith("/files/upload")) {
+				const arg = init.headers["Dropbox-API-Arg"];
+				expect(/^[\x00-\x7e]*$/.test(arg)).toBe(true); // pure ASCII on the wire
+				expect(JSON.parse(arg).path).toBe("/notes/메모.md"); // decodes to the real path
+				return new Response(JSON.stringify({ path_display: "/notes/메모.md", size: 2 }), { status: 200 });
+			}
+			return new Response(JSON.stringify({ url: "https://www.dropbox.com/s/x/m.md" }), { status: 200 });
+		}));
+		const r = await dropbox.run(ENV, { op: "put", path: "notes/메모.md", data: "hi" });
+		expect(JSON.parse(r.content[0].text).ok).toBe(true);
 	});
 
 	it("lists a folder", async () => {
@@ -67,6 +106,33 @@ describe("dropbox (app-folder blob store)", () => {
 		}));
 		const r = await dropbox.run(ENV, { op: "list" });
 		expect(JSON.parse(r.content[0].text)).toMatchObject({ dir: "/", count: 1, entries: [{ kind: "file", name: "a.pdf", size: 9 }] });
+	});
+
+	it("list paginates through a cursor instead of dead-ending on has_more", async () => {
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
+			const body = JSON.parse(init.body);
+			if (String(u).endsWith("/files/list_folder")) {
+				return new Response(JSON.stringify({ entries: [{ ".tag": "file", name: "a", path_display: "/a", size: 1 }], has_more: true, cursor: "CUR" }), { status: 200 });
+			}
+			expect(String(u)).toContain("/files/list_folder/continue");
+			expect(body.cursor).toBe("CUR");
+			return new Response(JSON.stringify({ entries: [{ ".tag": "file", name: "b", path_display: "/b", size: 1 }], has_more: false }), { status: 200 });
+		}));
+		const page1 = JSON.parse((await dropbox.run(ENV, { op: "list" })).content[0].text);
+		expect(page1).toMatchObject({ has_more: true, cursor: "CUR" });
+		const page2 = JSON.parse((await dropbox.run(ENV, { op: "list", cursor: page1.cursor })).content[0].text);
+		expect(page2).toMatchObject({ has_more: false, count: 1 });
+	});
+
+	it("put warns when the upload lands but no shared link could be minted", async () => {
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL) => {
+			if (String(u).endsWith("/files/upload")) return new Response(JSON.stringify({ path_display: "/a.txt", size: 2 }), { status: 200 });
+			return new Response(JSON.stringify({ error_summary: "missing_scope/sharing.write" }), { status: 403 });
+		}));
+		const out = JSON.parse((await dropbox.run(ENV, { op: "put", path: "a.txt", data: "hi" })).content[0].text);
+		expect(out.ok).toBe(true);
+		expect(out.url).toBeUndefined();
+		expect(out.warning).toMatch(/no shared link/);
 	});
 
 	it("deletes a path", async () => {

@@ -141,9 +141,9 @@ call `json` with CSV or YAML in, `csv` with JSON in.
 | Same tool over many inputs, optionally reduced | `batch` (`over` + `args` template, `reduce: concat\|summarize`, or `reduce_with` a tool) |
 | Stash/retrieve blobs (content-addressed R2) | `store` |
 | Small persistent key-values | `kv_put`, `kv_get`, `kv_list`, `kv_delete` |
-| Obsidian vault: list/read/search/append/write/edit/delete notes | `obsidian` (default `backend: git`; `edit` = surgical find/replace; `remote` reaches the live vault and its vault tools via `action: tools`/`call`; reads KV-cached with git-HEAD validation + Mac-asleep fallback) |
-| Capture url/text/search-results into the vault (provenance note in Inbox/; blobs ≤1MB → vault attachment, larger → Dropbox link) | `ingest` (`url` \| `text` \| `query`; `blobs: dropbox` forces Dropbox; explicit `path` overrides Inbox) |
-| Dropbox app-folder files (human-facing blob store; syncs to devices) | `dropbox` (`op: put/get/list/delete/share`; paths relative to /Apps root; put returns a shared link) |
+| Obsidian vault: list/read/search/append/write/edit/delete notes | `obsidian` (default `backend: git`; `edit` = surgical find/replace; `tools`/`call` need `backend: remote`; mutating actions refuse dot-prefixed paths; reads KV-cached with git-HEAD validation + Mac-asleep fallback on remote `read`) |
+| Capture url/text/search-results into the vault (provenance note in Inbox/; blobs ≤1MB → vault attachment, larger → public Dropbox link) | `ingest` (`url` \| `text` \| `query`; `summarize`/`compress` passes; `blobs: dropbox` forces Dropbox; explicit `path` overrides Inbox and overwrites — default paths never do) |
+| Dropbox app-folder files (human-facing blob store; syncs to devices) | `dropbox` (`op: put/get/list/delete/share`; paths relative to /Apps root; `list` paginates via `cursor`; put returns a PUBLIC anyone-with-the-link URL) |
 
 ## Infrastructure & meta
 

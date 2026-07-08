@@ -140,6 +140,44 @@ describe("obsidian (git backend)", () => {
 		expect(r.content[0].text).toMatch(/not found/);
 	});
 
+	it("edit keeps $-patterns in the replacement literal", async () => {
+		let putBody: any;
+		routes.handler = (url, init) => {
+			if (init?.method === "PUT") {
+				putBody = JSON.parse(init.body);
+				return new Response(JSON.stringify({ commit: { sha: "c8" } }), { status: 200 });
+			}
+			return new Response(JSON.stringify({ content: b64("price: 40 end"), sha: "s8" }), { status: 200 });
+		};
+		const r = await obsidian.run(ENV, { action: "edit", path: "d.md", find: "price: 40", replace: "price: $$45 & $' more" });
+		expect(r.isError).toBeFalsy();
+		expect(Buffer.from(putBody.content, "base64").toString("utf8")).toBe("price: $$45 & $' more end");
+	});
+
+	it("refuses dot-prefixed and traversal paths on mutating actions", async () => {
+		for (const path of [".github/workflows/pwn.yml", "notes/../.obsidian/x.md", ".hidden.md"]) {
+			const r = await obsidian.run(ENV, { action: "write", path, content: "x" });
+			expect(r.isError).toBe(true);
+			expect(r.content[0].text).toMatch(/Refusing vault path/);
+		}
+	});
+
+	it("routes tools/call to the remote backend with a clear error on git", async () => {
+		const r = await obsidian.run(ENV, { action: "tools" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/backend:'remote'/);
+	});
+
+	it("reads a >1MB note via the raw refetch when contents omits the body", async () => {
+		routes.handler = (url, init) => {
+			const accept = init?.headers?.Accept ?? "";
+			if (String(accept).includes("raw")) return new Response("BIG BODY", { status: 200 });
+			return new Response(JSON.stringify({ content: "", size: 2_000_000, sha: "s9", encoding: "none" }), { status: 200 });
+		};
+		const r = await obsidian.run(ENV, { action: "read", path: "big.md" });
+		expect(r.content[0].text).toBe("BIG BODY");
+	});
+
 	it("deletes a note with its sha", async () => {
 		let delBody: any;
 		routes.handler = (url, init) => {
@@ -158,8 +196,8 @@ describe("obsidian (git backend)", () => {
 describe("obsidian (KV read-through cache)", () => {
 	it("serves a git read from KV when the cached sha matches a fresh HEAD", async () => {
 		const kv = fakeKV({
-			"cache:vault:head": JSON.stringify({ sha: "h1", at: Date.now() }),
-			"cache:vault:note:a.md": JSON.stringify({ body: "cached body", sha: "h1", at: 1, src: "git" }),
+			"cache:vault:git:me/vault@main:head": JSON.stringify({ sha: "h1", at: Date.now() }),
+			"cache:vault:git:me/vault@main:note:a.md": JSON.stringify({ body: "cached body", sha: "h1", at: 1, src: "git" }),
 		});
 		routes.handler = () => {
 			throw new Error("GitHub should not be touched on a warm hit");
@@ -170,8 +208,8 @@ describe("obsidian (KV read-through cache)", () => {
 
 	it("revalidates a stale head, misses on sha change, and repopulates", async () => {
 		const kv = fakeKV({
-			"cache:vault:head": JSON.stringify({ sha: "h1", at: 1 }), // stale → recheck
-			"cache:vault:note:a.md": JSON.stringify({ body: "old", sha: "h1", at: 1, src: "git" }),
+			"cache:vault:git:me/vault@main:head": JSON.stringify({ sha: "h1", at: 1 }), // stale → recheck
+			"cache:vault:git:me/vault@main:note:a.md": JSON.stringify({ body: "old", sha: "h1", at: 1, src: "git" }),
 		});
 		routes.handler = (url) => {
 			if (url.includes("/git/ref/heads/main")) return new Response(JSON.stringify({ object: { sha: "h2" } }), { status: 200 });
@@ -179,7 +217,7 @@ describe("obsidian (KV read-through cache)", () => {
 		};
 		const r = await obsidian.run({ ...ENV, OAUTH_KV: kv }, { action: "read", path: "a.md" });
 		expect(r.content[0].text).toBe("fresh");
-		expect(JSON.parse(kv.store.get("cache:vault:note:a.md")!)).toMatchObject({ body: "fresh", sha: "h2" });
+		expect(JSON.parse(kv.store.get("cache:vault:git:me/vault@main:note:a.md")!)).toMatchObject({ body: "fresh", sha: "h2" });
 	});
 
 	it("git writes warm the note cache and advance the cached HEAD", async () => {
@@ -190,12 +228,32 @@ describe("obsidian (KV read-through cache)", () => {
 		};
 		const r = await obsidian.run({ ...ENV, OAUTH_KV: kv }, { action: "write", path: "n.md", content: "body" });
 		expect(JSON.parse(r.content[0].text)).toMatchObject({ ok: true, created: true, commit: "c9" });
-		expect(JSON.parse(kv.store.get("cache:vault:note:n.md")!)).toMatchObject({ body: "body", sha: "c9" });
-		expect(JSON.parse(kv.store.get("cache:vault:head")!).sha).toBe("c9");
+		expect(JSON.parse(kv.store.get("cache:vault:git:me/vault@main:note:n.md")!)).toMatchObject({ body: "body", sha: "c9" });
+		expect(JSON.parse(kv.store.get("cache:vault:git:me/vault@main:head")!).sha).toBe("c9");
+	});
+
+	it("a leading-slash list path behaves like the root listing (no poisoned empty cache)", async () => {
+		const kv = fakeKV({ "cache:vault:git:me/vault@main:head": JSON.stringify({ sha: "h1", at: Date.now() }) });
+		routes.handler = () => new Response(JSON.stringify({ tree: [{ type: "blob", path: "a.md" }] }), { status: 200 });
+		const r = await obsidian.run({ ...ENV, OAUTH_KV: kv }, { action: "list", path: "/" });
+		expect(JSON.parse(r.content[0].text).notes).toEqual(["a.md"]);
+	});
+
+	it("bypasses the cache when the head ref is stale beyond the trust window and GitHub fails", async () => {
+		const kv = fakeKV({
+			"cache:vault:git:me/vault@main:head": JSON.stringify({ sha: "h1", at: Date.now() - 700_000 }),
+			"cache:vault:git:me/vault@main:note:a.md": JSON.stringify({ body: "ancient", sha: "h1", at: 1, src: "git" }),
+		});
+		routes.handler = (url) => {
+			if (url.includes("/git/ref/")) return new Response(JSON.stringify({ message: "rate limited" }), { status: 403 });
+			return new Response(JSON.stringify({ content: b64("fresh"), sha: "f1" }), { status: 200 });
+		};
+		const r = await obsidian.run({ ...ENV, OAUTH_KV: kv }, { action: "read", path: "a.md" });
+		expect(r.content[0].text).toBe("fresh"); // ancient cached copy is NOT trusted
 	});
 
 	it("caches git lists per filter, keyed to HEAD", async () => {
-		const kv = fakeKV({ "cache:vault:head": JSON.stringify({ sha: "h1", at: Date.now() }) });
+		const kv = fakeKV({ "cache:vault:git:me/vault@main:head": JSON.stringify({ sha: "h1", at: Date.now() }) });
 		let treeCalls = 0;
 		routes.handler = (url) => {
 			expect(url).toContain("/git/trees/");
@@ -340,10 +398,18 @@ describe("obsidian (remote backend — Funnel'd Local REST API)", () => {
 		vi.stubGlobal("fetch", vi.fn(async () => {
 			throw new Error("connect timeout");
 		}));
-		const kv = fakeKV({ "cache:vault:note:a.md": JSON.stringify({ body: "cached copy", sha: null, at: 1, src: "remote" }) });
+		const kv = fakeKV({ "cache:vault:remote:note:a.md": JSON.stringify({ body: "cached copy", sha: null, at: 1, src: "remote" }) });
 		const r = await obsidian.run({ ...REMOTE, OAUTH_KV: kv }, { action: "read", path: "a.md", backend: "remote" });
 		expect(r.isError).toBeFalsy();
 		expect(r.content[0].text).toBe("cached copy");
+	});
+
+	it("read falls back to the KV copy on a Funnel 502 (Mac up, Obsidian down)", async () => {
+		vi.stubGlobal("fetch", vi.fn(async () => new Response("bad gateway", { status: 502 })));
+		const kv = fakeKV({ "cache:vault:remote:note:a.md": JSON.stringify({ body: "cached 502 copy", sha: null, at: 1, src: "remote" }) });
+		const r = await obsidian.run({ ...REMOTE, OAUTH_KV: kv }, { action: "read", path: "a.md", backend: "remote" });
+		expect(r.isError).toBeFalsy();
+		expect(r.content[0].text).toBe("cached 502 copy");
 	});
 
 	it("read fails with a git hint when unreachable and nothing is cached", async () => {
@@ -360,6 +426,6 @@ describe("obsidian (remote backend — Funnel'd Local REST API)", () => {
 		const kv = fakeKV();
 		const r = await obsidian.run({ ...REMOTE, OAUTH_KV: kv }, { action: "read", path: "notes/x.md", backend: "remote" });
 		expect(r.content[0].text).toBe("# Live");
-		expect(JSON.parse(kv.store.get("cache:vault:note:notes/x.md")!)).toMatchObject({ body: "# Live", src: "remote" });
+		expect(JSON.parse(kv.store.get("cache:vault:remote:note:notes/x.md")!)).toMatchObject({ body: "# Live", src: "remote" });
 	});
 });
