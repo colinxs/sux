@@ -21,7 +21,7 @@ import { dirname } from 'node:path';
 
 const SNAPSHOT = 'docs/sux-tools.txt';
 const TOOLS_DOC = 'docs/TOOLS.md';
-const SKILL = '.claude/skills/sux-router/SKILL.md';
+const SKILL = '.claude/skills/sux/SKILL.md';
 const PLUGIN_SKILL = 'plugins/sux-router/skills/sux-router/SKILL.md';
 const SNIPPET = 'docs/claude-profile-snippet.md';
 

@@ -1,68 +1,188 @@
 ---
 name: sux
-description: Route a task to the right sux edge function — web search (Kagi + native Google), scrape/fetch through a residential proxy (smart/full/geo), crawl a site, extract/parse HTML (links, tables, metadata, readability, feeds, sitemaps, contacts, entities), convert formats (markdown, html, csv, json, xml, yaml, subtitles), build/fill PDFs, convert images, compress/archive/encode/hash, declutter + token-pack, Workers-AI text (summarize, translate, classify, ocr, redact), archived snapshots (wayback), product search (shop), and storage (R2 store + KV). Use when the user wants any web fetch, data transform, extraction, or lightweight compute done at the edge via the sux MCP connector.
+description: Route a task to the right sux edge function and chain them when needed — web search (Kagi, native Google, Brave, DDG, Tavily, Exa), scrape/render through a residential proxy with an escalation ladder (scrape → render → render:mac) for bot-walled sites, crawl, extract/parse HTML (links, tables, metadata, readability, feeds, sitemaps, contacts, entities, subtitles), research databases (arxiv, pubmed, openalex, crossref, semantic_scholar, clinical_trials, stackexchange, reddit), convert formats (markdown, html, csv, json, xml, yaml), build/fill PDFs, OCR, convert images, compress/archive/encode/hash, declutter + token-pack, Workers-AI text (summarize, translate, classify, redact), archived snapshots (wayback), product/price/store search (shop + named retailers), places/people, crypto (coingecko), YouTube, Obsidian notes, and storage (R2 store + KV). Use whenever the user wants any web fetch, scrape/render of a page (including Akamai/PerimeterX-walled sites), data transform, extraction, research lookup, or lightweight compute done at the edge via the sux MCP connector.
 ---
 
 # sux — the edge function engine
 
-sux is one Cloudflare Worker exposing 50 composable functions as MCP tools
-(Julia-style generic verbs + multiple dispatch). **Kagi is just one function (`search`).**
-Full inventory + status: **`sux/FUNCTIONS.md`** (run `npm run docs` to regenerate).
+sux is one personal Cloudflare Worker exposing **~85 composable functions** as MCP
+tools (Julia-style generic verbs + multiple dispatch). **Kagi is just one function
+(`search`).** The full inventory, status, and per-function summaries live in
+**`sux/FUNCTIONS.md`** — that file is the source of truth (run `npm run docs` to
+regenerate it from `sux/src/fns/*.ts`). This skill maps intent → function.
 
-## How to route
+When a task needs live web data, a page fetch, document work, or an edge transform,
+reach for sux instead of declining or answering from memory.
 
-Pick the **narrowest** function that answers the need; compose in front of heavier ones
-to keep token cost down (e.g. `grep`/`select`/`readability` before dumping a whole page).
+## Two principles before any table
 
-| The user wants… | function |
+1. **Escalate fetching gradually.** Plain `scrape` (residential proxy, cheapest)
+   → `render` (headless Chromium, JS executed, screenshot / page→PDF)
+   → `render {backend:"mac"}` (residential patched browser that clears
+   Akamai/PerimeterX and auto-solves captchas; add `solve:true` to force the
+   solver tier). Don't start at the top — mac is slow and a shared resource.
+   `selftest` probes which rungs of the ladder are currently up.
+2. **Keep bulk data out of context.** Pick the **narrowest** function, and compose
+   lighter ones in front of heavy ones. Chain steps server-side with `pipe`, fan
+   out with `batch` (let its `reduce`/`reduce_with` merge), ask for `as:"url"`
+   delivery on big/binary outputs (a ~100-token `/s/<uuid>` ref instead of
+   base64), and re-encode row data with `pack`.
+
+## Web search
+
+| Intent | Function |
 |---|---|
-| web search / news | `search` (Kagi) · `web_search` (kagi + native Google via SerpAPI; `engine:"all"` fans out + can `summarize`) |
-| product search across retailers | `shop` (gshop/amazon/walmart/home_depot via SerpAPI) |
-| fetch a page that blocks datacenter IPs | `scrape` |
-| force every request through a residential exit | `proxy` (full residential) |
-| pick the exit region for geo-priced / geo-gated data | `geo_fetch` |
-| crawl a whole site / follow links | `crawl` |
-| main article text (strip nav/ads) | `readability` |
-| links / JSON-LD / plain text from HTML | `extract` |
-| tables · metadata · feeds · sitemaps | `tables` · `metadata` · `feed` · `sitemap` |
-| CSS-select / regex-grep a page | `select` · `grep` |
-| emails & phones · named entities | `contacts` · `entities` |
-| subtitles / transcript track from a video page | `subtitles` |
-| redirect chain · robots rules | `redirects` · `robots` |
-| convert formats (verb = target) | `markdown` · `html` · `csv` · `json` · `xml` · `yaml` · `subtitles` |
-| strip ads/nav/tracking from HTML | `declutter` (compose before summarize/readability/markdown) |
-| build / merge / paginate a PDF | `pdf` (anything→PDF: merge, TOC, forms, metadata, OCR) |
-| add fillable form fields to a PDF | `fillable` |
-| convert an image format | `image_convert` |
-| compress / archive / encode / hash | `compress` · `archive` · `encode` · `hash` |
-| pack / shrink tokens of a payload | `pack` |
-| summarize / translate / classify / OCR | `summarize` · `translate` · `classify` · `ocr` |
-| PII redaction | `redact` |
-| archived snapshot / page history | `wayback` |
-| chain tools server-side (COMPOSE) | `pipe` (`{{prev}}` feeds each step) |
-| run one tool over many inputs (MAP) | `batch` · `batch_fetch` (many URLs) |
-| stash / fetch content by handle or URL | `store` (R2, content-addressed) · `kv_get`/`kv_put`/`kv_list`/`kv_delete` |
-| report a bug | `issue` |
+| Default web search | `search` (Kagi). Scope with `include_domains`/`exclude_domains`/`time_relative`/`after`/`before`/`file_type`; `workflow: news\|videos\|podcasts\|images`; lens via `lens_id` (Academic=2, Forums=1, Programming=15, News360=29, Recipes=120, Small Web=107) |
+| Cross-engine / second opinion / no-key | `web_search` — `engine: kagi\|ddg\|google\|brave\|all`; `all` fans out, merges, and can `summarize: true` |
+| Synthesized answer + sources | `tavily` (`depth: advanced` for deeper) |
+| "More like this page" / semantic search | `find_similar` (Exa: `url` for similar pages, `query` for neural search) |
 
-## Fetch routing modes (keep all three)
+## Fetch, extract, page anatomy
 
-- **smart** (default) — cheapest rung first; residential only when a datacenter IP is
-  blocked; direct fallback so it never hard-fails. (`scrape`.)
+| Intent | Function |
+|---|---|
+| Fetch a page (bot-shy sites, datacenter-IP blocks) | `scrape` |
+| JS-rendered page, screenshot, or page→PDF | `render` (`as: html\|text\|screenshot\|pdf`; `backend: mac` for Akamai-hard sites) |
+| Force everything through the residential exit (raw HTTP: headers, POST, binary) | `proxy` |
+| Fetch from a specific country/locale (geo-priced / geo-gated data) | `geo_fetch` |
+| Many URLs at once | `batch_fetch` (`as: "url"` = bulk download to R2) |
+| Follow links breadth-first | `crawl` (depth ≤ 3, max 100) |
+| Article body only (no nav/ads) | `readability` |
+| Strip ads/consent/tracking, keep HTML | `declutter` (compose before summarize/markdown) |
+| Links / JSON-LD / plain text from HTML | `extract` |
+| CSS-selector query | `select` (subset: no `>`, `+`, `~`, pseudo-classes) |
+| Regex over a page or text | `grep` |
+| HTML tables → JSON/CSV | `tables` |
+| Title/OG/twitter meta | `metadata` |
+| Emails/phones/social links on a page | `contacts` |
+| Subtitles / transcript track ↔ SRT/WebVTT | `subtitles` |
+| Redirect chain, robots.txt, sitemap, RSS/Atom | `redirects`, `robots`, `sitemap`, `feed` |
+| Historical snapshot / change history | `wayback` |
+| Detect whether a page changed since last check | `watch` |
+
+### Fetch routing modes (keep all three)
+
+- **smart** (default) — cheapest rung first; residential only when a datacenter IP
+  is blocked; direct fallback so it never hard-fails. (`scrape`.)
 - **full proxy** — force everything through the residential exit, no fallback. (`proxy`.)
 - **geo** — pick the exit locale for region-priced / geo-gated data. (`geo_fetch`.)
+
+## Research & reference
+
+| Domain | Function |
+|---|---|
+| CS/math/physics preprints | `arxiv` |
+| Biomedical literature | `pubmed` (PubMed query syntax, field tags OK) |
+| Any-discipline scholarly graph + citation counts | `openalex` |
+| DOI metadata | `crossref` |
+| Abstracts + PDFs across fields | `semantic_scholar` |
+| Clinical studies | `clinical_trials` |
+| Programming/sysadmin Q&A | `stackexchange` (`site:` superuser, askubuntu, math, …) |
+| Reddit posts / subreddits / comments | `reddit` (read-only app-only OAuth) |
+| Crypto prices | `coingecko` (`search` for the id, then `price`) |
+| YouTube videos | `youtube` |
+
+Overlap rule: papers-in-general → `openalex` or `semantic_scholar`;
+"preprint"/CS-math-physics → `arxiv`; anything medical → `pubmed`.
+
+## Shopping, places, people
+
+| Intent | Function |
+|---|---|
+| Product search, no retailer named | `shop` (routes over the retail fns) |
+| Fan one term across many retailers | `product_search` (kroger, walmart, homedepot, … at once) |
+| Named retailer | `amazon`, `walmart`, `homedepot`, `lowes`, `bestbuy`, `ebay`, `costco`, `kroger` (+ QFC/Fred Meyer/Ralphs banners via `chain`; pass `zip` for prices), `ace`; `winco` is store-locations only |
+| Grocery weekly-ad / flyer deals by ZIP | `weekly_ad` (Flipp, keyless) |
+| Local businesses / points of interest | `places` (free-text, e.g. "hardware store near 98133") |
+| Who is X / org directory | `people` (`extract_contacts: true` pulls emails/phones from the top hit; `source: usagov` for federal agencies) |
+| LinkedIn profile/company (URL in hand) | `linkedin` |
+| Facebook Graph node/edge | `facebook` |
+
+Retailer note: amazon/walmart/homedepot/lowes/ace ride the mac render backend —
+slow, best-effort; bestbuy/ebay/kroger are official APIs — prefer them when the
+retailer is interchangeable.
+
+## Documents & media
+
+| Intent | Function |
+|---|---|
+| Anything → PDF; merge/split/pages/bookmarks/metadata/forms/OCR | `pdf` (use `as: "url"` for delivery) |
+| Add fillable form fields to a PDF | `fillable` |
+| Text out of an image | `ocr` |
+| Convert/resize an image (png/jpeg/webp/avif) | `image_convert` (Images binding) |
+| Summarize a page, long doc, or YouTube video | `summarize` (pass `url` — Kagi handles YouTube natively; `text` for raw input) |
+
+## Text & data transforms
+
+Converters are named for their **target** format and auto-detect the input — e.g.
+call `json` with CSV or YAML in, `csv` with JSON in.
+
+| Intent | Function |
+|---|---|
+| Anything → JSON (auto-detects yaml/csv/xml) | `json`; inverses: `yaml`, `csv`, `xml` |
+| HTML ↔ Markdown | `markdown` (HTML→MD), `html` (MD→HTML) |
+| Translate | `translate` (m2m100, `to` code) |
+| Zero-shot label text | `classify` |
+| Dates/money/emails/URLs/phones from text | `entities` (regex, no model) |
+| Scrub PII | `redact` |
+| Case/unicode-font conversion | `fontcase` |
+| base64/hex/url, hashes, compression, zip/gzip | `encode`, `hash`, `compress`, `archive` |
+| JSON rows → token-cheap TSV | `pack` |
+
+## Composition, storage, memory
+
+| Intent | Function |
+|---|---|
+| Chain tools server-side (A's output → B) | `pipe` (`{{prev}}` / `{{prev.path}}` feeds each step) |
+| Same tool over many inputs, optionally reduced | `batch` (`over` + `args` template, `reduce: concat\|summarize`, or `reduce_with` a tool) |
+| Stash/retrieve blobs (content-addressed R2) | `store` |
+| Small persistent key-values | `kv_put`, `kv_get`, `kv_list`, `kv_delete` |
+| Obsidian vault: list/read/search/append notes | `obsidian` (default `backend: git`; `remote` reaches the live vault and its vault tools via `action: tools`/`call`) |
+
+## Infrastructure & meta
+
+| Intent | Function |
+|---|---|
+| Probe the fetch ladder — which rungs are up | `selftest` |
+| Read your ControlD DNS setup (read-only) | `controld` |
+| Read your Tailscale tailnet control plane | `tailscale` |
+| Report a bug / wrong output from a sux tool | `issue { tool, text }` (lands in the server-side feedback log) |
 
 ## Conventions
 
 - Every result is MCP text; structured data is JSON, binary is base64 inside JSON
   (or `as:"url"` for a CAS-backed download link on binary outputs).
-- Cacheable functions are memoized in KV by a hash of their arguments — repeat calls are free.
-- Converters are named for their **target** format (`markdown`, `html`, `csv`, `json`,
-  `xml`, `yaml`) and auto-detect the input — e.g. call `json` with CSV or YAML in, `csv`
-  with JSON in.
-- `image_convert` runs via the Images binding; `pdf`/`fillable`/`ocr` handle document I/O.
+- Cacheable functions are memoized in KV by a hash of their arguments — repeat
+  calls are free.
+- `image_convert` runs via the Images binding; `pdf`/`fillable`/`ocr` handle
+  document I/O.
 
 ## Token discipline
 
-sux does the heavy work server-side and returns only the distilled result. Prefer
-projecting first: `grep`/`select`/`readability` to slice, `declutter` to strip chrome,
-`pack` to squeeze — then hand the small result to the model.
+sux does the heavy work server-side and returns only the distilled result. Project
+first: `grep`/`select`/`readability` to slice, `declutter` to strip chrome, `pack`
+to squeeze — then hand the small result to the model.
+
+## Worked examples
+
+- "What are people saying about X on forums this week?"
+  → `search { query: "X", lens_id: "1", time_relative: "week" }`
+- "Is this $200 air fryer cheaper anywhere?"
+  → `shop { query: "..." }` (or `product_search` to fan across retailers), then the
+  named retailer tool to confirm
+- "Summarize these five articles into one brief"
+  → `batch { tool: "readability", over: [urls...], args: { url: "{{item}}" }, reduce: "summarize", include_results: false }`
+- "Get the pricing table off this JS-heavy page"
+  → `pipe { steps: [{ tool: "render", args: { url, as: "html", block_resources: true } }, { tool: "tables", args: { html: "{{prev}}" } }] }`
+- "Turn this doc into a PDF I can send"
+  → `pdf { text: "...", title: "...", as: "url" }` and share the returned link
+
+## When something fails
+
+Escalate the fetch ladder first (`scrape` → `render` → `render {backend:"mac",
+solve:true}`); run `selftest` to see which rungs are up; try `wayback` if the live
+page is gone. Key-gated tools (`tavily`, `find_similar`, `youtube`, `places`,
+`bestbuy`, `ebay`, `kroger`, `facebook`, `controld`, `tailscale`) fail cleanly when
+the secret is unset — fall back to `search` / `shop` / `scrape`. If a tool errors or
+returns wrong output, file it with `issue { tool, text }` so it lands in the
+server's feedback log.
