@@ -1,11 +1,14 @@
 #!/usr/bin/env node
-// Keep .claude/skills/sux-router/SKILL.md honest against the deployed sux
-// server's tool surface. No dependencies; speaks MCP Streamable HTTP directly.
+// Keep the sux-router skill, its plugin copy, and the generated docs honest
+// against the deployed sux server's tool surface. No dependencies; speaks MCP
+// Streamable HTTP directly.
 //
 // Modes:
 //   node scripts/check-skill-sync.mjs            live check (needs SUX_MCP_URL)
 //   node scripts/check-skill-sync.mjs --offline  snapshot-only check (no network)
-//   node scripts/check-skill-sync.mjs --write    refresh docs/sux-tools.txt from live
+//   node scripts/check-skill-sync.mjs --write    regenerate docs/sux-tools.txt and
+//                                                docs/TOOLS.md from the live server,
+//                                                and sync the plugin's skill copy
 //
 // Env:
 //   SUX_MCP_URL    the /mcp endpoint of the deployed server (required unless --offline)
@@ -13,10 +16,13 @@
 //
 // Exit codes: 0 in sync · 1 drift found · 2 misconfigured/unreachable
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 
 const SNAPSHOT = 'docs/sux-tools.txt';
+const TOOLS_DOC = 'docs/TOOLS.md';
 const SKILL = '.claude/skills/sux-router/SKILL.md';
+const PLUGIN_SKILL = 'plugins/sux-router/skills/sux-router/SKILL.md';
 const SNIPPET = 'docs/claude-profile-snippet.md';
 
 const mode = process.argv.includes('--write')
@@ -70,7 +76,7 @@ async function rpc(url, token, method, params, sessionId, isNotification = false
   return { json, session };
 }
 
-async function fetchLiveToolNames() {
+async function fetchLiveTools() {
   const url = process.env.SUX_MCP_URL;
   const token = process.env.SUX_MCP_TOKEN;
   if (!url) die('SUX_MCP_URL is not set (use --offline for the snapshot-only check).');
@@ -82,16 +88,43 @@ async function fetchLiveToolNames() {
   });
   await rpc(url, token, 'notifications/initialized', {}, init.session, true).catch(() => {});
 
-  const names = [];
+  const byName = new Map();
   let cursor;
   do {
     const { json } = await rpc(url, token, 'tools/list', cursor ? { cursor } : {}, init.session);
-    for (const t of json.result.tools ?? []) names.push(t.name);
+    for (const t of json.result.tools ?? []) byName.set(t.name, t.description ?? '');
     cursor = json.result.nextCursor;
   } while (cursor);
 
-  if (names.length === 0) die('tools/list returned zero tools — refusing to treat that as truth.');
-  return [...new Set(names)].sort();
+  if (byName.size === 0) die('tools/list returned zero tools — refusing to treat that as truth.');
+  return [...byName.entries()].map(([name, description]) => ({ name, description })).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// --- Generated docs ---
+
+function writeSnapshot(tools) {
+  writeFileSync(
+    SNAPSHOT,
+    '# Tool surface of the deployed sux server, one name per line.\n' +
+      '# Regenerate with: SUX_MCP_URL=… node scripts/check-skill-sync.mjs --write\n' +
+      tools.map((t) => t.name).join('\n') +
+      '\n',
+  );
+}
+
+function writeToolsDoc(tools) {
+  const body = tools.map((t) => `## \`${t.name}\`\n\n${(t.description || '_no description_').trim()}\n`).join('\n');
+  writeFileSync(
+    TOOLS_DOC,
+    `# sux tool reference (${tools.length} tools)\n\n` +
+      '_Generated from the live server by `scripts/check-skill-sync.mjs --write` — do not edit by hand._\n\n' +
+      body,
+  );
+}
+
+function syncPluginSkill() {
+  mkdirSync(dirname(PLUGIN_SKILL), { recursive: true });
+  copyFileSync(SKILL, PLUGIN_SKILL);
 }
 
 // --- Checks ---
@@ -113,15 +146,11 @@ function report(title, names) {
 
 async function main() {
   if (mode === 'write') {
-    const live = await fetchLiveToolNames();
-    writeFileSync(
-      SNAPSHOT,
-      '# Tool surface of the deployed sux server, one name per line.\n' +
-        '# Regenerate with: SUX_MCP_URL=… node scripts/check-skill-sync.mjs --write\n' +
-        live.join('\n') +
-        '\n',
-    );
-    console.log(`Wrote ${live.length} tool names to ${SNAPSHOT}.`);
+    const tools = await fetchLiveTools();
+    writeSnapshot(tools);
+    writeToolsDoc(tools);
+    syncPluginSkill();
+    console.log(`Wrote ${tools.length} tools to ${SNAPSHOT} and ${TOOLS_DOC}; synced ${PLUGIN_SKILL}.`);
     return;
   }
 
@@ -131,7 +160,7 @@ async function main() {
   let drift = false;
 
   if (mode === 'check') {
-    const live = await fetchLiveToolNames();
+    const live = (await fetchLiveTools()).map((t) => t.name);
     const snapSet = new Set(snapshot);
     const liveSet = new Set(live);
     drift |= report(
@@ -150,6 +179,16 @@ async function main() {
     `Tools in ${SNAPSHOT} never mentioned in ${SKILL}`,
     snapshot.filter((n) => !mentioned(skill, n)),
   );
+
+  // The plugin ships a copy of the canonical skill — they must be identical.
+  if (!existsSync(PLUGIN_SKILL)) {
+    console.log(`\n${PLUGIN_SKILL} is missing — run --write (or copy ${SKILL}).`);
+    drift = true;
+  } else if (readFileSync(PLUGIN_SKILL, 'utf8') !== skill) {
+    console.log(`\n${PLUGIN_SKILL} differs from ${SKILL} — run --write (or copy it over).`);
+    drift = true;
+  }
+
   const unSnippeted = snapshot.filter((n) => !mentioned(snippet, n));
   if (unSnippeted.length)
     console.log(
@@ -157,10 +196,10 @@ async function main() {
     );
 
   if (drift) {
-    console.log('\nDRIFT — update SKILL.md / docs/claude-profile-snippet.md, then refresh the snapshot with --write.');
+    console.log('\nDRIFT — update SKILL.md / docs/claude-profile-snippet.md, then regenerate with --write.');
     process.exit(1);
   }
-  console.log(`OK — ${snapshot.length} tools, skill and snapshot in sync${mode === 'check' ? ' with the live server' : ''}.`);
+  console.log(`OK — ${snapshot.length} tools; skill, plugin copy, and snapshot in sync${mode === 'check' ? ' with the live server' : ''}.`);
 }
 
 main().catch((e) => die(String(e?.stack ?? e)));

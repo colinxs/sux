@@ -1,0 +1,71 @@
+name: Docs update
+
+# Auto-regenerates the machine-maintained docs from the deployed sux server:
+# docs/sux-tools.txt (tool-name snapshot), docs/TOOLS.md (full tool reference),
+# and the plugin's copy of the sux-router skill. If anything changed it opens
+# (or force-refreshes) a PR on the `bot/docs-update` branch — prose edits to
+# SKILL.md stay human/Claude work, flagged separately by the Skill sync issue.
+#
+# Needs: SUX_MCP_URL (+ SUX_MCP_TOKEN if gated) repo secrets, and the repo
+# setting "Allow GitHub Actions to create and approve pull requests".
+
+on:
+  schedule:
+    - cron: '0 13 * * 1' # Mondays 13:00 UTC, an hour before Skill sync
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: docs-update
+  cancel-in-progress: true
+
+jobs:
+  regenerate:
+    name: Regenerate generated docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Regenerate from live server
+        env:
+          SUX_MCP_URL: ${{ secrets.SUX_MCP_URL }}
+          SUX_MCP_TOKEN: ${{ secrets.SUX_MCP_TOKEN }}
+        run: |
+          if [ -z "$SUX_MCP_URL" ]; then
+            echo "SUX_MCP_URL not set — nothing to regenerate." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          node scripts/check-skill-sync.mjs --write
+
+      - name: Open or refresh PR if docs changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if git diff --quiet && [ -z "$(git status --porcelain)" ]; then
+            echo "Generated docs already up to date." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B bot/docs-update
+          git add docs/sux-tools.txt docs/TOOLS.md plugins/sux-router/skills
+          git commit -m "docs: regenerate tool snapshot, TOOLS.md, and plugin skill copy"
+          git push -f origin bot/docs-update
+          existing=$(gh pr list --state open --head bot/docs-update --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh pr comment "$existing" --body "Refreshed by the latest Docs update run."
+            echo "Updated existing PR #$existing." | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            gh pr create \
+              --title "docs: auto-update generated tool docs" \
+              --body "$(printf 'Automated regeneration from the live sux server by the **Docs update** workflow:\n\n- `docs/sux-tools.txt` — tool-name snapshot\n- `docs/TOOLS.md` — full tool reference\n- `plugins/sux-router/skills/sux-router/SKILL.md` — resync of the canonical skill\n\nIf new/removed tools appear here, `.claude/skills/sux-router/SKILL.md` prose likely needs a matching edit — see any open `skill-sync` issue.\n\nRun: %s/%s/actions/runs/%s' "${{ github.server_url }}" "${{ github.repository }}" "${{ github.run_id }}")"
+            echo "Opened new docs PR." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi

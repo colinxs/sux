@@ -84,10 +84,21 @@ Two artifacts teach Claude to pick the right sux tool for a query:
 - **`.claude/skills/sux-router/SKILL.md`** — a Claude Code skill with the full
   intent→tool routing map (search, fetch/render ladder, research, shopping,
   documents, transforms, `pipe`/`batch` composition). Loaded automatically in
-  Claude Code sessions in this repo; copy it into `~/.claude/skills/` to use it
-  everywhere.
+  Claude Code sessions in this repo.
+- **The `sux-router` plugin** — the same skill packaged for installation
+  anywhere Claude Code runs (CLI, desktop app, IDE extensions). This repo is
+  its marketplace (`.claude-plugin/marketplace.json` → `plugins/sux-router/`):
+  ```
+  /plugin marketplace add colinxs/sux
+  /plugin install sux-router@sux
+  ```
+  The plugin ships only the routing skill; connect the sux server itself
+  separately (`claude mcp add --transport http sux https://<worker>/mcp`, or a
+  claude.ai custom connector).
 - **`docs/claude-profile-snippet.md`** — a compact snippet to paste into
   claude.ai → Settings → Profile, for chats where skills aren't available.
+- **`docs/TOOLS.md`** — generated full tool reference (created/refreshed by the
+  Docs update workflow).
 
 They're kept honest by `docs/sux-tools.txt` (a committed snapshot of the
 deployed tool names) and `scripts/check-skill-sync.mjs`, run weekly by the
@@ -185,6 +196,12 @@ Run `wrangler tail` (or watch `wrangler dev` output) and match the symptom:
   issue on drift. Needs optional repo secrets `SUX_MCP_URL` (the `/mcp`
   endpoint) and `SUX_MCP_TOKEN` (bearer, if gated); without them it degrades
   to the offline snapshot check.
+- **`.github/workflows/docs-update.yml`** — weekly (or manual dispatch):
+  regenerates the machine-maintained docs from the live server
+  (`docs/sux-tools.txt`, `docs/TOOLS.md`, the plugin's skill copy) and opens a
+  PR on `bot/docs-update` when anything changed. Same secrets as skill-sync,
+  plus the repo setting *Allow GitHub Actions to create and approve pull
+  requests* (Settings → Actions → General).
 
 Deploy needs two **repo secrets** (Settings → Secrets and variables → Actions):
 

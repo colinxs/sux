@@ -1,0 +1,13 @@
+{
+  "name": "sux-router",
+  "displayName": "sux router",
+  "version": "0.1.0",
+  "description": "Intent→tool routing for the sux MCP server: web search, fetch/render escalation, research databases, shopping, documents, data transforms, and server-side pipe/batch composition.",
+  "author": {
+    "name": "colinxs"
+  },
+  "repository": "https://github.com/colinxs/sux",
+  "license": "MIT",
+  "keywords": ["mcp", "routing", "web-search", "scraping"],
+  "skills": "./skills/"
+}
