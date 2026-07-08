@@ -72,6 +72,7 @@ import { pipe } from "./pipe";
 import { places } from "./places";
 import { product_search } from "./product_search";
 import { render } from "./render";
+import { selftest } from "./selftest";
 import { semantic_scholar } from "./semantic_scholar";
 import { shop } from "./shop";
 import { stackexchange } from "./stackexchange";
@@ -154,6 +155,7 @@ export const FUNCTIONS: Fn[] = [
 	places,
 	product_search,
 	render,
+	selftest,
 	semantic_scholar,
 	shop,
 	stackexchange,
