@@ -3,7 +3,7 @@ import { smartFetch } from "../proxy";
 
 // Translate a robots.txt path rule to a regex: `*` → `.*`, a trailing `$`
 // anchors the end of the path, and every other character is matched literally.
-const pathMatches = (rule: string, path: string): boolean => {
+export const pathMatches = (rule: string, path: string): boolean => {
 	let pat = rule;
 	let anchored = false;
 	if (pat.endsWith("$")) {
@@ -16,6 +16,55 @@ const pathMatches = (rule: string, path: string): boolean => {
 		.join(".*");
 	return new RegExp(`^${re}${anchored ? "$" : ""}`).test(path);
 };
+
+export type RobotsGroup = { agents: string[]; allow: string[]; disallow: string[]; crawl_delay?: number };
+
+// Parse a robots.txt body into its agent groups and sitemap list. Shared by the
+// `robots` fn and any caller (e.g. `crawl`) that needs to honour Disallow rules.
+export function parseRobots(txt: string): { groups: RobotsGroup[]; sitemaps: string[] } {
+	const groups: RobotsGroup[] = [];
+	const sitemaps: string[] = [];
+	let cur: RobotsGroup | null = null;
+	let lastWasAgent = false;
+	for (const line of txt.split(/\r?\n/)) {
+		const l = line.replace(/#.*/, "").trim();
+		if (!l) continue;
+		const [k, ...rest] = l.split(":");
+		const key = k.trim().toLowerCase();
+		const val = rest.join(":").trim();
+		if (key === "user-agent") {
+			if (!cur || !lastWasAgent) {
+				cur = { agents: [], allow: [], disallow: [] };
+				groups.push(cur);
+			}
+			cur.agents.push(val);
+			lastWasAgent = true;
+			continue;
+		}
+		lastWasAgent = false;
+		if (key === "sitemap") sitemaps.push(val);
+		else if (cur && key === "disallow") cur.disallow.push(val);
+		else if (cur && key === "allow") cur.allow.push(val);
+		else if (cur && key === "crawl-delay") cur.crawl_delay = Number(val) || undefined;
+	}
+	return { groups, sitemaps };
+}
+
+// Decide whether the `*` user-agent may fetch `path`, per RFC 9309 longest-match
+// (Allow wins an equal-length tie). Unknown/unmatched paths default to allowed.
+export function isPathAllowed(groups: RobotsGroup[], path: string): boolean {
+	const star = groups.find((g) => g.agents.includes("*"));
+	const rules = [
+		...(star?.disallow ?? []).map((r) => ({ r, allow: false })),
+		...(star?.allow ?? []).map((r) => ({ r, allow: true })),
+	].filter((x) => x.r);
+	let best: { len: number; allow: boolean } | null = null;
+	for (const { r, allow } of rules) {
+		if (!pathMatches(r, path)) continue;
+		if (!best || r.length > best.len || (r.length === best.len && allow)) best = { len: r.length, allow };
+	}
+	return best ? best.allow : true;
+}
 
 export const robots: Fn = {
 	name: "robots",
@@ -44,50 +93,13 @@ export const robots: Fn = {
 		}
 		const txt = await resp.text();
 
-		const groups: Array<{ agents: string[]; allow: string[]; disallow: string[]; crawl_delay?: number }> = [];
-		const sitemaps: string[] = [];
-		let cur: (typeof groups)[number] | null = null;
-		let lastWasAgent = false;
-		for (const line of txt.split(/\r?\n/)) {
-			const l = line.replace(/#.*/, "").trim();
-			if (!l) continue;
-			const [k, ...rest] = l.split(":");
-			const key = k.trim().toLowerCase();
-			const val = rest.join(":").trim();
-			if (key === "user-agent") {
-				if (!cur || !lastWasAgent) {
-					cur = { agents: [], allow: [], disallow: [] };
-					groups.push(cur);
-				}
-				cur.agents.push(val);
-				lastWasAgent = true;
-				continue;
-			}
-			lastWasAgent = false;
-			if (key === "sitemap") sitemaps.push(val);
-			else if (cur && key === "disallow") cur.disallow.push(val);
-			else if (cur && key === "allow") cur.allow.push(val);
-			else if (cur && key === "crawl-delay") cur.crawl_delay = Number(val) || undefined;
-		}
+		// Per RFC 9309: `*` matches any run of characters, a trailing `$` anchors the
+		// end of the path, everything else is literal. Longest matching rule wins; on
+		// an equal-length tie the Allow beats the Disallow.
+		const { groups, sitemaps } = parseRobots(txt);
 
 		let allowed: boolean | undefined;
-		if (args?.path) {
-			const p = String(args.path);
-			const star = groups.find((g) => g.agents.includes("*"));
-			const rules = [
-				...(star?.disallow ?? []).map((r) => ({ r, allow: false })),
-				...(star?.allow ?? []).map((r) => ({ r, allow: true })),
-			].filter((x) => x.r);
-			// Per RFC 9309: `*` matches any run of characters, a trailing `$` anchors the
-			// end of the path, everything else is literal. Longest matching rule wins; on
-			// an equal-length tie the Allow beats the Disallow.
-			let best: { len: number; allow: boolean } | null = null;
-			for (const { r, allow } of rules) {
-				if (!pathMatches(r, p)) continue;
-				if (!best || r.length > best.len || (r.length === best.len && allow)) best = { len: r.length, allow };
-			}
-			allowed = best ? best.allow : true;
-		}
+		if (args?.path) allowed = isPathAllowed(groups, String(args.path));
 		return ok(JSON.stringify({ origin, groups, sitemaps, ...(allowed !== undefined ? { path: args.path, allowed } : {}) }, null, 2));
 	},
 };

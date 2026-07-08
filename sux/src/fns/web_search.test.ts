@@ -71,6 +71,18 @@ describe("web_search", () => {
 		expect(r.content[0].text).toContain("2. Second Result");
 	});
 
+	it("egresses the Kagi query direct (auto route) by default", async () => {
+		const { kagiTool } = await import("../kagi");
+		await webSearch.run({ KAGI_API_KEY: "k" } as any, { query: "x", engine: "kagi" });
+		expect(kagiTool).toHaveBeenLastCalledWith(expect.anything(), "kagi_search_fetch", expect.anything(), "auto");
+	});
+
+	it("routes the Kagi query through the residential proxy when proxy: true", async () => {
+		const { kagiTool } = await import("../kagi");
+		await webSearch.run({ KAGI_API_KEY: "k" } as any, { query: "x", engine: "kagi", proxy: true });
+		expect(kagiTool).toHaveBeenLastCalledWith(expect.anything(), "kagi_search_fetch", expect.anything(), "proxy");
+	});
+
 	it("scrapes DuckDuckGo keyless (no render) and decodes the uddg redirect", async () => {
 		const html = '<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fex.com%2Fp&rut=z">DDG Result</a>';
 		smartFetch.mockResolvedValueOnce(new Response(html, { status: 200 }));

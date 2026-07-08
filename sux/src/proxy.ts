@@ -230,7 +230,7 @@ export function backoffDelay(attempt: number, retryAfter?: string | null): numbe
  * reliability. Each attempt keeps its own 30s bound; the last retryable response
  * (or thrown error) is surfaced once the attempts are exhausted.
  */
-async function withRetry(fn: () => Promise<Response>): Promise<Response> {
+export async function withRetry(fn: () => Promise<Response>): Promise<Response> {
 	let lastResp: Response | undefined;
 	for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
 		if (attempt > 0) await new Promise((r) => setTimeout(r, backoffDelay(attempt - 1, lastResp?.headers.get("retry-after"))));

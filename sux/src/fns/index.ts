@@ -83,6 +83,7 @@ import { obsidian } from "./obsidian";
 import { tailscale } from "./tailscale";
 import { tavily } from "./tavily";
 import { walmart } from "./walmart";
+import { watch } from "./watch";
 import { webSearch } from "./web_search";
 import { weekly_ad } from "./weekly_ad";
 import { winco } from "./winco";
@@ -169,6 +170,7 @@ export const FUNCTIONS: Fn[] = [
 	tailscale,
 	tavily,
 	walmart,
+	watch,
 	webSearch,
 	weekly_ad,
 	winco,

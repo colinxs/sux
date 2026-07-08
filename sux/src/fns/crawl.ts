@@ -1,5 +1,6 @@
 import { type Fn, fail, ok } from "../registry";
 import { fetchText, isHttpUrl } from "./_util";
+import { type RobotsGroup, isPathAllowed, parseRobots } from "./robots";
 
 // Pages within a frontier level are fetched by a small index-claiming worker
 // pool (same pattern as batch_fetch.ts) instead of one await per page. Bodies
@@ -10,7 +11,7 @@ const PAGE_MAX_BYTES = 512 * 1024;
 
 export const crawl: Fn = {
 	name: "crawl",
-	description: "Breadth-first crawl from a seed URL. Follows same-origin links up to `depth` and `max` pages, returning each URL + its title. same_origin=false allows off-site links (still capped).",
+	description: "Breadth-first crawl from a seed URL. Follows same-origin links up to `depth` and `max` pages, returning each URL + its title. same_origin=false allows off-site links (still capped). respect_robots=true honours each host's robots.txt Disallow (for agent *) and reports skipped URLs.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -20,6 +21,7 @@ export const crawl: Fn = {
 			depth: { type: "integer", default: 1, minimum: 0, maximum: 3 },
 			max: { type: "integer", default: 25, minimum: 1, maximum: 100 },
 			same_origin: { type: "boolean", default: true },
+			respect_robots: { type: "boolean", default: false, description: "Skip URLs disallowed by the target host's robots.txt (user-agent *)." },
 		},
 	},
 	cacheable: true,
@@ -34,11 +36,41 @@ export const crawl: Fn = {
 		const maxRaw = Number(args?.max ?? 25);
 		const maxPages = Math.min(100, Math.max(1, Number.isFinite(maxRaw) ? maxRaw : 25));
 		const sameOrigin = args?.same_origin !== false;
+		const respectRobots = args?.respect_robots === true;
 		const origin = new URL(seed).origin;
+
+		// robots.txt is fetched at most once per host for the whole crawl. `null`
+		// (fetch failed / >= 400) means "no robots — nothing disallowed". A miss on
+		// the map (undefined) triggers the one fetch; an empty [] would look "cached".
+		const robotsCache = new Map<string, RobotsGroup[] | null>();
+		const skippedByRobots: string[] = [];
+		async function robotsAllows(u: string): Promise<boolean> {
+			if (!respectRobots) return true;
+			const host = new URL(u).origin;
+			let groups = robotsCache.get(host);
+			if (groups === undefined) {
+				try {
+					const f = await fetchText(env, `${host}/robots.txt`, { maxBytes: PAGE_MAX_BYTES });
+					groups = f.status >= 400 ? null : parseRobots(f.text).groups;
+				} catch {
+					groups = null; // couldn't reach robots.txt — don't block the crawl
+				}
+				robotsCache.set(host, groups);
+			}
+			if (!groups) return true;
+			const parsed = new URL(u);
+			return isPathAllowed(groups, parsed.pathname + parsed.search);
+		}
 
 		const seen = new Set<string>([seed]);
 		const results: Array<{ url: string; title: string | null; depth: number }> = [];
 		let frontier: Array<{ url: string; depth: number }> = [{ url: seed, depth: 0 }];
+
+		// The seed is a candidate URL too: honour robots before fetching it.
+		if (respectRobots && !(await robotsAllows(seed))) {
+			skippedByRobots.push(seed);
+			return ok(JSON.stringify({ seed, pages: 0, results, skipped_by_robots: skippedByRobots }, null, 2));
+		}
 
 		while (frontier.length && results.length < maxPages) {
 			// Only fetch what the remaining budget can index.
@@ -92,12 +124,17 @@ export const crawl: Fn = {
 					}
 					if (!isHttpUrl(abs) || seen.has(abs)) continue;
 					if (sameOrigin && new URL(abs).origin !== origin) continue;
+					if (respectRobots && !(await robotsAllows(abs))) {
+						seen.add(abs); // mark handled so it's reported once, not per inbound link
+						skippedByRobots.push(abs);
+						continue;
+					}
 					seen.add(abs);
 					next.push({ url: abs, depth: depth + 1 });
 				}
 			}
 			frontier = next;
 		}
-		return ok(JSON.stringify({ seed, pages: results.length, results }, null, 2));
+		return ok(JSON.stringify({ seed, pages: results.length, results, ...(respectRobots ? { skipped_by_robots: skippedByRobots } : {}) }, null, 2));
 	},
 };

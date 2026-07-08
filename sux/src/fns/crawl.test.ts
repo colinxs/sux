@@ -136,6 +136,40 @@ describe("crawl", () => {
 		expect(out.results.map((x: any) => x.url)).toEqual(["https://ex.com/", "https://ex.com/about"]);
 	});
 
+	it("respect_robots:true skips a Disallow'd path (and reports it); false crawls it", async () => {
+		const impl = async (_env: unknown, url: string) => {
+			if (url === "https://ex.com/robots.txt") {
+				return new Response(["User-agent: *", "Disallow: /private"].join("\n"), { status: 200 });
+			}
+			if (url === "https://ex.com/") {
+				return new Response(`<title>Home</title><a href="https://ex.com/about">a</a><a href="https://ex.com/private">p</a>`, { status: 200 });
+			}
+			if (url === "https://ex.com/about") return new Response("<title>About</title>", { status: 200 });
+			if (url === "https://ex.com/private") return new Response("<title>Private</title>", { status: 200 });
+			return new Response("<title>?</title>", { status: 200 });
+		};
+
+		mockFetch.mockImplementation(impl);
+		const guarded = await crawl.run({} as any, { url: "https://ex.com/", depth: 1, respect_robots: true });
+		expect(guarded.isError).toBeFalsy();
+		const g = JSON.parse(guarded.content[0].text);
+		expect(g.results.map((x: any) => x.url)).toEqual(["https://ex.com/", "https://ex.com/about"]);
+		expect(g.skipped_by_robots).toContain("https://ex.com/private");
+		// the disallowed page is never fetched
+		expect(mockFetch).not.toHaveBeenCalledWith(expect.anything(), "https://ex.com/private", expect.anything());
+		// robots.txt is fetched at most once for the host
+		expect(mockFetch.mock.calls.filter((c) => c[1] === "https://ex.com/robots.txt").length).toBe(1);
+
+		vi.clearAllMocks();
+		mockFetch.mockImplementation(impl);
+		const open = await crawl.run({} as any, { url: "https://ex.com/", depth: 1, respect_robots: false });
+		const o = JSON.parse(open.content[0].text);
+		expect(o.results.map((x: any) => x.url)).toEqual(["https://ex.com/", "https://ex.com/about", "https://ex.com/private"]);
+		expect(o.skipped_by_robots).toBeUndefined(); // default output unchanged
+		expect(mockFetch).toHaveBeenCalledWith(expect.anything(), "https://ex.com/private", expect.anything());
+		expect(mockFetch).not.toHaveBeenCalledWith(expect.anything(), "https://ex.com/robots.txt", expect.anything());
+	});
+
 	it("caps each page body read at 512KB (links past the cap are not seen)", async () => {
 		const body = `<title>Seed</title><a href="https://ex.com/early">e</a>${"x".repeat(600 * 1024)}<a href="https://ex.com/late">l</a>`;
 		mockFetch.mockImplementation(async (_env: unknown, url: string) => {

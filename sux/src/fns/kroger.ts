@@ -1,3 +1,4 @@
+import { withRetry } from "../proxy";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { normalizeMoney, type RetailProduct } from "./_retail";
 
@@ -16,11 +17,15 @@ const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);
 /** Mint a fresh bearer token from the OAuth endpoint and cache it in KV. */
 async function mintToken(env: RtEnv): Promise<string> {
 	const basic = btoa(`${env.KROGER_CLIENT_ID}:${env.KROGER_CLIENT_SECRET}`);
-	const resp = await fetch(TOKEN_URL, {
-		method: "POST",
-		headers: { Authorization: `Basic ${basic}`, "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
-		body: "grant_type=client_credentials&scope=product.compact",
-	});
+	// A client-credentials mint has no side effect (it just issues a bearer), so it
+	// is safe to retry a transient/rate-limit blip with backoff — same as an idempotent GET.
+	const resp = await withRetry(() =>
+		fetch(TOKEN_URL, {
+			method: "POST",
+			headers: { Authorization: `Basic ${basic}`, "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+			body: "grant_type=client_credentials&scope=product.compact",
+		}),
+	);
 	if (!resp.ok) throw new Error(`OAuth token HTTP ${resp.status}: ${(await resp.text().catch(() => "")).slice(0, 300)}`);
 	const j: any = await resp.json();
 	const token = String(j?.access_token ?? "");
@@ -47,7 +52,10 @@ async function getToken(env: RtEnv): Promise<string> {
  * KV read-after-delete eventual consistency can't hand back the rejected token.
  */
 async function api(env: RtEnv, path: string): Promise<any> {
-	const get = (token: string) => fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } });
+	// GETs are idempotent, so retry transient/rate-limit failures with backoff. A
+	// 401/403 is NOT transient — withRetry passes it straight through, so the
+	// re-mint self-heal below still fires on exactly the first rejected response.
+	const get = (token: string) => withRetry(() => fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } }));
 	let resp = await get(await getToken(env));
 	if (resp.status === 401 || resp.status === 403) {
 		await env.OAUTH_KV.delete(TOKEN_KEY);

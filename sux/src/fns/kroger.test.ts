@@ -167,6 +167,70 @@ describe("kroger", () => {
 		expect(j.products[0].id).toBe("0001111041700");
 	});
 
+	it("retries a transient 503 on the product GET, then returns the success", async () => {
+		let productHits = 0;
+		global.fetch = vi.fn(async (input: any) => {
+			const url = String(input);
+			if (url.includes("/connect/oauth2/token")) return json({ access_token: "TOK", expires_in: 1800 });
+			if (url.includes("/v1/products")) {
+				productHits++;
+				return productHits === 1 ? json({ errors: { reason: "busy" } }, 503) : json(PRODUCTS);
+			}
+			return json({}, 404);
+		}) as any;
+		const r = await kroger.run(keyedEnv(), { action: "search", term: "milk", location_id: "70100123" });
+		expect(r.isError).toBeFalsy();
+		expect(JSON.parse(r.content[0].text).count).toBe(1);
+		expect(productHits).toBe(2); // 503 retried once, then 200
+	});
+
+	it("retries a transient 503 on the token mint, then returns the minted token", async () => {
+		let tokenHits = 0;
+		global.fetch = vi.fn(async (input: any) => {
+			const url = String(input);
+			if (url.includes("/connect/oauth2/token")) {
+				tokenHits++;
+				return tokenHits === 1 ? json({ errors: { reason: "busy" } }, 503) : json({ access_token: "TOK", expires_in: 1800 });
+			}
+			if (url.includes("/v1/products")) return json(PRODUCTS);
+			return json({}, 404);
+		}) as any;
+		const r = await kroger.run(keyedEnv(), { action: "search", term: "milk", location_id: "70100123" });
+		expect(r.isError).toBeFalsy();
+		expect(JSON.parse(r.content[0].text).count).toBe(1);
+		expect(tokenHits).toBe(2); // 503 retried once, then the token issues
+	});
+
+	it("does NOT retry a 401 — the re-mint self-heal fires on the first rejected response", async () => {
+		let productHits = 0;
+		const staleKv = () => {
+			const map = new Map<string, string>([["sux:kroger:token", "STALE"]]);
+			return {
+				map,
+				get: vi.fn(async (k: string) => (map.has(k) ? map.get(k)! : null)),
+				put: vi.fn(async (k: string, v: string) => {
+					map.set(k, v);
+				}),
+				delete: vi.fn(async (_k: string) => {}),
+			};
+		};
+		const env = { KROGER_CLIENT_ID: "id", KROGER_CLIENT_SECRET: "sec", OAUTH_KV: staleKv() } as any;
+		global.fetch = vi.fn(async (input: any, init: any) => {
+			const url = String(input);
+			if (url.includes("/connect/oauth2/token")) return json({ access_token: "FRESH", expires_in: 1800 });
+			if (url.includes("/v1/products")) {
+				productHits++;
+				const auth = init?.headers?.Authorization ?? "";
+				return auth === "Bearer FRESH" ? json(PRODUCTS) : json({ errors: { reason: "revoked" } }, 401);
+			}
+			return json({}, 404);
+		}) as any;
+		const r = await kroger.run(env, { action: "search", term: "milk", location_id: "70100123" });
+		expect(r.isError).toBeFalsy();
+		// One rejected GET (STALE→401) + one fresh GET — the 401 was NOT retried by withRetry.
+		expect(productHits).toBe(2);
+	});
+
 	it("carries the upstream HTTP status into the failure message", async () => {
 		installFetch();
 		global.fetch = vi.fn(async (input: any) => {

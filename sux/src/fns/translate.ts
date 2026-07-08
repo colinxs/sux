@@ -23,6 +23,13 @@ export const translate: Fn = {
 		if (!text) return fail("Provide `text`.");
 		if (!to) return fail("Provide target language `to`.");
 		try {
+			// No prompt-injection fence here (unlike summarize/classify, which run through
+			// the instruction-following llm()): m2m100 is a pure seq2seq translation model
+			// with no system/instruction channel — it transliterates whatever text it's
+			// given and cannot "follow" embedded instructions, so there is no instruction
+			// surface to hijack. Fencing the text with <<<DATA>>> markers would instead
+			// corrupt the translation (the model would translate the markers). The content
+			// is already processed strictly as data.
 			const r = await (env as any).AI.run(MODELS.translate, {
 				text: text.slice(0, 24_000),
 				target_lang: to,
