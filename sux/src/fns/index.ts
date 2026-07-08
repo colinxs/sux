@@ -67,6 +67,7 @@ import { linkedin } from "./linkedin";
 import { lowes } from "./lowes";
 import { markdown } from "./markdown";
 import { openalex } from "./openalex";
+import { oracle } from "./oracle";
 import { pdf } from "./pdf";
 import { people } from "./people";
 import { people_finder } from "./people_finder";
@@ -157,6 +158,7 @@ export const FUNCTIONS: Fn[] = [
 	lowes,
 	markdown,
 	openalex,
+	oracle,
 	pdf,
 	people,
 	people_finder,
