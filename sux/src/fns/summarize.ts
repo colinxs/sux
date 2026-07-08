@@ -53,6 +53,7 @@ export const summarize: Fn = {
 				`You are a precise summarizer. Produce ${shape}. Stay under ${maxWords} words. No preamble.`,
 				input.slice(0, 24_000),
 				Math.ceil(maxWords * 2),
+				"summarize",
 			);
 			// An empty model output is a failure, not a summary — fail() (never cached)
 			// instead of serving "(empty summary)" for the next hour on a transient hiccup.

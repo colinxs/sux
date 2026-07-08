@@ -29,6 +29,7 @@ export const classify: Fn = {
 				`Classify the text into ${multi ? "all applicable labels" : "exactly one label"} from: ${labels.join(", ")}. Reply as JSON: {"labels":[...],"why":"..."}. Use only the given labels.`,
 				text.slice(0, 12_000),
 				200,
+				"classify",
 			);
 			const json = out.match(/\{[\s\S]*\}/)?.[0];
 			if (json) {
