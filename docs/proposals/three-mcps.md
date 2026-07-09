@@ -1,90 +1,83 @@
-# Three MCPs — vault · jmap · sux
+# Three MCP namespaces — vault · mail · sux
 
-Split the monolith into three focused MCP connectors, each owning one domain. Claude connects to all three and composes them. The knowledge/note/oracle interface is the `vault` MCP; email is `jmap`; web search is `sux`.
+**Corrected 2026-07-09 after reading the branch.** The earlier draft proposed 3 separate workers and a parallel verb vocabulary; both were wrong. The real architecture is Colin's (commit 220ed15) and the vault namespace is already built (`sux/src/vault-mcp.ts`). This doc now reflects reality.
 
-## The three
+## Architecture — one Worker, N connector namespaces
 
-| MCP | Domain | Transport |
-|---|---|---|
-| **vault** | Your Obsidian knowledge store — notes, knowledge lifecycle, oracle | Two: local (Local REST API over Tailscale, live vault, preferred) / cloud (worker → `colinxs/vault` git) when off-tailnet or Mac asleep. One interface, routed at runtime. |
-| **jmap** | Fastmail email, full JMAP | One: `api.fastmail.com` (public cloud API), token as worker secret — reachable from anywhere. |
-| **sux** | Web search & retrieval, residentially-proxied | One: the existing sux worker, refocused. |
+> "one Worker + one OAuth + N connector namespaces; `sux/mcp` = universal capabilities, each personal domain = its own `/<domain>/mcp` endpoint + its own plugin." — commit 220ed15
 
----
+| Endpoint | Domain | Plugin | Status |
+|---|---|---|---|
+| `/mcp` | **sux** — universal web search + utilities (non-personal) | sux-router | live |
+| `/vault/mcp` | **vault** — personal Obsidian store | sux-vault | **built** (`vault-mcp.ts`) |
+| `/mail/mcp` | **mail** — Fastmail full JMAP | sux-mail | planned |
 
-## `vault` MCP — the knowledge/note/oracle interface
+All behind the same `workers-oauth-provider` flow, so each appears as its own connector in claude.ai with zero new public surface / zero new infra. Plugins auto-register connectors in **Claude Code**; the claude.ai web/mobile app still needs a manual connector add.
 
-Six verbs in three tiers. The `note` tier is the CRUD primitive everything else composes; the knowledge tier is the lifecycle; the oracle tier is the query.
-
-### note tier — the primitive
-| verb | args | contract |
-|---|---|---|
-| **note** | `action` (get\|put\|patch\|append\|delete\|list\|search), `path`, `content?`, `query?` | Direct CRUD + search over a note by path. Maps to the Local REST API (local) or the git backend (cloud). `patch` = heading/block-relative surgical edit. The substrate. |
-
-### knowledge tier — the lifecycle
-| verb | args | contract |
-|---|---|---|
-| **capture** | `text`, `source?` (chat\|clip\|email\|url), `to?` (Inbox\|Daily) | Append a raw item to `Inbox/` (or today's `Daily/`) with baseline frontmatter + provenance. Zero polishing, <10s. Intake only — never files or edits. |
-| **remember** | `fact`, `type` (project\|reference\|user\|feedback), `links?` | Write one durable, memory-typed fact per file (`metadata.node_type: memory`) and index its line in the relevant MOC. Claude's own durable knowledge. |
-| **organize** | `scope?` (inbox\|orphans\|topic) | Triage `Inbox/` (file / promote / discard) + wire notes into MOCs + heal orphans; flag when 4+ siblings warrant a new MOC. Runs on a cadence, not per-capture. |
-| **consolidate** | `scope?` | Periodic GC (memory's consolidate lifecycle): merge overlaps, retire stale, absolutize dates, prune the re-findable, re-fit each MOC to its ~200-line budget. |
-
-### oracle tier — the query
-| verb | args | contract |
-|---|---|---|
-| **ask** | `query`, `write_back?` | Retrieve via the ladder (MOC → Local REST search / DQL → whole-note read → Smart Connections semantic fallback → link-follow, cap ~12 notes) and answer with `[[note#heading]]` citations. Optionally write the synthesis back as a keepable note. |
-
-**Two skills carry these** (per the core decisions): a cheap **capture/remember** skill and a careful **organize/consolidate** skill; `note` and `ask` are the shared substrate both use. Writes are unblocked — git is the undo.
+**Transports for the vault** (both first-class, different endpoints — not one router):
+- **Cloud** = `/vault/mcp`, git store (`colinxs/vault`, every write a revertible commit, KV-cached). Works with no box awake. This is v1.
+- **Local/desktop** = the live vault (Local REST API) via the **mcp-gate** wrapper on the tailnet — used where git can't serve (full-text search: GitHub code search is dead on private repos).
+- **Tier-2** = a `vpc` backend (CF Workers VPC → live vault privately) is the planned path to give the *cloud* endpoint live-vault search too. See [[workers-vpc-vault-path]].
 
 ---
 
-## `jmap` MCP — Fastmail email
+## `vault` MCP — the built surface (git, cloud, v1)
 
-| verb | args | contract |
-|---|---|---|
-| **mail** | `action` (search\|read\|send\|draft\|archive\|label\|masked), … | Ergonomic everyday email. `masked` = create a masked-email address (the connector can't). Send/destroy gated. |
-| **jmap** | `{using, methodCalls}` \| `{method, args}` | Raw full-protocol JMAP escape hatch — the whole surface (Email/Mailbox/Thread/Submission/masked/contacts/calendars), auto batch/paginate around limits, byte-exact. Per `jmap.md`; security model intact (scoped token, send/destroy gated, `cacheable:false`). |
+Nine tools (`vault-mcp.ts`), all dispatching through the `obsidian` fn's git backend. Prior art: `jimprosser/obsidian-web-mcp` (confirm-gated delete, daily verbs, tight schemas — kept; its OAuth/atomic-write/path-guard machinery — not re-implemented, we have our own).
 
----
-
-## `sux` MCP — web search & retrieval
-
-| verb | args | contract |
-|---|---|---|
-| **search** | `query`, `backends?`, `filter?` | Web/research search across Kagi + engines, residentially-proxied, direct-fallback. |
-| **fetch** | `url`, `render?` | Retrieve a page through the scrape → render → render:mac escalation ladder (beats bot walls). |
-
-(The worker keeps its utility fns — extract, convert, etc. — but the headline verbs are `search` + `fetch`.)
-
----
-
-## Composition — Claude is the cross-source oracle
-
-The three MCPs stay focused; Claude orchestrates across them. Each answers over its own domain:
-
-| Intent | Composition |
+| tool | contract |
 |---|---|
-| ask my notes | `vault.ask` |
-| ask my mail | `jmap.mail search` |
-| search the web | `sux.search` |
-| **ask everything** | Claude fans `vault.ask` + `jmap.mail` + `sux.search`, synthesizes, cites per source (the "Ask Your Org" pattern over your own domains) |
-| capture an email as a note | `jmap.mail read` → `vault.capture` |
-| research X and file it | `sux.search`/`fetch` → `vault.capture` or `remember` |
+| `vault_read` | read a note by path |
+| `vault_list` | list notes, optional folder |
+| `vault_write` | create/overwrite (every write a commit) |
+| `vault_append` | append, create if absent |
+| `vault_edit` | surgical find/replace, must match exactly once unless `all` |
+| `vault_delete` | delete, **requires `confirm:true`** (git keeps it recoverable) |
+| `vault_capture` | url \| text \| query → `Inbox/` with provenance frontmatter (via the `ingest` fn); optional summarize/compress; never overwrites |
+| `vault_daily_read` | read today's daily note |
+| `vault_daily_append` | append to today's daily (the quick task/jot surface) |
 
-No MCP calls another (clean separation); the composition lives in Claude.
+This is the **note tier + capture + daily** — the primitives. It's done and shippable.
 
 ---
 
-## Build plan
+## What's actually missing (the real gap)
 
-**Phase 1 — `vault` MCP (the core, first).**
-1. `note` primitive over both transports; **add the git-backend gap-fills** (`patch`/`delete`/`put`) so cloud/mobile matches local op-parity.
-2. `capture` + `remember` — the cheap intake skill. (First useful thing — starts paying down the 24-item Inbox.)
-3. `organize` + `consolidate` — the maintenance skill.
-4. `ask` — the oracle: wire the retrieval ladder.
+The primitives are built. What is NOT yet built, and where my earlier "verbs" belong:
 
-**Phase 2 — `jmap` MCP.** Ship `jmap` (raw, per jmap.md) + `mail` (ergonomic). Token as worker secret. Wire email into `vault.capture` (capture-from-email) and into `ask` as a source.
+**As tools (server-side), the genuine additions:**
+- `vault_search` — full-text/structured search. Deferred: needs the live host (git code-search is dead on private repos), lands with the tier-2 `vpc` backend. The one primitive still missing.
 
-**Phase 3 — `sux` MCP.** Refocus the existing worker as the search MCP: `search` + `fetch`. Wire into `ask` as a web source.
+**As SKILLS (Claude-side, not server tools) — this is the correction to my earlier design:**
+The lifecycle and the oracle are **skills that orchestrate the tools above**, per the core decision (two skills). They are NOT vault-MCP verbs:
+- **capture / remember skill** — cheap intake (`vault_capture`) + durable memory-typed facts (a `vault_write` with the memory frontmatter contract, indexed into a MOC).
+- **organize / consolidate skill** — triage the Inbox, wire notes into MOCs, heal orphans (`vault_list`+`read`+`edit`+`write`); periodic GC.
+- **ask (the oracle)** — the retrieval ladder (MOC → search → read → semantic → link-follow → cite). A Claude behavior over the tools, not a server verb.
 
-Each ships as its own connector; the `vault` core lands first, and it's independently useful before jmap/sux are split out.
+So the corrected model: **vault MCP = primitive tools; the knowledge lifecycle + oracle = skills.** The built `vault-mcp.ts` already got this right (tools are primitives); my earlier draft wrongly promoted skills to server verbs.
+
+---
+
+## `mail` MCP — planned (`/mail/mcp`, sux-mail plugin)
+
+Full JMAP per [[jmap.md]]: `mail` (ergonomic: search/read/send/draft/archive/label/masked) + `jmap` (raw full-protocol escape hatch). Token as worker secret; send/destroy gated; `cacheable:false`. Same namespace pattern as vault.
+
+## `sux` MCP — the universal endpoint (`/mcp`)
+
+Web search + fetch + utilities (the non-personal capabilities). Already live.
+
+## Composition
+
+No namespace calls another; Claude composes. `vault_capture` from a `mail` read; `ask` fans vault + mail + sux and cites per source.
+
+---
+
+## Plan (corrected)
+
+1. **vault primitives — DONE.** `vault_*` CRUD + capture + daily are built and shippable.
+2. **`vault_search`** — add with the tier-2 `vpc` backend (or lean on the mcp-gate live path on desktop meanwhile).
+3. **The two skills** — capture/remember + organize/consolidate, orchestrating the vault tools. (The paused "fun part.")
+4. **`ask`** — the oracle skill (retrieval ladder + citations).
+5. **`/mail/mcp`** — the sux-mail plugin + JMAP tools; wire into capture + ask.
+
+The vault namespace is real and usable today; the work left is the search primitive + the skills + the mail namespace.
