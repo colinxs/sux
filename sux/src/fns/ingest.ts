@@ -1,7 +1,7 @@
 import { type Fn, fail, ok } from "../registry";
 import { htmlToMd } from "./_markup";
 import { clamp, loadBytes, putBlob, vaultToday } from "./_util";
-import { dropboxPut } from "./dropbox";
+import { dropboxPut, hasDropbox } from "./dropbox";
 import { type VaultCfg, vaultCfg, vaultPut } from "./obsidian";
 
 // Capture — the intake half of the knowledge core (docs/proposals/domains.md §3).
@@ -10,7 +10,7 @@ import { type VaultCfg, vaultCfg, vaultPut } from "./obsidian";
 // KV cache). Blob routing for non-markdown sources: ≤1MB is committed into the
 // vault repo as an attachment (a vault is allowed to hold small binaries);
 // larger — or blobs:"dropbox" — uploads to the Dropbox app folder and the note
-// carries the shared link; R2 is the fallback when DROPBOX_TOKEN is unset.
+// carries the shared link; R2 is the fallback when Dropbox isn't configured
 // Notes are cheap intake, never polished — triage promotes them later.
 const BLOB_VAULT_MAX = 1_048_576;
 const BODY_MAX = 150_000;
@@ -78,7 +78,7 @@ export const ingest: Fn = {
 	name: "ingest",
 	cost: 3,
 	description:
-		"Capture into the Obsidian vault (git-backed = the undo; the KV cache is warmed). Exactly one source: url (HTML → markdown; text files verbatim; binary files become attachments; fetch cap 32MB) | text (verbatim body) | query (web-search results). Writes a provenance-stamped note (frontmatter type/created/source/tags) to Inbox/<date> <slug>.md — never overwriting (collisions get a time suffix) — or to an explicit `path` (overwrites). Bodies over 150k chars are truncated with a marker. Optional passes (skipped for binary captures, degrade to verbatim when AI is unavailable): summarize:true prepends an AI summary section; compress:true stores only the distilled summary — for url sources the original stays re-fetchable via provenance; for text/query the original is not retained. Blob routing: ≤1MB commits into the vault repo (![[Attachments/…]]); larger — or blobs:'dropbox' — uploads to the Dropbox app folder and the note links the shared URL (PUBLIC anyone-with-the-link; R2 fallback when DROPBOX_TOKEN is unset). Returns { note, created, commit, source, pass?, blob? }.",
+		"Capture into the Obsidian vault (git-backed = the undo; the KV cache is warmed). Exactly one source: url (HTML → markdown; text files verbatim; binary files become attachments; fetch cap 32MB) | text (verbatim body) | query (web-search results). Writes a provenance-stamped note (frontmatter type/created/source/tags) to Inbox/<date> <slug>.md — never overwriting (collisions get a time suffix) — or to an explicit `path` (overwrites). Bodies over 150k chars are truncated with a marker. Optional passes (skipped for binary captures, degrade to verbatim when AI is unavailable): summarize:true prepends an AI summary section; compress:true stores only the distilled summary — for url sources the original stays re-fetchable via provenance; for text/query the original is not retained. Blob routing: ≤1MB commits into the vault repo (![[Attachments/…]]); larger — or blobs:'dropbox' — uploads to the Dropbox app folder and the note links the shared URL (PUBLIC anyone-with-the-link; R2 fallback when Dropbox isn't configured — either DROPBOX_TOKEN or the DROPBOX_REFRESH_TOKEN+APP_KEY durable flow). Returns { note, created, commit, source, pass?, blob? }.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -144,16 +144,17 @@ export const ingest: Fn = {
 					title ||= name;
 					const meta = [`- size: ${bytes.length} bytes`, ct ? `- content-type: ${ct}` : ""].filter(Boolean);
 					if (args?.blobs === "dropbox" || bytes.length > BLOB_VAULT_MAX) {
-						if (env.DROPBOX_TOKEN) {
+						if (hasDropbox(env)) {
 							// overwrite:false → Dropbox autorenames on collision (date-prefixed
 							// so same-name files from different days never even collide); up.path
-							// reflects the real stored name.
+							// reflects the real stored name. hasDropbox — NOT env.DROPBOX_TOKEN —
+							// so the durable refresh-token config (the production path) routes here.
 							const up = await dropboxPut(env, `/attachments/${date}-${name}`, bytes, { overwrite: false });
 							if ("error" in up) return fail(up.error);
 							blob = { placement: "dropbox", link: up.url ?? up.path, size: bytes.length, content_type: ct || undefined };
 						} else {
 							const ref = await putBlob(env, bytes, ct || "application/octet-stream");
-							blob = { placement: "r2 (DROPBOX_TOKEN unset)", link: ref.url, size: bytes.length, content_type: ct || undefined };
+							blob = { placement: "r2 (Dropbox not configured)", link: ref.url, size: bytes.length, content_type: ct || undefined };
 						}
 						body = [
 							/^https?:/.test(blob.link) ? `[${name}](${blob.link})` : `Dropbox: \`${blob.link}\` (no shared link minted — check the token's sharing scope)`,

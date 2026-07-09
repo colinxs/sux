@@ -129,6 +129,28 @@ describe("ingest (capture → vault)", () => {
 		expect(JSON.parse(r.content[0].text).blob.placement).toBe("dropbox");
 	});
 
+	it("routes blobs to Dropbox under the DURABLE refresh config (no static DROPBOX_TOKEN)", async () => {
+		// The production config: refresh token + app key, NO static DROPBOX_TOKEN.
+		// Regression for the final-analysis HIGH — this used to fall back to R2.
+		const gh = ghMock();
+		const big = new Uint8Array(1_100_000);
+		routes.handler = (url, init) => {
+			if (url.includes("api.github.com")) return gh.handler(url, init);
+			return new Response(big, { status: 200, headers: { "content-type": "application/zip" } });
+		};
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL) => {
+			const s = String(u);
+			if (s === "https://api.dropbox.com/oauth2/token") return new Response(JSON.stringify({ access_token: "sl.fresh", expires_in: 14400 }), { status: 200 });
+			if (s.endsWith("/files/upload")) return new Response(JSON.stringify({ path_display: "/attachments/big.zip", size: big.length }), { status: 200 });
+			return new Response(JSON.stringify({ url: "https://www.dropbox.com/s/x/big.zip" }), { status: 200 });
+		}));
+		const env = { ...ENV, DROPBOX_REFRESH_TOKEN: "rt", DROPBOX_APP_KEY: "ak", OAUTH_KV: { get: async () => null, put: async () => {}, delete: async () => {} } } as any;
+		const r = await ingest.run(env, { url: "https://files.example/big.zip" });
+		const out = JSON.parse(r.content[0].text);
+		expect(out.blob.placement).toBe("dropbox"); // NOT r2
+		expect(out.blob.link).toBe("https://www.dropbox.com/s/x/big.zip");
+	});
+
 	it("explicit path overrides the Inbox default", async () => {
 		const gh = ghMock();
 		routes.handler = gh.handler;

@@ -47,6 +47,28 @@ describe("dropbox (app-folder blob store)", () => {
 		expect(r.content[0].text).toMatch(/refresh token revoked|invalid_grant/);
 	});
 
+	it("on a 401 (revoked access token) it drops the cache and re-mints once", async () => {
+		// A stale token sits in KV; Dropbox 401s it; the fn must re-mint and succeed.
+		const kv = fakeKV({ "sux:dropbox:token": "sl.stale" });
+		const env = { DROPBOX_REFRESH_TOKEN: "rt", DROPBOX_APP_KEY: "ak", OAUTH_KV: kv } as any;
+		let mints = 0;
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
+			const url = String(u);
+			if (url === "https://api.dropbox.com/oauth2/token") {
+				mints++;
+				return new Response(JSON.stringify({ access_token: "sl.fresh", expires_in: 14400 }), { status: 200 });
+			}
+			const bearer = init.headers.Authorization;
+			if (bearer === "Bearer sl.stale") return new Response(JSON.stringify({ error_summary: "invalid_access_token/" }), { status: 401 });
+			expect(bearer).toBe("Bearer sl.fresh"); // retried with the freshly minted token
+			return new Response(JSON.stringify({ entries: [], has_more: false }), { status: 200 });
+		}));
+		const r = await dropbox.run(env, { op: "list" });
+		expect(r.isError).toBeFalsy();
+		expect(mints).toBe(1); // re-minted exactly once
+		expect(kv.store.get("sux:dropbox:token")).toBe("sl.fresh");
+	});
+
 	it("put uploads bytes and returns a fresh shared link", async () => {
 		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
 			const url = String(u);

@@ -37,7 +37,19 @@ async function dropboxToken(env: RtEnv): Promise<string> {
 	throw new Error("Dropbox not configured. Set DROPBOX_REFRESH_TOKEN + DROPBOX_APP_KEY (+ DROPBOX_APP_SECRET) for the durable refresh flow, or DROPBOX_TOKEN for a short-lived quick test.");
 }
 
-const hasDropbox = (env: RtEnv): boolean => Boolean((env.DROPBOX_REFRESH_TOKEN && env.DROPBOX_APP_KEY) || env.DROPBOX_TOKEN);
+/** True when Dropbox is usable by EITHER path — the durable refresh flow or a
+ * static token. Callers (incl. ingest's blob routing) must gate on this, not on
+ * env.DROPBOX_TOKEN alone, or the recommended durable-only config looks unset. */
+export const hasDropbox = (env: RtEnv): boolean => Boolean((env.DROPBOX_REFRESH_TOKEN && env.DROPBOX_APP_KEY) || env.DROPBOX_TOKEN);
+
+/** Drop the cached access token so the next call re-mints from the refresh token.
+ * Called on a 401 so a server-side revocation (app disconnect / password change)
+ * self-heals on the next request instead of failing for the whole KV TTL (~4h). */
+async function invalidateToken(env: RtEnv): Promise<void> {
+	try {
+		await env.OAUTH_KV?.delete(TOKEN_KEY);
+	} catch {}
+}
 const TEXT_EXT = /\.(md|txt|json|csv|tsv|ya?ml|xml|html?|js|ts|css)$/i;
 /** Above this, get returns metadata + a share hint instead of inlining bytes. */
 const MAX_INLINE_BYTES = 4 * 1024 * 1024;
@@ -54,25 +66,34 @@ const norm = (p: unknown): string => {
 };
 
 // Direct fetch throughout: Dropbox is a public API — no residential-proxy
-// routing needed (same call as obsidian's remoteFetch to its Funnel). Callers
-// pass a resolved bearer (dropboxToken) so one refresh serves a whole op.
-async function rpc(token: string, path: string, body: unknown): Promise<{ status: number; json: any }> {
-	const resp = await fetch(`${API}${path}`, {
+// routing needed (same call as obsidian's remoteFetch to its Funnel). All calls
+// go through dbxFetch: it resolves the (KV-cached) bearer and, on a 401 under the
+// refresh flow, drops the cache and re-mints once — so a server-side revocation
+// self-heals on the next request instead of failing for the whole ~4h TTL.
+async function dbxFetch(env: RtEnv, url: string, build: (token: string) => RequestInit): Promise<Response> {
+	const first = await fetch(url, build(await dropboxToken(env)));
+	if (first.status !== 401 || !(env.DROPBOX_REFRESH_TOKEN && env.DROPBOX_APP_KEY)) return first;
+	await invalidateToken(env);
+	return fetch(url, build(await dropboxToken(env)));
+}
+
+async function rpc(env: RtEnv, path: string, body: unknown): Promise<{ status: number; json: any }> {
+	const resp = await dbxFetch(env, `${API}${path}`, (token) => ({
 		method: "POST",
 		headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
 		body: JSON.stringify(body),
 		signal: AbortSignal.timeout(20_000),
-	});
+	}));
 	const json: any = await resp.json().catch(() => null);
 	return { status: resp.status, json };
 }
 
 /** Create a shared link for a path, reusing the existing one on 409. */
-async function sharedLink(token: string, path: string): Promise<string | undefined> {
-	const mk = await rpc(token, "/sharing/create_shared_link_with_settings", { path });
+async function sharedLink(env: RtEnv, path: string): Promise<string | undefined> {
+	const mk = await rpc(env, "/sharing/create_shared_link_with_settings", { path });
 	if (mk.status === 200 && mk.json?.url) return mk.json.url;
 	if (String(mk.json?.error_summary ?? "").includes("shared_link_already_exists")) {
-		const ls = await rpc(token, "/sharing/list_shared_links", { path, direct_only: true });
+		const ls = await rpc(env, "/sharing/list_shared_links", { path, direct_only: true });
 		return ls.json?.links?.[0]?.url;
 	}
 	return undefined;
@@ -83,9 +104,8 @@ async function sharedLink(token: string, path: string): Promise<string | undefin
  * overwrite:false for a never-clobber upload — Dropbox autorenames on collision
  * (e.g. "report (1).pdf") and the returned `path` reflects the actual name. */
 export async function dropboxPut(env: RtEnv, path: string, bytes: Uint8Array, opts?: { overwrite?: boolean }): Promise<{ path: string; size: number; url?: string } | { error: string }> {
-	const token = await dropboxToken(env);
 	const clobber = opts?.overwrite !== false;
-	const resp = await fetch(`${CONTENT}/files/upload`, {
+	const resp = await dbxFetch(env, `${CONTENT}/files/upload`, (token) => ({
 		method: "POST",
 		headers: {
 			Authorization: `Bearer ${token}`,
@@ -94,11 +114,11 @@ export async function dropboxPut(env: RtEnv, path: string, bytes: Uint8Array, op
 		},
 		body: bytes as BodyInit,
 		signal: AbortSignal.timeout(60_000),
-	});
+	}));
 	const json: any = await resp.json().catch(() => null);
 	if (resp.status >= 400) return { error: `Dropbox upload error: ${json?.error_summary ?? `HTTP ${resp.status}`}` };
 	const stored = json?.path_display ?? path;
-	return { path: stored, size: json?.size ?? bytes.length, url: await sharedLink(token, stored) };
+	return { path: stored, size: json?.size ?? bytes.length, url: await sharedLink(env, stored) };
 }
 
 export const dropbox: Fn = {
@@ -127,7 +147,6 @@ export const dropbox: Fn = {
 		const op = String(args?.op ?? "");
 		const path = norm(args?.path);
 		try {
-			const token = await dropboxToken(env);
 			if (op === "put") {
 				if (!path) return fail("op=put requires a `path`.");
 				let bytes: Uint8Array;
@@ -142,7 +161,7 @@ export const dropbox: Fn = {
 				if (!path) return fail("op=get requires a `path`.");
 				// Metadata first: an oversize file must never be buffered into the
 				// isolate (128MB limit) just to learn it is too big.
-				const meta = await rpc(token, "/files/get_metadata", { path });
+				const meta = await rpc(env, "/files/get_metadata", { path });
 				if (meta.status >= 400) return fail(`Dropbox error: ${meta.json?.error_summary ?? `HTTP ${meta.status}`} (${path})`);
 				if (meta.json?.[".tag"] === "folder") return fail(`'${path}' is a folder — use op=list.`);
 				// Trust the metadata size as the gate; if it is absent (anomalous — a
@@ -150,13 +169,13 @@ export const dropbox: Fn = {
 				const size = Number(meta.json?.size);
 				if (!Number.isFinite(size)) return fail(`Dropbox returned no size for '${path}'; refusing to download an unbounded body.`);
 				if (size > MAX_INLINE_BYTES) {
-					return ok(JSON.stringify({ path, size, too_large_to_inline: true, url: await sharedLink(token, path) }, null, 2));
+					return ok(JSON.stringify({ path, size, too_large_to_inline: true, url: await sharedLink(env, path) }, null, 2));
 				}
-				const resp = await fetch(`${CONTENT}/files/download`, {
+				const resp = await dbxFetch(env, `${CONTENT}/files/download`, (token) => ({
 					method: "POST",
 					headers: { Authorization: `Bearer ${token}`, "Dropbox-API-Arg": headerSafeJson({ path }) },
 					signal: AbortSignal.timeout(60_000),
-				});
+				}));
 				if (resp.status >= 400) return fail(`Dropbox download error: ${(await resp.text().catch(() => "")).slice(0, 200) || `HTTP ${resp.status}`}`);
 				const bytes = new Uint8Array(await resp.arrayBuffer());
 				if (TEXT_EXT.test(path)) return ok(new TextDecoder().decode(bytes));
@@ -164,8 +183,8 @@ export const dropbox: Fn = {
 			}
 			if (op === "list") {
 				const { status, json } = args?.cursor
-					? await rpc(token, "/files/list_folder/continue", { cursor: String(args.cursor) })
-					: await rpc(token, "/files/list_folder", { path, recursive: false, limit: 500 });
+					? await rpc(env, "/files/list_folder/continue", { cursor: String(args.cursor) })
+					: await rpc(env, "/files/list_folder", { path, recursive: false, limit: 500 });
 				if (status >= 400) return fail(`Dropbox list error: ${json?.error_summary ?? `HTTP ${status}`}`);
 				const entries = (json?.entries ?? []).map((e: any) => ({ kind: e?.[".tag"], name: e?.name, path: e?.path_display, size: e?.size }));
 				const hasMore = json?.has_more === true;
@@ -173,13 +192,13 @@ export const dropbox: Fn = {
 			}
 			if (op === "delete") {
 				if (!path) return fail("op=delete requires a `path`.");
-				const { status, json } = await rpc(token, "/files/delete_v2", { path });
+				const { status, json } = await rpc(env, "/files/delete_v2", { path });
 				if (status >= 400) return fail(`Dropbox delete error: ${json?.error_summary ?? `HTTP ${status}`} (${path})`);
 				return ok(JSON.stringify({ ok: true, deleted: json?.metadata?.path_display ?? path }, null, 2));
 			}
 			if (op === "share") {
 				if (!path) return fail("op=share requires a `path`.");
-				const url = await sharedLink(token, path);
+				const url = await sharedLink(env, path);
 				if (!url) return fail(`Could not create a shared link for ${path}.`);
 				return ok(JSON.stringify({ path, url }, null, 2));
 			}
