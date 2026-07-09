@@ -54,6 +54,7 @@ import { costco } from "./costco";
 import { crossref } from "./crossref";
 import { csv } from "./csv";
 import { declutter } from "./declutter";
+import { dropbox } from "./dropbox";
 import { ebay } from "./ebay";
 import { facebook } from "./facebook";
 import { fillable } from "./fillable";
@@ -61,6 +62,7 @@ import { find_similar } from "./find_similar";
 import { fontcase } from "./fontcase";
 import { homedepot } from "./homedepot";
 import { html } from "./html";
+import { ingest } from "./ingest";
 import { json } from "./json";
 import { kroger } from "./kroger";
 import { linkedin } from "./linkedin";
@@ -83,8 +85,6 @@ import { shop } from "./shop";
 import { stackexchange } from "./stackexchange";
 import { store } from "./store";
 import { obsidian } from "./obsidian";
-import { dropbox } from "./dropbox";
-import { ingest } from "./ingest";
 import { tailscale } from "./tailscale";
 import { tavily } from "./tavily";
 import { voice } from "./voice";
@@ -147,6 +147,7 @@ export const FUNCTIONS: Fn[] = [
 	crossref,
 	csv,
 	declutter,
+	dropbox,
 	ebay,
 	facebook,
 	fillable,
@@ -154,6 +155,7 @@ export const FUNCTIONS: Fn[] = [
 	fontcase,
 	homedepot,
 	html,
+	ingest,
 	json,
 	kroger,
 	linkedin,
@@ -176,8 +178,6 @@ export const FUNCTIONS: Fn[] = [
 	stackexchange,
 	store,
 	obsidian,
-	dropbox,
-	ingest,
 	tailscale,
 	tavily,
 	voice,
