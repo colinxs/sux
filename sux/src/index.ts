@@ -355,6 +355,12 @@ export const rtServer = {
 			const { handleMailRpc } = await import("./mail-mcp");
 			return handleMailRpc(env, ctx, rpc, bodyText?.length ?? 0);
 		}
+		// The files MCP server (personal blob workspace over the app-folder dropbox)
+		// — a fourth connector at its own path on the same OAuth gate.
+		if (pathname === "/files/mcp" || pathname.startsWith("/files/mcp/")) {
+			const { handleFilesRpc } = await import("./files-mcp");
+			return handleFilesRpc(env, ctx, rpc, bodyText?.length ?? 0);
+		}
 		// Weighted rate limit: expensive tools (render/Kagi/SerpAPI/Workers AI)
 		// consume extra tokens beyond the base 1 charged above, so a burst of paid
 		// calls drains the budget faster than free deterministic fns (see Fn.cost).
@@ -377,7 +383,7 @@ async function getOAuthProvider(): Promise<OAuthProvider> {
 		]);
 		oauthProvider = new OAuthProviderCtor({
 			apiHandler: rtServer as any,
-			apiRoute: ["/mcp", "/vault/mcp", "/mail/mcp"],
+			apiRoute: ["/mcp", "/vault/mcp", "/mail/mcp", "/files/mcp"],
 			authorizeEndpoint: "/authorize",
 			clientRegistrationEndpoint: "/register",
 			defaultHandler: GitHubHandler as any,

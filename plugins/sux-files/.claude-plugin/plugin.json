@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "sux-files",
+  "displayName": "sux files",
+  "version": "0.1.0",
+  "description": "Registers the personal file-workspace MCP connector (/files/mcp): list/read/write/upload/share/delete over your Dropbox app folder (scope-is-the-wall — it can only see /Apps/<app>/), plus the raw `dropbox` escape hatch. Where blobs live (PDFs, images, exports) while the vault holds the note about them. Same Worker, same OAuth; a focused namespace kept separate from the universal `sux` connector. Needs DROPBOX_REFRESH_TOKEN; degrades to a clear not-configured message otherwise.",
+  "author": {
+    "name": "colinxs"
+  },
+  "homepage": "https://sux.colinxs.workers.dev",
+  "repository": "https://github.com/colinxs/sux",
+  "license": "MIT",
+  "keywords": ["mcp", "files", "dropbox", "storage", "blobs", "personal"],
+  "mcpServers": {
+    "files": {
+      "type": "http",
+      "url": "https://sux.colinxs.workers.dev/files/mcp"
+    }
+  }
+}
