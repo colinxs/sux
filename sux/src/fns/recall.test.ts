@@ -84,4 +84,13 @@ describe("recall", () => {
 		expect(obs).toHaveBeenCalled();
 		expect(mail).toHaveBeenCalled();
 	});
+
+	it("strips OBSIDIAN_VAULT_DIR from search-hit paths before reading (no double-prefix 404)", async () => {
+		obs.mockImplementation(async (_e: any, a: any) => (a.action === "search" ? okR(JSON.stringify({ hits: [{ path: "notes/Areas/Health.md" }] })) : okR("Dr. Chen is my oncologist.")));
+		const dirEnv = { AI: { run: aiRun }, OBSIDIAN_VAULT_DIR: "notes" } as any;
+		const out = parse(await recall.run(dirEnv, { question: "oncologist?", sources: ["vault"] }));
+		const readCall = obs.mock.calls.find((c: any) => c[1].action === "read");
+		expect(readCall?.[1].path).toBe("Areas/Health.md"); // vault-relative, not the double-prefixed repo path
+		expect(out.sources.vault).toBe("1 hit(s)"); // vault contributed rather than being silently dropped
+	});
 });

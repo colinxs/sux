@@ -36,11 +36,17 @@ async function fromVault(env: RtEnv, question: string): Promise<Gathered> {
 	const r = await obsidian.run(env, { action: "search", query: question, backend: "git" });
 	if (r.isError) throw new Error(r.content?.[0]?.text ?? "vault search failed");
 	const hits = (pj(r.content?.[0]?.text ?? "")?.hits ?? []) as Array<{ path?: string }>;
+	// Git code-search returns REPO-relative paths (they include any OBSIDIAN_VAULT_DIR
+	// prefix), but obsidian `read` expects a VAULT-relative path and re-applies the dir
+	// itself — strip the dir here so the read doesn't double-prefix into a 404 that would
+	// silently drop the whole vault source.
+	const dir = String((env as { OBSIDIAN_VAULT_DIR?: string }).OBSIDIAN_VAULT_DIR ?? "").replace(/^\/+|\/+$/g, "");
 	const parts: string[] = [];
 	const refs: string[] = [];
 	for (const h of hits.slice(0, 3)) {
-		const path = h?.path;
+		let path = h?.path;
 		if (!path) continue;
+		if (dir && path.startsWith(`${dir}/`)) path = path.slice(dir.length + 1);
 		try {
 			const rd = await obsidian.run(env, { action: "read", path, backend: "git" });
 			if (!rd.isError) {
