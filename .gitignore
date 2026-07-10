@@ -181,3 +181,5 @@ sux/mac-render/extensions/
 *.crt
 *.key
 *.pem
+
+.DS_Store
