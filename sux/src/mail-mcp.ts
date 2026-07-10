@@ -38,6 +38,10 @@ function resultFor(resp: { methodResponses: any[] }, method: string, callId?: st
 const clamp = (v: unknown, lo: number, hi: number, dflt: number): number => Math.min(hi, Math.max(lo, Number(v) || dflt));
 
 /** Reduce an Email object to a token-cheap reference (never the body). */
+// RFC 8620 §5.1: Foo/get MAY return records in any order, so it doesn't preserve the
+// Email/query sort. Re-sort the hydrated list by receivedAt (ISO-8601 → lexicographic works).
+const byReceived = (asc: boolean) => (a: any, b: any) => (asc ? 1 : -1) * String(a?.receivedAt ?? "").localeCompare(String(b?.receivedAt ?? ""));
+
 function shapeRef(e: any): Record<string, unknown> {
 	const addr = (a: any[]): string => (Array.isArray(a) ? a.map((x) => x?.email).filter(Boolean).join(", ") : "");
 	return {
@@ -138,7 +142,7 @@ const TOOLS: MailTool[] = [
 						["Email/get", { "#ids": { resultOf: "q", name: "Email/query", path: "/ids" }, properties: ["id", "threadId", "subject", "from", "to", "receivedAt", "preview", "keywords", "hasAttachment"] }, "g"],
 					],
 				});
-				const emails = resultFor(resp, "Email/get")?.list ?? [];
+				const emails = (resultFor(resp, "Email/get")?.list ?? []).slice().sort(byReceived(false)); // newest first, matching the query sort
 				return ok({ count: emails.length, emails: emails.map(shapeRef) });
 			} catch (e) {
 				return fail(errMsg(e));
@@ -183,7 +187,7 @@ const TOOLS: MailTool[] = [
 						["Email/get", { "#ids": { resultOf: "t", name: "Thread/get", path: "/list/*/emailIds" }, properties: ["id", "threadId", "subject", "from", "to", "receivedAt", "preview", "keywords"] }, "e"],
 					],
 				});
-				const emails = resultFor(resp, "Email/get")?.list ?? [];
+				const emails = (resultFor(resp, "Email/get")?.list ?? []).slice().sort(byReceived(true)); // chronological thread order
 				return ok({ threadId, count: emails.length, messages: emails.map(shapeRef) });
 			} catch (e) {
 				return fail(errMsg(e));
