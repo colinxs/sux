@@ -3,6 +3,7 @@ import { isAllowedLogin } from "./utils";
 import { type CacheMeta, cacheKey, deferCacheWrite, type JsonRpc, parseJsonRpc, sseResponse } from "./mcp-util";
 import { unpackFromCache } from "./cache-codec";
 import { findFn, type RtEnv, type ToolResult, toolList } from "./registry";
+import { buildManifest, CONNECTOR_PATHS } from "./connectors";
 import { singleFlight } from "./single-flight";
 import { weightedRateLimit } from "./rate-limit";
 import { hasAI, llm } from "./ai";
@@ -321,6 +322,14 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 	return sseResponse({ jsonrpc: "2.0", id, error: { code: -32601, message: `unknown method: ${method}` } });
 }
 
+// Live tool counts per namespace for the discovery manifest — dynamic-imported so
+// the manifest is the only thing that pulls the namespace modules (they stay lazy for
+// the hot RPC path, exactly like the per-path dispatch below).
+async function connectorCounts(): Promise<Record<string, number>> {
+	const [fns, vault, mail, files] = await Promise.all([import("./fns"), import("./vault-mcp"), import("./mail-mcp"), import("./files-mcp")]);
+	return { "/mcp": fns.FUNCTIONS.length, "/vault/mcp": vault.VAULT_TOOLS.length, "/mail/mcp": mail.MAIL_TOOLS.length, "/files/mcp": files.FILES_TOOLS.length };
+}
+
 // Exported so the authorization/rate-limit gate can be driven directly in tests
 // (index.test.ts covers handleRpc, which is downstream of this gate). Importing
 // this module does not eval the OAuth provider — see getOAuthProvider below.
@@ -345,6 +354,13 @@ export const rtServer = {
 		// startsWith('/vault/mcp'), so an exact-only check would let '/vault/mcp/'
 		// silently fall through to the research-tools server (wrong tools, authed).
 		const pathname = new URL(request.url).pathname;
+		// Runtime connector discovery: GET /mcp/connectors self-describes every live
+		// namespace + its tool count, from the one CONNECTORS source. Authenticated
+		// (post-gate) — it exposes namespace names + counts, never secrets or tool args.
+		if (isBodyless && (pathname === "/mcp/connectors" || pathname === "/connectors")) {
+			const counts = await connectorCounts();
+			return new Response(JSON.stringify(buildManifest(new URL(request.url).origin, counts), null, 2), { headers: { "content-type": "application/json; charset=utf-8" } });
+		}
 		if (pathname === "/vault/mcp" || pathname.startsWith("/vault/mcp/")) {
 			const { handleVaultRpc } = await import("./vault-mcp");
 			return handleVaultRpc(env, ctx, rpc, bodyText?.length ?? 0);
@@ -383,7 +399,7 @@ async function getOAuthProvider(): Promise<OAuthProvider> {
 		]);
 		oauthProvider = new OAuthProviderCtor({
 			apiHandler: rtServer as any,
-			apiRoute: ["/mcp", "/vault/mcp", "/mail/mcp", "/files/mcp"],
+			apiRoute: CONNECTOR_PATHS,
 			authorizeEndpoint: "/authorize",
 			clientRegistrationEndpoint: "/register",
 			defaultHandler: GitHubHandler as any,
