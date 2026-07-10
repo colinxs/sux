@@ -144,7 +144,7 @@ export const FETCH_BYTES_MAX_BYTES = 32_000_000;
  * analogue of readBodyText). Rejects up front on an oversized Content-Length and
  * mid-stream once the running total exceeds the cap; throws rather than truncate
  * (a partial binary is not usable input). */
-async function readBodyBytes(resp: Response, maxBytes: number): Promise<Uint8Array> {
+export async function readBodyBytes(resp: Response, maxBytes: number): Promise<Uint8Array> {
 	const declared = Number(resp.headers.get("content-length"));
 	if (Number.isFinite(declared) && declared > maxBytes) throw new Error(`Response too large: ${declared} bytes exceeds ${maxBytes}-byte cap`);
 	if (!resp.body) {
