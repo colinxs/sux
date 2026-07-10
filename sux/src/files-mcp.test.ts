@@ -45,6 +45,13 @@ describe("files_* tools", () => {
 		expect(out).toMatchObject({ op: "share", path: "x" });
 	});
 
+	it("files_move forwards op:move (from→to)", async () => {
+		const out = parse(await tool("files_move").run(env(), { from: "a.pdf", to: "archive/a.pdf" }));
+		expect(out).toMatchObject({ op: "move", path: "a.pdf" });
+		const bad = await tool("files_move").run(env(), { from: "a.pdf" });
+		expect(bad.isError).toBe(true);
+	});
+
 	it("files_delete requires confirm:true", async () => {
 		const blocked = await tool("files_delete").run(env(), { path: "x" });
 		expect(blocked.isError).toBe(true);

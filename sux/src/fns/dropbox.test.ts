@@ -228,6 +228,24 @@ describe("dropbox (app-folder blob store)", () => {
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
+	it("moves/renames a path via move_v2", async () => {
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
+			expect(String(u)).toContain("/files/move_v2");
+			expect(JSON.parse(init.body)).toMatchObject({ from_path: "/a.pdf", to_path: "/archive/a.pdf", autorename: false });
+			return new Response(JSON.stringify({ metadata: { path_display: "/archive/a.pdf" } }), { status: 200 });
+		}));
+		const r = await dropbox.run(ENV, { op: "move", path: "a.pdf", to: "archive/a.pdf" });
+		expect(JSON.parse(r.content[0].text)).toMatchObject({ ok: true, from: "/a.pdf", to: "/archive/a.pdf" });
+	});
+
+	it("move refuses a no-op (to == path) and requires a destination", async () => {
+		const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+		vi.stubGlobal("fetch", fetchMock);
+		expect((await dropbox.run(ENV, { op: "move", path: "a.pdf", to: "a.pdf" })).isError).toBe(true);
+		expect((await dropbox.run(ENV, { op: "move", path: "a.pdf" })).isError).toBe(true);
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
 	it("delete surfaces the real Dropbox error text (not a blanket 'Not found')", async () => {
 		vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error_summary: "path_lookup/not_found/" }), { status: 409 })));
 		const r = await dropbox.run(ENV, { op: "delete", path: "missing.pdf", confirm: true });

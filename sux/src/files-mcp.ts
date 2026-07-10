@@ -135,6 +135,19 @@ const TOOLS: FileTool[] = [
 		},
 	},
 	{
+		name: "files_move",
+		description: "Move or rename a file/folder within your file workspace (app-folder): `from` → `to`. Scope-fenced, so no confirm needed.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["from", "to"], properties: { from: { type: "string", description: "Source path." }, to: { type: "string", description: "Destination path (rename or relocate)." } } },
+		run: async (env, a) => {
+			if (!a?.from || !a?.to) return fail("files_move requires `from` and `to`.");
+			try {
+				return ok(await dbx(env, { op: "move", path: String(a.from), to: String(a.to) }));
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
 		name: "files_delete",
 		description: "Delete a file (moves it to your Dropbox 'Deleted files' — recoverable there). Requires confirm:true.",
 		inputSchema: { type: "object", additionalProperties: false, required: ["path", "confirm"], properties: { path: { type: "string" }, confirm: { type: "boolean", description: "Must be true — a deliberate two-step." } } },
