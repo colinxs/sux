@@ -242,7 +242,7 @@ const TOOLS: MailTool[] = [
 	},
 	{
 		name: "mail_send",
-		description: "Send an email. Composes the draft, submits it, and files it in Sent. Provide to/subject/text; cc/bcc/from optional. Dispatches immediately — there is no scheduled send and no undo, so review before sending.",
+		description: "Send an email. Composes the draft, submits it, and files it in Sent. Provide to/subject/text; cc/bcc/from optional. Dispatches immediately UNLESS you pass `send_at` (an ISO-8601 date-time), which SCHEDULES it via SMTP FUTURERELEASE — held until then, cancelable with mail_scheduled. Review before sending; there's no undo once dispatched.",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -254,9 +254,40 @@ const TOOLS: MailTool[] = [
 				subject: { type: "string" },
 				text: { type: "string", description: "Plain-text body." },
 				from: { type: "string", description: "Sender address (defaults to your primary identity)." },
+				send_at: { type: "string", description: "Schedule the send for this ISO-8601 date-time (e.g. '2026-07-11T09:00:00Z'). Held via FUTURERELEASE; omit to send now." },
 			},
 		},
 		run: async (env, a) => draftOrSend(env, a, true),
+	},
+	{
+		name: "mail_scheduled",
+		description: "Manage scheduled (FUTURERELEASE-held) sends. action: list — the pending scheduled sends (submission id, emailId, sendAt) | cancel ({id}) — flip a pending submission's undoStatus to canceled, stopping the send before it releases.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["action"], properties: { action: { type: "string", enum: ["list", "cancel"] }, id: { type: "string", description: "cancel: the submissionId (from mail_send's response or a mail_scheduled list)." } } },
+		run: async (env, a) => {
+			const action = String(a?.action ?? "");
+			try {
+				if (action === "list") {
+					const resp = await jmapCall(env, {
+						calls: [
+							["EmailSubmission/query", { filter: { undoStatus: "pending" } }, "q"],
+							["EmailSubmission/get", { "#ids": { resultOf: "q", name: "EmailSubmission/query", path: "/ids" }, properties: ["id", "emailId", "sendAt", "undoStatus"] }, "g"],
+						],
+					});
+					const subs = resultFor(resp, "EmailSubmission/get")?.list ?? [];
+					return ok({ count: subs.length, scheduled: subs.map((s: any) => ({ id: s?.id, emailId: s?.emailId, sendAt: s?.sendAt })) });
+				}
+				if (action === "cancel") {
+					if (!a?.id) return fail("mail_scheduled cancel requires the submission `id`.");
+					const resp = await jmapCall(env, { calls: [["EmailSubmission/set", { update: { [String(a.id)]: { undoStatus: "canceled" } } }, "u"]] });
+					const setR = resultFor(resp, "EmailSubmission/set");
+					if (Object.prototype.hasOwnProperty.call(setR?.updated ?? {}, String(a.id))) return ok({ canceled: String(a.id) });
+					return fail(`cancel failed: ${JSON.stringify(setR?.notUpdated ?? {})}`);
+				}
+				return fail("mail_scheduled action must be 'list' or 'cancel'.");
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
 	},
 	{
 		name: "mail_archive",
@@ -353,20 +384,39 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 			return ok({ drafted: true, id: created.id });
 		}
 
+		// Scheduled send: hold via the SMTP FUTURERELEASE extension (RFC 4865) — a HOLDFOR (seconds)
+		// parameter on the submission envelope's mailFrom. Fastmail holds the message (undoStatus
+		// 'pending') and releases it at send_at; cancel via mail_scheduled. A held submission needs
+		// an explicit rcptTo envelope (it overrides the auto-derived recipients).
+		let holdFor = 0;
+		if (a?.send_at !== undefined && a?.send_at !== null && a?.send_at !== "") {
+			const at = Date.parse(String(a.send_at));
+			if (!Number.isFinite(at)) return fail("send_at must be an ISO-8601 date-time, e.g. '2026-07-11T09:00:00Z'.");
+			holdFor = Math.ceil((at - Date.now()) / 1000);
+			if (holdFor <= 0) return fail("send_at must be in the future.");
+		}
+
 		// Send: create draft, submit, and on success strip $draft + move Drafts→Sent.
 		const onSuccess: Record<string, unknown> = { "keywords/$draft": null };
 		if (draftsId) onSuccess[`mailboxIds/${draftsId}`] = null;
 		if (sentId) onSuccess[`mailboxIds/${sentId}`] = true;
+		const subCreate: Record<string, unknown> = { emailId: "#draft", identityId: identity.id };
+		if (holdFor > 0) {
+			subCreate.envelope = {
+				mailFrom: { email: identity.email, parameters: { HOLDFOR: String(holdFor) } },
+				rcptTo: [...to, ...(Array.isArray(a?.cc) ? a.cc : []), ...(Array.isArray(a?.bcc) ? a.bcc : [])].map((e) => ({ email: String(e) })),
+			};
+		}
 		const resp = await jmapCall(env, {
 			allow_send: true,
 			calls: [
 				["Email/set", { create: { draft } }, "c"],
-				["EmailSubmission/set", { create: { sub: { emailId: "#draft", identityId: identity.id } }, onSuccessUpdateEmail: { "#sub": onSuccess } }, "s"],
+				["EmailSubmission/set", { create: { sub: subCreate }, onSuccessUpdateEmail: { "#sub": onSuccess } }, "s"],
 			],
 		});
 		const submitted = resultFor(resp, "EmailSubmission/set")?.created?.sub;
 		if (!submitted) return fail(`send failed: ${JSON.stringify(resultFor(resp, "EmailSubmission/set")?.notCreated ?? {})}`);
-		return ok({ sent: true, submissionId: submitted.id, to });
+		return ok(holdFor > 0 ? { scheduled: true, send_at: String(a.send_at), submissionId: submitted.id, to, note: "held via FUTURERELEASE — cancel with mail_scheduled {action:'cancel', id:<submissionId>}." } : { sent: true, submissionId: submitted.id, to });
 	} catch (e) {
 		return fail(errMsg(e));
 	}

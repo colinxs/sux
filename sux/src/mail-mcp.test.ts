@@ -50,7 +50,10 @@ function answer([method, args]: any): any {
 		const notUpdated = Object.fromEntries(keys.filter((k) => k.includes("bad")).map((k) => [k, { type: "invalidProperties" }]));
 		return [method, { created: args?.create ? Object.fromEntries(Object.keys(args.create).map((k) => [k, { id: "new-1" }])) : undefined, updated, notUpdated }, "x"];
 	}
-	if (method === "EmailSubmission/set") return [method, { created: { sub: { id: "sub-1" } } }, "x"];
+	if (method === "EmailSubmission/set")
+		return [method, { created: args?.create ? { sub: { id: "sub-1" } } : undefined, updated: args?.update ? Object.fromEntries(Object.keys(args.update).map((k) => [k, null])) : undefined }, "x"];
+	if (method === "EmailSubmission/query") return [method, { ids: ["sub-1"] }, "x"];
+	if (method === "EmailSubmission/get") return [method, { list: [{ id: "sub-1", emailId: "e1", sendAt: "2026-07-11T09:00:00Z", undoStatus: "pending" }] }, "x"];
 	if (method === "MaskedEmail/get") return [method, { list: [{ id: "m1", email: "x@fastmail.com", state: "enabled", forDomain: "shop.com" }] }, "x"];
 	if (method === "MaskedEmail/set") return [method, { created: { m: { id: "m2", email: "y@fastmail.com", forDomain: "new.com" } } }, "x"];
 	return [method, {}, "x"];
@@ -123,6 +126,32 @@ describe("mail_* ergonomic tools", () => {
 		// The send batch carried allow_send (an EmailSubmission/set create).
 		const sendBody = f.mock.calls.map((c: any) => (c[1]?.body ? JSON.parse(c[1].body) : {})).find((b: any) => (b.methodCalls ?? []).some((mc: any) => mc[0] === "EmailSubmission/set"));
 		expect(sendBody).toBeTruthy();
+	});
+
+	it("mail_send with send_at SCHEDULES via FUTURERELEASE (HOLDFOR envelope + explicit rcptTo)", async () => {
+		const f = installFetch();
+		const out = parse(await tool("mail_send").run(env(), { to: ["x@y.com"], cc: ["c@y.com"], subject: "Later", text: "yo", send_at: "2999-01-01T00:00:00Z" }));
+		expect(out).toMatchObject({ scheduled: true, submissionId: "sub-1", send_at: "2999-01-01T00:00:00Z" });
+		const body = f.mock.calls.map((c: any) => (c[1]?.body ? JSON.parse(c[1].body) : {})).find((b: any) => (b.methodCalls ?? []).some((mc: any) => mc[0] === "EmailSubmission/set"));
+		const sub = body.methodCalls.find((mc: any) => mc[0] === "EmailSubmission/set")[1].create.sub;
+		expect(sub.envelope.mailFrom.parameters.HOLDFOR).toMatch(/^\d+$/); // seconds of hold
+		expect(sub.envelope.rcptTo).toEqual([{ email: "x@y.com" }, { email: "c@y.com" }]); // all recipients listed
+	});
+
+	it("mail_send rejects a past send_at", async () => {
+		installFetch();
+		const r = await tool("mail_send").run(env(), { to: ["x@y.com"], subject: "s", text: "t", send_at: "2000-01-01T00:00:00Z" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/future/);
+	});
+
+	it("mail_scheduled lists pending sends and cancels one", async () => {
+		installFetch();
+		const list = parse(await tool("mail_scheduled").run(env(), { action: "list" }));
+		expect(list.count).toBe(1);
+		expect(list.scheduled[0]).toMatchObject({ id: "sub-1", emailId: "e1", sendAt: "2026-07-11T09:00:00Z" });
+		const cancel = parse(await tool("mail_scheduled").run(env(), { action: "cancel", id: "sub-1" }));
+		expect(cancel).toMatchObject({ canceled: "sub-1" });
 	});
 
 	it("mail_archive moves messages out of the inbox", async () => {
