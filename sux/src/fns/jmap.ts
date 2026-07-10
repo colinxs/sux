@@ -8,6 +8,8 @@ import {
 	jstr,
 	runBatch,
 	runPaginate,
+	scopeProbe,
+	sessionDump,
 	validateCalls,
 } from "./_jmap";
 
@@ -85,11 +87,21 @@ export const jmap: Fn = {
 			allow_send: { type: "boolean", default: false, description: "GATE: an EmailSubmission/set with a non-empty create is REJECTED unless true. Accidental-send guard only (an injected instruction can set it) — not an injection boundary." },
 			allow_destroy: { type: "boolean", default: false, description: "GATE: any Foo/set destroy (permanent expunge), Mailbox onDestroyRemoveEmails, VacationResponse/set, or forwarding/rule method is REJECTED unless true. Accidental-mutation guard only." },
 			session_refresh: { type: "boolean", default: false, description: "Force re-discovery of the JMAP Session before dispatch (bypass the KV cache)." },
+			session: { type: "boolean", default: false, description: "Discovery: return the raw JMAP Session — capabilities (incl. submission.maxDelayedSend / maxSizeUpload), primaryAccounts, per-account capabilities. No method batch." },
+			scope_probe: { type: "boolean", default: false, description: "Discovery: return a reachable-capability map for the current token {mail, submission, maskedemail, contacts, vacationresponse, quota, calendars}. calendars is always false (Fastmail has no jmap:calendars)." },
 		},
 	},
 	run: async (env: RtEnv, args: any) => {
 		if (!env.FASTMAIL_TOKEN) return failWith("not_configured", NOT_CONFIGURED);
 		const startedAt = Date.now();
+
+		// Phase-0 capability discovery (no method batch): dump the Session or probe reachable scope.
+		try {
+			if (args?.session === true) return ok(jstr(await sessionDump(env, args.session_refresh === true)));
+			if (args?.scope_probe === true) return ok(jstr(await scopeProbe(env, args.session_refresh === true)));
+		} catch (e) {
+			return toFail(e);
+		}
 
 		const modes = ["calls", "method", "upload", "download"].filter((k) => args?.[k] !== undefined);
 		if (modes.length === 0) return failWith("bad_input", "provide exactly one of: calls (raw batch), method+args (single call), upload, or download.");

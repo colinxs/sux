@@ -22,6 +22,7 @@ const CAP_CONTACTS = "urn:ietf:params:jmap:contacts";
 const CAP_CALENDARS = "urn:ietf:params:jmap:calendars";
 const CAP_MASKEDEMAIL = "https://www.fastmail.com/dev/maskedemail";
 const CAP_FM_CONTACTS = "https://www.fastmail.com/dev/contacts";
+const CAP_QUOTA = "urn:ietf:params:jmap:quota";
 
 export const SESSION_KEY = "sux:fastmail:session";
 const SESSION_TTL = 3600;
@@ -112,6 +113,38 @@ export async function getSession(env: RtEnv, forceRefresh = false): Promise<Jmap
 		}
 	}
 	return discoverSession(env);
+}
+
+/** Raw Session dump (Phase 0b) — capabilities + account summary + limits — so callers can read
+ *  submission.maxDelayedSend / submissionExtensions / maxSizeUpload without re-discovering. */
+export async function sessionDump(env: RtEnv, refresh = false): Promise<Record<string, unknown>> {
+	const s = await getSession(env, refresh);
+	return {
+		capabilities: s.capabilities,
+		primaryAccounts: s.primaryAccounts,
+		accounts: Object.fromEntries(Object.entries(s.accounts ?? {}).map(([id, a]) => [id, { name: a?.name, isPersonal: a?.isPersonal, capabilities: Object.keys(a?.accountCapabilities ?? {}) }])),
+		state: s.state,
+	};
+}
+
+/** Reachable-capability map on the CURRENT token (Phase 0c). Derived from the primary account's
+ *  accountCapabilities (unioned with session capabilities) — which reflect the token's scope.
+ *  calendars is always false: Fastmail exposes no jmap:calendars (calendar is CalDAV-only). */
+export async function scopeProbe(env: RtEnv, refresh = false): Promise<Record<string, boolean>> {
+	const s = await getSession(env, refresh);
+	const primary = s.primaryAccounts?.[CAP_MAIL] ?? Object.keys(s.accounts ?? {})[0] ?? "";
+	const acct = s.accounts?.[primary]?.accountCapabilities ?? {};
+	const top = s.capabilities ?? {};
+	const has = (...urns: string[]) => urns.some((u) => u in acct || u in top);
+	return {
+		mail: has(CAP_MAIL),
+		submission: has(CAP_SUBMISSION),
+		maskedemail: has(CAP_MASKEDEMAIL),
+		contacts: has(CAP_CONTACTS, CAP_FM_CONTACTS),
+		vacationresponse: has(CAP_VACATION),
+		quota: has(CAP_QUOTA),
+		calendars: has(CAP_CALENDARS),
+	};
 }
 
 // ---------------------------------------------------------------------------
