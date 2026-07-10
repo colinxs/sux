@@ -35,6 +35,15 @@ async function dbx(env: RtEnv, args: Record<string, unknown>): Promise<any> {
 	}
 }
 
+// The write firewall flags only mean something for whole-Dropbox (Mode B) writes. In the
+// app-folder (Mode A) — where the /Apps scope IS the wall and writes are unblocked — the
+// dropbox fn always overwrites, so a supplied dry_run/overwrite/rev/backup would be silently
+// dropped and a requested guardrail would become a real clobber. Reject them instead.
+const rejectModeBFlags = (a: any): string | null =>
+	["dry_run", "overwrite", "rev", "backup"].some((k) => a?.[k] !== undefined)
+		? "dry_run/overwrite/rev/backup apply only to whole-Dropbox writes (full:true). App-folder writes are unblocked — the /Apps scope is the wall."
+		: null;
+
 type FileTool = { name: string; description: string; inputSchema: unknown; run: (env: RtEnv, args: any) => Promise<ToolResult> };
 const ok = (v: unknown): ToolResult => ({ content: [{ type: "text", text: JSON.stringify(v, null, 2) }] });
 
@@ -109,6 +118,8 @@ const TOOLS: FileTool[] = [
 					if (!hasDropboxFull(env)) return fail("full-Dropbox (Mode B) write not configured — set DROPBOX_FULL_*. Without it, files_write covers the app-folder workspace only.");
 					return ok(await writeFull(env, { path: String(a.path), bytes: writeBytes(String(a.text), undefined), rev: a?.rev ? String(a.rev) : undefined, overwrite: a?.overwrite === true, backup: a?.backup !== false, dryRun: a?.dry_run !== false }));
 				}
+				const g = rejectModeBFlags(a);
+				if (g) return fail(g);
 				return ok(await dbx(env, { op: "put", path: String(a.path), data: String(a.text) }));
 			} catch (e) {
 				return fail(errMsg(e));
@@ -126,6 +137,8 @@ const TOOLS: FileTool[] = [
 					if (!hasDropboxFull(env)) return fail("full-Dropbox (Mode B) upload not configured — set DROPBOX_FULL_*. Without it, files_upload covers the app-folder workspace only.");
 					return ok(await writeFull(env, { path: String(a.path), bytes: writeBytes(undefined, String(a.base64)), rev: a?.rev ? String(a.rev) : undefined, overwrite: a?.overwrite === true, backup: a?.backup !== false, dryRun: a?.dry_run !== false }));
 				}
+				const g = rejectModeBFlags(a);
+				if (g) return fail(g);
 				return ok(await dbx(env, { op: "put", path: String(a.path), base64: String(a.base64) }));
 			} catch (e) {
 				return fail(errMsg(e));

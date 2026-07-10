@@ -40,6 +40,15 @@ describe("files_* tools", () => {
 		expect(out).toMatchObject({ op: "put", path: "note.txt", data: "hi" });
 	});
 
+	it("app-folder write rejects Mode-B-only flags instead of silently dropping the guardrail", async () => {
+		const r = await tool("files_write").run(env(), { path: "a.txt", text: "x", overwrite: false });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/apply only to whole-Dropbox|full:true/);
+		expect(runMock).not.toHaveBeenCalled();
+		const okd = parse(await tool("files_write").run(env(), { path: "a.txt", text: "x" })); // plain write still works
+		expect(okd).toMatchObject({ op: "put", path: "a.txt", data: "x" });
+	});
+
 	it("files_upload forwards op:put with base64", async () => {
 		const out = parse(await tool("files_upload").run(env(), { path: "img.png", base64: "AAAA" }));
 		expect(out).toMatchObject({ op: "put", path: "img.png", base64: "AAAA" });
