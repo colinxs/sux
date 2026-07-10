@@ -16,6 +16,12 @@
       "source": "./plugins/sux-vault",
       "description": "The PERSONAL Obsidian-vault connector (https://sux.colinxs.workers.dev/vault/mcp): read/write/edit/capture + daily notes over the git-backed knowledge store. A separate endpoint on the same Worker/OAuth so vault tools stay a clean namespace and sux-router stays universal.",
       "version": "0.1.0"
+    },
+    {
+      "name": "sux-mail",
+      "source": "./plugins/sux-mail",
+      "description": "The PERSONAL Fastmail connector (https://sux.colinxs.workers.dev/mail/mcp): search/read/thread/send/draft/archive mail, masked-email, plus the raw `jmap` conduit for the full protocol (calendars, contacts). A separate endpoint on the same Worker/OAuth so mail tools stay a clean namespace and sux-router stays universal.",
+      "version": "0.1.0"
     }
   ]
 }

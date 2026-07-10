@@ -349,6 +349,12 @@ export const rtServer = {
 			const { handleVaultRpc } = await import("./vault-mcp");
 			return handleVaultRpc(env, ctx, rpc, bodyText?.length ?? 0);
 		}
+		// The mail MCP server (ergonomic Fastmail tools + the raw jmap escape hatch)
+		// rides the same OAuth gate at its own path — a third connector, no new provider.
+		if (pathname === "/mail/mcp" || pathname.startsWith("/mail/mcp/")) {
+			const { handleMailRpc } = await import("./mail-mcp");
+			return handleMailRpc(env, ctx, rpc, bodyText?.length ?? 0);
+		}
 		// Weighted rate limit: expensive tools (render/Kagi/SerpAPI/Workers AI)
 		// consume extra tokens beyond the base 1 charged above, so a burst of paid
 		// calls drains the budget faster than free deterministic fns (see Fn.cost).
@@ -371,7 +377,7 @@ async function getOAuthProvider(): Promise<OAuthProvider> {
 		]);
 		oauthProvider = new OAuthProviderCtor({
 			apiHandler: rtServer as any,
-			apiRoute: ["/mcp", "/vault/mcp"],
+			apiRoute: ["/mcp", "/vault/mcp", "/mail/mcp"],
 			authorizeEndpoint: "/authorize",
 			clientRegistrationEndpoint: "/register",
 			defaultHandler: GitHubHandler as any,
