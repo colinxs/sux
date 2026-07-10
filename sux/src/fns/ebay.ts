@@ -13,10 +13,8 @@ const SCOPE = "https://api.ebay.com/oauth/api_scope";
 
 const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);
 
-/** Get a valid app token — from KV if present, else mint one and cache it. */
-async function getToken(env: RtEnv): Promise<string> {
-	const cached = await env.OAUTH_KV.get(TOKEN_KEY);
-	if (cached) return cached;
+/** Mint a fresh app token and cache it in KV. */
+async function mintToken(env: RtEnv): Promise<string> {
 	const basic = btoa(`${env.EBAY_CLIENT_ID}:${env.EBAY_CLIENT_SECRET}`);
 	const resp = await fetch(TOKEN_URL, {
 		method: "POST",
@@ -32,8 +30,22 @@ async function getToken(env: RtEnv): Promise<string> {
 	return token;
 }
 
-async function api(token: string, url: string): Promise<any> {
-	const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } });
+/** Get a valid app token — from KV if present, else mint one and cache it. */
+async function getToken(env: RtEnv): Promise<string> {
+	const cached = await env.OAUTH_KV.get(TOKEN_KEY);
+	return cached || mintToken(env);
+}
+
+/** GET an authed eBay endpoint; self-heals a stale app token (401/403) by re-minting once — matching kroger/reddit/tailscale. */
+async function api(env: RtEnv, url: string): Promise<any> {
+	const get = (token: string) => fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } });
+	let resp = await get(await getToken(env));
+	if (resp.status === 401 || resp.status === 403) {
+		// eBay invalidated the token before its ~2h TTL → drop the cache and re-mint DIRECTLY (not via
+		// getToken, so KV read-after-delete eventual consistency can't hand back the rejected token).
+		await env.OAUTH_KV.delete(TOKEN_KEY).catch(() => {});
+		resp = await get(await mintToken(env));
+	}
 	if (!resp.ok) throw new Error(`eBay API HTTP ${resp.status}: ${(await resp.text().catch(() => "")).slice(0, 300)}`);
 	return resp.json();
 }
@@ -76,13 +88,11 @@ export const ebay: Fn = {
 		const limit = Math.min(50, Math.max(1, Number(args?.limit) || 15));
 
 		try {
-			const token = await getToken(env);
-
 			// action === "search"
 			const term = String(args?.term ?? "").trim();
 			if (!term) return fail("action=search requires a `term`.");
 			const p = new URLSearchParams({ q: term, limit: String(limit) });
-			const j = await api(token, `${API}/item_summary/search?${p}`);
+			const j = await api(env, `${API}/item_summary/search?${p}`);
 			const products = (j?.itemSummaries ?? []).map(normProduct);
 			return ok(JSON.stringify({ retailer: "ebay", action, count: products.length, products }, null, 2));
 		} catch (e) {

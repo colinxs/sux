@@ -11,6 +11,9 @@ function kvStub() {
 		put: vi.fn(async (k: string, v: string) => {
 			map.set(k, v);
 		}),
+		delete: vi.fn(async (k: string) => {
+			map.delete(k);
+		}),
 	};
 }
 
@@ -87,6 +90,25 @@ describe("ebay", () => {
 		expect(env.OAUTH_KV.map.get("sux:ebay:token")).toBe("TOK");
 		// TTL applied = expires_in - 60.
 		expect(env.OAUTH_KV.put).toHaveBeenCalledWith("sux:ebay:token", "TOK", { expirationTtl: 7140 });
+	});
+
+	it("self-heals a 401 (stale app token) by dropping the cache and re-minting once", async () => {
+		const env = keyedEnv();
+		env.OAUTH_KV.map.set("sux:ebay:token", "STALE");
+		let mints = 0;
+		global.fetch = vi.fn(async (input: any, init?: any) => {
+			const url = String(input);
+			if (url.includes("/oauth2/token")) {
+				mints++;
+				return json({ access_token: "FRESH", expires_in: 7200 });
+			}
+			if (url.includes("/item_summary/search")) return init?.headers?.Authorization === "Bearer STALE" ? json({ errors: [] }, 401) : json(RESULTS);
+			return json({}, 404);
+		}) as any;
+		const r = await ebay.run(env, { action: "search", term: "iphone" });
+		expect(r.isError).toBeFalsy(); // recovered
+		expect(mints).toBe(1); // re-minted exactly once
+		expect(env.OAUTH_KV.map.get("sux:ebay:token")).toBe("FRESH");
 	});
 
 	it("carries the upstream HTTP status into the failure message", async () => {
