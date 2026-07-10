@@ -2,17 +2,19 @@ import { checkArgs, FN_DEADLINE_MS, withDeadline } from "./index";
 import { type JsonRpc, sseResponse } from "./mcp-util";
 import { fail, type RtEnv, type ToolResult } from "./registry";
 import { dropbox } from "./fns/dropbox";
-import { hasDropboxFull, listFull, readFull, searchFull } from "./fns/_dropbox-full";
+import { deleteFull, hasDropboxFull, listFull, moveFull, readFull, searchFull, writeBytes, writeFull } from "./fns/_dropbox-full";
 
 // The files MCP server — the personal blob workspace, served at /files/mcp behind
 // the same workers-oauth-provider flow (a fourth connector; zero new infra). Mirrors
 // vault-mcp / mail-mcp: tight, handle-disciplined tools over the built `dropbox` fn
 // (App-folder scoped — it can ONLY see /Apps/<app>/, so scope is the safety wall).
 // The raw `dropbox` fn is exposed here as the escape hatch. Design: docs/proposals/files.md
-// (Mode A — the bidirectional app workspace). Mode B (whole-Dropbox) is layered in
-// READ-ONLY behind a SEPARATE full-scope credential (_dropbox-full.ts): files_search +
-// files_read/files_list `full:true`. Whole-account MUTATION is deliberately deferred —
-// the injection-reachable delete/overwrite surface needs its own gate first.
+// (Mode A — the bidirectional app workspace). Mode B (whole-Dropbox) rides a SEPARATE
+// full-scope credential (_dropbox-full.ts): read/search (files_search + files_read/
+// files_list `full:true`) and, behind the write firewall (files.md §6), gated mutation —
+// files_write/files_upload/files_delete/files_move `full:true` with dry-run-by-default,
+// confirm-on-delete, rev-conditioning, a protected-prefix deny-list, and /.sux-trash
+// recoverability. Nothing in Mode B fires without the deliberate second credential.
 //
 // The rule (files.md): markdown → vault, blobs → files. This is where PDFs, images,
 // and exports live; the vault holds the *note* about them. list/read return references
@@ -97,11 +99,15 @@ const TOOLS: FileTool[] = [
 	},
 	{
 		name: "files_write",
-		description: "Write a text file (create or overwrite). Returns the path + a public shareable link. For binary, use files_upload.",
-		inputSchema: { type: "object", additionalProperties: false, required: ["path", "text"], properties: { path: { type: "string" }, text: { type: "string", description: "UTF-8 text to write." } } },
+		description: "Write a text file. Default: create/overwrite in the app-folder workspace (returns path + shareable link). `full:true` writes an ABSOLUTE path in your whole Dropbox (Mode B) behind the write firewall: dry_run defaults TRUE (returns the plan, writes nothing), existing files need overwrite:true OR a matching rev, and an overwrite is backed up to /.sux-trash first. For binary, use files_upload.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["path", "text"], properties: { path: { type: "string" }, text: { type: "string", description: "UTF-8 text to write." }, full: { type: "boolean", description: "Write into the whole Dropbox (Mode B) instead of the app folder." }, dry_run: { type: "boolean", description: "full mode: default true — returns the plan without writing. Pass false to apply." }, overwrite: { type: "boolean", description: "full mode: allow replacing an existing file." }, rev: { type: "string", description: "full mode: conditional update — write only if the file still has this rev." }, backup: { type: "boolean", description: "full mode: pre-op copy an overwritten file to /.sux-trash (default true)." } } },
 		run: async (env, a) => {
 			if (!a?.path || a?.text === undefined) return fail("files_write requires `path` and `text`.");
 			try {
+				if (a?.full === true) {
+					if (!hasDropboxFull(env)) return fail("full-Dropbox (Mode B) write not configured — set DROPBOX_FULL_*. Without it, files_write covers the app-folder workspace only.");
+					return ok(await writeFull(env, { path: String(a.path), bytes: writeBytes(String(a.text), undefined), rev: a?.rev ? String(a.rev) : undefined, overwrite: a?.overwrite === true, backup: a?.backup !== false, dryRun: a?.dry_run !== false }));
+				}
 				return ok(await dbx(env, { op: "put", path: String(a.path), data: String(a.text) }));
 			} catch (e) {
 				return fail(errMsg(e));
@@ -110,11 +116,15 @@ const TOOLS: FileTool[] = [
 	},
 	{
 		name: "files_upload",
-		description: "Upload binary content (base64) — an image, PDF, or export. Returns the path + a public shareable link.",
-		inputSchema: { type: "object", additionalProperties: false, required: ["path", "base64"], properties: { path: { type: "string" }, base64: { type: "string", description: "Base64-encoded bytes." } } },
+		description: "Upload binary content (base64) — an image, PDF, or export. Default: the app-folder workspace (returns path + shareable link). `full:true` uploads to an ABSOLUTE whole-Dropbox path (Mode B) under the same write firewall as files_write (dry_run default true, overwrite/rev gated, /.sux-trash backup).",
+		inputSchema: { type: "object", additionalProperties: false, required: ["path", "base64"], properties: { path: { type: "string" }, base64: { type: "string", description: "Base64-encoded bytes." }, full: { type: "boolean", description: "Upload into the whole Dropbox (Mode B) instead of the app folder." }, dry_run: { type: "boolean", description: "full mode: default true — returns the plan without writing. Pass false to apply." }, overwrite: { type: "boolean", description: "full mode: allow replacing an existing file." }, rev: { type: "string", description: "full mode: conditional update — write only if the file still has this rev." }, backup: { type: "boolean", description: "full mode: pre-op copy an overwritten file to /.sux-trash (default true)." } } },
 		run: async (env, a) => {
 			if (!a?.path || !a?.base64) return fail("files_upload requires `path` and `base64`.");
 			try {
+				if (a?.full === true) {
+					if (!hasDropboxFull(env)) return fail("full-Dropbox (Mode B) upload not configured — set DROPBOX_FULL_*. Without it, files_upload covers the app-folder workspace only.");
+					return ok(await writeFull(env, { path: String(a.path), bytes: writeBytes(undefined, String(a.base64)), rev: a?.rev ? String(a.rev) : undefined, overwrite: a?.overwrite === true, backup: a?.backup !== false, dryRun: a?.dry_run !== false }));
+				}
 				return ok(await dbx(env, { op: "put", path: String(a.path), base64: String(a.base64) }));
 			} catch (e) {
 				return fail(errMsg(e));
@@ -136,10 +146,18 @@ const TOOLS: FileTool[] = [
 	},
 	{
 		name: "files_move",
-		description: "Move or rename a file/folder within your file workspace (app-folder): `from` → `to`. Scope-fenced, so no confirm needed.",
-		inputSchema: { type: "object", additionalProperties: false, required: ["from", "to"], properties: { from: { type: "string", description: "Source path." }, to: { type: "string", description: "Destination path (rename or relocate)." } } },
+		description: "Move or rename a file/folder. App-folder mode (`from`→`to`) is scope-fenced, no confirm. `full:true` moves within your whole Dropbox (Mode B): dry_run defaults TRUE (preview); reversible by moving back.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["from", "to"], properties: { from: { type: "string", description: "Source path." }, to: { type: "string", description: "Destination path (rename or relocate)." }, full: { type: "boolean", description: "Move within the whole Dropbox (Mode B) instead of the app folder." }, dry_run: { type: "boolean", description: "full mode: default true — previews the move. Pass false to apply." } } },
 		run: async (env, a) => {
 			if (!a?.from || !a?.to) return fail("files_move requires `from` and `to`.");
+			if (a?.full === true) {
+				if (!hasDropboxFull(env)) return fail("full-Dropbox (Mode B) move not configured — set DROPBOX_FULL_*. Without it, files_move covers the app-folder workspace only.");
+				try {
+					return ok(await moveFull(env, { from: String(a.from), to: String(a.to), dryRun: a?.dry_run !== false }));
+				} catch (e) {
+					return fail(errMsg(e));
+				}
+			}
 			try {
 				return ok(await dbx(env, { op: "move", path: String(a.from), to: String(a.to) }));
 			} catch (e) {
@@ -149,10 +167,20 @@ const TOOLS: FileTool[] = [
 	},
 	{
 		name: "files_delete",
-		description: "Delete a file (moves it to your Dropbox 'Deleted files' — recoverable there). Requires confirm:true.",
-		inputSchema: { type: "object", additionalProperties: false, required: ["path", "confirm"], properties: { path: { type: "string" }, confirm: { type: "boolean", description: "Must be true — a deliberate two-step." } } },
+		description: "Delete a file (moves it to your Dropbox 'Deleted files' — recoverable there). App-folder mode requires confirm:true. `full:true` deletes an ABSOLUTE whole-Dropbox path (Mode B): dry_run defaults TRUE (preview the plan), and applying (dry_run:false) requires confirm:true — two gates on the one whole-account destructive verb.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["path"], properties: { path: { type: "string" }, confirm: { type: "boolean", description: "Must be true to actually delete — a deliberate two-step." }, full: { type: "boolean", description: "Delete from the whole Dropbox (Mode B) instead of the app folder." }, dry_run: { type: "boolean", description: "full mode: default true — previews the delete. Pass false (+confirm:true) to apply." } } },
 		run: async (env, a) => {
 			if (!a?.path) return fail("files_delete requires a `path`.");
+			if (a?.full === true) {
+				if (!hasDropboxFull(env)) return fail("full-Dropbox (Mode B) delete not configured — set DROPBOX_FULL_*. Without it, files_delete covers the app-folder workspace only.");
+				const dryRun = a?.dry_run !== false;
+				if (!dryRun && a?.confirm !== true) return fail("files_delete full:true requires confirm:true to apply (dry_run:false). Omit dry_run to preview the plan first.");
+				try {
+					return ok(await deleteFull(env, { path: String(a.path), dryRun }));
+				} catch (e) {
+					return fail(errMsg(e));
+				}
+			}
 			if (a?.confirm !== true) return fail("files_delete requires confirm:true.");
 			try {
 				return ok(await dbx(env, { op: "delete", path: String(a.path), confirm: true }));

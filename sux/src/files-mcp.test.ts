@@ -101,6 +101,29 @@ describe("full-Dropbox (Mode B) gating — dormant without DROPBOX_FULL_*", () =
 		const modeA = parse(await tool("files_list").run(env(), {}));
 		expect(modeA).toMatchObject({ op: "list" });
 	});
+
+	it("full-mode write/upload/delete/move fail closed without DROPBOX_FULL_* and never fall through to Mode A", async () => {
+		const cases: Array<[string, any]> = [
+			["files_write", { path: "/x.txt", text: "hi", full: true }],
+			["files_upload", { path: "/x.bin", base64: "AAAA", full: true }],
+			["files_delete", { path: "/x.txt", full: true }],
+			["files_move", { from: "/a", to: "/b", full: true }],
+		];
+		for (const [name, args] of cases) {
+			const r = await tool(name).run(env(), args);
+			expect(r.isError).toBe(true);
+			expect(r.content[0].text).toMatch(/DROPBOX_FULL_|not configured/);
+		}
+		expect(runMock).not.toHaveBeenCalled(); // Mode A (the mocked dropbox fn) is never touched
+	});
+
+	it("full delete requires confirm:true to APPLY (dry-run needs no confirm)", async () => {
+		const envFull = { DROPBOX_FULL_TOKEN: "ft" } as any; // configured, but we never reach the network
+		const r = await tool("files_delete").run(envFull, { path: "/x.txt", full: true, dry_run: false });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/confirm:true/);
+		expect(runMock).not.toHaveBeenCalled();
+	});
 });
 
 describe("handleFilesRpc protocol shell", () => {

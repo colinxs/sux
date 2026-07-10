@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { hasDropboxFull, listFull, normFull, readFull, searchFull } from "./_dropbox-full";
+import { deleteFull, hasDropboxFull, listFull, moveFull, normFull, readFull, searchFull, writeFull } from "./_dropbox-full";
 
 // Read-only full-Dropbox (Mode B) client. These tests hit the real fetch paths via a
 // stub, asserting: the credential is isolated to DROPBOX_FULL_* (its own KV key), reads
@@ -217,5 +217,128 @@ describe("readFull — bytes with a hard inline cap", () => {
 
 	it("requires a real path (root is not a file)", async () => {
 		await expect(readFull(tokenEnv(), "")).rejects.toThrow(/requires a file path/);
+	});
+});
+
+describe("Mode B write firewall — dry-run default, fence, backup, rev-conditioning", () => {
+	it("writeFull dry-run returns a plan and never uploads", async () => {
+		const fetchMock = vi.fn(async (u: string | URL) => {
+			if (String(u).endsWith("/files/get_metadata")) return new Response(JSON.stringify({ error_summary: "path/not_found/" }), { status: 409 });
+			throw new Error("no mutation allowed in dry-run");
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		const r = await writeFull(tokenEnv(), { path: "/Docs/new.txt", bytes: new TextEncoder().encode("hi"), dryRun: true });
+		expect(r).toMatchObject({ action: "write", exists: false, will_overwrite: false, bytes: 2 });
+		expect(String(r.note)).toMatch(/DRY RUN/);
+		expect(fetchMock.mock.calls.every(([u]) => !String(u).endsWith("/files/upload"))).toBe(true);
+	});
+
+	it("writeFull apply (new file) uploads mode:add with no backup", async () => {
+		const seen: string[] = [];
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
+			const url = String(u); seen.push(url);
+			if (url.endsWith("/files/get_metadata")) return new Response(JSON.stringify({ error_summary: "path/not_found/" }), { status: 409 });
+			if (url.endsWith("/files/upload")) {
+				expect(JSON.parse(init.headers["Dropbox-API-Arg"]).mode).toBe("add");
+				return new Response(JSON.stringify({ path_display: "/Docs/new.txt", size: 2, rev: "01a" }), { status: 200 });
+			}
+			throw new Error(`unexpected ${url}`);
+		}));
+		const r = await writeFull(tokenEnv(), { path: "/Docs/new.txt", bytes: new TextEncoder().encode("hi"), dryRun: false });
+		expect(r).toMatchObject({ ok: true, path: "/Docs/new.txt", rev: "01a" });
+		expect(seen.some((u) => u.endsWith("/files/copy_v2"))).toBe(false);
+	});
+
+	it("writeFull refuses to overwrite an existing file without overwrite:true or a rev", async () => {
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL) => {
+			if (String(u).endsWith("/files/get_metadata")) return new Response(JSON.stringify({ ".tag": "file", rev: "99", size: 5 }), { status: 200 });
+			throw new Error("no write");
+		}));
+		await expect(writeFull(tokenEnv(), { path: "/x.txt", bytes: new Uint8Array([1]), dryRun: false })).rejects.toThrow(/already exists/);
+	});
+
+	it("writeFull overwrite backs up to /.sux-trash then uploads mode:overwrite", async () => {
+		const seen: string[] = [];
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
+			const url = String(u); seen.push(url);
+			if (url.endsWith("/files/get_metadata")) return new Response(JSON.stringify({ ".tag": "file", rev: "99", size: 5 }), { status: 200 });
+			if (url.endsWith("/files/copy_v2")) {
+				expect(JSON.parse(init.body).from_path).toBe("/x.txt");
+				expect(JSON.parse(init.body).to_path).toMatch(/^\/\.sux-trash\//);
+				return new Response(JSON.stringify({ metadata: { path_display: "/.sux-trash/T/x.txt" } }), { status: 200 });
+			}
+			if (url.endsWith("/files/upload")) {
+				expect(JSON.parse(init.headers["Dropbox-API-Arg"]).mode).toBe("overwrite");
+				return new Response(JSON.stringify({ path_display: "/x.txt", size: 1, rev: "9a" }), { status: 200 });
+			}
+			throw new Error(url);
+		}));
+		const r = await writeFull(tokenEnv(), { path: "/x.txt", bytes: new Uint8Array([1]), overwrite: true, dryRun: false });
+		expect(r).toMatchObject({ ok: true, backup: "/.sux-trash/T/x.txt", rev: "9a" });
+		expect(seen.filter((u) => u.endsWith("/files/copy_v2")).length).toBe(1);
+	});
+
+	it("writeFull is rev-conditioned: stale rev rejects, matching rev uploads mode:update", async () => {
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
+			const url = String(u);
+			if (url.endsWith("/files/get_metadata")) return new Response(JSON.stringify({ ".tag": "file", rev: "99", size: 5 }), { status: 200 });
+			if (url.endsWith("/files/upload")) {
+				expect(JSON.parse(init.headers["Dropbox-API-Arg"]).mode).toMatchObject({ ".tag": "update", update: "99" });
+				return new Response(JSON.stringify({ path_display: "/x.txt", rev: "aa", size: 1 }), { status: 200 });
+			}
+			throw new Error(url);
+		}));
+		await expect(writeFull(tokenEnv(), { path: "/x.txt", bytes: new Uint8Array([1]), rev: "88", dryRun: false })).rejects.toThrow(/rev mismatch/);
+		const r = await writeFull(tokenEnv(), { path: "/x.txt", bytes: new Uint8Array([1]), rev: "99", backup: false, dryRun: false });
+		expect(r).toMatchObject({ ok: true, rev: "aa" });
+	});
+
+	it("writeFull refuses to overwrite a folder with a file", async () => {
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL) => {
+			if (String(u).endsWith("/files/get_metadata")) return new Response(JSON.stringify({ ".tag": "folder" }), { status: 200 });
+			throw new Error("no write");
+		}));
+		await expect(writeFull(tokenEnv(), { path: "/Docs", bytes: new Uint8Array([1]), overwrite: true, dryRun: false })).rejects.toThrow(/is a folder/);
+	});
+
+	it("the fence refuses the account root and any protected prefix (case-insensitive), before any network call", async () => {
+		const env = { DROPBOX_FULL_TOKEN: "ft", DROPBOX_FULL_PROTECT_PREFIXES: "/Obsidian, /Private" } as any;
+		const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+		vi.stubGlobal("fetch", fetchMock);
+		await expect(writeFull(env, { path: "", bytes: new Uint8Array(), dryRun: true })).rejects.toThrow(/account root/);
+		await expect(writeFull(env, { path: "/Obsidian/vault/n.md", bytes: new Uint8Array(), dryRun: true })).rejects.toThrow(/protected prefix/);
+		await expect(deleteFull(env, { path: "/private/secret.txt", dryRun: true })).rejects.toThrow(/protected prefix/);
+		await expect(moveFull(env, { from: "/ok.txt", to: "/Obsidian/x", dryRun: true })).rejects.toThrow(/protected prefix/);
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("deleteFull dry-run previews; apply calls delete_v2; a missing path throws", async () => {
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL) => {
+			if (String(u).endsWith("/files/get_metadata")) return new Response(JSON.stringify({ ".tag": "file" }), { status: 200 });
+			throw new Error("no delete in dry-run");
+		}));
+		expect(await deleteFull(tokenEnv(), { path: "/x.txt", dryRun: true })).toMatchObject({ action: "delete", path: "/x.txt" });
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL) => {
+			const url = String(u);
+			if (url.endsWith("/files/get_metadata")) return new Response(JSON.stringify({ ".tag": "file" }), { status: 200 });
+			if (url.endsWith("/files/delete_v2")) return new Response(JSON.stringify({ metadata: { path_display: "/x.txt" } }), { status: 200 });
+			throw new Error(url);
+		}));
+		expect(await deleteFull(tokenEnv(), { path: "/x.txt", dryRun: false })).toMatchObject({ ok: true, deleted: "/x.txt" });
+		vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error_summary: "path_lookup/not_found/" }), { status: 409 })));
+		await expect(deleteFull(tokenEnv(), { path: "/gone.txt", dryRun: false })).rejects.toThrow(/nothing deleted|not_found/);
+	});
+
+	it("moveFull dry-run previews; apply calls move_v2; a no-op is refused", async () => {
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
+			if (String(u).endsWith("/files/move_v2")) {
+				expect(JSON.parse(init.body)).toMatchObject({ from_path: "/a", to_path: "/b", autorename: false });
+				return new Response(JSON.stringify({ metadata: { path_display: "/b" } }), { status: 200 });
+			}
+			throw new Error(String(u));
+		}));
+		expect(await moveFull(tokenEnv(), { from: "/a", to: "/b", dryRun: true })).toMatchObject({ action: "move", from: "/a", to: "/b" });
+		expect(await moveFull(tokenEnv(), { from: "/a", to: "/b", dryRun: false })).toMatchObject({ ok: true, from: "/a", to: "/b" });
+		await expect(moveFull(tokenEnv(), { from: "/a", to: "/a", dryRun: true })).rejects.toThrow(/nothing to move/);
 	});
 });

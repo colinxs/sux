@@ -1,5 +1,5 @@
 import { type RtEnv } from "../registry";
-import { toB64 } from "./_util";
+import { fromB64, toB64 } from "./_util";
 
 // Full-Dropbox (Mode B) client — READ + SEARCH over the WHOLE Dropbox, behind a
 // SEPARATE full-scope credential (DROPBOX_FULL_*) at a DISTINCT KV key. This never
@@ -132,3 +132,102 @@ export async function readFull(env: RtEnv, path: string): Promise<Record<string,
 		? { path: meta.json?.path_display ?? p, size: bytes.length, rev: meta.json?.rev, text: new TextDecoder().decode(bytes) }
 		: { path: meta.json?.path_display ?? p, size: bytes.length, rev: meta.json?.rev, base64: toB64(bytes) };
 }
+
+// ── Mode B WRITE firewall ────────────────────────────────────────────────────
+// Because Mode B's credential has NO scope wall (it can touch the whole account),
+// every mutating verb carries the plan→confirm→mutate→report firewall from
+// files.md §6. This is an ACCIDENT guard (not an injection boundary — an injected
+// tool-call can set the same flags): the real containment is recoverability
+// (Dropbox 'Deleted files' + version history + a pre-op .trash copy on overwrite),
+// rev-conditioning (a concurrent edit fails loudly, never clobbers), dry-run by
+// default (you always see the plan first), and a configurable protected-prefix
+// deny-list. Read verbs above cannot reach any of this.
+
+const TRASH_ROOT = "/.sux-trash";
+
+/** Configured deny-list prefixes (absolute, lowercased). Empty when unset. */
+const protectedPrefixes = (env: RtEnv): string[] =>
+	String(env.DROPBOX_FULL_PROTECT_PREFIXES ?? "")
+		.split(",")
+		.map((s) => normFull(s).toLowerCase())
+		.filter(Boolean);
+
+/** Normalize + refuse a mutating target: never the account root, never under a protected prefix. */
+function fenceFull(env: RtEnv, path: unknown): string {
+	const p = normFull(path);
+	if (!p) throw new Error("refusing to mutate the Dropbox account root ('').");
+	const low = p.toLowerCase();
+	for (const pre of protectedPrefixes(env)) {
+		if (low === pre || low.startsWith(`${pre}/`)) throw new Error(`'${p}' is under a protected prefix (${pre}) — refused. Widen DROPBOX_FULL_PROTECT_PREFIXES to allow it.`);
+	}
+	return p;
+}
+
+/** Copy a file to /.sux-trash/<ts>/<path> so an overwrite is browsably recoverable (belt to version history's suspenders). */
+async function copyToTrash(env: RtEnv, path: string, stamp: string): Promise<string> {
+	const dest = `${TRASH_ROOT}/${stamp}${path}`;
+	const r = await fullRpc(env, "/files/copy_v2", { from_path: path, to_path: dest, autorename: true });
+	if (r.status >= 400) throw new Error(`Dropbox backup(copy) error: ${r.json?.error_summary ?? `HTTP ${r.status}`} (${path})`);
+	return r.json?.metadata?.path_display ?? dest;
+}
+
+const stampNow = (): string => new Date().toISOString().replace(/[:.]/g, "-");
+
+/** Write a file anywhere in the account. dry-run by default; existing files need overwrite:true OR a matching rev. */
+export async function writeFull(env: RtEnv, opts: { path: string; bytes: Uint8Array; rev?: string; overwrite?: boolean; backup?: boolean; dryRun: boolean }): Promise<Record<string, unknown>> {
+	const p = fenceFull(env, opts.path);
+	const meta = await fullRpc(env, "/files/get_metadata", { path: p });
+	if (meta.status >= 400 && meta.status !== 409) throw new Error(`Dropbox metadata error: ${meta.json?.error_summary ?? `HTTP ${meta.status}`} (${p})`);
+	const existing = meta.status < 400 ? meta.json : null;
+	if (existing?.[".tag"] === "folder") throw new Error(`'${p}' is a folder — refusing to overwrite it with a file.`);
+	const exists = existing?.[".tag"] === "file";
+	if (exists && !opts.overwrite && !opts.rev) throw new Error(`'${p}' already exists (rev ${existing?.rev}). Pass overwrite:true to replace it, or rev:'${existing?.rev}' for a conditional update.`);
+	if (opts.rev && exists && opts.rev !== existing?.rev) throw new Error(`rev mismatch for '${p}': you have ${opts.rev}, current is ${existing?.rev}. Re-read and retry.`);
+	const willBackup = exists && opts.backup !== false;
+	if (opts.dryRun) {
+		return { action: "write", scope: "full-dropbox", path: p, exists, will_overwrite: exists, bytes: opts.bytes.length, rev_condition: opts.rev ?? null, ...(willBackup ? { backup_to: TRASH_ROOT } : {}), note: "DRY RUN — nothing written. Re-call with dry_run:false to apply." };
+	}
+	const backup = willBackup ? await copyToTrash(env, p, stampNow()) : undefined;
+	const mode = opts.rev ? { ".tag": "update", update: opts.rev } : exists ? "overwrite" : "add";
+	const resp = await fullFetch(env, `${CONTENT}/files/upload`, (t) => ({
+		method: "POST",
+		headers: { Authorization: `Bearer ${t}`, "Content-Type": "application/octet-stream", "Dropbox-API-Arg": headerSafeJson({ path: p, mode, autorename: false, mute: true }) },
+		body: opts.bytes,
+		signal: AbortSignal.timeout(60_000),
+	}));
+	if (resp.status >= 400) throw new Error(`Dropbox upload error: ${(await resp.text().catch(() => "")).slice(0, 200) || `HTTP ${resp.status}`} (${p})`);
+	const j: any = await resp.json().catch(() => null);
+	return { ok: true, action: "write", scope: "full-dropbox", path: j?.path_display ?? p, size: j?.size ?? opts.bytes.length, rev: j?.rev, ...(backup ? { backup } : {}) };
+}
+
+/** Delete a file/folder anywhere in the account. dry-run by default; caller supplies confirm at the tool layer. Recoverable in Dropbox 'Deleted files'. */
+export async function deleteFull(env: RtEnv, opts: { path: string; dryRun: boolean }): Promise<Record<string, unknown>> {
+	const p = fenceFull(env, opts.path);
+	const meta = await fullRpc(env, "/files/get_metadata", { path: p });
+	if (meta.status >= 400) throw new Error(`Dropbox error: ${meta.json?.error_summary ?? `HTTP ${meta.status}`} (${p}) — nothing deleted.`);
+	if (opts.dryRun) {
+		return { action: "delete", scope: "full-dropbox", path: p, kind: meta.json?.[".tag"], note: "DRY RUN — nothing deleted. Re-call with dry_run:false + confirm:true to apply. Deletes are recoverable in Dropbox 'Deleted files'." };
+	}
+	const r = await fullRpc(env, "/files/delete_v2", { path: p });
+	if (r.status >= 400) throw new Error(`Dropbox delete error: ${r.json?.error_summary ?? `HTTP ${r.status}`} (${p})`);
+	return { ok: true, action: "delete", scope: "full-dropbox", deleted: r.json?.metadata?.path_display ?? p, note: "Recoverable in Dropbox 'Deleted files'." };
+}
+
+/** Move/rename anywhere in the account. dry-run by default; reversible by moving back. */
+export async function moveFull(env: RtEnv, opts: { from: string; to: string; dryRun: boolean }): Promise<Record<string, unknown>> {
+	const f = fenceFull(env, opts.from);
+	const t = fenceFull(env, opts.to);
+	if (f === t) throw new Error("move: `to` equals `from` — nothing to move.");
+	if (opts.dryRun) {
+		return { action: "move", scope: "full-dropbox", from: f, to: t, note: "DRY RUN — nothing moved. Re-call with dry_run:false to apply." };
+	}
+	const r = await fullRpc(env, "/files/move_v2", { from_path: f, to_path: t, autorename: false });
+	if (r.status >= 400) throw new Error(`Dropbox move error: ${r.json?.error_summary ?? `HTTP ${r.status}`} (${f} → ${t})`);
+	return { ok: true, action: "move", scope: "full-dropbox", from: f, to: r.json?.metadata?.path_display ?? t };
+}
+
+/** Build write bytes from either utf-8 text or base64 (for the tool layer). */
+export const writeBytes = (text?: string, base64?: string): Uint8Array => {
+	if (typeof base64 === "string" && base64) return fromB64(base64);
+	return new TextEncoder().encode(typeof text === "string" ? text : "");
+};

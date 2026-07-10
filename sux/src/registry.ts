@@ -63,6 +63,11 @@ export type RtEnv = Env &
 		DROPBOX_FULL_APP_KEY?: string;
 		DROPBOX_FULL_APP_SECRET?: string;
 		DROPBOX_FULL_TOKEN?: string;
+		// Mode B write firewall: comma-separated absolute path prefixes that Mode B
+		// mutations (write/delete/move) REFUSE to touch (case-insensitive), e.g. a vault
+		// mirror. Empty → no deny-list (the always-on guards — dry-run default, confirm on
+		// delete, rev-conditioning, recoverable trash — still apply). See _dropbox-full.ts.
+		DROPBOX_FULL_PROTECT_PREFIXES?: string;
 
 		// IANA tz for the vault owner's "today" (daily-note tools). Default Pacific.
 		VAULT_TZ?: string;
