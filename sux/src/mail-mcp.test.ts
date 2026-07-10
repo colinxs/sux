@@ -35,13 +35,21 @@ const MAILBOXES = [
 const EMAIL = { id: "e1", threadId: "t1", subject: "Hello", from: [{ email: "a@b.com", name: "A" }], to: [{ email: "me@fastmail.com" }], receivedAt: "2026-07-09T00:00:00Z", preview: "hi there", keywords: { $seen: true }, textBody: [{ partId: "p1", type: "text/plain" }], bodyValues: { p1: { value: "Full body text." } } };
 
 /** Answer one JMAP method call with canned data. */
+let lastEmailSet: any = null;
 function answer([method, args]: any): any {
 	if (method === "Mailbox/get") return [method, { list: MAILBOXES }, "x"];
 	if (method === "Identity/get") return [method, { list: [{ id: "id1", name: "Me", email: "me@fastmail.com" }] }, "x"];
 	if (method === "Email/query") return [method, { ids: ["e1"], queryState: "q1" }, "x"];
 	if (method === "Email/get") return [method, { list: [EMAIL] }, "x"];
 	if (method === "Thread/get") return [method, { list: [{ id: "t1", emailIds: ["e1"] }] }, "x"];
-	if (method === "Email/set") return [method, { created: args?.create ? Object.fromEntries(Object.keys(args.create).map((k) => [k, { id: "new-1" }])) : undefined, updated: args?.update ? Object.fromEntries(Object.keys(args.update).map((k) => [k, null])) : undefined }, "x"];
+	if (method === "Email/set") {
+		lastEmailSet = args;
+		// An id containing "bad" simulates a server-rejected patch (notUpdated); everything else updates.
+		const keys = args?.update ? Object.keys(args.update) : [];
+		const updated = Object.fromEntries(keys.filter((k) => !k.includes("bad")).map((k) => [k, null]));
+		const notUpdated = Object.fromEntries(keys.filter((k) => k.includes("bad")).map((k) => [k, { type: "invalidProperties" }]));
+		return [method, { created: args?.create ? Object.fromEntries(Object.keys(args.create).map((k) => [k, { id: "new-1" }])) : undefined, updated, notUpdated }, "x"];
+	}
 	if (method === "EmailSubmission/set") return [method, { created: { sub: { id: "sub-1" } } }, "x"];
 	if (method === "MaskedEmail/get") return [method, { list: [{ id: "m1", email: "x@fastmail.com", state: "enabled", forDomain: "shop.com" }] }, "x"];
 	if (method === "MaskedEmail/set") return [method, { created: { m: { id: "m2", email: "y@fastmail.com", forDomain: "new.com" } } }, "x"];
@@ -121,6 +129,23 @@ describe("mail_* ergonomic tools", () => {
 		installFetch();
 		const out = parse(await tool("mail_archive").run(env(), { ids: ["e1"] }));
 		expect(out).toMatchObject({ moved: 1, to: "archive" });
+	});
+
+	it("mail_move REPLACES the mailbox set (a real move, not an additive copy-into)", async () => {
+		installFetch();
+		lastEmailSet = null;
+		await tool("mail_move").run(env(), { ids: ["e1"], mailbox: "archive" });
+		// The whole mailboxIds property is set to exactly the target — NOT a `mailboxIds/<id>:true` add
+		// (which would leave the message in its origin mailbox, e.g. move-to-trash staying in the Inbox).
+		expect(lastEmailSet.update.e1).toEqual({ mailboxIds: { "mb-arch": true } });
+		expect(Object.keys(lastEmailSet.update.e1)).not.toContain("mailboxIds/mb-arch");
+	});
+
+	it("mail_move surfaces a rejected patch instead of a silent moved:0", async () => {
+		installFetch();
+		const r = await tool("mail_move").run(env(), { ids: ["bad-1"], mailbox: "archive" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/move to 'archive' failed/);
 	});
 
 	it("mail_masked lists and creates masked addresses", async () => {

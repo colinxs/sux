@@ -368,7 +368,7 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 	}
 }
 
-/** Move messages into a target mailbox (add target, and when archiving, remove Inbox). */
+/** Move messages into a target mailbox — REPLACES the mailbox set (a real move, not an add). */
 async function moveMessages(env: RtEnv, ids: unknown, target: string): Promise<ToolResult> {
 	const list = Array.isArray(ids) ? ids.map(String) : [];
 	if (!list.length || !target) return fail("provide ids[] and a target mailbox.");
@@ -376,17 +376,18 @@ async function moveMessages(env: RtEnv, ids: unknown, target: string): Promise<T
 		const map = await mailboxMap(env);
 		const targetId = resolveMailboxId(map, target);
 		if (!targetId) return fail(`unknown mailbox '${target}'.`);
-		const inboxId = map.byRole["inbox"];
+		// A MOVE sets mailboxIds to EXACTLY the target — the additive `mailboxIds/<id>:true`
+		// patch left the message in its origin mailbox too (move-to-trash stayed in the Inbox).
 		const update: Record<string, unknown> = {};
-		for (const id of list) {
-			const patch: Record<string, unknown> = { [`mailboxIds/${targetId}`]: true };
-			// Archiving means "leave the inbox"; a plain move keeps it simple and additive.
-			if (target.toLowerCase() === "archive" && inboxId) patch[`mailboxIds/${inboxId}`] = null;
-			update[id] = patch;
-		}
+		for (const id of list) update[id] = { mailboxIds: { [targetId]: true } };
 		const resp = await jmapCall(env, { calls: [["Email/set", { update }, "u"]] });
-		const updated = resultFor(resp, "Email/set")?.updated ?? {};
-		return ok({ moved: Object.keys(updated).length, to: target });
+		const setResult = resultFor(resp, "Email/set");
+		const moved = Object.keys(setResult?.updated ?? {});
+		const notUpdated = setResult?.notUpdated ?? {};
+		const failed = Object.keys(notUpdated);
+		// Don't report a silent moved:0 — an invalid target / rejected patch surfaces as an error.
+		if (!moved.length && failed.length) return fail(`move to '${target}' failed: ${JSON.stringify(notUpdated).slice(0, 300)}`);
+		return ok({ moved: moved.length, to: target, ...(failed.length ? { failed: failed.length, errors: notUpdated } : {}) });
 	} catch (e) {
 		return fail(errMsg(e));
 	}
