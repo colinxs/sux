@@ -44,10 +44,12 @@ import { kv_list } from "./kv_list";
 import { kv_delete } from "./kv_delete";
 import { issue } from "./issue";
 import { imageConvert } from "./image_convert";
+import { recall } from "./recall";
 import { ace } from "./ace";
 import { amazon } from "./amazon";
 import { arxiv } from "./arxiv";
 import { bestbuy } from "./bestbuy";
+import { citation } from "./citation";
 import { coingecko } from "./coingecko";
 import { controld } from "./controld";
 import { costco } from "./costco";
@@ -63,6 +65,7 @@ import { fontcase } from "./fontcase";
 import { homedepot } from "./homedepot";
 import { html } from "./html";
 import { ingest } from "./ingest";
+import { jmap } from "./jmap";
 import { json } from "./json";
 import { kroger } from "./kroger";
 import { linkedin } from "./linkedin";
@@ -87,6 +90,7 @@ import { store } from "./store";
 import { obsidian } from "./obsidian";
 import { tailscale } from "./tailscale";
 import { tavily } from "./tavily";
+import { todoist } from "./todoist";
 import { voice } from "./voice";
 import { walmart } from "./walmart";
 import { watch } from "./watch";
@@ -137,10 +141,12 @@ export const FUNCTIONS: Fn[] = [
 	kv_delete,
 	issue,
 	imageConvert,
+	recall,
 	ace,
 	amazon,
 	arxiv,
 	bestbuy,
+	citation,
 	coingecko,
 	controld,
 	costco,
@@ -156,6 +162,7 @@ export const FUNCTIONS: Fn[] = [
 	homedepot,
 	html,
 	ingest,
+	jmap,
 	json,
 	kroger,
 	linkedin,
@@ -180,6 +187,7 @@ export const FUNCTIONS: Fn[] = [
 	obsidian,
 	tailscale,
 	tavily,
+	todoist,
 	voice,
 	walmart,
 	watch,

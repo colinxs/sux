@@ -39,6 +39,23 @@ describe("dropbox (app-folder blob store)", () => {
 		expect(mints).toBe(1);
 	});
 
+	it("refresh flow (public client / PKCE — no app secret): client_id in body, NO Basic auth", async () => {
+		const kv = fakeKV();
+		const env = { DROPBOX_REFRESH_TOKEN: "rt", DROPBOX_APP_KEY: "ak", OAUTH_KV: kv } as any; // no DROPBOX_APP_SECRET
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
+			if (String(u) === "https://api.dropbox.com/oauth2/token") {
+				expect(init.headers.Authorization).toBeUndefined(); // a public client sends no Basic auth
+				expect(init.body).toContain("client_id=ak"); // client_id rides the body instead
+				expect(init.body).toContain("grant_type=refresh_token");
+				return new Response(JSON.stringify({ access_token: "sl.pub", expires_in: 14400 }), { status: 200 });
+			}
+			expect(init.headers.Authorization).toBe("Bearer sl.pub");
+			return new Response(JSON.stringify({ entries: [], has_more: false }), { status: 200 });
+		}));
+		await dropbox.run(env, { op: "list" });
+		expect(kv.store.get("sux:dropbox:token")).toBe("sl.pub");
+	});
+
 	it("refresh flow surfaces an auth failure clearly", async () => {
 		const env = { DROPBOX_REFRESH_TOKEN: "rt", DROPBOX_APP_KEY: "ak", OAUTH_KV: fakeKV() } as any;
 		vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "invalid_grant", error_description: "refresh token revoked" }), { status: 400 })));
@@ -192,19 +209,46 @@ describe("dropbox (app-folder blob store)", () => {
 		expect(out.warning).toMatch(/no shared link/);
 	});
 
-	it("deletes a path", async () => {
+	it("deletes a path (with confirm:true)", async () => {
 		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
 			expect(String(u)).toContain("/files/delete_v2");
 			expect(JSON.parse(init.body).path).toBe("/a.pdf");
 			return new Response(JSON.stringify({ metadata: { path_display: "/a.pdf" } }), { status: 200 });
 		}));
-		const r = await dropbox.run(ENV, { op: "delete", path: "a.pdf" });
+		const r = await dropbox.run(ENV, { op: "delete", path: "a.pdf", confirm: true });
 		expect(JSON.parse(r.content[0].text)).toMatchObject({ ok: true, deleted: "/a.pdf" });
+	});
+
+	it("delete without confirm:true is rejected and never calls Dropbox (no fire-at-will)", async () => {
+		const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+		vi.stubGlobal("fetch", fetchMock);
+		const r = await dropbox.run(ENV, { op: "delete", path: "a.pdf" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/confirm:true/);
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("moves/renames a path via move_v2", async () => {
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
+			expect(String(u)).toContain("/files/move_v2");
+			expect(JSON.parse(init.body)).toMatchObject({ from_path: "/a.pdf", to_path: "/archive/a.pdf", autorename: false });
+			return new Response(JSON.stringify({ metadata: { path_display: "/archive/a.pdf" } }), { status: 200 });
+		}));
+		const r = await dropbox.run(ENV, { op: "move", path: "a.pdf", to: "archive/a.pdf" });
+		expect(JSON.parse(r.content[0].text)).toMatchObject({ ok: true, from: "/a.pdf", to: "/archive/a.pdf" });
+	});
+
+	it("move refuses a no-op (to == path) and requires a destination", async () => {
+		const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+		vi.stubGlobal("fetch", fetchMock);
+		expect((await dropbox.run(ENV, { op: "move", path: "a.pdf", to: "a.pdf" })).isError).toBe(true);
+		expect((await dropbox.run(ENV, { op: "move", path: "a.pdf" })).isError).toBe(true);
+		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
 	it("delete surfaces the real Dropbox error text (not a blanket 'Not found')", async () => {
 		vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error_summary: "path_lookup/not_found/" }), { status: 409 })));
-		const r = await dropbox.run(ENV, { op: "delete", path: "missing.pdf" });
+		const r = await dropbox.run(ENV, { op: "delete", path: "missing.pdf", confirm: true });
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toContain("path_lookup/not_found");
 		expect(r.content[0].text).toContain("missing.pdf");

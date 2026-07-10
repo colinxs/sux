@@ -7,6 +7,13 @@ It does the fetching, parsing, converting, and AI-summarizing at the edge
 instead of in your context window, and exposes the whole thing to any MCP client
 as a set of small, composable tools.
 
+> **Browse this repo as a wiki.** It's also an Obsidian vault — open the repo
+> root in Obsidian and start at [`Home.md`](Home.md). The design corpus, the
+> function surface, and the concept graph are cross-linked and status-tagged
+> (`shipped` / `designed` / `parked`); see [`docs/wiki/`](docs/wiki/). Two notes
+> stay in sync with the code via `npm run wiki` — see
+> [`docs/wiki/Meta/wiki-protocol.md`](docs/wiki/Meta/wiki-protocol.md).
+
 The Worker and its full documentation live under [`sux/`](sux/):
 
 - **[`sux/README.md`](sux/README.md)** — the single source of truth:

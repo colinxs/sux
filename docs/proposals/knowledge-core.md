@@ -1,3 +1,13 @@
+---
+title: Knowledge core spec
+status: designed
+cluster: knowledge
+type: proposal
+summary: "Decisions-only spec for the personal knowledge store — transport-agnostic vault ops, PARA+MOC nav, memory frontmatter, the six-verb lifecycle."
+tags: [sux, knowledge, designed]
+updated: 2026-07-09
+---
+
 > **Reconciliation note (per Colin, 2026-07-08):** §1 below frames the worker as a "fallback." That's superseded — **both paths are first-class**: local Obsidian integration (direct Local REST over Tailscale) AND a cloud version for mobile. The cloud/mobile path routes through the sux worker, which PREFERS the live vault via the Funnel'd Local REST API (full ops when the Mac is up — the usual case) and degrades to the git backend only when the Mac is asleep. So "both first-class," graceful-degrade only when off. This resolves Open Decision #1 in favor of exposing the node's Local REST to claude.ai.
 
 # Getting the knowledge core right
@@ -187,3 +197,11 @@ The knowledge core spans TWO first-class data domains, not one:
 - **triage / manage** (adjacent productivity, same wrapper) — archive/label/reply/send + masked-email creation. Email management is a productivity surface the full JMAP enables; the CORE integration is capture-from / retrieve-over / remember-from email.
 
 **jmap.md status:** KEPT as the email-access spec (analogous to the Local REST API for the vault). Its security model (scoped token as worker secret, mutation gating on send/destroy, cacheable:false, batched-dispatch) stands. Masked email is the bonus the connector can't do.
+
+## Related
+
+- [[six-verb-lifecycle]]
+- [[vault-stack]]
+- [[jmap]]
+- [[SUX]]
+- [[Knowledge-Engine-MOC]]

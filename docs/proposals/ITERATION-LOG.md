@@ -1,3 +1,13 @@
+---
+title: Design iteration log
+status: parked
+cluster: meta
+type: log
+summary: "Changelog of the 13-round/104-improvement adversarial refinement that hardened the parked retrieval corpus; provenance, not spec."
+tags: [sux, meta, parked]
+updated: 2026-07-09
+---
+
 # Design refinement — iteration log
 
 Stopped: target reached (104). Rounds: 13. Applied improvements: 104.
@@ -317,3 +327,9 @@ This is the sharpest residual defect. `shop.md` R1 and the `_retail_fanout.ts` s
 ## (2) Verdict
 
 The corpus is substantially coherent and buildable as one program: the load-bearing shared substrate — `_records.ts`/`_fanout.ts`, the `_filter.ts` grammar, the `_retail_fanout.ts` seam, `searchByTerm`, the `env._budget` ledger, `Fn.staleGrace`/`width`/`records`, and the `env._fresh`/`bustRenders` freshness contract — is bilaterally co-signed with matching signatures across the docs that touch it, and the hardest platform constraints (60s deadline, 24h stale-grace, concurrency-1 solver) are respected consistently everywhere. The residual weaknesses are real but narrow and mostly editorial: the retail `renderTimeoutMs` figure (item A) is a genuine number-level contradiction that is nonetheless neutralized at runtime because search omits the arg, and the shop-in-pipe wall-time gap (B) and platform's unratified `_entity`/allowlist claims (C) are integration seams that need one more round of sibling sign-off rather than redesign. Ship it after correcting search.md's "55s" to 80s, deciding shop's `tier:'full'` pipe status, and having shop/teach either co-sign or explicitly decline the `_entity.ts` consumer claim.
+
+## Related
+
+- [[ROADMAP]]
+- [[Parked-Retrieval-MOC]]
+- [[SUX]]

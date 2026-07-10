@@ -1,3 +1,13 @@
+---
+title: travel — API-first vertical
+status: parked
+cluster: retrieval
+type: proposal
+summary: "One fn producing a flights/hotels/attractions/visa/price-trend dossier from Amadeus; two-phase DAG; visa harm-avoidance (refuse, don't guess)."
+tags: [sux, retrieval, parked]
+updated: 2026-07-09
+---
+
 # Design: `travel(from, to)` — API-first travel vertical for sux
 
 **Angle commitment: API-FIRST, production-primary.** Amadeus Self-Service (a **production** key pair, live real-time fares) is the data floor for flights, hotels, and price analytics. Purchase links are *constructed*, never scraped. Visa comes from a commit-pinned passport-index matrix + a vendored pre-authorization table + Wikipedia detail; attractions from the existing `places` fn (+ Wikivoyage). Scraping appears exactly once, as the keyless flights fallback (Google Flights, parsed from aria-label accessibility strings) — a legitimate degradation path because we already beat bot detection through the residential exit + `render:mac`. Zero mac renders on the happy path; at most one per call, budget-gated, on the deepest fallback.
@@ -535,3 +545,10 @@ Each step is a small PR on a `feat/travel` branch off main (`feat/shop-refactor`
 > **VISA — reference data, not legal advice.** The visa facet answers from a commit-pinned, community-maintained passport-index matrix + a small vendored pre-authorization table + Wikipedia detail. It **refuses** rather than guesses: no nationality → `ok:false`; unrecognized dataset value → `layout_change`; dataset >12 months old → stops asserting a requirement and returns only official verify links. It **never** folds ESTA/ETIAS/ETA/eTA into "not required" — the vendored pre-authorization override table is applied to **both the destination AND every resolved transit country**, emitting a structured `pre_authorization:{name,url,applies_to}` even when the matrix cell reads `visa_free` (airside transit through a pre-auth country such as the US, which has no sterile international transit, is the highest-miss case). It **never** infers nationality from the departure city, and always flags **transit-country** exposure from the offer's own segments with an explicit "entry-rule, confirm airside-transit" caveat. "Nonstop — no transit exposure" is asserted **only** when an offer's stop counts are zero, never merely because `connects_in` is empty: a connecting offer whose routing could not be resolved (`routing_known:false`, the keyless fare path) — or a visa-only call that requested no flights facet, so no itinerary was evaluated — emits `transit_unknown:true`, never a false `transit:[]`. Every visa answer carries a non-droppable `verify.official` government link, `data_as_of`, and the dual-national/residence-permit scope note. Confirm at the linked authority before booking.
 
 > **PRICE — a quote is not a booking.** Every fare is a point-in-time GDS or scraped-teaser number, not a held quote. `search_link.kind` is `route_search` unless an airline template matched — **the link opens a live search, not this exact fare** ("$918 here, maybe $1,240 on the page"). Money objects each name their own `currency`; the top-level field is `requested_currency`, not a promise that every number is in it. Keyless fares are **USD/US point-of-sale teasers** (`approx:true`). `AMADEUS_ENV=test` numbers are **canned samples** stamped `env:"test"`. Price-trend verdicts are per-adult, cabin-matched deal barometers over an interpolated historical distribution — never a forecast, suppressed entirely for business/first **and for nonstop-only requests, since the price-history distribution cannot be filtered to nonstop** (the metrics API has no `nonStop` parameter, so the all-routing quartiles are a different routing basis than a nonstop-only fare and a nonstop-vs-all-routing verdict would be confidently wrong — `verdict:null`, quartiles still shown as all-routing), and **suppressed when the fare and the price-history quartiles are in different currencies** (the metrics API and the offer can each quote a currency that differs from the one requested, so a cross-currency verdict would be a confidently-wrong EUR-vs-USD signal — `verdict:null`, quartiles still shown in their own currency). sux never books.
+
+## Related
+
+- [[fanout]]
+- [[verb-algebra]]
+- [[two-hard-facts]]
+- [[Parked-Retrieval-MOC]]

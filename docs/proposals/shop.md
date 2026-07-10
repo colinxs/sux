@@ -1,3 +1,13 @@
+---
+title: shop — price comparison
+status: parked
+cluster: retrieval
+type: proposal
+summary: "Cross-retailer price comparison over the shared retail fan-out — entity resolution, unit price, deal overlay, true freshness; owns _retail_fanout.ts."
+tags: [sux, retrieval, parked]
+updated: 2026-07-09
+---
+
 # shop(item) — cross-retailer price-comparison engine
 
 `shop` is a **specialized commerce verb**, not "search with retail backends." `search` *retrieves* (fan out, normalize, isolate failures, return a list). `shop` *compares*: it resolves which listings are the same product, normalizes prices to comparable units, overlays live flyer deals, stamps every number with its true age, and returns one structured comparison table. Recommendation ("buy the Lowe's one") stays with the frontier-model caller — the server never synthesizes prose judgment (Workers AI is too weak to be the reasoner; the schema's user *is* a frontier model, so hand it clean structured facts). `shop` owns **zero fetching**; it composes the same retail adapter core the unified `search` refactor consumes.
@@ -453,3 +463,10 @@ Steps 2–5 have **no dependency on the search refactor** — only on step 1. `F
 - **Price tracking → v1.1** (`track` arg, KV watch prefix, structured delta report). v1 rejects a stray `track` with a teaching fail rather than silently dropping it.
 - **Barcode / UPC identity fn → future** (barcode mode interim-fails with a teaching message; it's the stash's integration seam, not +1 top-level fn).
 - **Prose "buy the Lowe's one" recommendation → stays with the caller.** The server returns clean structured facts and an arithmetic `best` pointer; a frontier model does the judgment. Workers AI is too weak to be the reasoner, and the schema's user already is one.
+
+## Related
+
+- [[fanout]]
+- [[search]]
+- [[records-envelope]]
+- [[Parked-Retrieval-MOC]]

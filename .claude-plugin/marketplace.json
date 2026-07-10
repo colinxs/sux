@@ -16,6 +16,24 @@
       "source": "./plugins/sux-vault",
       "description": "The PERSONAL Obsidian-vault connector (https://sux.colinxs.workers.dev/vault/mcp): read/write/edit/capture + daily notes over the git-backed knowledge store. A separate endpoint on the same Worker/OAuth so vault tools stay a clean namespace and sux-router stays universal.",
       "version": "0.1.0"
+    },
+    {
+      "name": "sux-mail",
+      "source": "./plugins/sux-mail",
+      "description": "The PERSONAL Fastmail connector (https://sux.colinxs.workers.dev/mail/mcp): search/read/thread/send/draft/archive mail, masked-email, plus the raw `jmap` conduit for the full protocol (calendars, contacts). A separate endpoint on the same Worker/OAuth so mail tools stay a clean namespace and sux-router stays universal.",
+      "version": "0.1.0"
+    },
+    {
+      "name": "sux-life",
+      "source": "./plugins/sux-life",
+      "description": "The digital-life MEMORY layer — a skill (no new connector) that turns the vault + mail connectors into a second brain: capture in seconds, remember durable facts/people/decisions, recall across notes + mail + files + web with citations, triage the inbox, and consolidate into a linked graph. Git is the undo, so writes are unblocked. Pairs with sux-vault + sux-mail.",
+      "version": "0.1.0"
+    },
+    {
+      "name": "sux-files",
+      "source": "./plugins/sux-files",
+      "description": "The PERSONAL file-workspace connector (https://sux.colinxs.workers.dev/files/mcp): list/read/write/upload/share/delete over your Dropbox app folder (scope-is-the-wall), plus the raw `dropbox` escape hatch. Blobs live here; the vault holds the note about them. A separate endpoint on the same Worker/OAuth.",
+      "version": "0.1.0"
     }
   ]
 }

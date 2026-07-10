@@ -1,3 +1,13 @@
+---
+title: search — one retrieval verb
+status: parked
+cluster: retrieval
+type: proposal
+summary: "One retrieval verb over web/research/social/retail backends with a string WHERE-DSL; emits the records envelope so combinators compose."
+tags: [sux, retrieval, parked]
+updated: 2026-07-09
+---
+
 # `search(query, backends, filter)` — one unified retrieval verb
 
 **Angle: caller-ergonomics.** Every decision is made from one question — *what does the frontier model on the other side of the MCP boundary reliably produce on the first try?* — then reconciled with the Workers constraints and the co-signed sibling freezes (`algebra.md`, `shop.md`). Where the user's spec and the platform conflict — the `filter = page -> page.reviews > 4.5` lambda cannot run, because **there is no `eval` on Workers** — this design picks the faithful, safe realization (a string WHERE-expression) and says why.
@@ -449,3 +459,11 @@ Each cycle: `gen:index` + `docs`, hand-edit SKILL.md, mirror `plugins/sux-router
 2. The lexer synonym set (`==`→`=`, `&&`→`and`, `||`→`or`, `contains`→`has`) is part of the shared grammar.
 3. `exists` is **prefix**; missing-field → false for all ops except `exists` (R11 confirmed).
 4. `Fn.staleGrace?`, `Fn.width?`, `Fn.records?` are the shared `Fn` fields (also in `shop.md`).
+
+## Related
+
+- [[filter-dsl]]
+- [[fanout]]
+- [[records-envelope]]
+- [[shop]]
+- [[Parked-Retrieval-MOC]]

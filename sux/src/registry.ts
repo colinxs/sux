@@ -55,6 +55,20 @@ export type RtEnv = Env &
 		DROPBOX_APP_KEY?: string;
 		DROPBOX_APP_SECRET?: string;
 
+		// Full-Dropbox (Mode B) — a SEPARATE full-scope credential for read/search over
+		// the WHOLE Dropbox (fns/_dropbox-full.ts), kept distinct from the App-folder
+		// token above so Mode A stays the /Apps/<app>/ safety wall. PKCE public client:
+		// omit DROPBOX_FULL_APP_SECRET (Worker holds no secret). Absent → Mode B dormant.
+		DROPBOX_FULL_REFRESH_TOKEN?: string;
+		DROPBOX_FULL_APP_KEY?: string;
+		DROPBOX_FULL_APP_SECRET?: string;
+		DROPBOX_FULL_TOKEN?: string;
+		// Mode B write firewall: comma-separated absolute path prefixes that Mode B
+		// mutations (write/delete/move) REFUSE to touch (case-insensitive), e.g. a vault
+		// mirror. Empty → no deny-list (the always-on guards — dry-run default, confirm on
+		// delete, rev-conditioning, recoverable trash — still apply). See _dropbox-full.ts.
+		DROPBOX_FULL_PROTECT_PREFIXES?: string;
+
 		// IANA tz for the vault owner's "today" (daily-note tools). Default Pacific.
 		VAULT_TZ?: string;
 
@@ -81,6 +95,20 @@ export type RtEnv = Env &
 
 		EBAY_CLIENT_ID?: string;
 		EBAY_CLIENT_SECRET?: string;
+
+		// Todoist REST v2 (todoist fn) — a personal API token (Todoist → Settings →
+		// Integrations → Developer → API token), used as a Bearer directly. Absent → the
+		// fn returns not_configured; nothing about it runs until the token is set.
+		TODOIST_TOKEN?: string;
+
+		// Fastmail JMAP conduit (jmap fn + /mail/mcp namespace). A JMAP-scoped API
+		// token (Fastmail → Settings → Privacy & Security → API tokens), NOT an MCP
+		// token. Scope it read-only for read/compose workflows so send/destroy are
+		// impossible at the credential layer. accountId/session URL are derived from
+		// the Session; the two overrides are escape hatches.
+		FASTMAIL_TOKEN?: string;
+		FASTMAIL_ACCOUNT_ID?: string;
+		FASTMAIL_SESSION_URL?: string;
 
 
 		TAVILY_API_KEY?: string;

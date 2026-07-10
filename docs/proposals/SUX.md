@@ -1,3 +1,13 @@
+---
+title: SUX — the core-and-tools pivot
+status: meta
+cluster: meta
+type: meta
+summary: "The pivot — declares the git-markdown knowledge store the core and everything else thin tools on top; parks the web-retrieval/algebra corpus."
+tags: [sux, meta, meta]
+updated: 2026-07-09
+---
+
 # sux — the core and the tools on it
 
 The core is a **knowledge store**: one git repo of markdown notes. Two clients read and write it — Claude (through the `obsidian` verb) and Obsidian (the human editor, git-syncing the same repo). Everything else is a tool built on top of that store.
@@ -62,3 +72,11 @@ The web `search`/`shop`/`travel`/algebra corpus is a separate, unrelated tool �
 ## Next step
 
 Confirm `OBSIDIAN_VAULT_REPO` + `GITHUB_TOKEN` are set and the round trip works (Claude `append`s → repo → Obsidian syncs), fill the `write`/`edit`/`delete` gaps on the obsidian fn, then build the productivity tool as the first thing on top.
+
+## Related
+
+- [[knowledge-core]]
+- [[namespace-architecture]]
+- [[vault-stack]]
+- [[ROADMAP]]
+- [[Home]]

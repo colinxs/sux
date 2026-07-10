@@ -1,0 +1,21 @@
+{
+  "alwaysUpdateLinks": true,
+  "newFileLocation": "folder",
+  "newFileFolderPath": "docs/wiki",
+  "attachmentFolderPath": "docs/proposals/diagrams",
+  "useMarkdownLinks": false,
+  "showUnsupportedFiles": false,
+  "userIgnoreFilters": [
+    "node_modules/",
+    "sux/src/",
+    "sux/node/",
+    "sux/mac-render/",
+    "sux/openwrt/",
+    "sux/grafana/",
+    "sux/test/",
+    "sux/scripts/",
+    ".github/",
+    "scripts/",
+    "plugins/"
+  ]
+}

@@ -1,6 +1,7 @@
 import { checkArgs, FN_DEADLINE_MS, withDeadline } from "./index";
+import { fingerprint, ledger } from "./ledger";
 import { type JsonRpc, sseResponse } from "./mcp-util";
-import { fail, type RtEnv, type ToolResult } from "./registry";
+import { fail, ok, type RtEnv, type ToolResult } from "./registry";
 import { ingest } from "./fns/ingest";
 import { obsidian } from "./fns/obsidian";
 import { vaultToday } from "./fns/_util";
@@ -104,6 +105,52 @@ const TOOLS: VaultTool[] = [
 			const pick: Record<string, unknown> = {};
 			for (const k of ["url", "text", "query", "title", "tags", "summarize", "compress"]) if (a?.[k] !== undefined) pick[k] = a[k];
 			return ingest.run(env, pick);
+		},
+	},
+	{
+		name: "vault_batch_append",
+		description:
+			"Append to MANY notes in one call: `items` [{path, content}] fanned out server-side. IDEMPOTENT — an item already appended in a prior run (same path + content) is skipped, so a re-run converges instead of duplicating. `dry_run:true` previews the intended appends without writing. Git history is the undo, so no confirm gate.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["items"],
+			properties: {
+				items: { type: "array", items: { type: "object", additionalProperties: false, required: ["path", "content"], properties: { path: { type: "string" }, content: { type: "string" } } }, description: "The appends to make." },
+				dry_run: { type: "boolean", description: "Preview the intended appends without writing." },
+			},
+		},
+		run: async (env, a) => {
+			const items = Array.isArray(a?.items) ? a.items : [];
+			if (!items.length) return fail("vault_batch_append requires a non-empty `items` [{path, content}].");
+			const dryRun = a?.dry_run === true;
+			const led = ledger(env, "vault_append");
+			const results: Array<Record<string, unknown>> = [];
+			for (const it of items) {
+				const path = String(it?.path ?? "");
+				const content = String(it?.content ?? "");
+				if (!path || !content) {
+					results.push({ path, skipped: "missing path or content" });
+					continue;
+				}
+				const id = `${path}::${await fingerprint(content)}`;
+				if (await led.seen(id)) {
+					results.push({ path, skipped: "already appended (idempotent)" });
+					continue;
+				}
+				if (dryRun) {
+					results.push({ path, would_append_chars: content.length });
+					continue;
+				}
+				const r = await obsidian.run(env, git({ action: "append", path, content }));
+				if (r.isError) {
+					results.push({ path, error: (r.content?.[0]?.text ?? "append failed").slice(0, 120) });
+					continue;
+				}
+				await led.mark(id);
+				results.push({ path, appended: true });
+			}
+			return ok(JSON.stringify({ count: items.length, dry_run: dryRun, results }, null, 2));
 		},
 	},
 	{

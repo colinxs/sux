@@ -1,3 +1,13 @@
+---
+title: style / edit — style engine
+status: parked
+cluster: knowledge
+type: proposal
+summary: "style learns a writing voice / edit rewrites to it; closed style-dimension taxonomy as the injection boundary; owns the voice kind on _kb.ts."
+tags: [sux, knowledge, parked]
+updated: 2026-07-09
+---
+
 # Style Engine: `edit(doc, style)` + `style(source)`
 
 **Angle: rewrite-quality outward-in.** Every decision is derived from one question — *what makes the edited output good, given the server model is `@cf/meta/llama-3.2-3b-instruct` (summarize/classify grade) and the caller is a frontier model?* The answer is a verb pair: `edit` rewrites server-side for pipes and bulk; `style(action:"get")` hands the compiled spec to the frontier caller to self-apply. Fidelity is enforced by deterministic machinery — block-region splitting, inline freeze/thaw, a bidirectional entity census, honest failure — never by prompt hope. Injection is contained by a **closed positive rule taxonomy**, not a denylist.
@@ -440,3 +450,9 @@ Delete both in a later cycle once connectors refresh; the SKILL/plugin/snippet d
 - **No `mode` flag on `edit`, no diff mode, no numeric sliders.** Each would double a surface or hand a 3B a knob it can't calibrate.
 - **PDF input unsupported** (no pdf→text fn); **no Durable-Object strong consistency** for KV writes; the `style`/`edit` fn names coexist with the `style` param on `summarize`/`edit` (separate MCP namespaces — accepted).
 - **`obey` vs `emulate` runtime distinction is thin** at the 3B (one preamble sentence); the taxonomy, metrics, and `obey_rules`/emulated split carry the real difference, and the description says so rather than overclaiming "authoritative / extracted verbatim."
+
+## Related
+
+- [[kb-substrate]]
+- [[teach-ask]]
+- [[Knowledge-Engine-MOC]]

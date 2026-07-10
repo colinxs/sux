@@ -39,4 +39,9 @@ paths = [
 
   # Lockfile: npm integrity SHA-512 hashes are content digests, not secrets.
   '''package-lock\.json$''',
+
+  # citation fn test: BibTeX citekeys (authorYYYYword, e.g. "preskill2019quantum")
+  # are deterministic bibliographic fixtures that trip the generic-api-key rule but
+  # are never secrets. Scoped to this one formatter test.
+  '''sux/src/fns/citation\.test\.ts$''',
 ]

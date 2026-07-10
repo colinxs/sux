@@ -1,3 +1,13 @@
+---
+title: Platform upgrades
+status: parked
+cluster: infrastructure
+type: proposal
+summary: "Five infra upgrades as one substrate — notify/diff/job (scheduler + cron drain), mac-LLM tier, browse, Cloudflare Workflows, entity resolution."
+tags: [sux, infrastructure, parked]
+updated: 2026-07-09
+---
+
 # Platform upgrades — the infrastructure under the feature verbs (FINAL)
 
 Five infrastructure upgrades that sit *beneath* the sux feature verbs (`search`, `teach`/`ask`, `style`/`edit`, `shop`, `travel`, `algebra`) rather than beside them. They are the plumbing those verbs stand on: a way to be **proactive** (notice + push), a way to think **harder** (a stronger local model), a way to **operate** a page (not just read it), a way to **outlast** the request (durable execution), and a way to know **when two records are the same thing** (identity). Each is designed to deploy half-built and inert — every new capability is gated on an optional secret or binding and no-ops when unset, exactly like `grafana.ts`'s `shipToLoki` — so the whole set lands one-change-per-cycle without a flag day.
@@ -650,3 +660,9 @@ Each cycle is independently shippable, testable, and (except where noted) revers
 - **No travel work here** — travel's authoritative design is `docs/proposals/travel.md`; it adopts the Workflows pattern as a consumer.
 
 **Total fn-count delta across all five upgrades: +5** — `notify`, `diff`, `job`, `browse`, `entity` (**89 → 94**). mac-llm is +0 (pure infra behind `llm()`); Workflows is +0 additional (its handle surface is the unified `job` fn). Sibling proposals move the baseline independently; +5 is the delta attributable to these five.
+
+## Related
+
+- [[two-hard-facts]]
+- [[fanout]]
+- [[Infrastructure-MOC]]

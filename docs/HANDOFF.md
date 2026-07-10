@@ -1,3 +1,13 @@
+---
+title: Session handoff
+status: meta
+cluster: meta
+type: handoff
+summary: "Rolling single-file session handoff (git history holds prior versions); current content is mostly ephemeral or superseded."
+tags: [sux, meta, meta]
+updated: 2026-07-09
+---
+
 # Session handoff — sux-router / plugin / sync automation (2026-07-08)
 
 Context dump from the Claude Code session that built the router skill, plugin
@@ -126,3 +136,8 @@ claude plugin validate .
   explain the old live/repo drift).
 - Don't reopen merged PRs #6/#10/#11; new work goes through fresh PRs from
   `claude/router-skill-profile-snippet-ci3yic`.
+
+## Related
+
+- [[Home]]
+- [[connector-surface-policy]]

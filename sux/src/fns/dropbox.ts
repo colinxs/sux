@@ -20,11 +20,17 @@ async function dropboxToken(env: RtEnv): Promise<string> {
 	if (env.DROPBOX_REFRESH_TOKEN && env.DROPBOX_APP_KEY) {
 		const cached = await env.OAUTH_KV?.get(TOKEN_KEY);
 		if (cached) return cached;
-		const basic = btoa(`${env.DROPBOX_APP_KEY}:${env.DROPBOX_APP_SECRET ?? ""}`);
+		// Confidential client (app secret set) → HTTP Basic auth. Public client (PKCE,
+		// no secret) → client_id in the body, no Authorization header. Both are valid
+		// Dropbox refresh flows; the public path lets the Worker hold NO long-lived
+		// app secret at all — only the app key (public) + the refresh token.
+		const hasSecret = Boolean(env.DROPBOX_APP_SECRET);
+		const headers: Record<string, string> = { "Content-Type": "application/x-www-form-urlencoded" };
+		if (hasSecret) headers.Authorization = `Basic ${btoa(`${env.DROPBOX_APP_KEY}:${env.DROPBOX_APP_SECRET}`)}`;
 		const resp = await fetch(OAUTH_TOKEN_URL, {
 			method: "POST",
-			headers: { Authorization: `Basic ${basic}`, "Content-Type": "application/x-www-form-urlencoded" },
-			body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(String(env.DROPBOX_REFRESH_TOKEN))}`,
+			headers,
+			body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(String(env.DROPBOX_REFRESH_TOKEN))}${hasSecret ? "" : `&client_id=${encodeURIComponent(String(env.DROPBOX_APP_KEY))}`}`,
 			signal: AbortSignal.timeout(20_000),
 		});
 		const j: any = await resp.json().catch(() => null);
@@ -125,17 +131,19 @@ export const dropbox: Fn = {
 	name: "dropbox",
 	cost: 2,
 	description:
-		"Dropbox app-folder blob store — the human-facing twin of R2 `store`: files land in /Apps/<app>/ and sync to every device (the App-folder token cannot see the rest of Dropbox). op: put (`path` + `data` utf-8 or `base64` binary → uploads and returns the shared link) | get (`path` → text for textual extensions, else base64; large files return metadata + shared link) | list (`path` folder, default root; paginate with `cursor`) | delete (`path`) | share (`path` → shared link, created or reused). Shared links are PUBLIC 'anyone with the link' URLs. Paths are relative to the app-folder root. Needs DROPBOX_TOKEN (App-folder scoped access token).",
+		"Dropbox app-folder blob store — the human-facing twin of R2 `store`: files land in /Apps/<app>/ and sync to every device (the App-folder token cannot see the rest of Dropbox). op: put (`path` + `data` utf-8 or `base64` binary → uploads and returns the shared link) | get (`path` → text for textual extensions, else base64; large files return metadata + shared link) | list (`path` folder, default root; paginate with `cursor`) | delete (`path` + `confirm:true` — deletes go to recoverable Dropbox 'Deleted files') | share (`path` → shared link, created or reused) | move (`path` + `to` → rename/relocate). Shared links are PUBLIC 'anyone with the link' URLs. Paths are relative to the app-folder root. Needs DROPBOX_TOKEN (App-folder scoped access token).",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
 		required: ["op"],
 		properties: {
-			op: { type: "string", enum: ["put", "get", "list", "delete", "share"] },
-			path: { type: "string", description: "Path relative to the app-folder root (folder path for list; file path otherwise)." },
+			op: { type: "string", enum: ["put", "get", "list", "delete", "share", "move"] },
+			path: { type: "string", description: "Path relative to the app-folder root (folder path for list; file/source path otherwise)." },
 			cursor: { type: "string", description: "list: continue a paginated listing (returned as `cursor` when has_more)." },
 			data: { type: "string", description: "put: UTF-8 text to upload." },
 			base64: { type: "string", description: "put: base64 bytes to upload (binary)." },
+			to: { type: "string", description: "move: destination path (rename or relocate `path`)." },
+			confirm: { type: "boolean", description: "delete: REQUIRED — must be true. A deliberate two-step (the file lands in recoverable Dropbox 'Deleted files', but delete is never fire-at-will)." },
 		},
 	},
 	cacheable: false,
@@ -151,7 +159,7 @@ export const dropbox: Fn = {
 				if (!path) return fail("op=put requires a `path`.");
 				let bytes: Uint8Array;
 				if (typeof args?.base64 === "string" && args.base64) bytes = fromB64(args.base64);
-				else if (typeof args?.data === "string" && args.data) bytes = new TextEncoder().encode(args.data);
+				else if (typeof args?.data === "string") bytes = new TextEncoder().encode(args.data); // "" is a valid empty upload
 				else return fail("op=put requires `data` (utf-8) or `base64` (binary).");
 				const r = await dropboxPut(env, path, bytes);
 				if ("error" in r) return fail(r.error);
@@ -192,9 +200,19 @@ export const dropbox: Fn = {
 			}
 			if (op === "delete") {
 				if (!path) return fail("op=delete requires a `path`.");
+				if (args?.confirm !== true) return fail("op=delete requires confirm:true (the file goes to recoverable Dropbox 'Deleted files', but delete is a deliberate two-step — never fire-at-will).");
 				const { status, json } = await rpc(env, "/files/delete_v2", { path });
 				if (status >= 400) return fail(`Dropbox delete error: ${json?.error_summary ?? `HTTP ${status}`} (${path})`);
 				return ok(JSON.stringify({ ok: true, deleted: json?.metadata?.path_display ?? path }, null, 2));
+			}
+			if (op === "move") {
+				if (!path) return fail("op=move requires a `path` (source).");
+				const to = norm(args?.to);
+				if (!to) return fail("op=move requires a `to` (destination).");
+				if (to === path) return fail("op=move: `to` equals `path` — nothing to move.");
+				const { status, json } = await rpc(env, "/files/move_v2", { from_path: path, to_path: to, autorename: false });
+				if (status >= 400) return fail(`Dropbox move error: ${json?.error_summary ?? `HTTP ${status}`} (${path} → ${to})`);
+				return ok(JSON.stringify({ ok: true, from: path, to: json?.metadata?.path_display ?? to }, null, 2));
 			}
 			if (op === "share") {
 				if (!path) return fail("op=share requires a `path`.");

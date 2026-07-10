@@ -1,3 +1,13 @@
+---
+title: Self-hosting the vault (VPC)
+status: designed
+cluster: infrastructure
+type: proposal
+summary: "Move the live vault off the sleeping Mac onto always-on boxes via Workers VPC; three tiers, phases A-E; routes tier-3 OAuth through the sux Worker."
+tags: [sux, infrastructure, designed]
+updated: 2026-07-09
+---
+
 # Self-hosting the vault: home + cloud, over Cloudflare Workers VPC
 
 Companion to [domains.md](domains.md) and [architecture.md](architecture.md). Answers the three "figure out" questions: (1) self-host the vault at home on a spare Linux box, (2) an always-on cloud host with an Electron web app, (3) how Cloudflare Zero Trust (`cloudflared`) maps onto Tailscale (`tailscaled`). Research-verified 2026-07-08; Colin's decisions locked inline.
@@ -273,3 +283,11 @@ Compared the prior art against keeping our Workers implementation; **rolled our 
 | Stolen | — | confirm-gated delete, daily-note verbs, closed schemas |
 
 **v1 is cloud tools only** (Colin): no live-vault dependency — full-text search arrives with the tier-2 `vpc` backend; **desktop keeps the live Obsidian MCP through the local mcp-gate wrapper** meanwhile. Consequence for §9: the vault connector no longer waits for Phase B/C — it ships with **Phase A** (it needs only the git store, which is already live).
+
+## Related
+
+- [[vault-backends-matrix]]
+- [[vault-stack]]
+- [[architecture]]
+- [[mcp-gate]]
+- [[Infrastructure-MOC]]

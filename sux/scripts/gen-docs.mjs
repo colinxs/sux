@@ -20,6 +20,8 @@ const CATEGORIES = [
 	["Storage (KV)", ["kv_get", "kv_put", "kv_list", "kv_delete", "store"]],
 	["Feedback / meta", ["issue"]],
 	["Query / APIs", ["search", "web_search", "shop", "wayback"]],
+	["Mail (JMAP)", ["jmap"]],
+	["Memory / recall", ["recall"]],
 ];
 
 const files = readdirSync(FNS).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && f !== "index.ts" && !f.startsWith("_"));

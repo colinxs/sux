@@ -1,3 +1,13 @@
+---
+title: Nine domains on the knowledge core
+status: designed
+cluster: namespaces
+type: proposal
+summary: "Maps nine personal-data domains onto vault-hub + conduit verbs; derives the unblocked/gated law from reversibility; three transport classes."
+tags: [sux, namespaces, designed]
+updated: 2026-07-09
+---
+
 # The hub and the spokes — mapping the nine domains onto the knowledge core
 
 The problem, stated once: **one assistant surface over Colin's whole personal-data estate** — notes (Obsidian), email (Fastmail/JMAP), tasks (Todoist-shaped), calendar, messages (iMessage), files (Dropbox), code (GitHub), and the open web (search) — without the failure mode visible in any current claude.ai session: ~29 Fastmail tools + ~50 Todoist tools + ~20 Dropbox tools + 4 iMessage tools + 4 Apple Notes tools, six disjoint connectors, none composable, none cached, none of which write anything durable into a store Claude can learn from. The sux answer is the inverse: **the vault is the hub, domain access is a handful of conduit verbs on one worker, and the intelligence lives in skills** ([knowledge-core.md](knowledge-core.md)'s six verbs). This doc maps each named domain onto that architecture, with the prior art each decision steals from.
@@ -174,3 +184,11 @@ Knowledge-core's deferred order (capture/remember → consolidate → ladder) su
 3. **Old vault disposal — RESOLVED: triage keepers, then archive.** One pass migrates the worthwhile Omnivore clippings and unique notes into the live vault (with provenance), then the directory moves out of `~/Documents` so two look-alike vaults can't cause a wrong-vault write.
 4. **iMessage send gate — RESOLVED: jmap-parity.** `allow_send` boolean on the cloud fn, honestly documented as an accident guard; mobile send stays possible, which is the point of the cloud path.
 5. ~~**Fastmail calendars/contacts confirmation.**~~ **Verified 2026-07-08** via the claude.ai connector (JMAP-backed): the account serves 23 calendars (Personal, Family, Bills, a leftover Todoist feed, …) and a populated address book (contact groups imported 2026-07-08). "Calendar and contacts = jmap" is fact. Residual check at token time: the Session object's capability URNs (`…:calendars`/`…:contacts`), per jmap.md §16 feature-detection.
+
+## Related
+
+- [[unblocked-gated-law]]
+- [[namespace-architecture]]
+- [[three-mcps]]
+- [[six-verb-lifecycle]]
+- [[Namespaces-MOC]]

@@ -128,6 +128,7 @@ call `json` with CSV or YAML in, `csv` with JSON in.
 | Scrub PII | `redact` |
 | Restyle text into a tone or a learned voice | `voice` (rewrites into a `style` and/or a saved `profile`, preserving facts/names/links) |
 | Teach / persist a preferred writing voice | `preferences` (`action: learn` appends an exemplar and re-distills a style spec in KV; `voice` folds it back) |
+| "What do I know about X?" — recall from YOUR life, cited | `recall` (`question`; `sources`: vault\|mail\|web, default all → fans out across your Obsidian notes + Fastmail + the web and synthesizes ONE answer with each claim tagged [vault:…]/[mail:…]/[web]; READ-only, grounded-not-invented, graceful per-source degrade) |
 | Teach a knowledge base, then answer from it | `oracle` (`knowledge`: text/URL/book → distilled + saved to KV under `topic`; `problem` alone answers using Claude's own knowledge + the learned KB; `action: get\|list\|forget`) |
 | Case/unicode-font conversion | `fontcase` |
 | base64/hex/url, hashes, compression, zip/gzip | `encode`, `hash`, `compress`, `archive` |
@@ -141,9 +142,12 @@ call `json` with CSV or YAML in, `csv` with JSON in.
 | Same tool over many inputs, optionally reduced | `batch` (`over` + `args` template, `reduce: concat\|summarize`, or `reduce_with` a tool) |
 | Stash/retrieve blobs (content-addressed R2) | `store` |
 | Small persistent key-values | `kv_put`, `kv_get`, `kv_list`, `kv_delete` |
+| Todoist tasks | `todoist` (`action: list/add/update/complete/reopen/delete/projects`; needs `TODOIST_TOKEN`; delete is confirm-gated; NOTE: `due_string` via update on a recurring task replaces its recurrence — reschedule a single occurrence in the app) |
+| Reference management — BibTeX/CSL + a vault References/ library | `citation` (`action: format` entries→BibTeX+CSL, `capture` a type:citation note, `export` References/*.md→a combined .bib; handle-first PDFs) |
 | Obsidian vault: list/read/search/append/write/edit/delete notes | `obsidian` (default `backend: git`; `edit` = surgical find/replace; `tools`/`call` need `backend: remote`; mutating actions refuse dot-prefixed paths; reads KV-cached with git-HEAD validation + Mac-asleep fallback on remote `read`) |
 | Capture url/text/search-results into the vault (provenance note in Inbox/; blobs ≤1MB → vault attachment, larger → public Dropbox link) | `ingest` (`url` \| `text` \| `query`; `summarize`/`compress` passes; `blobs: dropbox` forces Dropbox; explicit `path` overrides Inbox and overwrites — default paths never do) |
 | Dropbox app-folder files (human-facing blob store; syncs to devices) | `dropbox` (`op: put/get/list/delete/share`; paths relative to /Apps root; `list` paginates via `cursor`; put returns a PUBLIC anyone-with-the-link URL) |
+| Fastmail email/calendars/contacts over the full JMAP protocol | `jmap` (raw conduit: `calls:[[method,args,callId]]` or `method`+`args`; auto session/accountId/`using`; `paginate` past page limits; `upload`/`download` blobs; `allow_send`/`allow_destroy` gate send/destroy; needs `FASTMAIL_TOKEN`). Ergonomic `mail_*` tools (search/read/thread/send/draft/archive/masked) live on the separate **`/mail/mcp`** connector; use `jmap` here when you need the raw protocol (MaskedEmail, calendars, contacts). |
 
 ## Infrastructure & meta
 

@@ -1,3 +1,13 @@
+---
+title: The sux data algebra
+status: parked
+cluster: algebra
+type: proposal
+summary: "Server-side map/filter/reduce/augment over a records[] envelope; splits a pure (cacheable) algebra from an effectful (subrequest-capped) one + a per-request ledger."
+tags: [sux, algebra, parked]
+updated: 2026-07-09
+---
+
 # The sux data algebra — combinators over a `records[]` contract (FINAL)
 
 Post-tournament synthesis: the verbs-first winning design (`map`/`filter`/`reduce`/`augment` as first-class generic fns over a `records[]` envelope, composed server-side by `pipe`), with every judge graft and every one of the 43 adversarial issues (5 blockers, 23 majors) folded in as design. This layer sits UNDER five sibling features and owns none of their domains: `search` owns the filter DSL (`_filter.ts`), `shop` owns the retail term→product core (`shop.md`), `teach`/`ask` own the `_kb` substrate and distillation (`teach-ask.md`), `style`/`edit` and `travel` are consumers. This doc references those as owners; it never duplicates them.
@@ -410,3 +420,11 @@ New modules (not tools): `_records.ts`, `_fanout.ts`, `_filter.ts` (owned by #1)
 - **`batch` is not renamed to `map`; `json`/`pack`/`summarize` keep their surfaces.** Folding effectful and pure maps under one name drags caps onto the pure path; `json` is a target-named converter and stays; `pack`/`summarize` keep direct surfaces while `_reduce` owns the shared implementation.
 - **`pipe`/`batch` do not adopt `_invoke.cachedRun` in the same cycle they gain it.** Nested response-cache participation is a behavior change flagged for its own cycle; `augment`'s §4.4 memo is the decoupled path that lets the join ship first.
 - **No new global cap constant beyond the ledger.** Local caps stay per-tool for fail-fast UX; the single `env._budget` ledger is the one structural addition that makes composed, locally-legal caps fail safe instead of hitting Cloudflare 1102.
+
+## Related
+
+- [[records-envelope]]
+- [[verb-algebra]]
+- [[fanout]]
+- [[handle-discipline]]
+- [[Parked-Retrieval-MOC]]

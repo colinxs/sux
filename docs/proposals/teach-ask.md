@@ -1,3 +1,13 @@
+---
+title: teach / ask — knowledge engine
+status: parked
+cluster: knowledge
+type: proposal
+summary: "teach writes / ask reads over a per-topic KB with agentic acquisition + Obsidian projection; owns _kb.ts v3; supersedes and deletes oracle."
+tags: [sux, knowledge, parked]
+updated: 2026-07-09
+---
+
 # teach / ask — a generalized knowledge engine for sux (FINAL)
 
 Post-tournament synthesis: the winning agentic-acquisition design with every judge graft and every adversarial-verification fix folded in as design, plus the Obsidian knowledge-vault projection. This document supersedes all prior drafts.
@@ -630,3 +640,11 @@ Net (teach-ask's own contribution): 89 → **90** (−oracle +teach +ask). Not a
 - **`published_at` extraction**: the optional field exists; only feed `pubDate` populates it in v1.
 - **Nightly auto-refresh of aged sources**: `aged_sources` flags, `refresh:true` fixes, `watch` monitors; a cron-driven refresher is deliberately not built.
 - **Cross-caller concurrency control**: KV has no CAS. On the write side, teach is a single-caller tool: the description tells callers to serialize same-topic teaches, `pending` resume is specified as one serialized follow-up call, and batch fanout is capped. `ask` is the inherently parallel side but writes NOTHING — it is a pure reader (R1/R5), so no number of concurrent asks can breach the 1-write/sec/key limit or race a teach's commit; the read path has no shared mutable state to guard. This is the reason consolidate-on-ask was cut: a KV timestamp cannot coalesce concurrent cross-isolate work (no CAS, load precedes stamp), so the only honest close is to not write on the read path at all. Consolidation of a hot `needs_consolidation` topic is deferred to its next teach or the maintenanceTick reconciler (§9.2). A Durable Object lock is therefore not justified: the only writer is single-caller teach, and the parallel side never writes.
+
+## Related
+
+- [[kb-substrate]]
+- [[oracle-supersession]]
+- [[six-verb-lifecycle]]
+- [[style-edit]]
+- [[Knowledge-Engine-MOC]]

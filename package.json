@@ -3,6 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "scripts": {
+    "prepare": "git config core.hooksPath scripts/hooks || true",
     "deploy": "wrangler deploy --config sux/wrangler.jsonc",
     "deploy:sux": "wrangler deploy --config sux/wrangler.jsonc",
     "secret:sux": "wrangler secret put --config sux/wrangler.jsonc",
@@ -14,6 +15,8 @@
     "test:sux": "vitest run --config sux/vitest.config.ts",
     "test:watch": "vitest",
     "docs": "node sux/scripts/gen-docs.mjs",
+    "wiki": "node scripts/gen-wiki.mjs",
+    "check:wiki": "node scripts/gen-wiki.mjs --check",
     "gen:index": "node sux/scripts/gen-index.mjs",
     "build:node": "node sux/node/build-deploy.mjs",
     "check:node": "node sux/node/build-deploy.mjs --check",

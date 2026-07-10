@@ -1,3 +1,13 @@
+---
+title: Architecture & dataflow
+status: shipped
+cluster: infrastructure
+type: proposal
+summary: "Diagrams of the SHIPPED vault system — hub-and-spoke Worker + ~91 fns, git-as-truth + KV read-through cache, two-transport routing, ingest dataflow."
+tags: [sux, infrastructure, shipped]
+updated: 2026-07-09
+---
+
 # Architecture & dataflow — the knowledge core in pictures
 
 The visual companion to [domains.md](domains.md) (the nine-domain mapping) and [knowledge-core.md](knowledge-core.md) (the locked spec). Four diagrams, each in two forms:
@@ -150,3 +160,11 @@ flowchart LR
 ---
 
 *Diagrams regenerate from [`diagrams/gen_excalidraw.py`](diagrams/gen_excalidraw.py) (Excalidraw) and the fenced Mermaid blocks above (single source for the inline form). Keep both in sync when the design moves.*
+
+## Related
+
+- [[vault-stack]]
+- [[fetch-ladder]]
+- [[content-addressed-cache]]
+- [[vpc-hosting]]
+- [[Infrastructure-MOC]]

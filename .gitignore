@@ -181,3 +181,12 @@ sux/mac-render/extensions/
 *.crt
 *.key
 *.pem
+
+.DS_Store
+
+# Obsidian per-machine state (keep shared config, ignore local workspace/cache)
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+.obsidian/cache
+.obsidian/plugins/
+.obsidian/themes/

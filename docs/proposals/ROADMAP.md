@@ -1,3 +1,13 @@
+---
+title: Build program roadmap
+status: meta
+cluster: meta
+type: meta
+summary: "Coherence anchor for the PARKED web/algebra program — shared-substrate owner table, frozen interfaces, build order; home of the two hard facts (60s deadline, 24h stale-grace)."
+tags: [sux, meta, meta]
+updated: 2026-07-09
+---
+
 # sux build program — roadmap
 
 Seven design proposals (this directory) form one coherent build program, not seven independent features. They share substrate modules; the ownership and build order below are what keep them from diverging. This file is the coherence anchor — when two docs specify the same shared module, this file names the owner and the frozen interface.
@@ -90,3 +100,11 @@ The per-doc build orders compose into one acyclic sequence; the load-bearing cro
 12. **jmap** — fully independent (only the standard `Fn`/`smartFetch`/`OAUTH_KV` conventions + a `FASTMAIL_TOKEN` secret); ships anytime. Its `_jmap.ts` session/limit engine is self-contained; its `records`-shaped output composes into the algebra (`map`/`filter`/`reduce` over `Email/query` results) once Phase 1 lands.
 
 The only hard ordering constraints are the four import edges (steps 2→3, 4→6, 4→8, 7→8); everything else parallelizes across branches. `jmap` (12) has no substrate dependency and can land first if email is the priority.
+
+## Related
+
+- [[SUX]]
+- [[ITERATION-LOG]]
+- [[Parked-Retrieval-MOC]]
+- [[two-hard-facts]]
+- [[algebra]]

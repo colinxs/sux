@@ -42,6 +42,7 @@ describe("vault MCP server (/vault/mcp)", () => {
 			"vault_edit",
 			"vault_delete",
 			"vault_capture",
+			"vault_batch_append",
 			"vault_daily_read",
 			"vault_daily_append",
 		]);

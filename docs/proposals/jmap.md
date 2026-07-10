@@ -1,3 +1,13 @@
+---
+title: jmap — the JMAP conduit
+status: shipped
+cluster: namespaces
+type: proposal
+summary: "The full JMAP protocol as one typed conduit verb forwarding raw batches to Fastmail; _jmap.ts session/limit engine; MaskedEmail/Contacts/Calendars."
+tags: [sux, namespaces, designed]
+updated: 2026-07-09
+---
+
 # sux fn design: `jmap` — the full JMAP protocol as one lean generic verb (FINAL)
 
 Post-tournament synthesis. The raw-passthrough winner is the spine; every judge graft and every one of the 43 adversarial issues (9 blockers, 19 majors, the rest minors) is folded in as if always intended. `jmap` is **one fn** that is a typed conduit to a JMAP endpoint (Fastmail today): the caller sends a raw JMAP batch, sux injects auth, discovers+caches the Session, resolves the reference graph for safe splitting, transparently paginates around the per-request limits, gates the irreversible mutations, and returns the raw `methodResponses` byte-exact. It curates nothing — it forwards method names — so the whole of Email/Mailbox/Thread/Identity/EmailSubmission/VacationResponse/Contacts/Calendars **and** Fastmail's MaskedEmail extension is reachable through the same verb. The escape hatch is the product.
@@ -494,3 +504,10 @@ Files touched to register +1 fn (the sync ritual):
 ## Why this is the right shape
 
 The existing 29-tool connector is a *translation layer* over JMAP — it re-encodes a batched RPC as flat tools, loses back-references, can't reach MaskedEmail, and burns 29 tool-slots of context. `jmap` is a *transport* — it forwards the protocol and adds exactly the five things an edge proxy is uniquely positioned to add: injected auth, cached Session discovery, limit-safe batching/pagination over a correctly-computed reference graph, accidental-mutation gates with honest limits, and composability with the sux algebra over live mail. One fn, the whole protocol, the generic-verb ideal made literal. The cost — the LLM must know JMAP method names — is the cost JMAP's designers already decided was worth paying, and a frontier model pays it easily given the method list and the two skeletons in the description.
+
+## Related
+
+- [[jmap-conduit]]
+- [[mail]]
+- [[unblocked-gated-law]]
+- [[Namespaces-MOC]]
