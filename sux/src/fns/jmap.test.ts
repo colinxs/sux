@@ -319,4 +319,45 @@ describe("review-fix regressions", () => {
 		expect(r.isError).toBe(true);
 		expect(text(r)).toContain("[bad_input]");
 	});
+
+	it("paginate resume advances forward — does not deadlock re-fetching the same page", async () => {
+		let q = 0;
+		installFetch({
+			onApi: (body) => {
+				if (body.methodCalls[0][0] === "Email/query") {
+					q++;
+					const pages: Record<number, string[]> = { 1: ["a", "b"], 2: ["c", "d"], 3: ["e", "f"] };
+					return json({ methodResponses: [["Email/query", { ids: pages[q] ?? ["g"], queryState: "qs" }, "q"]], sessionState: "s1" });
+				}
+				return json({ methodResponses: [["Email/get", { list: [] }, "g"]], sessionState: "s1" });
+			},
+		});
+		const first = parse(await jmap.run(env(), { paginate: true, max_results: 3, calls: [["Email/query", { filter: { inMailbox: "x" } }, "q"]] as any }));
+		expect(first.ids).toEqual(["a", "b", "c"]);
+		expect(first.partial).toBe(true);
+		const resume = parse(await jmap.run(env(), { paginate: true, max_results: 3, cursor: first.cursor, calls: [["Email/query", { filter: { inMailbox: "x" } }, "q"]] as any }));
+		// Forward progress: resume returns MORE ids and reaches the tail — never the identical set.
+		expect(resume.ids.length).toBeGreaterThan(first.ids.length);
+		expect(resume.ids).toContain("g");
+		expect(resume.ids).not.toEqual(first.ids);
+	});
+
+	it("paginate on a short page that overshoots max_results emits a cursor (no silent drop)", async () => {
+		const bigSession = { ...SESSION, capabilities: { ...SESSION.capabilities, "urn:ietf:params:jmap:core": { ...(SESSION.capabilities as any)["urn:ietf:params:jmap:core"], maxObjectsInGet: 200 } } };
+		global.fetch = vi.fn(async (input: any, init?: any) => {
+			const url = String(input?.url ?? input);
+			if (url.includes("/jmap/session")) return json(bigSession);
+			if (url.includes("/jmap/api")) {
+				const body = init?.body ? JSON.parse(init.body) : {};
+				if (body.methodCalls[0][0] === "Email/query") return json({ methodResponses: [["Email/query", { ids: ["a", "b", "c", "d", "e"], queryState: "qs" }, "q"]], sessionState: "s1" });
+				return json({ methodResponses: [["Email/get", { list: [] }, "g"]], sessionState: "s1" });
+			}
+			return json({}, 404);
+		}) as any;
+		// pageLimit=200, one short page of 5 ids, but max_results=2 → must NOT report complete.
+		const out = parse(await jmap.run(env(), { paginate: true, max_results: 2, calls: [["Email/query", { filter: {} }, "q"]] as any }));
+		expect(out.ids).toEqual(["a", "b"]);
+		expect(out.partial).toBe(true); // not falsely complete
+		expect(out.cursor).toBeTruthy(); // the tail (c,d,e) stays reachable
+	});
 });
