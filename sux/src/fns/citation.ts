@@ -130,7 +130,13 @@ function parseFrontmatter(md: string): Entry | null {
 			return v;
 		}
 	};
-	const authors = fm.authors ? (JSON.parse(fm.authors) as string[]) : undefined;
+	// A malformed authors line must not throw and drop an otherwise-valid citation from export.
+	let authors: string[] | undefined;
+	try {
+		authors = fm.authors ? (JSON.parse(fm.authors) as string[]) : undefined;
+	} catch {
+		authors = undefined;
+	}
 	return { key: fm.citekey, type: fm.entry_type, title: unq(fm.title) ?? "", authors, year: fm.year, container: unq(fm.container), publisher: unq(fm.publisher), volume: unq(fm.volume), pages: unq(fm.pages), doi: unq(fm.doi), url: unq(fm.url), pdf: unq(fm.pdf) };
 }
 
@@ -145,6 +151,32 @@ async function obs(env: RtEnv, args: Record<string, unknown>): Promise<any> {
 	}
 }
 
+/** citation needs a vault backend (git or remote) to capture/export. */
+const hasVault = (env: RtEnv): boolean => Boolean(env.OBSIDIAN_VAULT_REPO || env.OBSIDIAN_REMOTE_URL);
+
+/** Read one References/ note, returning its parsed citation entry or null if absent/non-citation. */
+async function readCitation(env: RtEnv, key: string): Promise<Entry | null> {
+	try {
+		const note = await obs(env, { action: "read", path: `${REF_DIR}/${key}.md` });
+		return parseFrontmatter(String(note?.content ?? note?.text ?? ""));
+	} catch {
+		return null; // not found (or unreadable) → the slot is free
+	}
+}
+
+/** Find a non-colliding citekey: reuse the slot for the SAME paper (idempotent re-capture), else suffix a/b/c… */
+async function freeCiteKey(env: RtEnv, base: string, entry: Entry): Promise<string> {
+	for (let i = 0; i < 26; i++) {
+		const k = i === 0 ? base : `${base}${String.fromCharCode(96 + i)}`;
+		const existing = await readCitation(env, k);
+		if (!existing) return k; // free slot
+		// Same work → reuse (overwrite): match on DOI, else on title when neither has a DOI.
+		const same = entry.doi ? existing.doi === entry.doi : !existing.doi && existing.title === entry.title;
+		if (same) return k;
+	}
+	return `${base}${entry.doi ? entry.doi.replace(/\W+/g, "") : entry.year ?? ""}z`; // pathological fallback, still deterministic
+}
+
 const asEntries = (a: any): Entry[] => (Array.isArray(a?.entries) ? a.entries : a?.title ? [a] : []);
 
 export const citation: Fn = {
@@ -156,12 +188,25 @@ export const citation: Fn = {
 		"An entry: {title, authors:[\"Family, Given\"|{family,given}], year, type:article|book|inproceedings, doi?, url?, container?, publisher?, volume?, pages?, pdf?(a dropbox handle)}. capture/export use the obsidian fn (git backend) so every write is a revertible commit; needs OBSIDIAN_VAULT_REPO (+ GITHUB_TOKEN for writes).",
 	inputSchema: {
 		type: "object",
-		additionalProperties: true,
+		additionalProperties: false,
 		required: ["action"],
 		properties: {
 			action: { type: "string", enum: ["format", "capture", "export"] },
 			entries: { type: "array", items: { type: "object" }, description: "format: the entries to render." },
 			write: { type: "boolean", description: "export: also write the .bib to References/library.bib." },
+			// A single inline entry's fields (capture, or format of one entry):
+			title: { type: "string" },
+			authors: { type: "array", items: {} },
+			year: { type: ["string", "integer"] },
+			type: { type: "string", enum: ["article", "book", "inproceedings", "misc"] },
+			doi: { type: "string" },
+			url: { type: "string" },
+			container: { type: "string" },
+			publisher: { type: "string" },
+			volume: { type: ["string", "integer"] },
+			pages: { type: "string" },
+			pdf: { type: "string", description: "A dropbox handle, kept in the note (never inlined)." },
+			key: { type: "string", description: "Override the derived citekey." },
 		},
 	},
 	run: async (env: RtEnv, a: any) => {
@@ -170,21 +215,36 @@ export const citation: Fn = {
 			if (action === "format") {
 				const entries = asEntries(a);
 				if (!entries.length) return failWith("bad_input", "citation format needs `entries` (or a single entry's fields).");
-				return ok(JSON.stringify({ bibtex: entries.map(toBibtex).join("\n\n"), csl: entries.map(toCsl) }, null, 2));
+				// Disambiguate colliding citekeys within the batch (a/b/c…) so the .bib has no duplicate keys.
+				const seen = new Map<string, number>();
+				const keyed = entries.map((e) => {
+					const base = e.key || citeKey(e);
+					const n = seen.get(base) ?? 0;
+					seen.set(base, n + 1);
+					return { ...e, key: n === 0 ? base : `${base}${String.fromCharCode(96 + n)}` };
+				});
+				return ok(JSON.stringify({ bibtex: keyed.map(toBibtex).join("\n\n"), csl: keyed.map(toCsl) }, null, 2));
 			}
 			if (action === "capture") {
+				if (!hasVault(env)) return failWith("not_configured", "citation capture needs a vault — set OBSIDIAN_VAULT_REPO (+ GITHUB_TOKEN for writes) or the remote backend.");
 				if (!a?.title) return failWith("bad_input", "citation capture requires a `title`.");
 				const entry = a as Entry;
-				const key = entry.key || citeKey(entry);
+				// Never clobber a DIFFERENT paper that hashed to the same key — reuse the slot only for the same work.
+				const key = await freeCiteKey(env, entry.key || citeKey(entry), entry);
 				const path = `${REF_DIR}/${key}.md`;
 				await obs(env, { action: "write", path, content: citationNote(entry, key) });
 				return ok(JSON.stringify({ ok: true, citekey: key, path, bibtex: toBibtex({ ...entry, key }) }, null, 2));
 			}
 			if (action === "export") {
+				if (!hasVault(env)) return failWith("not_configured", "citation export needs a vault — set OBSIDIAN_VAULT_REPO or the remote backend.");
 				const listing = await obs(env, { action: "list", path: REF_DIR });
+				// list returns REPO-relative paths (they include any OBSIDIAN_VAULT_DIR prefix); obsidian read re-applies
+				// the dir, so strip it here or every read 404s and export silently yields an empty bibliography.
+				const dir = String((env as { OBSIDIAN_VAULT_DIR?: string }).OBSIDIAN_VAULT_DIR ?? "").replace(/^\/+|\/+$/g, "");
 				const files: string[] = (listing?.files ?? listing?.notes ?? listing?.entries ?? []).map((f: any) => (typeof f === "string" ? f : f?.path)).filter((p: string) => p && p.endsWith(".md"));
 				const entries: Entry[] = [];
-				for (const p of files) {
+				for (const raw of files) {
+					const p = dir && raw.startsWith(`${dir}/`) ? raw.slice(dir.length + 1) : raw;
 					try {
 						const note = await obs(env, { action: "read", path: p });
 						const e = parseFrontmatter(String(note?.content ?? note?.text ?? ""));
