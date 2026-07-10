@@ -4,6 +4,7 @@ vi.mock("../proxy", () => ({
 	smartFetch: vi.fn(async (_env: unknown, url: string) => {
 		if (url.includes("boom")) throw new Error("network down");
 		if (url.includes("blocked")) return new Response("rate limited", { status: 429 });
+		if (url.includes("huge")) return new Response("x", { status: 200, headers: { "content-length": "99999999" } }); // declared > 25MB cap
 		return new Response(`body of ${url}`, { status: 200 });
 	}),
 }));
@@ -108,6 +109,18 @@ describe("batch_fetch", () => {
 		const refUuid = out[0].ref.split("/s/")[1];
 		const kvRef = JSON.parse(env.OAUTH_KV._m.get(`store:${refUuid}`));
 		expect(new TextDecoder().decode(env.R2._m.get(kvRef.key).bytes)).toBe("body of https://a.com");
+	});
+
+	it('as:"url" aborts an oversize body before buffering — reports oversize, stores nothing for it, OOMs nothing', async () => {
+		const env = mkStoreEnv();
+		const r = await batch_fetch.run(env, { urls: ["https://ex.com/huge", "https://ex.com/ok"], as: "url" });
+		const out = JSON.parse(r.content[0].text);
+		const huge = out.find((x: any) => x.url.includes("huge"));
+		expect(huge.oversize).toBe(true);
+		expect(huge.ref).toBeUndefined(); // never stored
+		const ok = out.find((x: any) => x.url.includes("ok"));
+		expect(ok.ref).toMatch(UUID); // the normal URL still stored
+		expect(env.R2._m.size).toBe(1); // only the ok body in CAS, not the huge one
 	});
 
 	it('as:"url" isolates per-url failures — a survivor still gets a ref', async () => {

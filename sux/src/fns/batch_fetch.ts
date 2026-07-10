@@ -1,5 +1,5 @@
 import { type Fn, type RtEnv, fail, ok } from "../registry";
-import { type BlobRef, fetchText, getBlob, isHttpUrl, noCacheOn4xx, noCacheOnMutation, pool, putBlob, storeRefUuid } from "./_util";
+import { type BlobRef, fetchText, getBlob, isHttpUrl, noCacheOn4xx, noCacheOnMutation, pool, putBlob, readBodyBytes, storeRefUuid } from "./_util";
 import { smartFetch } from "../proxy";
 
 // Fetch many URLs concurrently through the residential proxy (direct fallback).
@@ -43,7 +43,7 @@ async function fetchBytes(
 	env: RtEnv,
 	url: string,
 	method: string,
-): Promise<{ status: number; bytes: Uint8Array; contentType: string }> {
+): Promise<{ status: number; bytes: Uint8Array; contentType: string; oversize?: boolean }> {
 	const uuid = storeRefUuid(url);
 	if (uuid && env.R2) {
 		const blob = await getBlob(env, uuid);
@@ -51,11 +51,15 @@ async function fetchBytes(
 		return { status: 200, bytes: blob.bytes, contentType: blob.contentType };
 	}
 	const resp = await smartFetch(env, url, { method });
-	return {
-		status: resp.status,
-		bytes: new Uint8Array(await resp.arrayBuffer()),
-		contentType: resp.headers.get("content-type") ?? "application/octet-stream",
-	};
+	const contentType = resp.headers.get("content-type") ?? "application/octet-stream";
+	// Bound the read: a huge body must abort (content-length pre-check + mid-stream cap)
+	// rather than buffer the whole thing — CONCURRENCY (8) of these would OOM the isolate.
+	try {
+		return { status: resp.status, bytes: await readBodyBytes(resp, MAX_STORE_BYTES), contentType };
+	} catch (e) {
+		if (/too large|exceeds/i.test(String((e as Error)?.message ?? e))) return { status: resp.status, bytes: new Uint8Array(0), contentType, oversize: true };
+		throw e;
+	}
 }
 
 export const batch_fetch: Fn = {
@@ -102,7 +106,8 @@ export const batch_fetch: Fn = {
 				if (as === "url") {
 					const r = await fetchBytes(env, url, method);
 					// Oversize isolated to this URL — report it, don't store, don't fail the batch.
-					if (r.bytes.length > MAX_STORE_BYTES) return { url, status: r.status, bytes: r.bytes.length, oversize: true };
+					// r.oversize means the read aborted before buffering (no OOM); the length check is a belt.
+					if (r.oversize || r.bytes.length > MAX_STORE_BYTES) return { url, status: r.status, bytes: r.bytes.length, oversize: true };
 					const ref: BlobRef = await putBlob(env, r.bytes, r.contentType);
 					return { url, status: r.status, bytes: r.bytes.length, ref: ref.url };
 				}
