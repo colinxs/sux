@@ -39,6 +39,23 @@ describe("dropbox (app-folder blob store)", () => {
 		expect(mints).toBe(1);
 	});
 
+	it("refresh flow (public client / PKCE — no app secret): client_id in body, NO Basic auth", async () => {
+		const kv = fakeKV();
+		const env = { DROPBOX_REFRESH_TOKEN: "rt", DROPBOX_APP_KEY: "ak", OAUTH_KV: kv } as any; // no DROPBOX_APP_SECRET
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
+			if (String(u) === "https://api.dropbox.com/oauth2/token") {
+				expect(init.headers.Authorization).toBeUndefined(); // a public client sends no Basic auth
+				expect(init.body).toContain("client_id=ak"); // client_id rides the body instead
+				expect(init.body).toContain("grant_type=refresh_token");
+				return new Response(JSON.stringify({ access_token: "sl.pub", expires_in: 14400 }), { status: 200 });
+			}
+			expect(init.headers.Authorization).toBe("Bearer sl.pub");
+			return new Response(JSON.stringify({ entries: [], has_more: false }), { status: 200 });
+		}));
+		await dropbox.run(env, { op: "list" });
+		expect(kv.store.get("sux:dropbox:token")).toBe("sl.pub");
+	});
+
 	it("refresh flow surfaces an auth failure clearly", async () => {
 		const env = { DROPBOX_REFRESH_TOKEN: "rt", DROPBOX_APP_KEY: "ak", OAUTH_KV: fakeKV() } as any;
 		vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "invalid_grant", error_description: "refresh token revoked" }), { status: 400 })));

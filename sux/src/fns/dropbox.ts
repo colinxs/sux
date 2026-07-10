@@ -20,11 +20,17 @@ async function dropboxToken(env: RtEnv): Promise<string> {
 	if (env.DROPBOX_REFRESH_TOKEN && env.DROPBOX_APP_KEY) {
 		const cached = await env.OAUTH_KV?.get(TOKEN_KEY);
 		if (cached) return cached;
-		const basic = btoa(`${env.DROPBOX_APP_KEY}:${env.DROPBOX_APP_SECRET ?? ""}`);
+		// Confidential client (app secret set) → HTTP Basic auth. Public client (PKCE,
+		// no secret) → client_id in the body, no Authorization header. Both are valid
+		// Dropbox refresh flows; the public path lets the Worker hold NO long-lived
+		// app secret at all — only the app key (public) + the refresh token.
+		const hasSecret = Boolean(env.DROPBOX_APP_SECRET);
+		const headers: Record<string, string> = { "Content-Type": "application/x-www-form-urlencoded" };
+		if (hasSecret) headers.Authorization = `Basic ${btoa(`${env.DROPBOX_APP_KEY}:${env.DROPBOX_APP_SECRET}`)}`;
 		const resp = await fetch(OAUTH_TOKEN_URL, {
 			method: "POST",
-			headers: { Authorization: `Basic ${basic}`, "Content-Type": "application/x-www-form-urlencoded" },
-			body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(String(env.DROPBOX_REFRESH_TOKEN))}`,
+			headers,
+			body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(String(env.DROPBOX_REFRESH_TOKEN))}${hasSecret ? "" : `&client_id=${encodeURIComponent(String(env.DROPBOX_APP_KEY))}`}`,
 			signal: AbortSignal.timeout(20_000),
 		});
 		const j: any = await resp.json().catch(() => null);
