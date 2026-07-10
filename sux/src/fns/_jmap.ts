@@ -1,6 +1,6 @@
 import { withRetry } from "../proxy";
 import { type FailCode, type RtEnv } from "../registry";
-import { fromB64, getBlob, putBlob, storeRefUuid, toB64 } from "./_util";
+import { fromB64, getBlob, putBlob, readBodyBytes, storeRefUuid, toB64 } from "./_util";
 
 // _jmap.ts — the shared JMAP engine behind the `jmap` conduit fn and the ergonomic
 // `mail` surface. It owns Session discovery + KV cache + self-heal, generalized
@@ -33,6 +33,8 @@ const SOFT_DEADLINE_MS = 55_000;
 const POST_TIMEOUT_MS = 30_000;
 /** Accumulated-output byte ceiling for a paginated pull (raw:true bypasses MAX_OUTPUT_CHARS, §9/D18). */
 const OUTPUT_CEILING_BYTES = 700_000;
+/** Hard cap on a single blob download (as:'store' can be large, but never unbounded → isolate OOM). */
+const DOWNLOAD_MAX_BYTES = 50 * 1024 * 1024;
 
 export type JmapSession = {
 	apiUrl: string;
@@ -463,7 +465,18 @@ export async function runPaginate(
 			break;
 		}
 		const mr = resp.methodResponses?.[0];
-		if (!mr || mr[0] === "error") throw new JmapError("upstream_error", `JMAP query error: ${mr?.[1]?.type ?? "unknown"}`);
+		if (!mr) throw new JmapError("upstream_error", "JMAP query error: empty response");
+		if (mr[0] === "error") {
+			// anchorNotFound is a METHOD-level error inside a 200 (postOnce doesn't throw it, so the
+			// catch above is unreachable) — the live inbox mutated under us. Degrade to partial: keep
+			// the ids gathered so far + the resume cursor, don't discard the whole run.
+			if (/anchorNotFound/i.test(String((mr[1] as { type?: string })?.type ?? ""))) {
+				truncated = true;
+				reason = "anchor_lost";
+				break;
+			}
+			throw new JmapError("upstream_error", `JMAP query error: ${(mr[1] as { type?: string })?.type ?? "unknown"}`);
+		}
 		const page = mr[1] as { ids?: string[]; queryState?: string };
 		if (queryState && page.queryState && page.queryState !== queryState) {
 			truncated = true;
@@ -538,7 +551,12 @@ export async function runPaginate(
 			const gUsing = deriveUsing([getMethod], session, opts.using);
 			const gr = await postOnce(env, session.apiUrl, { using: gUsing, methodCalls: [[getMethod, gArgs, "g"]] }, remaining(), false);
 			const gmr = gr.methodResponses?.[0];
-			if (gmr && gmr[0] !== "error" && gmr[1]) {
+			if (gmr && gmr[0] === "error") {
+				// A method-level error on a hydration chunk must NOT be swallowed as a complete success —
+				// the caller would get ids for the full set but a list missing this chunk, with partial:false.
+				payload.partial = true;
+				payload.truncated_reason = "get_error";
+			} else if (gmr && gmr[1]) {
 				if (Array.isArray(gmr[1].list)) list.push(...gmr[1].list);
 				if (Array.isArray(gmr[1].notFound)) notFound.push(...gmr[1].notFound);
 			}
@@ -610,7 +628,15 @@ export async function doDownload(env: RtEnv, args: { blobId: string; type?: stri
 	}
 	if (resp.status === 404) throw new JmapError("not_found", `blob '${args.blobId}' not found.`);
 	if (!resp.ok) throw new JmapError("upstream_error", `blob download HTTP ${resp.status}.`);
-	const bytes = new Uint8Array(await resp.arrayBuffer());
+	// Bound the read (content-length pre-check + mid-stream abort) so a huge attachment errors
+	// clearly instead of buffering unbounded into the 128MB isolate. 50MB covers real attachments.
+	let bytes: Uint8Array;
+	try {
+		bytes = await readBodyBytes(resp, DOWNLOAD_MAX_BYTES);
+	} catch (e) {
+		if (/too large|exceeds/i.test(String((e as Error)?.message ?? e))) throw new JmapError("bad_input", `blob '${args.blobId}' exceeds the ${DOWNLOAD_MAX_BYTES}-byte download cap.`);
+		throw e;
+	}
 	// as:"store" always spills to R2; as:"base64" spills too when it would blow the output ceiling (D18).
 	if (args.as === "store" || bytes.length * (4 / 3) > OUTPUT_CEILING_BYTES) {
 		const ref = await putBlob(env, bytes, type);
