@@ -38,7 +38,7 @@ const EMAIL = { id: "e1", threadId: "t1", subject: "Hello", from: [{ email: "a@b
 let lastEmailSet: any = null;
 function answer([method, args]: any): any {
 	if (method === "Mailbox/get") return [method, { list: MAILBOXES }, "x"];
-	if (method === "Identity/get") return [method, { list: [{ id: "id1", name: "Me", email: "me@fastmail.com" }] }, "x"];
+	if (method === "Identity/get") return [method, { list: [{ id: "id1", name: "Me", email: "me@fastmail.com" }, { id: "id2", name: "Domain", email: "*@colinxs.com" }] }, "x"];
 	if (method === "Email/query") return [method, { ids: ["e1"], queryState: "q1" }, "x"];
 	if (method === "Email/get") return [method, { list: [EMAIL] }, "x"];
 	if (method === "Thread/get") return [method, { list: [{ id: "t1", emailIds: ["e1"] }] }, "x"];
@@ -126,6 +126,27 @@ describe("mail_* ergonomic tools", () => {
 		// The send batch carried allow_send (an EmailSubmission/set create).
 		const sendBody = f.mock.calls.map((c: any) => (c[1]?.body ? JSON.parse(c[1].body) : {})).find((b: any) => (b.methodCalls ?? []).some((mc: any) => mc[0] === "EmailSubmission/set"));
 		expect(sendBody).toBeTruthy();
+	});
+
+	it("mail_send resolves a concrete From against a *@domain wildcard identity (§1a)", async () => {
+		const f = installFetch();
+		const out = parse(await tool("mail_send").run(env(), { to: ["x@y.com"], subject: "s", text: "t", from: "probe@colinxs.com" }));
+		expect(out).toMatchObject({ sent: true });
+		const body = f.mock.calls.map((c: any) => (c[1]?.body ? JSON.parse(c[1].body) : {})).find((b: any) => (b.methodCalls ?? []).some((mc: any) => mc[0] === "EmailSubmission/set"));
+		const sub = body.methodCalls.find((mc: any) => mc[0] === "EmailSubmission/set")[1].create.sub;
+		expect(sub.identityId).toBe("id2"); // matched the *@colinxs.com wildcard, not a "not verified" throw
+	});
+
+	it("mail_send stage:true previews with a commit_token and sends NOTHING; commit sends", async () => {
+		const e = env(); // shared KV so the token survives to the commit call
+		const f = installFetch();
+		const st = parse(await tool("mail_send").run(e, { to: ["x@y.com"], subject: "s", text: "t", stage: true }));
+		expect(st).toMatchObject({ staged: true, kind: "mail_send" });
+		expect(st.commit_token).toBeTruthy();
+		const submittedInStage = f.mock.calls.some((c: any) => c[1]?.body && JSON.parse(c[1].body).methodCalls?.some((mc: any) => mc[0] === "EmailSubmission/set"));
+		expect(submittedInStage).toBe(false); // stage performed no submission
+		const done = parse(await tool("mail_send").run(e, { to: ["x@y.com"], subject: "s", text: "t", commit_token: st.commit_token }));
+		expect(done).toMatchObject({ sent: true });
 	});
 
 	it("mail_send with send_at SCHEDULES via FUTURERELEASE (HOLDFOR envelope + explicit rcptTo)", async () => {

@@ -1,6 +1,7 @@
 import { checkArgs, FN_DEADLINE_MS, withDeadline } from "./index";
 import { type JsonRpc, sseResponse } from "./mcp-util";
 import { fail, type RtEnv, type ToolResult } from "./registry";
+import { staged } from "./stage";
 import { jmap } from "./fns/jmap";
 import { jstr } from "./fns/_jmap";
 
@@ -41,6 +42,14 @@ const clamp = (v: unknown, lo: number, hi: number, dflt: number): number => Math
 // RFC 8620 §5.1: Foo/get MAY return records in any order, so it doesn't preserve the
 // Email/query sort. Re-sort the hydrated list by receivedAt (ISO-8601 → lexicographic works).
 const byReceived = (asc: boolean) => (a: any, b: any) => (asc ? 1 : -1) * String(a?.receivedAt ?? "").localeCompare(String(b?.receivedAt ?? ""));
+
+/** From→identity: exact match, else a stored `*@domain` wildcard identity by domain suffix.
+ *  A concrete address never string-equals a wildcard identity, which threw "From is not verified"
+ *  before any API call — this lets send-as-any work at owned domains (workflow §1a). */
+function resolveIdentity(identities: any[], from: string): any {
+	const f = from.toLowerCase();
+	return identities.find((i: any) => String(i?.email).toLowerCase() === f) || identities.find((i: any) => String(i?.email).startsWith("*@") && f.endsWith(String(i.email).slice(1).toLowerCase()));
+}
 
 function shapeRef(e: any): Record<string, unknown> {
 	const addr = (a: any[]): string => (Array.isArray(a) ? a.map((x) => x?.email).filter(Boolean).join(", ") : "");
@@ -253,8 +262,10 @@ const TOOLS: MailTool[] = [
 				bcc: { type: "array", items: { type: "string" } },
 				subject: { type: "string" },
 				text: { type: "string", description: "Plain-text body." },
-				from: { type: "string", description: "Sender address (defaults to your primary identity)." },
+				from: { type: "string", description: "Sender address — exact identity or any address at an owned *@domain (send-as-any). Defaults to your primary identity." },
 				send_at: { type: "string", description: "Schedule the send for this ISO-8601 date-time (e.g. '2026-07-11T09:00:00Z'). Held via FUTURERELEASE; omit to send now." },
+				stage: { type: "boolean", description: "Preview only: returns {preview, commit_token} and sends NOTHING. Re-call with the token to commit." },
+				commit_token: { type: "string", description: "Commit a previously staged send (the payload must match what was staged)." },
 			},
 		},
 		run: async (env, a) => draftOrSend(env, a, true),
@@ -355,10 +366,10 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 		const fromWanted = a?.from ? String(a.from).toLowerCase() : "";
 		let identity: any;
 		if (fromWanted) {
-			// An explicit `from` that matches no identity must FAIL — never silently
-			// send from a different (primary) address than the caller asked for.
-			identity = identities.find((i: any) => String(i?.email).toLowerCase() === fromWanted);
-			if (!identity) return fail(`no sending identity for from address '${fromWanted}' — check mail_identities.`);
+			// An explicit `from` that matches no identity must FAIL — never silently send from a
+			// different address than the caller asked for. Matches exact OR a *@domain wildcard (§1a).
+			identity = resolveIdentity(identities, fromWanted);
+			if (!identity) return fail(`no sending identity for from address '${fromWanted}' (no exact or *@domain-wildcard match) — check mail_identities.`);
 		} else {
 			identity = identities[0];
 		}
@@ -396,27 +407,29 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 			if (holdFor <= 0) return fail("send_at must be in the future.");
 		}
 
-		// Send: create draft, submit, and on success strip $draft + move Drafts→Sent.
-		const onSuccess: Record<string, unknown> = { "keywords/$draft": null };
-		if (draftsId) onSuccess[`mailboxIds/${draftsId}`] = null;
-		if (sentId) onSuccess[`mailboxIds/${sentId}`] = true;
-		const subCreate: Record<string, unknown> = { emailId: "#draft", identityId: identity.id };
-		if (holdFor > 0) {
-			subCreate.envelope = {
-				mailFrom: { email: identity.email, parameters: { HOLDFOR: String(holdFor) } },
-				rcptTo: [...to, ...(Array.isArray(a?.cc) ? a.cc : []), ...(Array.isArray(a?.bcc) ? a.bcc : [])].map((e) => ({ email: String(e) })),
-			};
-		}
-		const resp = await jmapCall(env, {
-			allow_send: true,
-			calls: [
-				["Email/set", { create: { draft } }, "c"],
-				["EmailSubmission/set", { create: { sub: subCreate }, onSuccessUpdateEmail: { "#sub": onSuccess } }, "s"],
-			],
-		});
-		const submitted = resultFor(resp, "EmailSubmission/set")?.created?.sub;
-		if (!submitted) return fail(`send failed: ${JSON.stringify(resultFor(resp, "EmailSubmission/set")?.notCreated ?? {})}`);
-		return ok(holdFor > 0 ? { scheduled: true, send_at: String(a.send_at), submissionId: submitted.id, to, note: "held via FUTURERELEASE — cancel with mail_scheduled {action:'cancel', id:<submissionId>}." } : { sent: true, submissionId: submitted.id, to });
+		// The mutation (draft create + submit) runs behind stage-then-commit: stage:true previews
+		// with NO Fastmail write; a commit_token commits the identical payload. The reads above
+		// (Identity/Mailbox get) are safe during a stage — only this closure writes.
+		const doSend = async () => {
+			const onSuccess: Record<string, unknown> = { "keywords/$draft": null };
+			if (draftsId) onSuccess[`mailboxIds/${draftsId}`] = null;
+			if (sentId) onSuccess[`mailboxIds/${sentId}`] = true;
+			const subCreate: Record<string, unknown> = { emailId: "#draft", identityId: identity.id };
+			if (holdFor > 0) {
+				subCreate.envelope = {
+					mailFrom: { email: identity.email, parameters: { HOLDFOR: String(holdFor) } },
+					rcptTo: [...to, ...(Array.isArray(a?.cc) ? a.cc : []), ...(Array.isArray(a?.bcc) ? a.bcc : [])].map((e) => ({ email: String(e) })),
+				};
+			}
+			const resp = await jmapCall(env, { allow_send: true, calls: [["Email/set", { create: { draft } }, "c"], ["EmailSubmission/set", { create: { sub: subCreate }, onSuccessUpdateEmail: { "#sub": onSuccess } }, "s"]] });
+			const submitted = resultFor(resp, "EmailSubmission/set")?.created?.sub;
+			if (!submitted) throw new Error(`send failed: ${JSON.stringify(resultFor(resp, "EmailSubmission/set")?.notCreated ?? {})}`);
+			return holdFor > 0 ? { scheduled: true, send_at: String(a.send_at), submissionId: submitted.id, to, note: "held via FUTURERELEASE — cancel with mail_unschedule." } : { sent: true, submissionId: submitted.id, to };
+		};
+		const payload = { from: identity.email, to, cc: a?.cc ?? null, bcc: a?.bcc ?? null, subject: String(a.subject), text: String(a.text), send_at: a?.send_at ?? null };
+		const preview = { action: holdFor > 0 ? "scheduled_send" : "send", from: identity.email, to, ...(a?.cc ? { cc: a.cc } : {}), ...(a?.bcc ? { bcc: a.bcc } : {}), subject: String(a.subject), body_chars: String(a.text).length, ...(holdFor > 0 ? { send_at: String(a.send_at) } : {}) };
+		const out = await staged(env, "mail_send", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, payload, preview, doSend);
+		return ok("stageResult" in out ? out.stageResult : out.result);
 	} catch (e) {
 		return fail(errMsg(e));
 	}
