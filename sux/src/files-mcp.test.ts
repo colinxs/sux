@@ -13,6 +13,11 @@ import { FILES_TOOLS, handleFilesRpc } from "./files-mcp";
 import { dropbox } from "./fns/dropbox";
 
 const env = () => ({}) as any;
+const fakeKV = () => {
+	const s = new Map<string, string>();
+	return { get: async (k: string) => s.get(k) ?? null, put: async (k: string, v: string) => void s.set(k, v), delete: async (k: string) => void s.delete(k) };
+};
+const kvEnv = () => ({ OAUTH_KV: fakeKV() }) as any;
 const tool = (n: string) => FILES_TOOLS.find((t) => t.name === n)!;
 const parse = (r: any) => JSON.parse(r.content[0].text);
 const runMock = dropbox.run as unknown as ReturnType<typeof vi.fn>;
@@ -68,6 +73,35 @@ describe("files_* tools", () => {
 
 	it("exposes the raw dropbox escape hatch", () => {
 		expect(tool("dropbox")).toBeTruthy();
+	});
+});
+
+describe("files_batch_put (app-folder batch write, idempotent)", () => {
+	it("fans out puts and reports per item", async () => {
+		const out = parse(await tool("files_batch_put").run(kvEnv(), { items: [{ path: "a.txt", text: "x" }, { path: "b.png", base64: "AAAA" }] }));
+		expect(out.count).toBe(2);
+		expect(runMock).toHaveBeenCalledTimes(2);
+		expect(out.results[0]).toMatchObject({ path: "a.txt" });
+	});
+
+	it("is idempotent — a re-run with the same path+content skips, no re-put", async () => {
+		const e = kvEnv();
+		await tool("files_batch_put").run(e, { items: [{ path: "a.txt", text: "x" }] });
+		runMock.mockClear();
+		const out = parse(await tool("files_batch_put").run(e, { items: [{ path: "a.txt", text: "x" }] }));
+		expect(out.results[0].skipped).toMatch(/idempotent/);
+		expect(runMock).not.toHaveBeenCalled();
+	});
+
+	it("dry_run previews without writing", async () => {
+		const out = parse(await tool("files_batch_put").run(kvEnv(), { items: [{ path: "a.txt", text: "x" }], dry_run: true }));
+		expect(out.dry_run).toBe(true);
+		expect(out.results[0]).toMatchObject({ path: "a.txt", would_write: "text" });
+		expect(runMock).not.toHaveBeenCalled();
+	});
+
+	it("rejects an empty items list", async () => {
+		expect((await tool("files_batch_put").run(kvEnv(), { items: [] })).isError).toBe(true);
 	});
 });
 

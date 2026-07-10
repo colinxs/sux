@@ -3,6 +3,7 @@ import { type JsonRpc, sseResponse } from "./mcp-util";
 import { fail, type RtEnv, type ToolResult } from "./registry";
 import { dropbox } from "./fns/dropbox";
 import { deleteFull, hasDropboxFull, listFull, moveFull, readFull, searchFull, writeBytes, writeFull } from "./fns/_dropbox-full";
+import { fingerprint, ledger } from "./ledger";
 
 // The files MCP server — the personal blob workspace, served at /files/mcp behind
 // the same workers-oauth-provider flow (a fourth connector; zero new infra). Mirrors
@@ -129,6 +130,53 @@ const TOOLS: FileTool[] = [
 			} catch (e) {
 				return fail(errMsg(e));
 			}
+		},
+	},
+	{
+		name: "files_batch_put",
+		description:
+			"Write MANY files to the app-folder workspace in one call: `items` [{path, text?|base64?}] fanned out server-side, each returning its path + shareable link. IDEMPOTENT — an item already written (same path + content) is skipped, so a re-run converges. `dry_run:true` previews. App-folder scoped (scope is the wall). For whole-Dropbox batch writes, use files_operate.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["items"],
+			properties: {
+				items: { type: "array", items: { type: "object", additionalProperties: false, required: ["path"], properties: { path: { type: "string" }, text: { type: "string", description: "UTF-8 text." }, base64: { type: "string", description: "Base64 bytes (binary)." } } }, description: "The files to write." },
+				dry_run: { type: "boolean", description: "Preview the intended writes without writing." },
+			},
+		},
+		run: async (env, a) => {
+			const items = Array.isArray(a?.items) ? a.items : [];
+			if (!items.length) return fail("files_batch_put requires a non-empty `items` [{path, text?|base64?}].");
+			const dryRun = a?.dry_run === true;
+			const led = ledger(env, "files_put");
+			const results: Array<Record<string, unknown>> = [];
+			for (const it of items) {
+				const path = String(it?.path ?? "");
+				const hasBin = typeof it?.base64 === "string" && it.base64;
+				const hasText = typeof it?.text === "string";
+				if (!path || (!hasBin && !hasText)) {
+					results.push({ path, skipped: "missing path or content (text|base64)" });
+					continue;
+				}
+				const id = `${path}::${await fingerprint(hasBin ? `b:${it.base64}` : `t:${String(it.text)}`)}`;
+				if (await led.seen(id)) {
+					results.push({ path, skipped: "already written (idempotent)" });
+					continue;
+				}
+				if (dryRun) {
+					results.push({ path, would_write: hasBin ? "binary" : "text" });
+					continue;
+				}
+				try {
+					const r = await dbx(env, { op: "put", path, ...(hasBin ? { base64: it.base64 } : { data: String(it.text) }) });
+					await led.mark(id);
+					results.push({ path: r?.path ?? path, url: r?.url });
+				} catch (e) {
+					results.push({ path, error: errMsg(e).slice(0, 120) });
+				}
+			}
+			return ok({ count: items.length, dry_run: dryRun, results });
 		},
 	},
 	{
