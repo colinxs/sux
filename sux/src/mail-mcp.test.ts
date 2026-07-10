@@ -32,7 +32,7 @@ const MAILBOXES = [
 	{ id: "mb-sent", name: "Sent", role: "sent", unreadEmails: 0, totalEmails: 50 },
 	{ id: "mb-arch", name: "Archive", role: "archive", unreadEmails: 0, totalEmails: 500 },
 ];
-const EMAIL = { id: "e1", threadId: "t1", subject: "Hello", from: [{ email: "a@b.com", name: "A" }], to: [{ email: "me@fastmail.com" }], receivedAt: "2026-07-09T00:00:00Z", preview: "hi there", keywords: { $seen: true }, textBody: [{ partId: "p1", type: "text/plain" }], bodyValues: { p1: { value: "Full body text." } } };
+const EMAIL = { id: "e1", threadId: "t1", subject: "Hello", from: [{ email: "a@b.com", name: "A" }], to: [{ email: "me@fastmail.com" }], receivedAt: "2026-07-09T00:00:00Z", preview: "hi there", keywords: { $seen: true, $flagged: true }, mailboxIds: { "mb-inbox": true }, textBody: [{ partId: "p1", type: "text/plain" }], bodyValues: { p1: { value: "Full body text." } } };
 
 /** Answer one JMAP method call with canned data. */
 let lastEmailSet: any = null;
@@ -104,6 +104,14 @@ describe("mail_* ergonomic tools", () => {
 		const out = parse(await tool("mail_read").run(env(), { id: "e1" }));
 		expect(out.body).toBe("Full body text.");
 		expect(out.subject).toBe("Hello");
+	});
+
+	it("mail_read/search return the typed shape — isRead/isFlagged/isDraft + resolved folder labels (§1c)", async () => {
+		installFetch();
+		const out = parse(await tool("mail_read").run(env(), { id: "e1" }));
+		expect(out).toMatchObject({ isRead: true, isFlagged: true, isDraft: false, labels: ["Inbox"] }); // mailboxIds resolved to the folder name
+		const s = parse(await tool("mail_search").run(env(), { text: "hi" }));
+		expect(s.emails[0]).toMatchObject({ isRead: true, isFlagged: true, labels: ["Inbox"] });
 	});
 
 	it("mail_thread lists the conversation messages", async () => {

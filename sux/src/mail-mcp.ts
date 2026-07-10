@@ -51,18 +51,26 @@ function resolveIdentity(identities: any[], from: string): any {
 	return identities.find((i: any) => String(i?.email).toLowerCase() === f) || identities.find((i: any) => String(i?.email).startsWith("*@") && f.endsWith(String(i.email).slice(1).toLowerCase()));
 }
 
-function shapeRef(e: any): Record<string, unknown> {
+function shapeRef(e: any, boxNames?: Record<string, string>): Record<string, unknown> {
 	const addr = (a: any[]): string => (Array.isArray(a) ? a.map((x) => x?.email).filter(Boolean).join(", ") : "");
+	const kw = e?.keywords ?? {};
+	const boxIds = e?.mailboxIds ? Object.keys(e.mailboxIds) : undefined;
+	const labels = boxIds && boxNames ? boxIds.map((id) => boxNames[id] ?? id) : boxIds;
 	return {
 		id: e?.id,
 		threadId: e?.threadId,
 		subject: e?.subject ?? "(no subject)",
 		from: addr(e?.from),
 		to: addr(e?.to),
+		...(addr(e?.cc) ? { cc: addr(e.cc) } : {}),
 		receivedAt: e?.receivedAt,
 		preview: e?.preview,
-		unread: !e?.keywords?.$seen,
+		isRead: !!kw.$seen,
+		isFlagged: !!kw.$flagged,
+		isDraft: !!kw.$draft,
+		unread: !kw.$seen,
 		hasAttachment: !!e?.hasAttachment,
+		...(labels ? { labels } : {}),
 	};
 }
 
@@ -148,11 +156,13 @@ const TOOLS: MailTool[] = [
 				const resp = await jmapCall(env, {
 					calls: [
 						["Email/query", { filter, sort: [{ property: "receivedAt", isAscending: false }], limit }, "q"],
-						["Email/get", { "#ids": { resultOf: "q", name: "Email/query", path: "/ids" }, properties: ["id", "threadId", "subject", "from", "to", "receivedAt", "preview", "keywords", "hasAttachment"] }, "g"],
+						["Email/get", { "#ids": { resultOf: "q", name: "Email/query", path: "/ids" }, properties: ["id", "threadId", "subject", "from", "to", "cc", "receivedAt", "preview", "keywords", "mailboxIds", "hasAttachment"] }, "g"],
+						["Mailbox/get", { properties: ["id", "name"] }, "m"],
 					],
 				});
+				const boxNames: Record<string, string> = Object.fromEntries((resultFor(resp, "Mailbox/get")?.list ?? []).map((b: any) => [b?.id, b?.name]));
 				const emails = (resultFor(resp, "Email/get")?.list ?? []).slice().sort(byReceived(false)); // newest first, matching the query sort
-				return ok({ count: emails.length, emails: emails.map(shapeRef) });
+				return ok({ count: emails.length, emails: emails.map((e: any) => shapeRef(e, boxNames)) });
 			} catch (e) {
 				return fail(errMsg(e));
 			}
@@ -166,13 +176,16 @@ const TOOLS: MailTool[] = [
 			if (!a?.id) return fail("mail_read requires an `id`.");
 			try {
 				const resp = await jmapCall(env, {
-					method: "Email/get",
-					args: { ids: [String(a.id)], properties: ["id", "threadId", "subject", "from", "to", "cc", "receivedAt", "keywords", "textBody", "htmlBody", "bodyValues", "hasAttachment", "attachments"], fetchTextBodyValues: true, fetchHTMLBodyValues: false, maxBodyValueBytes: 200_000 },
+					calls: [
+						["Email/get", { ids: [String(a.id)], properties: ["id", "threadId", "subject", "from", "to", "cc", "receivedAt", "keywords", "mailboxIds", "textBody", "htmlBody", "bodyValues", "hasAttachment", "attachments"], fetchTextBodyValues: true, fetchHTMLBodyValues: false, maxBodyValueBytes: 200_000 }, "g"],
+						["Mailbox/get", { properties: ["id", "name"] }, "m"],
+					],
 				});
+				const boxNames: Record<string, string> = Object.fromEntries((resultFor(resp, "Mailbox/get")?.list ?? []).map((b: any) => [b?.id, b?.name]));
 				const e = resultFor(resp, "Email/get")?.list?.[0];
 				if (!e) return fail(`No message '${a.id}'.`);
 				const attachments = Array.isArray(e.attachments) ? e.attachments.map((x: any) => ({ blobId: x?.blobId, name: x?.name, type: x?.type, size: x?.size })) : [];
-				return ok({ ...shapeRef(e), body: extractBody(e), attachments });
+				return ok({ ...shapeRef(e, boxNames), body: extractBody(e), attachments });
 			} catch (e) {
 				return fail(errMsg(e));
 			}
