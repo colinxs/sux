@@ -77,6 +77,7 @@ function installFetch(opts?: { onApi?: (body: any, n: number) => Response; sessi
 		}
 		if (url.includes("/jmap/download")) {
 			calls.download++;
+			if (url.includes("BIG")) return new Response("x", { status: 200, headers: { "content-type": "application/octet-stream", "content-length": "99999999" } }); // declared > 50MB cap
 			return new Response(new Uint8Array([104, 105]).buffer, { status: 200, headers: { "content-type": "application/octet-stream" } });
 		}
 		return json({}, 404);
@@ -266,6 +267,13 @@ describe("jmap fn", () => {
 		const out = parse(r);
 		expect(out.blobId).toBe("B1");
 		expect(out.data).toBe(Buffer.from("hi").toString("base64"));
+	});
+
+	it("download: an oversize blob errors cleanly instead of buffering unbounded (OOM guard)", async () => {
+		installFetch();
+		const r = await jmap.run(env(), { download: { blobId: "BIG", as: "store" } });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/exceeds the .*download cap|too large/);
 	});
 });
 
