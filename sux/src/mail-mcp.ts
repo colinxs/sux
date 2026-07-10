@@ -322,24 +322,47 @@ const TOOLS: MailTool[] = [
 	},
 	{
 		name: "mail_masked",
-		description: "Fastmail Masked Email — list your masked addresses, or create a new one for a site (forDomain + description). A privacy superpower a normal mail tool can't reach.",
+		description: "Fastmail Masked Email — list, create (forDomain + description), or transition an address: disable (stop delivery, keep it), enable (re-activate), delete (soft-delete → recoverable in Fastmail). create + delete route through stage-then-commit. A privacy superpower a normal mail tool can't reach.",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
 			properties: {
-				action: { type: "string", enum: ["list", "create"], default: "list" },
-				forDomain: { type: "string", description: "The site the masked address is for (action=create)." },
-				description: { type: "string", description: "A note to remember what it's for (action=create)." },
+				action: { type: "string", enum: ["list", "create", "disable", "enable", "delete"], default: "list" },
+				id: { type: "string", description: "The masked-email id (disable/enable/delete)." },
+				forDomain: { type: "string", description: "The site the masked address is for (create)." },
+				description: { type: "string", description: "A note to remember what it's for (create)." },
+				stage: { type: "boolean", description: "create/delete: preview + commit_token, no write." },
+				commit_token: { type: "string" },
 			},
 		},
 		run: async (env, a) => {
 			try {
 				const action = String(a?.action ?? "list");
 				if (action === "create") {
-					const resp = await jmapCall(env, { calls: [["MaskedEmail/set", { create: { m: { state: "enabled", forDomain: a?.forDomain ? String(a.forDomain) : undefined, description: a?.description ? String(a.description) : undefined } } }, "s"]] });
-					const created = resultFor(resp, "MaskedEmail/set")?.created?.m;
-					if (!created) return fail(`MaskedEmail create failed: ${JSON.stringify(resultFor(resp, "MaskedEmail/set")?.notCreated ?? {})}`);
-					return ok({ created: { id: created.id, email: created.email, forDomain: created.forDomain, description: created.description } });
+					const mutate = async () => {
+						const resp = await jmapCall(env, { calls: [["MaskedEmail/set", { create: { m: { state: "enabled", forDomain: a?.forDomain ? String(a.forDomain) : undefined, description: a?.description ? String(a.description) : undefined } } }, "s"]] });
+						const created = resultFor(resp, "MaskedEmail/set")?.created?.m;
+						if (!created) throw new Error(`MaskedEmail create failed: ${JSON.stringify(resultFor(resp, "MaskedEmail/set")?.notCreated ?? {})}`);
+						return { created: { id: created.id, email: created.email, forDomain: created.forDomain, description: created.description } };
+					};
+					const out = await staged(env, "mail_masked_create", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, { forDomain: a?.forDomain ?? null, description: a?.description ?? null }, { action: "create masked address", forDomain: a?.forDomain, description: a?.description }, mutate);
+					return ok("stageResult" in out ? out.stageResult : out.result);
+				}
+				if (action === "disable" || action === "enable" || action === "delete") {
+					if (!a?.id) return fail(`mail_masked ${action} requires an \`id\`.`);
+					const id = String(a.id);
+					const state = action === "delete" ? "deleted" : action === "disable" ? "disabled" : "enabled";
+					const mutate = async () => {
+						const resp = await jmapCall(env, { calls: [["MaskedEmail/set", { update: { [id]: { state } } }, "s"]] });
+						const setR = resultFor(resp, "MaskedEmail/set");
+						if (!Object.prototype.hasOwnProperty.call(setR?.updated ?? {}, id)) throw new Error(`MaskedEmail ${action} failed: ${JSON.stringify(setR?.notUpdated ?? {})}`);
+						return { id, state };
+					};
+					if (action === "delete") {
+						const out = await staged(env, "mail_masked_delete", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, { id, state }, { action: "soft-delete masked address", id }, mutate);
+						return ok("stageResult" in out ? out.stageResult : out.result);
+					}
+					return ok(await mutate());
 				}
 				const resp = await jmapCall(env, { method: "MaskedEmail/get", args: {} });
 				const list = resultFor(resp, "MaskedEmail/get")?.list ?? [];

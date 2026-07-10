@@ -55,7 +55,7 @@ function answer([method, args]: any): any {
 	if (method === "EmailSubmission/query") return [method, { ids: ["sub-1"] }, "x"];
 	if (method === "EmailSubmission/get") return [method, { list: [{ id: "sub-1", emailId: "e1", sendAt: "2026-07-11T09:00:00Z", undoStatus: "pending" }] }, "x"];
 	if (method === "MaskedEmail/get") return [method, { list: [{ id: "m1", email: "x@fastmail.com", state: "enabled", forDomain: "shop.com" }] }, "x"];
-	if (method === "MaskedEmail/set") return [method, { created: { m: { id: "m2", email: "y@fastmail.com", forDomain: "new.com" } } }, "x"];
+	if (method === "MaskedEmail/set") return [method, { created: args?.create ? { m: { id: "m2", email: "y@fastmail.com", forDomain: "new.com" } } : undefined, updated: args?.update ? Object.fromEntries(Object.keys(args.update).map((k) => [k, null])) : undefined }, "x"];
 	return [method, {}, "x"];
 }
 
@@ -210,6 +210,14 @@ describe("mail_* ergonomic tools", () => {
 		expect(list.masked[0]).toMatchObject({ id: "m1", state: "enabled" });
 		const created = parse(await tool("mail_masked").run(env(), { action: "create", forDomain: "new.com" }));
 		expect(created.created).toMatchObject({ id: "m2", forDomain: "new.com" });
+	});
+
+	it("mail_masked disable/enable transition state; delete stages first (§1d)", async () => {
+		installFetch();
+		expect(parse(await tool("mail_masked").run(env(), { action: "disable", id: "m1" }))).toMatchObject({ id: "m1", state: "disabled" });
+		expect(parse(await tool("mail_masked").run(env(), { action: "enable", id: "m1" }))).toMatchObject({ id: "m1", state: "enabled" });
+		const st = parse(await tool("mail_masked").run(env(), { action: "delete", id: "m1", stage: true }));
+		expect(st).toMatchObject({ staged: true, kind: "mail_masked_delete" }); // soft-delete previews, no write
 	});
 
 	it("exposes the raw jmap escape hatch", () => {
