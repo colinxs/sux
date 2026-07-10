@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { deleteFull, hasDropboxFull, listFull, moveFull, normFull, readFull, searchFull, writeFull } from "./_dropbox-full";
+import { deleteFull, hasDropboxFull, listFull, moveFull, normFull, operateFull, readFull, searchFull, writeFull } from "./_dropbox-full";
 
 // Read-only full-Dropbox (Mode B) client. These tests hit the real fetch paths via a
 // stub, asserting: the credential is isolated to DROPBOX_FULL_* (its own KV key), reads
@@ -340,5 +340,88 @@ describe("Mode B write firewall — dry-run default, fence, backup, rev-conditio
 		expect(await moveFull(tokenEnv(), { from: "/a", to: "/b", dryRun: true })).toMatchObject({ action: "move", from: "/a", to: "/b" });
 		expect(await moveFull(tokenEnv(), { from: "/a", to: "/b", dryRun: false })).toMatchObject({ ok: true, from: "/a", to: "/b" });
 		await expect(moveFull(tokenEnv(), { from: "/a", to: "/a", dryRun: true })).rejects.toThrow(/nothing to move/);
+	});
+});
+
+describe("operateFull — find→plan→apply over the gated primitives", () => {
+	const searchHit = (path: string) => ({ metadata: { metadata: { ".tag": "file", path_display: path } } });
+
+	it("plan (default apply:false) searches and reports targets, mutating nothing", async () => {
+		const fetchMock = vi.fn(async (u: string | URL) => {
+			if (String(u).endsWith("/files/search_v2")) return new Response(JSON.stringify({ matches: [searchHit("/Docs/a.pdf"), searchHit("/Docs/b.pdf")], has_more: false }), { status: 200 });
+			throw new Error("no mutation allowed in a plan");
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		const r = await operateFull(tokenEnv(), { find: { query: "invoice" }, action: "move", dest: "/Archive", apply: false });
+		expect(r).toMatchObject({ plan: true, action: "move", matched: 2, dest: "/Archive", targets: ["/Docs/a.pdf", "/Docs/b.pdf"] });
+	});
+
+	it("apply move relocates each found file into dest (basename preserved)", async () => {
+		const moved: Array<[string, string]> = [];
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
+			const url = String(u);
+			if (url.endsWith("/files/search_v2")) return new Response(JSON.stringify({ matches: [searchHit("/Docs/a.pdf")], has_more: false }), { status: 200 });
+			if (url.endsWith("/files/move_v2")) {
+				const b = JSON.parse(init.body);
+				moved.push([b.from_path, b.to_path]);
+				return new Response(JSON.stringify({ metadata: { path_display: b.to_path } }), { status: 200 });
+			}
+			throw new Error(url);
+		}));
+		const r = await operateFull(tokenEnv(), { find: { query: "x" }, action: "move", dest: "/Archive", apply: true });
+		expect(r).toMatchObject({ applied: 1, of: 1, action: "move" });
+		expect(moved).toEqual([["/Docs/a.pdf", "/Archive/a.pdf"]]);
+	});
+
+	it("apply delete requires confirm:true, then deletes each", async () => {
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL) => {
+			if (String(u).endsWith("/files/search_v2")) return new Response(JSON.stringify({ matches: [searchHit("/tmp/x")], has_more: false }), { status: 200 });
+			throw new Error("no delete without confirm");
+		}));
+		await expect(operateFull(tokenEnv(), { find: { query: "x" }, action: "delete", apply: true })).rejects.toThrow(/confirm:true/);
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL) => {
+			const url = String(u);
+			if (url.endsWith("/files/search_v2")) return new Response(JSON.stringify({ matches: [searchHit("/tmp/x")], has_more: false }), { status: 200 });
+			if (url.endsWith("/files/get_metadata")) return new Response(JSON.stringify({ ".tag": "file" }), { status: 200 });
+			if (url.endsWith("/files/delete_v2")) return new Response(JSON.stringify({ metadata: { path_display: "/tmp/x" } }), { status: 200 });
+			throw new Error(url);
+		}));
+		expect(await operateFull(tokenEnv(), { find: { query: "x" }, action: "delete", apply: true, confirm: true })).toMatchObject({ applied: 1, action: "delete" });
+	});
+
+	it("accepts explicit handles and requires a query-or-handles", async () => {
+		vi.stubGlobal("fetch", vi.fn(async () => {
+			throw new Error("handles path must not search");
+		}));
+		expect(await operateFull(tokenEnv(), { handles: ["/a", "/b"], action: "move", dest: "/D", apply: false })).toMatchObject({ plan: true, matched: 2, targets: ["/a", "/b"] });
+		await expect(operateFull(tokenEnv(), { action: "move", dest: "/D", apply: false })).rejects.toThrow(/find.*query.*handles/);
+	});
+
+	it("preserves the basename for a trailing-slash handle (normalized before move)", async () => {
+		const moved: Array<[string, string]> = [];
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
+			if (String(u).endsWith("/files/move_v2")) {
+				const b = JSON.parse(init.body);
+				moved.push([b.from_path, b.to_path]);
+				return new Response(JSON.stringify({ metadata: { path_display: b.to_path } }), { status: 200 });
+			}
+			throw new Error(String(u));
+		}));
+		await operateFull(tokenEnv(), { handles: ["/OldPhotos/"], action: "move", dest: "/Archive", apply: true });
+		expect(moved).toEqual([["/OldPhotos", "/Archive/OldPhotos"]]); // nested, not collapsed to /Archive
+	});
+
+	it("a per-item fence failure is captured, not fatal", async () => {
+		const env = { DROPBOX_FULL_TOKEN: "ft", DROPBOX_FULL_PROTECT_PREFIXES: "/Protected" } as any;
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
+			if (String(u).endsWith("/files/move_v2")) {
+				const b = JSON.parse(init.body);
+				return new Response(JSON.stringify({ metadata: { path_display: b.to_path } }), { status: 200 });
+			}
+			throw new Error(String(u));
+		}));
+		const r = await operateFull(env, { handles: ["/ok.pdf", "/Protected/secret.pdf"], action: "move", dest: "/Archive", apply: true });
+		expect(r.applied).toBe(1); // only the un-fenced file moved
+		expect((r.results as any[])[1].error).toMatch(/protected prefix/);
 	});
 });

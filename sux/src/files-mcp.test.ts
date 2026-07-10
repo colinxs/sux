@@ -151,6 +151,15 @@ describe("full-Dropbox (Mode B) gating — dormant without DROPBOX_FULL_*", () =
 		expect(runMock).not.toHaveBeenCalled(); // Mode A (the mocked dropbox fn) is never touched
 	});
 
+	it("files_operate fails closed without DROPBOX_FULL_* and validates the action", async () => {
+		const gated = await tool("files_operate").run(env(), { action: "move", handles: ["/a"], dest: "/b" });
+		expect(gated.isError).toBe(true);
+		expect(gated.content[0].text).toMatch(/DROPBOX_FULL_|not configured/);
+		const badAction = await tool("files_operate").run({ DROPBOX_FULL_TOKEN: "ft" } as any, { action: "frobnicate" });
+		expect(badAction.isError).toBe(true);
+		expect(badAction.content[0].text).toMatch(/must be 'move' or 'delete'/);
+	});
+
 	it("full delete requires confirm:true to APPLY (dry-run needs no confirm)", async () => {
 		const envFull = { DROPBOX_FULL_TOKEN: "ft" } as any; // configured, but we never reach the network
 		const r = await tool("files_delete").run(envFull, { path: "/x.txt", full: true, dry_run: false });

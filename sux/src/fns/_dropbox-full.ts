@@ -226,6 +226,66 @@ export async function moveFull(env: RtEnv, opts: { from: string; to: string; dry
 	return { ok: true, action: "move", scope: "full-dropbox", from: f, to: r.json?.metadata?.path_display ?? t };
 }
 
+// files_operate — the find→plan→apply firewall (files.md §4-6). It gathers a target set
+// (a whole-account search OR explicit handles), and either returns a dry PLAN (default) or
+// APPLIES an action over the set by composing the ALREADY-GATED primitives (moveFull /
+// deleteFull) — never raw mutation. Every per-item op keeps its own fence + rev-safety +
+// recoverability; operate adds the plan/apply gate and a hard cap on blast radius. v1 does
+// move (organize) + delete (cleanup); the content-transform leg (merge/extract/etc.) composes
+// via the raw pdf/extract fns and is a documented next step, not raw mutation invented here.
+export async function operateFull(
+	env: RtEnv,
+	opts: { find?: { query?: string; path_prefix?: string; ext?: string[] }; handles?: string[]; action: "move" | "delete"; dest?: string; apply: boolean; confirm?: boolean; max?: number },
+): Promise<Record<string, unknown>> {
+	const max = Math.min(500, Math.max(1, Number(opts.max) || 100));
+	let paths: string[] = [];
+	let truncated = false;
+	// Normalize every gathered path (normFull strips trailing/duplicate slashes) so a
+	// handle like "/OldPhotos/" can't lose its basename at the move step below.
+	if (opts.handles?.length) {
+		paths = opts.handles.map((h) => normFull(h)).filter(Boolean);
+	} else if (opts.find?.query) {
+		const res = await searchFull(env, { query: opts.find.query, path_prefix: opts.find.path_prefix, ext: opts.find.ext, max_results: max });
+		paths = res.matches.map((m) => normFull(m.path)).filter(Boolean);
+		truncated = res.has_more;
+	} else {
+		throw new Error("operate needs a `find` query or an explicit `handles` list.");
+	}
+	if (paths.length > max) {
+		paths = paths.slice(0, max);
+		truncated = true;
+	}
+	if (opts.action === "move" && !opts.dest) throw new Error("operate move needs a `dest` folder.");
+	const dest = opts.dest ? normFull(opts.dest) : "";
+
+	if (!opts.apply) {
+		return {
+			plan: true,
+			action: opts.action,
+			matched: paths.length,
+			...(truncated ? { truncated: true, cap: max } : {}),
+			...(opts.action === "move" ? { dest } : {}),
+			targets: paths,
+			note: `Plan only — nothing changed. Pass apply:true${opts.action === "delete" ? " + confirm:true" : ""} to execute. Each op is fenced, rev-safe, and recoverable.`,
+		};
+	}
+	if (opts.action === "delete" && opts.confirm !== true) throw new Error("operate delete apply requires confirm:true.");
+	const results: Array<Record<string, unknown>> = [];
+	for (const p of paths) {
+		try {
+			if (opts.action === "move") {
+				const base = p.split("/").filter(Boolean).pop() ?? ""; // robust basename — never empty for a normalized path
+				results.push(await moveFull(env, { from: p, to: `${dest}/${base}`, dryRun: false }));
+			} else {
+				results.push(await deleteFull(env, { path: p, dryRun: false }));
+			}
+		} catch (e) {
+			results.push({ path: p, error: String((e as Error)?.message ?? e).slice(0, 150) });
+		}
+	}
+	return { applied: results.filter((r) => r.ok).length, of: paths.length, action: opts.action, ...(truncated ? { truncated: true, cap: max } : {}), results };
+}
+
 /** Build write bytes from either utf-8 text or base64 (for the tool layer). */
 export const writeBytes = (text?: string, base64?: string): Uint8Array => {
 	if (typeof base64 === "string" && base64) return fromB64(base64);

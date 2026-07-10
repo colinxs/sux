@@ -2,7 +2,7 @@ import { checkArgs, FN_DEADLINE_MS, withDeadline } from "./index";
 import { type JsonRpc, sseResponse } from "./mcp-util";
 import { fail, type RtEnv, type ToolResult } from "./registry";
 import { dropbox } from "./fns/dropbox";
-import { deleteFull, hasDropboxFull, listFull, moveFull, readFull, searchFull, writeBytes, writeFull } from "./fns/_dropbox-full";
+import { deleteFull, hasDropboxFull, listFull, moveFull, operateFull, readFull, searchFull, writeBytes, writeFull } from "./fns/_dropbox-full";
 import { fingerprint, ledger } from "./ledger";
 
 // The files MCP server — the personal blob workspace, served at /files/mcp behind
@@ -232,6 +232,35 @@ const TOOLS: FileTool[] = [
 			if (a?.confirm !== true) return fail("files_delete requires confirm:true.");
 			try {
 				return ok(await dbx(env, { op: "delete", path: String(a.path), confirm: true }));
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "files_operate",
+		description:
+			"Operate over a SEARCHED set of whole-Dropbox files in ONE call (Mode B), zero bytes through context. `find` (a files_search spec: {query, path_prefix?, ext?}) OR explicit `handles` [path] select the set; `action` is move (relocate the set into `dest`) or delete. PLAN by default (apply omitted/false) — returns the matched files + what would happen, changing nothing. Pass apply:true to execute (delete also needs confirm:true). Each op rides the same firewall as files_move/files_delete — path-fence, rev-safety, Dropbox-trash recoverability — and the set is capped at `max` (default 100). Content transforms (merge/extract) compose via the raw pdf/extract fns; that transform leg is a future addition. Needs DROPBOX_FULL_*.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["action"],
+			properties: {
+				action: { type: "string", enum: ["move", "delete"] },
+				find: { type: "object", additionalProperties: false, properties: { query: { type: "string" }, path_prefix: { type: "string" }, ext: { type: "array", items: { type: "string" } } }, description: "A whole-Dropbox search spec selecting the set." },
+				handles: { type: "array", items: { type: "string" }, description: "Explicit absolute paths (instead of a find)." },
+				dest: { type: "string", description: "move: destination folder for the set." },
+				apply: { type: "boolean", description: "false/omitted = plan only. true = execute." },
+				confirm: { type: "boolean", description: "delete apply: required true." },
+				max: { type: "integer", minimum: 1, maximum: 500, description: "Cap the set size (default 100)." },
+			},
+		},
+		run: async (env, a) => {
+			if (!hasDropboxFull(env)) return fail("full-Dropbox (Mode B) not configured — set DROPBOX_FULL_*. files_operate works over the whole account.");
+			const action = String(a?.action ?? "");
+			if (action !== "move" && action !== "delete") return fail("files_operate action must be 'move' or 'delete'.");
+			try {
+				return ok(await operateFull(env, { find: a?.find, handles: Array.isArray(a?.handles) ? a.handles : undefined, action, dest: a?.dest ? String(a.dest) : undefined, apply: a?.apply === true, confirm: a?.confirm === true, max: a?.max }));
 			} catch (e) {
 				return fail(errMsg(e));
 			}
