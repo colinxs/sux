@@ -1,11 +1,24 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { cfRender } from "../cf-render";
 import { macRender } from "../mac-render";
 import { winco } from "./winco";
 
+// Both render backends are mocked at the module boundary: the fn now renders via
+// retailRender's mac→cf fallback. cf defaults to unavailable (no BROWSER binding);
+// the fallback test overrides it to prove mac→cf hands the SAME HTML to the extractor.
 vi.mock("../mac-render", () => ({ macRender: vi.fn() }));
+vi.mock("../cf-render", () => ({ cfRender: vi.fn() }));
 
 const macRenderMock = vi.mocked(macRender);
+const cfRenderMock = vi.mocked(cfRender);
+
+beforeEach(() => {
+	// vi.mock factory mocks aren't reset by restoreAllMocks, so clear cf's call
+	// history each test; default the cf leg to unavailable (no BROWSER binding).
+	cfRenderMock.mockReset();
+	cfRenderMock.mockResolvedValue({ ok: false, error: "Browser Rendering is not configured (BROWSER binding)." });
+});
 
 // A rendered WinCo /stores page with two store-locator cards — the client-side
 // AngularJS list. Each `<li id="store-list-item-<locationID>">` carries the store
@@ -117,4 +130,18 @@ describe("winco", () => {
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toMatch(/no stores extracted/);
 	});
+	it("falls back to cf-residential when the mac node is down and runs the same extractor", async () => {
+		// Mac fails (e.g. node 502) → retailRender retries via cf; the identical rendered
+		// HTML from cf flows through the SAME extractor and yields the same results.
+		macRenderMock.mockResolvedValueOnce({ ok: false, error: "mac render failed: HTTP 502" });
+		cfRenderMock.mockResolvedValueOnce({ ok: true, contentType: "text/html", body: STORES_HTML });
+		const r = await winco.run(goodEnv, { action: "locations" });
+		expect(r.isError).toBeFalsy();
+		const j = JSON.parse(r.content[0].text);
+		expect(j.count).toBe(2);
+		// cf fired once, forcing residential + stealth (its only shot at the wall).
+		expect(cfRenderMock).toHaveBeenCalledTimes(1);
+		expect(cfRenderMock.mock.calls[0][1]).toMatchObject({ as: "html", residential: true, stealth: true });
+	});
+
 });
