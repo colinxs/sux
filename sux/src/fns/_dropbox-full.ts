@@ -1,3 +1,4 @@
+import { DROPBOX_CONTENT as CONTENT, type DropboxScope, dropboxFetch, dropboxRpc, headerSafeJson, MAX_INLINE_BYTES, scopeConfigured, TEXT_EXT } from "./_dropbox-core";
 import { type RtEnv } from "../registry";
 import { fromB64, toB64 } from "./_util";
 
@@ -10,24 +11,22 @@ import { fromB64, toB64 } from "./_util";
 // needs the vault-mirror guard configured fail-closed first). Design + adversarial
 // review: the design-full-dropbox-mode-b workflow.
 //
-// Auth mirrors dropbox.ts's public-client (PKCE, secretless) refresh: mint a short-lived
-// access token from the full refresh token, cache it in KV under a full-only key, and
-// self-heal a 401 by re-minting once.
+// Token lifecycle + fetch/rpc plumbing is the shared _dropbox-core (same mint/cache/
+// self-heal as Mode A); only the credential set + KV key differ, captured in fullScope.
+// Auth mirrors Mode A's public-client (PKCE, secretless) refresh.
 
-const API = "https://api.dropboxapi.com/2";
-const CONTENT = "https://content.dropboxapi.com/2";
-const OAUTH_TOKEN_URL = "https://api.dropbox.com/oauth2/token";
-const FULL_TOKEN_KEY = "sux:dropbox:full:token";
-
-/** Oversize gate: above this, read returns a TEMPORARY (expiring, non-public) link, never bytes. */
-const MAX_INLINE_BYTES = 4 * 1024 * 1024;
-const TEXT_EXT = /\.(md|txt|json|csv|tsv|ya?ml|xml|html?|js|ts|css)$/i;
+const fullScope = (env: RtEnv): DropboxScope => ({
+	tokenKey: "sux:dropbox:full:token",
+	refreshToken: env.DROPBOX_FULL_REFRESH_TOKEN,
+	appKey: env.DROPBOX_FULL_APP_KEY,
+	appSecret: env.DROPBOX_FULL_APP_SECRET,
+	staticToken: env.DROPBOX_FULL_TOKEN,
+	label: "Dropbox-full",
+	notConfigured: "Full-Dropbox not configured. Set DROPBOX_FULL_REFRESH_TOKEN + DROPBOX_FULL_APP_KEY (+ optional DROPBOX_FULL_APP_SECRET).",
+});
 
 /** True when the full-Dropbox (Mode B) credential is configured. */
-export const hasDropboxFull = (env: RtEnv): boolean =>
-	Boolean((env.DROPBOX_FULL_REFRESH_TOKEN && env.DROPBOX_FULL_APP_KEY) || env.DROPBOX_FULL_TOKEN);
-
-const headerSafeJson = (v: unknown): string => JSON.stringify(v).replace(/[-￿]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+export const hasDropboxFull = (env: RtEnv): boolean => scopeConfigured(fullScope(env));
 
 /** Absolute Dropbox path: "" = account root; a file/folder is "/Foo/bar". */
 export const normFull = (p: unknown): string => {
@@ -35,50 +34,9 @@ export const normFull = (p: unknown): string => {
 	return s ? `/${s}` : "";
 };
 
-async function mintFull(env: RtEnv): Promise<string> {
-	const hasSecret = Boolean(env.DROPBOX_FULL_APP_SECRET);
-	const headers: Record<string, string> = { "Content-Type": "application/x-www-form-urlencoded" };
-	if (hasSecret) headers.Authorization = `Basic ${btoa(`${env.DROPBOX_FULL_APP_KEY}:${env.DROPBOX_FULL_APP_SECRET}`)}`;
-	const resp = await fetch(OAUTH_TOKEN_URL, {
-		method: "POST",
-		headers,
-		body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(String(env.DROPBOX_FULL_REFRESH_TOKEN))}${hasSecret ? "" : `&client_id=${encodeURIComponent(String(env.DROPBOX_FULL_APP_KEY))}`}`,
-		signal: AbortSignal.timeout(20_000),
-	});
-	const j: any = await resp.json().catch(() => null);
-	if (!resp.ok || !j?.access_token) throw new Error(`Dropbox-full token refresh HTTP ${resp.status}: ${j?.error_description ?? j?.error ?? "no access_token"}`);
-	const ttl = Math.max(60, (Number(j?.expires_in) || 14_400) - 60);
-	await env.OAUTH_KV?.put(FULL_TOKEN_KEY, String(j.access_token), { expirationTtl: ttl });
-	return String(j.access_token);
-}
-
-async function fullToken(env: RtEnv): Promise<string> {
-	if (env.DROPBOX_FULL_REFRESH_TOKEN && env.DROPBOX_FULL_APP_KEY) {
-		const cached = await env.OAUTH_KV?.get(FULL_TOKEN_KEY);
-		if (cached) return cached;
-		return mintFull(env);
-	}
-	if (env.DROPBOX_FULL_TOKEN) return String(env.DROPBOX_FULL_TOKEN);
-	throw new Error("Full-Dropbox not configured. Set DROPBOX_FULL_REFRESH_TOKEN + DROPBOX_FULL_APP_KEY (+ optional DROPBOX_FULL_APP_SECRET).");
-}
-
-/** Fetch with per-credential 401 self-heal (re-mint ONLY the full token, never Mode A's). */
-async function fullFetch(env: RtEnv, url: string, build: (t: string) => RequestInit): Promise<Response> {
-	const first = await fetch(url, build(await fullToken(env)));
-	if (first.status !== 401 || !(env.DROPBOX_FULL_REFRESH_TOKEN && env.DROPBOX_FULL_APP_KEY)) return first;
-	await env.OAUTH_KV?.delete(FULL_TOKEN_KEY).catch(() => {});
-	return fetch(url, build(await fullToken(env)));
-}
-
-async function fullRpc(env: RtEnv, path: string, body: unknown): Promise<{ status: number; json: any }> {
-	const resp = await fullFetch(env, `${API}${path}`, (t) => ({
-		method: "POST",
-		headers: { Authorization: `Bearer ${t}`, "Content-Type": "application/json" },
-		body: JSON.stringify(body),
-		signal: AbortSignal.timeout(20_000),
-	}));
-	return { status: resp.status, json: await resp.json().catch(() => null) };
-}
+// Thin per-scope binders so the read/write/search call sites read as before.
+const fullFetch = (env: RtEnv, url: string, build: (t: string) => RequestInit): Promise<Response> => dropboxFetch(env, fullScope(env), url, build);
+const fullRpc = (env: RtEnv, path: string, body: unknown): Promise<{ status: number; json: any }> => dropboxRpc(env, fullScope(env), path, body);
 
 const fileEntry = (m: any) => ({ kind: m?.[".tag"], name: m?.name, path: m?.path_display ?? m?.path_lower, size: m?.size, rev: m?.rev, modified: m?.server_modified });
 
