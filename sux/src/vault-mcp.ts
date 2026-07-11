@@ -5,6 +5,7 @@ import { fail, ok, type RtEnv, type ToolResult } from "./registry";
 import { ingest } from "./fns/ingest";
 import { obsidian } from "./fns/obsidian";
 import { vaultToday } from "./fns/_util";
+import { extractTags, extractWikilinks, frontmatterMatches, linkResolvesTo, parseFrontmatter } from "./vault-graph";
 
 // The vault MCP server — our rolled-own obsidian-web-mcp (prior art:
 // github.com/jimprosser/obsidian-web-mcp), kept on OUR Workers implementation.
@@ -33,6 +34,31 @@ type VaultTool = {
 };
 
 const git = (args: Record<string, unknown>) => ({ ...args, backend: "git" });
+
+type VaultRecord = { path: string; content: string; fm: Record<string, unknown>; links: string[]; tags: string[] };
+
+/** Scan the git vault (optionally under `folder`): list notes, read each (parallel, capped), and
+ *  parse links/frontmatter/tags. The shared substrate for backlinks / frontmatter-query / tag-index.
+ *  Reads are KV-cached against HEAD, so repeated scans are cheap; `truncated` flags a capped listing. */
+async function scanVault(env: RtEnv, folder: string | undefined, cap: number): Promise<{ records: VaultRecord[]; total: number; truncated: boolean }> {
+	const listRes = await obsidian.run(env, git({ action: "list", ...(folder ? { path: folder } : {}) }));
+	if (listRes.isError) throw new Error(listRes.content?.[0]?.text ?? "vault list failed");
+	const listing = JSON.parse(listRes.content[0].text) as { notes?: string[] };
+	const all = Array.isArray(listing.notes) ? listing.notes : [];
+	const notes = all.slice(0, cap);
+	const records = (
+		await Promise.all(
+			notes.map(async (path) => {
+				const r = await obsidian.run(env, git({ action: "read", path }));
+				if (r.isError) return null;
+				const content = r.content[0].text;
+				const fm = parseFrontmatter(content);
+				return { path, content, fm, links: extractWikilinks(content), tags: extractTags(content, fm) } as VaultRecord;
+			}),
+		)
+	).filter((x): x is VaultRecord => x !== null);
+	return { records, total: all.length, truncated: all.length > cap };
+}
 
 const TOOLS: VaultTool[] = [
 	{
@@ -165,7 +191,63 @@ const TOOLS: VaultTool[] = [
 		inputSchema: { type: "object", additionalProperties: false, required: ["content"], properties: { content: { type: "string", description: "Markdown to add, e.g. '- [ ] call the plumber'." } } },
 		run: (env, a) => obsidian.run(env, git({ action: "append", path: dailyPath(env), content: a?.content })),
 	},
+	{
+		name: "vault_backlinks",
+		description: "List notes that [[link]] to a target note — the backlinks Obsidian shows in its side panel. Resolves wikilinks by basename. Scans the vault (KV-cached); `cap` bounds how many notes are read.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["path"], properties: { path: { type: "string", description: "Target note path, e.g. Projects/sux.md" }, cap: { type: "integer", minimum: 1, maximum: 2000, description: "Max notes to scan (default 500)." } } },
+		run: async (env, a) => {
+			if (!a?.path) return fail("vault_backlinks requires a `path`.");
+			try {
+				const { records, total, truncated } = await scanVault(env, undefined, clampCap(a?.cap));
+				const target = String(a.path);
+				const backlinks = records.filter((r) => r.path !== target && r.links.some((l) => linkResolvesTo(l, target))).map((r) => ({ path: r.path, links: r.links.filter((l) => linkResolvesTo(l, target)) }));
+				return ok(JSON.stringify({ target, count: backlinks.length, backlinks, scanned: records.length, total, truncated }, null, 2));
+			} catch (e) {
+				return fail(String((e as Error)?.message ?? e));
+			}
+		},
+	},
+	{
+		name: "vault_query",
+		description: "Find notes by a frontmatter field — the note-database query Obsidian folders can't do. Pass `field` (+ optional `value`: equality or array-membership; omit to match any note that HAS the field) and optional `folder`. Returns {path, frontmatter}.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["field"], properties: { field: { type: "string", description: "Frontmatter key, e.g. status or type." }, value: { type: "string", description: "Match this value (equality or array-membership); omit to match presence." }, folder: { type: "string", description: "Restrict to a folder." }, cap: { type: "integer", minimum: 1, maximum: 2000 } } },
+		run: async (env, a) => {
+			if (!a?.field) return fail("vault_query requires a `field`.");
+			try {
+				const { records, total, truncated } = await scanVault(env, a?.folder ? String(a.folder) : undefined, clampCap(a?.cap));
+				const field = String(a.field);
+				const value = a?.value !== undefined ? String(a.value) : undefined;
+				const matches = records.filter((r) => frontmatterMatches(r.fm, field, value)).map((r) => ({ path: r.path, frontmatter: r.fm }));
+				return ok(JSON.stringify({ field, ...(value !== undefined ? { value } : {}), count: matches.length, notes: matches, scanned: records.length, total, truncated }, null, 2));
+			} catch (e) {
+				return fail(String((e as Error)?.message ?? e));
+			}
+		},
+	},
+	{
+		name: "vault_tags",
+		description: "Tag index over the vault: pass a `tag` to list notes carrying it (frontmatter tags ∪ inline #tags), or omit to enumerate every tag with its note count. Optional `folder`.",
+		inputSchema: { type: "object", additionalProperties: false, properties: { tag: { type: "string", description: "A tag (with or without #) to list notes for; omit to enumerate all tags." }, folder: { type: "string" }, cap: { type: "integer", minimum: 1, maximum: 2000 } } },
+		run: async (env, a) => {
+			try {
+				const { records, total, truncated } = await scanVault(env, a?.folder ? String(a.folder) : undefined, clampCap(a?.cap));
+				if (a?.tag) {
+					const want = String(a.tag).replace(/^#/, "").toLowerCase();
+					const notes = records.filter((r) => r.tags.some((t) => t.toLowerCase() === want)).map((r) => r.path);
+					return ok(JSON.stringify({ tag: want, count: notes.length, notes, scanned: records.length, total, truncated }, null, 2));
+				}
+				const counts: Record<string, number> = {};
+				for (const r of records) for (const t of r.tags) counts[t] = (counts[t] ?? 0) + 1;
+				const tags = Object.entries(counts).sort((a2, b2) => b2[1] - a2[1]).map(([tag, count]) => ({ tag, count }));
+				return ok(JSON.stringify({ count: tags.length, tags, scanned: records.length, total, truncated }, null, 2));
+			} catch (e) {
+				return fail(String((e as Error)?.message ?? e));
+			}
+		},
+	},
 ];
+
+const clampCap = (v: unknown): number => Math.min(2000, Math.max(1, Number(v) || 500));
 
 export const VAULT_TOOLS = TOOLS;
 

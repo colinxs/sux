@@ -45,6 +45,9 @@ describe("vault MCP server (/vault/mcp)", () => {
 			"vault_batch_append",
 			"vault_daily_read",
 			"vault_daily_append",
+			"vault_backlinks",
+			"vault_query",
+			"vault_tags",
 		]);
 		expect(names).not.toContain("vault_search"); // live-dependent — deferred to the vpc phase
 		for (const t of out.result.tools) expect(t.inputSchema).toBeDefined();
@@ -58,6 +61,31 @@ describe("vault MCP server (/vault/mcp)", () => {
 		const out = await parse(await handleVaultRpc(ENV, CTX, rpc("tools/call", { name: "vault_read", arguments: { path: "Inbox/idea.md" } })));
 		expect(out.result.content[0].text).toBe("# Idea");
 		expect(out.result.isError).toBeFalsy();
+	});
+
+	it("vault_backlinks / vault_query / vault_tags scan the git store (§4)", async () => {
+		const notes: Record<string, string> = {
+			"Projects/sux.md": "---\nstatus: active\ntags: [project]\n---\n# sux\ncore stuff",
+			"Notes/a.md": "---\nstatus: draft\n---\nsee [[sux]] and #idea here",
+			"Notes/b.md": "plain note, no links, no tags",
+		};
+		routes.handler = (url) => {
+			if (url.includes("/git/trees/")) return new Response(JSON.stringify({ tree: Object.keys(notes).map((p) => ({ type: "blob", path: p })) }), { status: 200 });
+			const m = /\/contents\/(.+?)(\?|$)/.exec(url);
+			const path = m ? decodeURIComponent(m[1]) : "";
+			if (notes[path] === undefined) return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+			return new Response(JSON.stringify({ content: b64(notes[path]), sha: "s1" }), { status: 200 });
+		};
+		const call = async (name: string, args: any) => JSON.parse((await parse(await handleVaultRpc(ENV, CTX, rpc("tools/call", { name, arguments: args })))).result.content[0].text);
+
+		const bl = await call("vault_backlinks", { path: "Projects/sux.md" });
+		expect(bl.backlinks.map((x: any) => x.path)).toEqual(["Notes/a.md"]); // [[sux]] resolves by basename
+
+		const q = await call("vault_query", { field: "status", value: "active" });
+		expect(q.notes.map((x: any) => x.path)).toEqual(["Projects/sux.md"]);
+
+		const t = await call("vault_tags", {});
+		expect(t.tags.map((x: any) => x.tag).sort()).toEqual(["idea", "project"]);
 	});
 
 	it("vault_daily_append targets today's daily note", async () => {
