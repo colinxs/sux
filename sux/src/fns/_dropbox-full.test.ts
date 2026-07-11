@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { deleteFull, hasDropboxFull, listFull, moveFull, normFull, operateFull, readFull, searchFull, writeFull } from "./_dropbox-full";
+import { deleteFull, hasDropboxFull, listFull, moveFull, normFull, operateFull, readFull, searchFull, transformFull, writeFull } from "./_dropbox-full";
 
 // Read-only full-Dropbox (Mode B) client. These tests hit the real fetch paths via a
 // stub, asserting: the credential is isolated to DROPBOX_FULL_* (its own KV key), reads
@@ -423,5 +423,101 @@ describe("operateFull — find→plan→apply over the gated primitives", () => 
 		const r = await operateFull(env, { handles: ["/ok.pdf", "/Protected/secret.pdf"], action: "move", dest: "/Archive", apply: true });
 		expect(r.applied).toBe(1); // only the un-fenced file moved
 		expect((r.results as any[])[1].error).toMatch(/protected prefix/);
+	});
+});
+
+describe("transformFull — merge / extract composed through writeFull's firewall", () => {
+	// A source→content fetch stub keyed by path (readFull = get_metadata then download), plus the
+	// dest write half (get_metadata → 409 not-found = new file, then upload). Optionally captures
+	// the uploaded bytes so a caller can assert concat/slice byte-correctness.
+	const fileStub = (files: Record<string, { text?: string; bytes?: number[]; size?: number }>, cap?: (b: Uint8Array) => void) =>
+		vi.fn(async (u: string | URL, init?: any) => {
+			const url = String(u);
+			const bytesOf = (f: { text?: string; bytes?: number[] }) => (f.bytes ? Uint8Array.from(f.bytes) : new TextEncoder().encode(f.text ?? ""));
+			if (url.endsWith("/files/get_metadata")) {
+				const p = JSON.parse(init.body).path;
+				const f = files[p];
+				if (!f) return new Response(JSON.stringify({ error_summary: "path/not_found/" }), { status: 409 }); // dest is new
+				return new Response(JSON.stringify({ ".tag": "file", size: f.size ?? bytesOf(f).length, path_display: p, rev: "r" }), { status: 200 });
+			}
+			if (url.endsWith("/files/download")) return new Response(Buffer.from(bytesOf(files[JSON.parse(init.headers["Dropbox-API-Arg"]).path])), { status: 200 });
+			if (url.endsWith("/files/upload")) {
+				cap?.(new Uint8Array(init.body));
+				return new Response(JSON.stringify({ path_display: JSON.parse(init.headers["Dropbox-API-Arg"]).path, size: (init.body as Uint8Array).length, rev: "new" }), { status: 200 });
+			}
+			throw new Error(`unexpected ${url}`);
+		});
+
+	it("merge concat is dry-run by default: reads sources, reports sizes, uploads nothing", async () => {
+		const stub = fileStub({ "/a.bin": { bytes: [1, 2] }, "/b.bin": { bytes: [3, 4, 5] } });
+		vi.stubGlobal("fetch", stub);
+		const r = await transformFull(tokenEnv(), { op: "merge", sources: ["/a.bin", "/b.bin"], dest: "/out.bin", dryRun: true });
+		expect(r).toMatchObject({ op: "merge", mode: "concat", output_bytes: 5, action: "write", inputs: [{ path: "/a.bin", size: 2 }, { path: "/b.bin", size: 3 }] });
+		expect(String(r.note)).toMatch(/DRY RUN/);
+		expect(stub.mock.calls.every(([u]) => !String(u).endsWith("/files/upload"))).toBe(true);
+	});
+
+	it("merge concat apply joins raw bytes in listed order and uploads them", async () => {
+		let uploaded: Uint8Array | undefined;
+		vi.stubGlobal("fetch", fileStub({ "/a.bin": { bytes: [1, 2] }, "/b.bin": { bytes: [3, 4] } }, (b) => (uploaded = b)));
+		const r = await transformFull(tokenEnv(), { op: "merge", sources: ["/a.bin", "/b.bin"], dest: "/out.bin", dryRun: false });
+		expect(r).toMatchObject({ ok: true, op: "merge", output_bytes: 4 });
+		expect(Array.from(uploaded!)).toEqual([1, 2, 3, 4]);
+	});
+
+	it("extract byte_range slices [start,end) and writes the slice", async () => {
+		let uploaded: Uint8Array | undefined;
+		vi.stubGlobal("fetch", fileStub({ "/a.bin": { bytes: [10, 11, 12, 13, 14] } }, (b) => (uploaded = b)));
+		const r = await transformFull(tokenEnv(), { op: "extract", source: "/a.bin", byte_range: [1, 3], dest: "/slice.bin", dryRun: false });
+		expect(r).toMatchObject({ op: "extract", source: "/a.bin", byte_range: [1, 3], output_bytes: 2 });
+		expect(Array.from(uploaded!)).toEqual([11, 12]);
+	});
+
+	it("extract line_range slices decoded text lines [start,end) and rejoins with \\n", async () => {
+		let uploaded: Uint8Array | undefined;
+		vi.stubGlobal("fetch", fileStub({ "/log.txt": { text: "l0\nl1\nl2\nl3" } }, (b) => (uploaded = b)));
+		const r = await transformFull(tokenEnv(), { op: "extract", source: "/log.txt", line_range: [1, 3], dest: "/out.txt", dryRun: false });
+		expect(r).toMatchObject({ op: "extract", line_range: [1, 3], lines: 2 });
+		expect(new TextDecoder().decode(uploaded)).toBe("l1\nl2");
+	});
+
+	it("line_range on a non-text (binary) source is refused", async () => {
+		vi.stubGlobal("fetch", fileStub({ "/a.bin": { bytes: [1, 2, 3] } }));
+		await expect(transformFull(tokenEnv(), { op: "extract", source: "/a.bin", line_range: [0, 1], dest: "/o.txt", dryRun: false })).rejects.toThrow(/needs text content/);
+	});
+
+	it("extract requires exactly one of byte_range / line_range", async () => {
+		vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
+		await expect(transformFull(tokenEnv(), { op: "extract", source: "/a.bin", byte_range: [0, 1], line_range: [0, 1], dest: "/o", dryRun: true })).rejects.toThrow(/exactly one/);
+		await expect(transformFull(tokenEnv(), { op: "extract", source: "/a.bin", dest: "/o", dryRun: true })).rejects.toThrow(/exactly one/);
+	});
+
+	it("merge refuses 0 or 1 sources", async () => {
+		vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
+		await expect(transformFull(tokenEnv(), { op: "merge", sources: ["/only.bin"], dest: "/o.bin", dryRun: true })).rejects.toThrow(/at least 2/);
+		await expect(transformFull(tokenEnv(), { op: "merge", sources: [], dest: "/o.bin", dryRun: true })).rejects.toThrow(/at least 2/);
+	});
+
+	it("the dest fence blocks a protected prefix before any source read", async () => {
+		const env = { DROPBOX_FULL_TOKEN: "ft", DROPBOX_FULL_PROTECT_PREFIXES: "/Obsidian" } as any;
+		const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+		vi.stubGlobal("fetch", fetchMock);
+		await expect(transformFull(env, { op: "merge", sources: ["/a.bin", "/b.bin"], dest: "/Obsidian/merged.bin", dryRun: true })).rejects.toThrow(/protected prefix/);
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("an oversize (link-only) source is refused, never silently dropped", async () => {
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL) => {
+			const url = String(u);
+			if (url.endsWith("/files/get_metadata")) return new Response(JSON.stringify({ ".tag": "file", size: 500_000_000, path_display: "/big.bin" }), { status: 200 });
+			if (url.endsWith("/files/get_temporary_link")) return new Response(JSON.stringify({ link: "https://dl/temp" }), { status: 200 });
+			throw new Error("must not download or upload an oversize source");
+		}));
+		await expect(transformFull(tokenEnv(), { op: "extract", source: "/big.bin", byte_range: [0, 10], dest: "/o.bin", dryRun: false })).rejects.toThrow(/inline cap|link, not bytes/);
+	});
+
+	it("refuses a dest that collides with a source unless overwrite is explicit", async () => {
+		vi.stubGlobal("fetch", fileStub({ "/a.bin": { bytes: [1] }, "/b.bin": { bytes: [2] } }));
+		await expect(transformFull(tokenEnv(), { op: "merge", sources: ["/a.bin", "/b.bin"], dest: "/a.bin", dryRun: true })).rejects.toThrow(/also a source/);
 	});
 });

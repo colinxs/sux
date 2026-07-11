@@ -1,5 +1,6 @@
 import { type RtEnv } from "../registry";
 import { fromB64, toB64 } from "./_util";
+import { pdf } from "./pdf";
 
 // Full-Dropbox (Mode B) client — READ + SEARCH over the WHOLE Dropbox, behind a
 // SEPARATE full-scope credential (DROPBOX_FULL_*) at a DISTINCT KV key. This never
@@ -230,9 +231,9 @@ export async function moveFull(env: RtEnv, opts: { from: string; to: string; dry
 // (a whole-account search OR explicit handles), and either returns a dry PLAN (default) or
 // APPLIES an action over the set by composing the ALREADY-GATED primitives (moveFull /
 // deleteFull) — never raw mutation. Every per-item op keeps its own fence + rev-safety +
-// recoverability; operate adds the plan/apply gate and a hard cap on blast radius. v1 does
-// move (organize) + delete (cleanup); the content-transform leg (merge/extract/etc.) composes
-// via the raw pdf/extract fns and is a documented next step, not raw mutation invented here.
+// recoverability; operate adds the plan/apply gate and a hard cap on blast radius. It does
+// move (organize) + delete (cleanup); the content-transform leg (merge N→1, extract a slice)
+// lives in transformFull below — same write firewall, different set-building.
 export async function operateFull(
 	env: RtEnv,
 	opts: { find?: { query?: string; path_prefix?: string; ext?: string[] }; handles?: string[]; action: "move" | "delete"; dest?: string; apply: boolean; confirm?: boolean; max?: number },
@@ -291,3 +292,115 @@ export const writeBytes = (text?: string, base64?: string): Uint8Array => {
 	if (typeof base64 === "string" && base64) return fromB64(base64);
 	return new TextEncoder().encode(typeof text === "string" ? text : "");
 };
+
+// ── Mode B content transforms (merge / extract) ──────────────────────────────
+// The content-transform leg of files.md §4-6: build result BYTES from other files'
+// bytes (read edge-side via readFull, so no payload transits context), then write
+// them back through the SAME writeFull firewall (fence, rev-safety, dry-run default,
+// /.sux-trash backup) — no new mutation path. Merge is the only op with an existing
+// primitive to compose (the `pdf` fn, for the pdf mode); concat and slice are written
+// here because no fn does raw byte/line slicing of an arbitrary file. Dry-run by default:
+// the sources are still read (reads are free + safe) so the plan reports real sizes.
+
+const MERGE_MAX_SOURCES = 20;
+/** Hard cap on any transform's output, bounding Worker memory/cost. */
+const TRANSFORM_MAX_BYTES = 25 * 1024 * 1024;
+
+function concatBytes(chunks: Uint8Array[]): Uint8Array {
+	const out = new Uint8Array(chunks.reduce((s, c) => s + c.length, 0));
+	let o = 0;
+	for (const c of chunks) {
+		out.set(c, o);
+		o += c.length;
+	}
+	return out;
+}
+
+/** Read one transform source to raw bytes. Refuses an oversize (link-only) source: a transform
+ *  composes bytes, and readFull returns a link (not bytes) above the inline cap — so silently
+ *  merging/slicing would drop it. `isText` gates line-range (only text decodes to lines). */
+async function readTransformSource(env: RtEnv, path: string): Promise<{ path: string; bytes: Uint8Array; isText: boolean }> {
+	const p = normFull(path);
+	if (!p) throw new Error("transform source path is empty.");
+	const r = await readFull(env, p);
+	if (r.too_large_to_inline) throw new Error(`source '${p}' is ${r.size} bytes — over the ${MAX_INLINE_BYTES}-byte inline cap, so it reads as a link, not bytes. A transform can't compose a link; narrow the set.`);
+	if (typeof r.base64 === "string") return { path: p, bytes: fromB64(r.base64), isText: false };
+	return { path: p, bytes: new TextEncoder().encode(String(r.text ?? "")), isText: true };
+}
+
+/** Merge N files→one (raw-byte concat, or render+merge into a PDF), or extract a byte/line slice —
+ *  then write the result through writeFull's firewall. dry-run by default (reads run; the write is
+ *  planned, not applied). Fail-closed: gate on hasDropboxFull one level up, like the other ops. */
+export async function transformFull(
+	env: RtEnv,
+	opts: {
+		op: "merge" | "extract";
+		sources?: string[];
+		mode?: "concat" | "pdf";
+		source?: string;
+		byte_range?: [number, number];
+		line_range?: [number, number];
+		dest: string;
+		dryRun: boolean;
+		overwrite?: boolean;
+		backup?: boolean;
+	},
+): Promise<Record<string, unknown>> {
+	// Fence dest up front so a protected/root target is refused before any source read.
+	const dest = fenceFull(env, opts.dest);
+	const write = (bytes: Uint8Array) => writeFull(env, { path: dest, bytes, overwrite: opts.overwrite, backup: opts.backup, dryRun: opts.dryRun });
+
+	if (opts.op === "merge") {
+		const sources = (opts.sources ?? []).map((s) => normFull(s)).filter(Boolean);
+		if (sources.length < 2) throw new Error("merge needs at least 2 source paths.");
+		if (sources.length > MERGE_MAX_SOURCES) throw new Error(`merge is capped at ${MERGE_MAX_SOURCES} sources (got ${sources.length}).`);
+		if (sources.includes(dest) && opts.overwrite !== true) throw new Error(`dest '${dest}' is also a source — pass overwrite:true to replace it in place.`);
+		const read: Array<{ path: string; bytes: Uint8Array; isText: boolean }> = [];
+		for (const s of sources) read.push(await readTransformSource(env, s));
+		const mode = opts.mode ?? (sources.every((s) => /\.pdf$/i.test(s)) ? "pdf" : "concat");
+		let bytes: Uint8Array;
+		if (mode === "pdf") {
+			// The one "compose via the pdf fn" case: render each source to PDF page(s) and merge in order.
+			const res = await pdf.run(env, { sources: read.map((r) => ({ data: toB64(r.bytes), kind: "auto" })), as: "base64" });
+			if (res.isError) throw new Error(`merge(pdf) failed: ${String(res.content?.[0]?.text ?? "").slice(0, 200)}`);
+			bytes = fromB64(JSON.parse(res.content[0].text).base64);
+		} else {
+			bytes = concatBytes(read.map((r) => r.bytes));
+		}
+		if (bytes.length > TRANSFORM_MAX_BYTES) throw new Error(`merged output is ${bytes.length} bytes — over the ${TRANSFORM_MAX_BYTES}-byte transform cap.`);
+		return { op: "merge", scope: "full-dropbox", mode, inputs: read.map((r) => ({ path: r.path, size: r.bytes.length })), output_bytes: bytes.length, ...(await write(bytes)) };
+	}
+
+	// extract — exactly one of byte_range / line_range, slicing one source.
+	const source = normFull(opts.source ?? "");
+	if (!source) throw new Error("extract needs a `source` path.");
+	const hasByte = Array.isArray(opts.byte_range);
+	const hasLine = Array.isArray(opts.line_range);
+	if (hasByte === hasLine) throw new Error("extract needs exactly one of `byte_range` or `line_range`.");
+	if (source === dest && opts.overwrite !== true) throw new Error(`dest '${dest}' is also the source — pass overwrite:true to replace it in place.`);
+	const r = await readTransformSource(env, source);
+	let bytes: Uint8Array;
+	let range: Record<string, unknown>;
+	if (hasByte) {
+		const [start, rawEnd] = opts.byte_range!.map((n) => Math.floor(Number(n)));
+		if (!Number.isFinite(start) || !Number.isFinite(rawEnd) || start < 0 || rawEnd <= start) throw new Error(`byte_range [${start},${rawEnd}] is invalid — need 0 <= start < end.`);
+		if (start >= r.bytes.length) throw new Error(`byte_range start ${start} is past end-of-file (${r.bytes.length} bytes).`);
+		const end = Math.min(rawEnd, r.bytes.length);
+		bytes = r.bytes.slice(start, end);
+		range = { byte_range: [start, end] };
+	} else {
+		// Lines are text-only: a binary/undecoded source has no meaningful \n structure.
+		if (!r.isText) throw new Error("line_range needs text content — the source didn't decode as text (binary/undecoded).");
+		const [start, rawEnd] = opts.line_range!.map((n) => Math.floor(Number(n)));
+		if (!Number.isFinite(start) || !Number.isFinite(rawEnd) || start < 0 || rawEnd <= start) throw new Error(`line_range [${start},${rawEnd}] is invalid — need 0 <= start < end.`);
+		const lines = new TextDecoder().decode(r.bytes).split("\n");
+		if (start >= lines.length) throw new Error(`line_range start ${start} is past the last line (${lines.length} lines).`);
+		const end = Math.min(rawEnd, lines.length);
+		const slice = lines.slice(start, end);
+		bytes = new TextEncoder().encode(slice.join("\n"));
+		range = { line_range: [start, end], lines: slice.length };
+	}
+	if (!bytes.length) throw new Error("extract produced an empty slice — refusing to write nothing.");
+	if (bytes.length > TRANSFORM_MAX_BYTES) throw new Error(`extracted slice is ${bytes.length} bytes — over the ${TRANSFORM_MAX_BYTES}-byte transform cap.`);
+	return { op: "extract", scope: "full-dropbox", source, ...range, output_bytes: bytes.length, ...(await write(bytes)) };
+}
