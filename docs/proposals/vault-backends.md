@@ -527,6 +527,34 @@ citeable surface; the PDF stays a blob behind a handle.
 
 ---
 
+## Structured query + structural PATCH on the git backend (shipped)
+
+Two of the pieces once filed as "backend-coupled, deferred" are in fact pure over
+the git store — they need note frontmatter and text, not the live Obsidian REST
+verb — so they ship on impl 1/4 now, and only the genuinely live-only piece stays
+gated. This resolves the ambiguity so neither half gets re-proposed later.
+
+- **4d · JsonLogic-lite frontmatter query — on git now.** `vault_query` gains a
+  `filter` alongside its simple `field`/`value` form: `{and:[…]} {or:[…]} {not:…}`,
+  `{"==":[field,val]} {"!=":…} {">"/"<"/">="/"<=":[field,val]}` (numeric else ISO-date
+  lexical), `{"in":[field,val]}`. It is pure evaluation over each note's parsed `---`
+  block (`evalFilter` in `sux/src/vault-graph.ts`), scanning the store server-side and
+  returning **paths only** (handle-discipline, §0). This is exactly the *structured*
+  retriever knowledge-core.md §2 separates from Dataview — "JsonLogic for `type=project
+  AND status=active`" — and it needs no live host.
+- **4e · Structural PATCH — on git now.** `vault_patch` targets one of a `## Heading`
+  section, an `^block-id` anchor, or a top-level `frontmatter_field`, with
+  replace/append/prepend modes. It is read → pure text surgery (`patchHeadingSection` /
+  `patchBlockRef` / `patchFrontmatter`) → commit — the same shape `vault_edit` already
+  uses, so it reproduces Obsidian's PATCH *semantics* without the live REST PATCH verb.
+  Git history is the undo, so no confirm gate (as with `vault_batch_append`); a missing
+  or ambiguous target fails cleanly, mirroring `vault_edit`'s unique-match discipline.
+- **Still gated on the live backend (unchanged, §1.2 / knowledge-core.md §2):** true
+  **full-text / fuzzy search** and **Dataview DQL's arbitrary computed-query engine**.
+  Those are the `search` / `commands` ✖ cells for impls 1 & 4 above — code-search is
+  dead on a private repo and DQL is live-rendered — so they land with impl 2 (vpc) per
+  the build order below. Nothing new to design; this bullet just records the boundary.
+
 ## Appendix — build order (aligns with vpc-hosting.md phases A–E)
 
 - **A** — tier-1 git store + `/vault/mcp` connector (git-only). *(done-ish)*
