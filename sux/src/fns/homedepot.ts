@@ -1,11 +1,13 @@
-import { macRender } from "../mac-render";
+import { retailRender } from "../retail-render";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { normalizeMoney, type RetailProduct } from "./_retail";
 
 // Home Depot sits behind an ACTIVE Akamai `_abck` JS challenge a plain fetch can't
 // pass. The mac render backend (a residential patched browser) warms the sensor
 // and renders the client-side product grid, so this fn renders HD's search page
-// and lifts products out of the rendered HTML. HD builds its tiles client-side, so
+// and lifts products out of the rendered HTML. Rendering goes through `retailRender`:
+// the mac backend is primary, with Cloudflare Browser Rendering (residential +
+// stealth) as a fallback when the mac node is down. HD builds its tiles client-side, so
 // extraction is best-effort: prefer an embedded state blob if present, else parse
 // the product-pod anchors. Every step guards/try-catches — never throws.
 
@@ -118,7 +120,7 @@ export const homedepot: Fn = {
 	description:
 		"Home Depot product search via the mac render backend (a residential patched browser that warms Home Depot's active Akamai `_abck` sensor and renders the client-side product grid — a plain fetch can't). " +
 		"`action`: search (products for a `term`). Extraction is best-effort from the rendered page (embedded state blob when present, else product-pod tiles), normalized to the shared retail shape (id/title/price/image/url). " +
-		"`zip` optionally localizes the store; `limit` caps results (default 15, max 40). Slower than an API and dependent on the mac render backend being up.",
+		"`zip` optionally localizes the store; `limit` caps results (default 15, max 40). Slower than an API and falls back to Cloudflare Browser Rendering (residential + stealth) if the mac render backend is down.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -136,9 +138,8 @@ export const homedepot: Fn = {
 		if (!term) return failWith("bad_input", "action=search requires a `term`.");
 		const limit = Math.min(40, Math.max(1, Number(args?.limit) || 15));
 
-		const r = await macRender(env, {
+		const r = await retailRender(env, {
 			url: `https://www.homedepot.com/s/${encodeURIComponent(term)}`,
-			as: "html",
 			block_resources: true,
 			wait_until: "networkidle2",
 			wait_ms: 6000,

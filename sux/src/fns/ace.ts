@@ -1,4 +1,4 @@
-import { macRender } from "../mac-render";
+import { retailRender } from "../retail-render";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { normalizeMoney, type RetailProduct } from "./_retail";
 
@@ -7,7 +7,9 @@ import { normalizeMoney, type RetailProduct } from "./_retail";
 // (a residential patched browser) and lifts products out of the rendered HTML. Ace
 // runs an INVISIBLE reCAPTCHA v3 in the background that scores the session but does
 // NOT wall the page, so we never force a solve — the render backend auto-escalates
-// only if a real captcha wall ever appears. Extraction is best-effort from the
+// only if a real captcha wall ever appears. Rendering goes through `retailRender`:
+// the mac backend is primary, with a Cloudflare Browser Rendering (residential +
+// stealth) fallback when the mac node is down. Extraction is best-effort from the
 // rendered DOM: each result is a `mz-productlisting` tile with a `/p/<slug>/<sku>`
 // anchor. Every step guards/try-catches — never throws.
 
@@ -104,7 +106,7 @@ export const ace: Fn = {
 	description:
 		"Ace Hardware product search via the mac render backend (a residential patched browser that renders Ace's Kibo/Mozu client-side product grid — Ace has no public product API and runs an invisible reCAPTCHA v3, so a plain fetch can't). " +
 		"`action`: search (products for a `term`). Extraction is best-effort from the rendered `mz-productlisting` tiles, normalized to the shared retail shape (id/title/price/image/url). " +
-		"`limit` caps results (default 15, max 40). Slower than an API and dependent on the mac render backend being up.",
+		"`limit` caps results (default 15, max 40). Slower than an API and falls back to Cloudflare Browser Rendering (residential + stealth) if the mac render backend is down.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -121,9 +123,8 @@ export const ace: Fn = {
 		if (!term) return failWith("bad_input", "action=search requires a `term`.");
 		const limit = Math.min(40, Math.max(1, Number(args?.limit) || 15));
 
-		const r = await macRender(env, {
+		const r = await retailRender(env, {
 			url: `https://www.acehardware.com/search?query=${encodeURIComponent(term)}`,
-			as: "html",
 			block_resources: true,
 			wait_until: "networkidle2",
 			wait_ms: 6000,

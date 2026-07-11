@@ -1,11 +1,13 @@
-import { macRender } from "../mac-render";
+import { retailRender } from "../retail-render";
 import { type Fn, fail, ok, type RtEnv } from "../registry";
 import { normalizeMoney, type RetailProduct } from "./_retail";
 
 // Lowe's has no public product API and serves its catalog from a client-side React
 // app, so a plain fetch returns a shell with no products. The mac render backend (a
 // residential patched browser) renders the client-side grid, so this fn renders
-// Lowe's search page and lifts products out of the rendered HTML. Lowe's renders
+// Lowe's search page and lifts products out of the rendered HTML. Rendering goes
+// through `retailRender`: the mac backend is primary, with a Cloudflare Browser
+// Rendering (residential + stealth) fallback when the mac node is down. Lowe's renders
 // fine without a captcha; the backend auto-escalates its solver only if a wall
 // appears, so we do NOT force-solve. Extraction is best-effort and two-tier: prefer
 // an embedded state blob when present, else parse the `/pd/…` product anchors. Every
@@ -177,7 +179,7 @@ export const lowes: Fn = {
 	description:
 		"Lowe's product lookup via the mac render backend (a residential patched browser that renders Lowe's client-side React catalog — Lowe's has no public product API and a plain fetch returns an empty shell). " +
 		"`action`: search (products for a `term`) or product (a single item by `item_id`). Extraction is best-effort from the rendered page (embedded state blob when present, else `/pd/…` product tiles), normalized to the shared retail shape (id/title/price/image/url). " +
-		"`limit` caps results (default 15, max 40). Slower than an API and dependent on the mac render backend being up.",
+		"`limit` caps results (default 15, max 40). Slower than an API and falls back to Cloudflare Browser Rendering (residential + stealth) if the mac render backend is down.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -197,9 +199,8 @@ export const lowes: Fn = {
 		if (action === "product") {
 			const itemId = String(args?.item_id ?? "").trim();
 			if (!itemId) return fail("action=product requires an `item_id`.");
-			const r = await macRender(env, {
+			const r = await retailRender(env, {
 				url: `https://www.lowes.com/pd/-/${encodeURIComponent(itemId)}`,
-				as: "html",
 				block_resources: true,
 				wait_until: "networkidle2",
 				wait_ms: 6000,
@@ -216,9 +217,8 @@ export const lowes: Fn = {
 		const term = String(args?.term ?? "").trim();
 		if (!term) return fail("action=search requires a `term`.");
 
-		const r = await macRender(env, {
+		const r = await retailRender(env, {
 			url: `https://www.lowes.com/search?searchTerm=${encodeURIComponent(term)}`,
-			as: "html",
 			block_resources: true,
 			wait_until: "networkidle2",
 			wait_ms: 6000,

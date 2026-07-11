@@ -7,6 +7,14 @@ import { normalizeMoney, type RetailProduct } from "./_retail";
 // Walmart's own search/product pages and lifts products out of the __NEXT_DATA__
 // JSON blob Next.js embeds (props.pageProps.initialData…). No Orchestra GraphQL —
 // its persisted-query hashes rotate; __NEXT_DATA__ is stable.
+//
+// Unlike the other render-based retailers, walmart deliberately does NOT use the
+// mac→cf `retailRender` fallback and calls `macRender` directly. Walmart's wall is
+// a PerimeterX press-and-hold challenge the mac node passes with a real mouse-hold
+// gesture (see docs/retail.md "Why the press-and-hold win matters") — logic that
+// lives only in the Mac Python service. The cf/puppeteer path has no equivalent
+// gesture, so a cf attempt is a near-certain failure that would only add latency
+// to an already-degraded call. If the mac node is down, failing fast is better.
 
 const BLOCKED_MSG = "walmart: blocked or no data — the mac render backend may be down or Walmart challenged the request.";
 

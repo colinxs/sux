@@ -1,9 +1,12 @@
 // Shared client for the Mac patchright render service (backend:"mac"): a
-// residential, patched-Chromium node exposed via Tailscale Funnel that solves
-// active JS bot challenges (Akamai `_abck`, PerimeterX) a plain fetch — and even
-// CF Browser Rendering — can't pass. The `render` fn drives it for arbitrary
-// pages; the retailer fns (walmart/homedepot) drive it for their search pages and
-// extract structured products from the rendered HTML.
+// residential, patched-Chromium node exposed via Tailscale Funnel that solves the
+// active JS bot challenges (Akamai `_abck`, PerimeterX press-and-hold) whose
+// solver tiers — the real mouse-hold gesture and the CapSolver captcha pass — live
+// only here and have no CF Browser Rendering equivalent. The `render` fn drives it
+// for arbitrary pages; the retailer fns drive it (mostly via retail-render's
+// mac→cf fallback) for their search pages and extract structured products from the
+// rendered HTML. cf-residential is a viable fallback for some walls (e.g. Amazon's
+// AWS WAF), but not for the gesture/captcha walls above — hence mac stays primary.
 //
 // Signed with the SAME HMAC scheme as fetchViaTailscale/renderViaMac: hmacHex over
 // `${ts}\n${payload}`, with ts+sig on the query string (so uhttpd-style CGI hosts

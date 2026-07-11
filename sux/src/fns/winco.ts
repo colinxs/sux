@@ -1,9 +1,10 @@
-import { macRender } from "../mac-render";
+import { retailRender } from "../retail-render";
 import { type Fn, fail, ok, type RtEnv } from "../registry";
 
 // WinCo Foods has no online product catalog — this fn is a STORE LOCATOR only.
 // wincofoods.com 403s plain/datacenter fetches, so we render through the mac
-// backend (a residential patched browser). The store directory at /stores is a
+// backend (a residential patched browser), with a Cloudflare Browser Rendering
+// (residential + stealth) fallback when the mac node is down. The store directory at /stores is a
 // Drupal + AngularJS SPA: the full ~130-store list is rendered client-side into
 // `<li id="store-list-item-<locationID>">` cards (there is NO embedded store-JSON
 // blob and no per-store lat/lng in the markup), so extraction parses those cards.
@@ -103,7 +104,7 @@ export const winco: Fn = {
 	description:
 		"WinCo Foods store locator via the mac render backend (a residential patched browser — wincofoods.com 403s plain/datacenter fetches). " +
 		"WinCo has NO online product catalog, so this is locations-only: it renders the /stores directory (a client-side AngularJS list of all ~130 stores) and lifts each store into a normalized shape (id/name/address/city/state/zip/phone/hours). " +
-		"`action`: locations. `zip` (5-digit) and `state` (2-letter) are optional post-fetch filters; `limit` caps results (default 25, max 100). Slower than an API and dependent on the mac render backend being up.",
+		"`action`: locations. `zip` (5-digit) and `state` (2-letter) are optional post-fetch filters; `limit` caps results (default 25, max 100). Slower than an API and falls back to Cloudflare Browser Rendering (residential + stealth) if the mac render backend is down.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -121,9 +122,8 @@ export const winco: Fn = {
 		const zip = String(args?.zip ?? "").trim().slice(0, 5);
 		const state = String(args?.state ?? "").trim().toUpperCase();
 
-		const r = await macRender(env, {
+		const r = await retailRender(env, {
 			url: "https://www.wincofoods.com/stores",
-			as: "html",
 			// The store list is populated client-side, so wait for the network to settle
 			// and give the AngularJS app time to render every card into the DOM.
 			wait_until: "networkidle2",
