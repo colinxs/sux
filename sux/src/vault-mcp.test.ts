@@ -45,6 +45,8 @@ describe("vault MCP server (/vault/mcp)", () => {
 			"vault_batch_append",
 			"vault_daily_read",
 			"vault_daily_append",
+			"vault_query",
+			"vault_patch",
 		]);
 		expect(names).not.toContain("vault_search"); // live-dependent — deferred to the vpc phase
 		for (const t of out.result.tools) expect(t.inputSchema).toBeDefined();
@@ -160,5 +162,75 @@ describe("vault MCP server (/vault/mcp)", () => {
 		const out = await parse(r);
 		expect(out.result.isError).toBe(true);
 		expect(out.result.content[0].text).toMatch(/too large/);
+	});
+});
+
+// vault_query / vault_patch ride the same git backend as the rest, so we drive
+// them through the real obsidian fn over the mocked proxy: the trees API backs
+// list/scan, the contents API backs read, and PUT contents is the commit.
+describe("vault_query + vault_patch over the git backend", () => {
+	const fmNote = (obj: Record<string, string>, body = "") => `---\n${Object.entries(obj).map(([k, v]) => `${k}: ${v}`).join("\n")}\n---\n\n${body}`;
+	// A git store the mocked proxy serves: trees → paths, contents(GET) → bodies,
+	// contents(PUT) → commit (captured back into the store so a read-after-write sees it).
+	const gitStore = (notes: Record<string, string>) => {
+		const s = new Map(Object.entries(notes));
+		const puts: Record<string, string> = {};
+		routes.handler = (url, init) => {
+			if (url.includes("/git/trees/")) {
+				return new Response(JSON.stringify({ tree: [...s.keys()].map((path) => ({ type: "blob", path })) }), { status: 200 });
+			}
+			const cm = /\/contents\/([^?]+)/.exec(url);
+			const path = cm ? decodeURIComponent(cm[1]) : "";
+			if (init?.method === "PUT") {
+				const body = Buffer.from(JSON.parse(init.body).content, "base64").toString("utf8");
+				puts[path] = body;
+				s.set(path, body);
+				return new Response(JSON.stringify({ commit: { sha: "c1" }, content: { sha: "b1" } }), { status: 200 });
+			}
+			if (s.has(path)) return new Response(JSON.stringify({ content: b64(s.get(path)!), sha: `sha-${path}` }), { status: 200 });
+			return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+		};
+		return { s, puts };
+	};
+	const call = async (name: string, args: any) => JSON.parse((await parse(await handleVaultRpc(ENV, CTX, rpc("tools/call", { name, arguments: args })))).result.content[0].text);
+	const raw = async (name: string, args: any) => (await parse(await handleVaultRpc(ENV, CTX, rpc("tools/call", { name, arguments: args })))).result;
+
+	it("vault_query simple field/value scans frontmatter and returns paths only", async () => {
+		gitStore({ "Projects/a.md": fmNote({ type: "project", status: "active" }), "Projects/b.md": fmNote({ type: "project", status: "done" }), "Man/c.md": fmNote({ type: "note" }) });
+		const out = await call("vault_query", { field: "type", value: "project" });
+		expect(out.count).toBe(2);
+		expect(out.matches.sort()).toEqual(["Projects/a.md", "Projects/b.md"]);
+	});
+
+	it("vault_query JsonLogic filter composes and/comparison end to end", async () => {
+		gitStore({
+			"p/a.md": fmNote({ type: "project", status: "active", year: "2021" }),
+			"p/b.md": fmNote({ type: "project", status: "active", year: "2018" }),
+			"p/c.md": fmNote({ type: "project", status: "done", year: "2022" }),
+		});
+		const out = await call("vault_query", { filter: { and: [{ "==": ["type", "project"] }, { "==": ["status", "active"] }, { ">=": ["year", 2020] }] } });
+		expect(out.matches).toEqual(["p/a.md"]);
+	});
+
+	it("vault_query surfaces an invalid filter as a failure", async () => {
+		gitStore({ "a.md": fmNote({ type: "note" }) });
+		const r = await raw("vault_query", { filter: { bogus: [] } });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/invalid filter/);
+	});
+
+	it("vault_patch sets a frontmatter field and commits the rewrite", async () => {
+		const { puts } = gitStore({ "a.md": fmNote({ type: "project", status: "active" }, "# A") });
+		const out = await call("vault_patch", { path: "a.md", frontmatter_field: "status", content: "done" });
+		expect(out).toMatchObject({ ok: true, changed: true, target: "frontmatter_field" });
+		expect(puts["a.md"]).toContain("status: done");
+	});
+
+	it("vault_patch target-not-found fails and never commits", async () => {
+		const { puts } = gitStore({ "a.md": "# A\nno headings here" });
+		const r = await raw("vault_patch", { path: "a.md", heading: "Ghost", mode: "replace", content: "x" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/not found/);
+		expect(Object.keys(puts)).toHaveLength(0);
 	});
 });

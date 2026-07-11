@@ -3,8 +3,9 @@ import { fingerprint, ledger } from "./ledger";
 import { type JsonRpc, sseResponse } from "./mcp-util";
 import { fail, ok, type RtEnv, type ToolResult } from "./registry";
 import { ingest } from "./fns/ingest";
-import { obsidian } from "./fns/obsidian";
+import { obsidian, vaultCfg } from "./fns/obsidian";
 import { vaultToday } from "./fns/_util";
+import { type Filter, evalFilter, frontmatterMatches, parseFrontmatter, patchBlockRef, patchFrontmatter, patchHeadingSection, type PatchMode } from "./vault-graph";
 
 // The vault MCP server — our rolled-own obsidian-web-mcp (prior art:
 // github.com/jimprosser/obsidian-web-mcp), kept on OUR Workers implementation.
@@ -33,6 +34,28 @@ type VaultTool = {
 };
 
 const git = (args: Record<string, unknown>) => ({ ...args, backend: "git" });
+
+// Scan the git store's frontmatter server-side: list notes, then read each and
+// parse its `---` block. Bodies transit the Worker only (never the model context),
+// so a scan is handle-first — callers get {path, fm}, never note bodies. `list`
+// returns repo-relative paths (dir-prefixed when OBSIDIAN_VAULT_DIR is set) but
+// `vault_read`/obsidian read re-apply that prefix, so we strip it back to the
+// vault-relative handle the read path expects.
+async function scanVault(env: RtEnv, folder?: string): Promise<Array<{ path: string; fm: Record<string, unknown> }>> {
+	const cfg = vaultCfg(env);
+	const dir = "error" in cfg ? "" : cfg.dir;
+	const listed = await obsidian.run(env, git({ action: "list", ...(folder ? { path: folder } : {}) }));
+	if (listed.isError) throw new Error(listed.content?.[0]?.text ?? "vault list failed");
+	const notes: string[] = JSON.parse(listed.content[0].text)?.notes ?? [];
+	const rel = notes.map((p) => (dir && p.startsWith(`${dir}/`) ? p.slice(dir.length + 1) : p));
+	const out: Array<{ path: string; fm: Record<string, unknown> }> = [];
+	for (const path of rel) {
+		const r = await obsidian.run(env, git({ action: "read", path }));
+		if (r.isError) continue; // a note listed-then-unreadable (race/perm) is skipped, not fatal
+		out.push({ path, fm: parseFrontmatter(r.content[0].text).fm });
+	}
+	return out;
+}
 
 const TOOLS: VaultTool[] = [
 	{
@@ -164,6 +187,89 @@ const TOOLS: VaultTool[] = [
 		description: "Append to today's daily note (created if absent) — the quick-capture surface for tasks and jots.",
 		inputSchema: { type: "object", additionalProperties: false, required: ["content"], properties: { content: { type: "string", description: "Markdown to add, e.g. '- [ ] call the plumber'." } } },
 		run: (env, a) => obsidian.run(env, git({ action: "append", path: dailyPath(env), content: a?.content })),
+	},
+	{
+		name: "vault_query",
+		description:
+			"Find notes by FRONTMATTER (structured, git-backed — always available; this is not full-text search). Two forms: the simple `field` (+ optional `value`: omitted = presence, array field = membership, else equality), or a `filter` JsonLogic object for boolean/comparison composition — {and:[…]} {or:[…]} {not:…}, {\"==\":[field,val]} {\"!=\":…} {\">\"/\"<\"/\">=\"/\"<=\":[field,val]} (numeric else ISO-date lexical), {\"in\":[field,val]} (array membership). Scans server-side and returns matching PATHS only (never bodies). Optional `folder` scopes the scan. Free-text/Dataview search needs the live backend and is out of scope here.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				field: { type: "string", description: "Frontmatter key for the simple form, e.g. 'type'." },
+				value: { description: "Match value for the simple form; omit to test presence of `field`." },
+				filter: { type: "object", description: "JsonLogic-lite filter (and/or/not, ==,!=,>,<,>=,<=, in). Use instead of field/value for boolean composition." },
+				folder: { type: "string", description: "Scope the scan to a folder, e.g. 'Projects'." },
+			},
+		},
+		run: async (env, a) => {
+			const filter = a?.filter as Filter | undefined;
+			const field = typeof a?.field === "string" ? a.field : undefined;
+			if (!filter && !field) return fail("vault_query needs either `field` (simple form) or `filter` (JsonLogic).");
+			let matches: (fm: Record<string, unknown>) => boolean;
+			try {
+				matches = filter ? (fm) => evalFilter(fm, filter) : (fm) => frontmatterMatches(fm, field!, a?.value);
+			} catch (e) {
+				return fail(`invalid filter: ${String((e as Error).message ?? e)}`);
+			}
+			let scanned: Array<{ path: string; fm: Record<string, unknown> }>;
+			try {
+				scanned = await scanVault(env, typeof a?.folder === "string" ? a.folder : undefined);
+			} catch (e) {
+				return fail(`vault_query scan failed: ${String((e as Error).message ?? e)}`);
+			}
+			const hits: Array<{ path: string }> = [];
+			for (const n of scanned) {
+				// A malformed filter throws only on the first note; surface it once.
+				try {
+					if (matches(n.fm)) hits.push({ path: n.path });
+				} catch (e) {
+					return fail(`invalid filter: ${String((e as Error).message ?? e)}`);
+				}
+			}
+			return ok(JSON.stringify({ scanned: scanned.length, count: hits.length, matches: hits.map((h) => h.path) }, null, 2));
+		},
+	},
+	{
+		name: "vault_patch",
+		description:
+			"Structural edit of a note: target exactly ONE of `heading` (the `# Heading` section), `block` (an `^block-id` anchor), or `frontmatter_field` (a top-level frontmatter key). `mode` (replace|append|prepend) applies to heading/block; frontmatter_field always sets/replaces the key to `content`. Read → transform → commit on the git store, so history is the undo — no confirm gate (same rationale as vault_batch_append). A missing or ambiguous target fails cleanly (mirrors vault_edit's unique-match discipline).",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["path", "content"],
+			properties: {
+				path: { type: "string" },
+				heading: { type: "string", description: "Target the section under this heading (by its text)." },
+				block: { type: "string", description: "Target the block anchored by this id (`^id`, with or without the caret)." },
+				frontmatter_field: { type: "string", description: "Target this top-level frontmatter key; `content` is the value to set." },
+				mode: { type: "string", enum: ["replace", "append", "prepend"], default: "replace", description: "For heading/block targets." },
+				content: { type: "string", description: "Text to write (the section/block text, or the frontmatter value)." },
+			},
+		},
+		run: async (env, a) => {
+			const path = typeof a?.path === "string" ? a.path.trim() : "";
+			if (!path) return fail("vault_patch requires a `path`.");
+			if (typeof a?.content !== "string") return fail("vault_patch requires `content`.");
+			const targets = ["heading", "block", "frontmatter_field"].filter((k) => typeof a?.[k] === "string" && a[k]);
+			if (targets.length !== 1) return fail("vault_patch needs exactly one target: `heading`, `block`, or `frontmatter_field`.");
+			const mode = (["replace", "append", "prepend"].includes(a?.mode) ? a.mode : "replace") as PatchMode;
+			const read = await obsidian.run(env, git({ action: "read", path }));
+			if (read.isError) return read;
+			const cur = read.content[0].text;
+			let patched: { content: string; changed: boolean };
+			try {
+				if (targets[0] === "frontmatter_field") patched = patchFrontmatter(cur, a.frontmatter_field, a.content);
+				else if (targets[0] === "heading") patched = patchHeadingSection(cur, a.heading, mode, a.content);
+				else patched = patchBlockRef(cur, a.block, mode, a.content);
+			} catch (e) {
+				return fail(`vault_patch: ${String((e as Error).message ?? e)}`);
+			}
+			if (!patched.changed) return ok(JSON.stringify({ ok: true, path, changed: false, note: "target already holds this value" }, null, 2));
+			const wrote = await obsidian.run(env, git({ action: "write", path, content: patched.content }));
+			if (wrote.isError) return wrote;
+			return ok(JSON.stringify({ ok: true, path, changed: true, target: targets[0], mode: targets[0] === "frontmatter_field" ? undefined : mode }, null, 2));
+		},
 	},
 ];
 
