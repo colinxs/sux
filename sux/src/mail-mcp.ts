@@ -5,6 +5,7 @@ import { staged } from "./stage";
 import { jmap } from "./fns/jmap";
 import { doUpload, jstr, scopeProbe } from "./fns/_jmap";
 import { buildVEvent, buildVTodo, CALDAV_NOT_CONFIGURED, type CalendarRef, caldavFetch, calendarHome, hasCalDav, listCalendars, parseICal, reportObjects } from "./fns/_caldav";
+import { htmlToMd } from "./fns/_markup";
 
 // The mail MCP server — the ergonomic Fastmail surface, served at /mail/mcp behind
 // the same workers-oauth-provider flow, so it appears as its own "mail" connector in
@@ -176,19 +177,24 @@ function shapeRef(e: any, boxNames?: Record<string, string>): Record<string, unk
 	};
 }
 
-/** Extract plain-text body from a fetched Email (textBody parts → bodyValues). */
+/** Extract a readable plain-text body from a fetched Email. Prefers textBody
+ * parts; for an HTML-only message it falls back to htmlBody, converting the HTML
+ * to Markdown-ish text (readable, link-preserving) rather than dumping raw tags.
+ * The htmlBody parts only carry a `value` when the Email/get set fetchHTMLBodyValues —
+ * otherwise this fallback silently returned empty (the bug this fixes). */
 function extractBody(e: any): string {
 	const values = e?.bodyValues ?? {};
-	const parts = Array.isArray(e?.textBody) && e.textBody.length ? e.textBody : e?.htmlBody;
-	if (Array.isArray(parts)) {
-		const chunks = parts.map((p: any) => values[p?.partId]?.value).filter(Boolean);
-		if (chunks.length) return chunks.join("\n");
-	}
-	// Fall back to any bodyValue present.
+	const chunksFor = (parts: any): string[] => (Array.isArray(parts) ? parts.map((p: any) => values[p?.partId]?.value).filter(Boolean) : []);
+	const text = chunksFor(e?.textBody);
+	if (text.length) return text.join("\n");
+	const html = chunksFor(e?.htmlBody);
+	if (html.length) return htmlToMd(html.join("\n"));
+	// Last resort: any bodyValue present. Convert it if it looks like HTML.
 	const anyVal = Object.values(values)
 		.map((v: any) => v?.value)
-		.filter(Boolean);
-	return anyVal.join("\n");
+		.filter(Boolean)
+		.join("\n");
+	return /<[a-z!][\s\S]*>/i.test(anyVal) ? htmlToMd(anyVal) : anyVal;
 }
 
 /** Fetch the mailbox role→id map (inbox/drafts/sent/archive/trash/junk). */
@@ -279,7 +285,7 @@ const TOOLS: MailTool[] = [
 			try {
 				const resp = await jmapCall(env, {
 					calls: [
-						["Email/get", { ids: [String(a.id)], properties: ["id", "threadId", "subject", "from", "to", "cc", "receivedAt", "keywords", "mailboxIds", "textBody", "htmlBody", "bodyValues", "hasAttachment", "attachments"], fetchTextBodyValues: true, fetchHTMLBodyValues: false, maxBodyValueBytes: 200_000 }, "g"],
+						["Email/get", { ids: [String(a.id)], properties: ["id", "threadId", "subject", "from", "to", "cc", "receivedAt", "keywords", "mailboxIds", "textBody", "htmlBody", "bodyValues", "hasAttachment", "attachments"], fetchTextBodyValues: true, fetchHTMLBodyValues: true, maxBodyValueBytes: 200_000 }, "g"],
 						["Mailbox/get", { properties: ["id", "name"] }, "m"],
 					],
 				});

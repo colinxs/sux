@@ -148,6 +148,31 @@ describe("mail_* ergonomic tools", () => {
 		expect(s.emails[0]).toMatchObject({ isRead: true, isFlagged: true, labels: ["Inbox"] });
 	});
 
+	it("mail_read renders an HTML-only body (fetchHTMLBodyValues on, HTML→text)", async () => {
+		// An HTML-only email: no textBody parts, body lives in htmlBody. Without
+		// fetchHTMLBodyValues the value never populates and the body came back empty.
+		const HTML_EMAIL = { id: "e2", threadId: "t2", subject: "Newsletter", from: [{ email: "n@site.com" }], to: [{ email: "me@fastmail.com" }], receivedAt: "2026-07-10T00:00:00Z", keywords: {}, textBody: [], htmlBody: [{ partId: "h1", type: "text/html" }], bodyValues: { h1: { value: "<h1>Hi</h1><p>Read <a href=\"https://x.com\">this</a>.</p>" } } };
+		let getArgs: any = null;
+		global.fetch = vi.fn(async (input: any, init?: any) => {
+			const url = String(input?.url ?? input);
+			if (url.includes("/jmap/session")) return json(SESSION);
+			if (url.includes("/jmap/api")) {
+				const body = init?.body ? JSON.parse(init.body) : {};
+				const methodResponses = (body.methodCalls ?? []).map((c: any) => {
+					if (c[0] === "Email/get") getArgs = c[1];
+					return c[0] === "Email/get" ? [c[0], { list: [HTML_EMAIL] }, c[2]] : [c[0], {}, c[2]];
+				});
+				return json({ methodResponses, sessionState: "s1" });
+			}
+			return json({}, 404);
+		}) as any;
+		const out = parse(await tool("mail_read").run(env(), { id: "e2" }));
+		expect(getArgs.fetchHTMLBodyValues).toBe(true);
+		expect(out.body).toContain("# Hi");
+		expect(out.body).toContain("[this](https://x.com)");
+		expect(out.body).not.toContain("<p>");
+	});
+
 	it("mail_thread lists the conversation messages", async () => {
 		installFetch();
 		const out = parse(await tool("mail_thread").run(env(), { threadId: "t1" }));
