@@ -176,6 +176,29 @@ describe("full-Dropbox (Mode B) gating — dormant without DROPBOX_FULL_*", () =
 		expect(r.content[0].text).toMatch(/confirm:true/);
 		expect(runMock).not.toHaveBeenCalled();
 	});
+
+	it("files_transform fails closed without DROPBOX_FULL_* and validates op + dest", async () => {
+		const gated = await tool("files_transform").run(env(), { op: "merge", sources: ["/a", "/b"], dest: "/out" });
+		expect(gated.isError).toBe(true);
+		expect(gated.content[0].text).toMatch(/DROPBOX_FULL_|not configured/);
+		expect(runMock).not.toHaveBeenCalled(); // Mode A untouched
+
+		const envFull = { DROPBOX_FULL_TOKEN: "ft" } as any; // configured, but bad op never reaches the network
+		const badOp = await tool("files_transform").run(envFull, { op: "frobnicate", dest: "/out" });
+		expect(badOp.isError).toBe(true);
+		expect(badOp.content[0].text).toMatch(/must be 'merge' or 'extract'/);
+
+		const noDest = await tool("files_transform").run(envFull, { op: "merge", sources: ["/a", "/b"] });
+		expect(noDest.isError).toBe(true);
+		expect(noDest.content[0].text).toMatch(/requires a `dest`/);
+	});
+
+	it("files_transform surfaces a transformFull validation error as fail(...), not a throw", async () => {
+		const envFull = { DROPBOX_FULL_TOKEN: "ft" } as any; // reaches transformFull; merge<2 sources rejects before any network
+		const r = await tool("files_transform").run(envFull, { op: "merge", sources: ["/only"], dest: "/out" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/at least 2/);
+	});
 });
 
 describe("handleFilesRpc protocol shell", () => {

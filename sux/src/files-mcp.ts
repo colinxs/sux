@@ -2,7 +2,7 @@ import { checkArgs, FN_DEADLINE_MS, withDeadline } from "./index";
 import { type JsonRpc, sseResponse } from "./mcp-util";
 import { fail, type RtEnv, type ToolResult } from "./registry";
 import { dropbox } from "./fns/dropbox";
-import { deleteFull, hasDropboxFull, listFull, moveFull, operateFull, readFull, searchFull, writeBytes, writeFull } from "./fns/_dropbox-full";
+import { deleteFull, hasDropboxFull, listFull, moveFull, operateFull, readFull, searchFull, transformFull, writeBytes, writeFull } from "./fns/_dropbox-full";
 import { fingerprint, ledger } from "./ledger";
 import { errMsg } from "./fns/_util";
 
@@ -16,7 +16,9 @@ import { errMsg } from "./fns/_util";
 // files_list `full:true`) and, behind the write firewall (files.md §6), gated mutation —
 // files_write/files_upload/files_delete/files_move `full:true` with dry-run-by-default,
 // confirm-on-delete, rev-conditioning, a protected-prefix deny-list, and /.sux-trash
-// recoverability. Nothing in Mode B fires without the deliberate second credential.
+// recoverability. files_operate (set organize/cleanup) and files_transform (merge N→1 /
+// extract a slice) compose those same gated primitives server-side, no bytes through
+// context. Nothing in Mode B fires without the deliberate second credential.
 //
 // The rule (files.md): markdown → vault, blobs → files. This is where PDFs, images,
 // and exports live; the vault holds the *note* about them. list/read return references
@@ -253,7 +255,7 @@ const TOOLS: FileTool[] = [
 	{
 		name: "files_operate",
 		description:
-			"Operate over a SEARCHED set of whole-Dropbox files in ONE call (Mode B), zero bytes through context. `find` (a files_search spec: {query, path_prefix?, ext?}) OR explicit `handles` [path] select the set; `action` is move (relocate the set into `dest`) or delete. PLAN by default (apply omitted/false) — returns the matched files + what would happen, changing nothing. Pass apply:true to execute (delete also needs confirm:true). Each op rides the same firewall as files_move/files_delete — path-fence, rev-safety, Dropbox-trash recoverability — and the set is capped at `max` (default 100). Content transforms (merge/extract) compose via the raw pdf/extract fns; that transform leg is a future addition. Needs DROPBOX_FULL_*.",
+			"Operate over a SEARCHED set of whole-Dropbox files in ONE call (Mode B), zero bytes through context. `find` (a files_search spec: {query, path_prefix?, ext?}) OR explicit `handles` [path] select the set; `action` is move (relocate the set into `dest`) or delete. PLAN by default (apply omitted/false) — returns the matched files + what would happen, changing nothing. Pass apply:true to execute (delete also needs confirm:true). Each op rides the same firewall as files_move/files_delete — path-fence, rev-safety, Dropbox-trash recoverability — and the set is capped at `max` (default 100). For content transforms (merge N files→one, extract a byte/line slice) use files_transform. Needs DROPBOX_FULL_*.",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -274,6 +276,52 @@ const TOOLS: FileTool[] = [
 			if (action !== "move" && action !== "delete") return fail("files_operate action must be 'move' or 'delete'.");
 			try {
 				return ok(await operateFull(env, { find: a?.find, handles: Array.isArray(a?.handles) ? a.handles : undefined, action, dest: a?.dest ? String(a.dest) : undefined, apply: a?.apply === true, confirm: a?.confirm === true, max: a?.max }));
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "files_transform",
+		description:
+			"Compose whole-Dropbox files into a NEW file, server-side (Mode B) — zero bytes through context. `op:'merge'` joins `sources` (2..20 absolute paths) into `dest`: mode 'concat' (default) is a raw-byte join in listed order; mode 'pdf' (default when every source is .pdf) renders each source to PDF page(s) and merges them (via the pdf fn). `op:'extract'` slices ONE `source` into `dest` by `byte_range` OR `line_range` ([start,end), 0-indexed half-open; line ranges need a text source). Sources are read edge-side (oversize link-only files are refused, never silently skipped); the result is written through the SAME firewall as files_write full:true — dry_run defaults TRUE (returns the plan: resolved sources, sizes, would-overwrite), existing/overlapping dest needs overwrite:true, an overwrite is backed up to /.sux-trash, and output is capped. Needs DROPBOX_FULL_*.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["op", "dest"],
+			properties: {
+				op: { type: "string", enum: ["merge", "extract"] },
+				sources: { type: "array", items: { type: "string" }, description: "merge: 2..20 absolute source paths, joined in listed order." },
+				mode: { type: "string", enum: ["concat", "pdf"], description: "merge: 'concat' raw-byte join (default), or 'pdf' render+merge into one PDF (default when every source is .pdf)." },
+				source: { type: "string", description: "extract: the single absolute source path to slice." },
+				byte_range: { type: "array", items: { type: "integer" }, minItems: 2, maxItems: 2, description: "extract: [start,end) byte offsets (0-indexed, half-open)." },
+				line_range: { type: "array", items: { type: "integer" }, minItems: 2, maxItems: 2, description: "extract: [start,end) line indices (0-indexed, half-open); text sources only." },
+				dest: { type: "string", description: "Absolute destination path for the result." },
+				dry_run: { type: "boolean", description: "Default true — returns the plan without writing. Pass false to apply." },
+				overwrite: { type: "boolean", description: "Allow replacing an existing dest (required when dest is also a source)." },
+				backup: { type: "boolean", description: "Pre-op copy an overwritten dest to /.sux-trash (default true)." },
+			},
+		},
+		run: async (env, a) => {
+			if (!hasDropboxFull(env)) return fail("full-Dropbox (Mode B) not configured — set DROPBOX_FULL_*. files_transform composes whole-account files server-side.");
+			const op = String(a?.op ?? "");
+			if (op !== "merge" && op !== "extract") return fail("files_transform op must be 'merge' or 'extract'.");
+			if (!a?.dest) return fail("files_transform requires a `dest`.");
+			try {
+				return ok(
+					await transformFull(env, {
+						op,
+						sources: Array.isArray(a?.sources) ? a.sources.map(String) : undefined,
+						mode: a?.mode === "pdf" || a?.mode === "concat" ? a.mode : undefined,
+						source: a?.source ? String(a.source) : undefined,
+						byte_range: Array.isArray(a?.byte_range) ? (a.byte_range.map(Number) as [number, number]) : undefined,
+						line_range: Array.isArray(a?.line_range) ? (a.line_range.map(Number) as [number, number]) : undefined,
+						dest: String(a.dest),
+						dryRun: a?.dry_run !== false,
+						overwrite: a?.overwrite === true,
+						backup: a?.backup !== false,
+					}),
+				);
 			} catch (e) {
 				return fail(errMsg(e));
 			}
