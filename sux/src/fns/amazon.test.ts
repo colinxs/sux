@@ -1,11 +1,24 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { cfRender } from "../cf-render";
 import { macRender } from "../mac-render";
 import { amazon } from "./amazon";
 
+// amazon renders through retailRender's mac→cf fallback, so both backends are
+// mocked at the module boundary. By default the cf leg is unavailable (as when the
+// Worker has no BROWSER binding) — tests that exercise the fallback override it.
 vi.mock("../mac-render", () => ({ macRender: vi.fn() }));
+vi.mock("../cf-render", () => ({ cfRender: vi.fn() }));
 
 const macRenderMock = vi.mocked(macRender);
+const cfRenderMock = vi.mocked(cfRender);
+
+beforeEach(() => {
+	// vi.mock factory mocks aren't reset by restoreAllMocks, so clear cf's call
+	// history each test; default the cf leg to unavailable (no BROWSER binding).
+	cfRenderMock.mockReset();
+	cfRenderMock.mockResolvedValue({ ok: false, error: "Browser Rendering is not configured (BROWSER binding)." });
+});
 
 // A rendered Amazon search page with two `s-search-result` tiles: each carries a
 // `data-asin`, an <h2> title, an `a-offscreen` $-price, and an `s-image` thumb —
@@ -79,6 +92,45 @@ describe("amazon", () => {
 		// Each product carries ITS OWN asin/title/price/image and a matching /dp/ url.
 		expect(j.products[0]).toMatchObject({ id: "B0ABC12345", title: "Echo Dot 5th Gen", price: 49.99, image: "https://m.media-amazon.com/echo.jpg", url: "https://www.amazon.com/dp/B0ABC12345" });
 		expect(j.products[1]).toMatchObject({ id: "B0XYZ98765", title: "Fire TV Stick 4K", price: 39.99, image: "https://m.media-amazon.com/firetv.jpg", url: "https://www.amazon.com/dp/B0XYZ98765" });
+	});
+
+	it("uses the mac backend and never touches the cf fallback when mac succeeds", async () => {
+		macRenderMock.mockResolvedValueOnce({ ok: true, contentType: "text/html", body: SEARCH_HTML });
+		const r = await amazon.run({ MAC_RENDER_URL: "x", MAC_RENDER_SECRET: "y" } as any, { action: "search", term: "echo dot" });
+		expect(r.isError).toBeFalsy();
+		expect(cfRenderMock).not.toHaveBeenCalled();
+	});
+
+	it("falls back to cf-residential when the mac node is down (502) and runs the SAME extractor", async () => {
+		// Mac 502 → retailRender retries via cf; the identical search HTML from cf must
+		// flow through fromSearch and yield the same two products.
+		macRenderMock.mockResolvedValueOnce({ ok: false, error: "mac render failed: HTTP 502" });
+		cfRenderMock.mockResolvedValueOnce({ ok: true, contentType: "text/html", body: SEARCH_HTML });
+		const r = await amazon.run({ MAC_RENDER_URL: "x", MAC_RENDER_SECRET: "y" } as any, { action: "search", term: "echo dot" });
+		expect(r.isError).toBeFalsy();
+		const j = JSON.parse(r.content[0].text);
+		expect(j.count).toBe(2);
+		expect(j.products[0]).toMatchObject({ id: "B0ABC12345", price: 49.99 });
+		// The cf leg fired once, forcing residential + stealth (its only shot at the wall).
+		expect(cfRenderMock).toHaveBeenCalledTimes(1);
+		expect(cfRenderMock.mock.calls[0][1]).toMatchObject({ as: "html", residential: true, stealth: true });
+	});
+
+	it("a cf fallback that returns Amazon's Robot Check still reports the challenge distinctly", async () => {
+		macRenderMock.mockResolvedValueOnce({ ok: false, error: "mac render failed: HTTP 502" });
+		cfRenderMock.mockResolvedValueOnce({ ok: true, contentType: "text/html", body: "<html><body>Robot Check — Enter the characters you see below</body></html>" });
+		const r = await amazon.run({ MAC_RENDER_URL: "x", MAC_RENDER_SECRET: "y" } as any, { action: "search", term: "x" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/challenged the request/);
+	});
+
+	it("when BOTH backends fail, surfaces the mac error (the primary signal)", async () => {
+		macRenderMock.mockResolvedValueOnce({ ok: false, error: "mac render backend circuit-open" });
+		cfRenderMock.mockResolvedValueOnce({ ok: false, error: "Browser Rendering is not configured (BROWSER binding)." });
+		const r = await amazon.run({ MAC_RENDER_URL: "x", MAC_RENDER_SECRET: "y" } as any, { action: "search", term: "x" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/blocked or render failed/);
+		expect(r.content[0].text).toMatch(/circuit-open/);
 	});
 
 	it("fails with no backend configured (macRender ok:false)", async () => {
