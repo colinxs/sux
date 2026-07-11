@@ -4,6 +4,7 @@ import { hasDropboxFull, readFull, searchFull } from "./_dropbox-full";
 import { obsidian } from "./obsidian";
 import { search } from "./search";
 import { jmap } from "./jmap";
+import { errMsg } from "./_util";
 
 // recall — "what do I know about X?" answered from YOUR life. It fans out server-side
 // across four stores — the vault (your Obsidian notes), files (whole-Dropbox content
@@ -22,7 +23,6 @@ import { jmap } from "./jmap";
 // skipped and reported in `sources`, never fatal — recall answers from whatever it can
 // reach. cacheable:false (personal + live).
 
-const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);
 const pj = (s: string): any => {
 	try {
 		return JSON.parse(s);

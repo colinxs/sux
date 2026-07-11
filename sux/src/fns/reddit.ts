@@ -1,5 +1,6 @@
 import { smartFetch } from "../proxy";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
+import { errMsg } from "./_util";
 
 // Reddit read-only, KEYLESS-FIRST. Reddit now blocks self-serve OAuth app creation,
 // so the default path needs no credentials at all: Reddit serves every public
@@ -27,7 +28,6 @@ const UA_OAUTH = "sux/1.0 (by /u/sux)";
 const PUBLIC = "https://www.reddit.com";
 const UA_KEYLESS = "sux/1.0 (+https://github.com/colinxs/sux)";
 
-const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);
 
 /** Sentinel for a Reddit block on the keyless proxy path (403 / empty / non-JSON
  * challenge page) — the run() catch maps it to failWith("blocked") rather than the

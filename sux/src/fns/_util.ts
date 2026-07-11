@@ -5,6 +5,9 @@
 import type { RtEnv } from "../registry";
 import { smartFetch } from "../proxy";
 
+/** An Error/thrown value → its message string (the `catch (e)` idiom every fn shares). */
+export const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);
+
 /** True for an absolute http(s) URL. */
 export function isHttpUrl(u: unknown): u is string {
 	return typeof u === "string" && /^https?:\/\//i.test(u);

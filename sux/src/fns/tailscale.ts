@@ -1,4 +1,5 @@
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
+import { errMsg } from "./_util";
 
 // Tailscale API (api.tailscale.com/api/v2) — official REST control-plane read.
 // Auth is OAuth2 client-credentials (TAILSCALE_OAUTH_CLIENT_ID/SECRET); the
@@ -16,7 +17,6 @@ const API = "https://api.tailscale.com/api/v2";
 const TOKEN_URL = `${API}/oauth/token`;
 const TOKEN_KEY = "sux:tailscale:token";
 
-const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);
 
 /** Mint a fresh bearer token from the OAuth endpoint and cache it in KV. */
 async function mintToken(env: RtEnv): Promise<string> {

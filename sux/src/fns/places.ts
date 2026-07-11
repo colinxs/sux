@@ -1,4 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
+import { errMsg } from "./_util";
 
 // Google Places API (places.googleapis.com) — local business / point-of-interest
 // text search. The key rides the `X-Goog-Api-Key` header; a field mask names the
@@ -7,7 +8,6 @@ import { type Fn, fail, ok } from "../registry";
 const API = "https://places.googleapis.com/v1/places:searchText";
 const FIELD_MASK = "places.displayName,places.formattedAddress,places.rating,places.priceLevel,places.location,places.websiteUri,places.nationalPhoneNumber";
 
-const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);
 
 function normPlace(d: any): Record<string, unknown> {
 	const loc = d?.location ?? {};

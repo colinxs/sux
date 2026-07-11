@@ -1,5 +1,6 @@
 import { type Fn, fail, ok } from "../registry";
 import { normalizeMoney, type RetailProduct } from "./_retail";
+import { errMsg } from "./_util";
 
 // Best Buy Products API (api.bestbuy.com) — official, free, clean REST, no bot
 // wall. A single apiKey rides the query string; no OAuth handshake. `search`
@@ -8,7 +9,6 @@ import { normalizeMoney, type RetailProduct } from "./_retail";
 const API = "https://api.bestbuy.com/v1";
 const SHOW = "sku,name,salePrice,regularPrice,onlineAvailability,image,url,manufacturer";
 
-const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);
 
 async function api(url: string): Promise<any> {
 	const resp = await fetch(url, { headers: { Accept: "application/json" } });

@@ -1,6 +1,7 @@
 import { withRetry } from "../proxy";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { normalizeMoney, type RetailProduct } from "./_retail";
+import { errMsg } from "./_util";
 
 // Kroger Public API (api.kroger.com) — official, free, clean REST, no bot wall.
 // One fn covers Kroger and every banner it owns (QFC, Fred Meyer, Ralphs, …) via
@@ -12,7 +13,6 @@ const API = "https://api.kroger.com/v1";
 const TOKEN_URL = `${API}/connect/oauth2/token`;
 const TOKEN_KEY = "sux:kroger:token";
 
-const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);
 
 /** Mint a fresh bearer token from the OAuth endpoint and cache it in KV. */
 async function mintToken(env: RtEnv): Promise<string> {

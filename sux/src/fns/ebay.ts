@@ -1,5 +1,6 @@
 import { type Fn, fail, ok, type RtEnv } from "../registry";
 import { normalizeMoney, type RetailProduct } from "./_retail";
+import { errMsg } from "./_util";
 
 // eBay Browse API (api.ebay.com) — official, clean REST, no bot wall. Auth is
 // OAuth2 client-credentials (same shape as kroger): the app token is minted once
@@ -11,7 +12,6 @@ const TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token";
 const TOKEN_KEY = "sux:ebay:token";
 const SCOPE = "https://api.ebay.com/oauth/api_scope";
 
-const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);
 
 /** Mint a fresh app token and cache it in KV. */
 async function mintToken(env: RtEnv): Promise<string> {

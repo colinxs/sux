@@ -1,5 +1,6 @@
 import { hasAI, llm } from "../ai";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
+import { errMsg } from "./_util";
 
 // A KV-backed style-preference profile that LEARNS over time and continually
 // self-distills. Each `learn` appends an exemplar of the user's preferred writing
@@ -23,7 +24,6 @@ const DISTILL_SYSTEM =
 
 type StoredProfile = { distilled_spec: string; examples: string[]; updated_at: number };
 
-const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);
 
 /** Read + parse a stored profile; null if absent or unparseable (never throws here). */
 async function loadProfile(env: RtEnv, profile: string): Promise<StoredProfile | null> {

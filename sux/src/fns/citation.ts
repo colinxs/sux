@@ -1,5 +1,6 @@
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { obsidian } from "./obsidian";
+import { errMsg } from "./_util";
 
 // citation — turn a scholarly result into a durable, exportable reference. Three
 // actions over one normalized entry shape (vault-backends.md Part 3):
@@ -9,7 +10,6 @@ import { obsidian } from "./obsidian";
 //   export  — walk References/*.md, parse the frontmatter, emit a combined .bib string.
 // Handle-first: PDFs live as a `pdf:` dropbox handle in the note, never inlined here.
 
-const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);
 const REF_DIR = "References";
 const STOPWORDS = new Set(["a", "an", "the", "on", "of", "in", "for", "and", "to", "with"]);
 

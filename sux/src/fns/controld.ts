@@ -1,4 +1,5 @@
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
+import { errMsg } from "./_util";
 
 // ControlD API (api.controld.com) — official, clean REST behind a single Bearer
 // token. Read-only surface: list DNS profiles, the devices bound to them, and a
@@ -8,7 +9,6 @@ import { type Fn, failWith, ok, type RtEnv } from "../registry";
 
 const API = "https://api.controld.com";
 
-const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);
 
 async function api(env: RtEnv, path: string): Promise<any> {
 	const resp = await fetch(`${API}${path}`, {

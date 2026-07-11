@@ -1,6 +1,6 @@
 import { hasAI, llm } from "../ai";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
-import { fetchText, isHttpUrl, stripHtml } from "./_util";
+import { errMsg, fetchText, isHttpUrl, stripHtml } from "./_util";
 import { readability } from "./readability";
 
 // oracle — a learn-then-answer knowledge oracle backed by KV + Workers AI. Give it
@@ -49,7 +49,6 @@ const answerSystem = (topic: string, distilled: string): string =>
 
 type StoredKb = { distilled: string; chunks: string[]; sources: string[]; updated_at: number };
 
-const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);
 
 /** Read + parse a stored knowledge base; null if absent or unparseable (never throws). */
 async function loadKb(env: RtEnv, topic: string): Promise<StoredKb | null> {

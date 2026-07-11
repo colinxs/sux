@@ -4,6 +4,7 @@ import { fail, type RtEnv, type ToolResult } from "./registry";
 import { jmap } from "./fns/jmap";
 import { jstr } from "./fns/_jmap";
 import { htmlToMd } from "./fns/_markup";
+import { errMsg } from "./fns/_util";
 
 // The mail MCP server — the ergonomic Fastmail surface, served at /mail/mcp behind
 // the same workers-oauth-provider flow, so it appears as its own "mail" connector in
@@ -17,7 +18,6 @@ import { htmlToMd } from "./fns/_markup";
 // bodies; exactly one deliberate read (mail_read) returns the body. Send/destroy are
 // the sensitive acts — mail_send sets allow_send; nothing here permanently destroys.
 
-const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);
 
 /** Call the raw jmap conduit and parse its JSON envelope, throwing its error text on failure. */
 async function jmapCall(env: RtEnv, args: Record<string, unknown>): Promise<{ methodResponses: any[]; sessionState?: string }> {

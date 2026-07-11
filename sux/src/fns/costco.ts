@@ -1,6 +1,7 @@
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { smartFetch } from "../proxy";
 import { normalizeMoney, type RetailProduct, type RetailResult } from "./_retail";
+import { errMsg } from "./_util";
 
 // Costco sits behind Akamai, but the wall here is JA3/fingerprint-centric rather
 // than IP-centric: the residential curl-impersonate path (smartFetch → proxy,
@@ -10,7 +11,6 @@ import { normalizeMoney, type RetailProduct, type RetailResult } from "./_retail
 // tiles as the fallback. Best-effort throughout: parsing never throws, and a
 // zero-product result is disambiguated (Akamai block vs. layout change).
 
-const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);
 
 /** Absolute costco.com URL from a possibly-relative href. */
 function absUrl(href: string): string {

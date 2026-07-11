@@ -1,4 +1,5 @@
 import { type Fn, type FailCode, failWith, ok, type RtEnv } from "../registry";
+import { errMsg } from "./_util";
 
 // Todoist tasks over the REST v2 API — a thin, honest adapter (NOT the ~50-tool
 // interactive connector). Auth is a personal API token used as a Bearer directly
@@ -9,7 +10,6 @@ import { type Fn, type FailCode, failWith, ok, type RtEnv } from "../registry";
 // a recoverable trash); complete is reversible (reopen), so it isn't gated.
 
 const API = "https://api.todoist.com/rest/v2";
-const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);
 
 /** True when the Todoist token is configured. */
 export const hasTodoist = (env: RtEnv): boolean => Boolean(env.TODOIST_TOKEN);

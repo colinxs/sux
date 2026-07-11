@@ -4,6 +4,7 @@ import { fail, type RtEnv, type ToolResult } from "./registry";
 import { dropbox } from "./fns/dropbox";
 import { deleteFull, hasDropboxFull, listFull, moveFull, operateFull, readFull, searchFull, writeBytes, writeFull } from "./fns/_dropbox-full";
 import { fingerprint, ledger } from "./ledger";
+import { errMsg } from "./fns/_util";
 
 // The files MCP server — the personal blob workspace, served at /files/mcp behind
 // the same workers-oauth-provider flow (a fourth connector; zero new infra). Mirrors
@@ -21,7 +22,6 @@ import { fingerprint, ledger } from "./ledger";
 // and exports live; the vault holds the *note* about them. list/read return references
 // or one file; nothing here is unrecoverable without confirm.
 
-const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);
 
 /** Call the dropbox fn and return its parsed JSON, throwing its error text on failure. */
 async function dbx(env: RtEnv, args: Record<string, unknown>): Promise<any> {

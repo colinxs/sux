@@ -1,4 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
+import { errMsg } from "./_util";
 
 // YouTube Data API v3 (googleapis.com) — official, free-quota key rides the
 // query string. `search` returns matching videos; an optional `videos` call
@@ -7,7 +8,6 @@ import { type Fn, fail, ok } from "../registry";
 const SEARCH = "https://www.googleapis.com/youtube/v3/search";
 const VIDEOS = "https://www.googleapis.com/youtube/v3/videos";
 
-const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);
 
 async function api(url: string): Promise<any> {
 	const resp = await fetch(url, { headers: { Accept: "application/json" } });
