@@ -1,15 +1,22 @@
-import { macRender } from "../mac-render";
 import { type Fn, fail, ok, type RtEnv } from "../registry";
+import { retailRender } from "../retail-render";
 import { normalizeMoney, type RetailProduct } from "./_retail";
 
 // Amazon has NO usable free API (the Product Advertising API needs affiliate
-// approval), so this fn is render-based exactly like homedepot: the mac render
-// backend (a residential patched browser) fetches Amazon's search or product
-// page — passing the active bot wall a plain fetch can't — and we lift products
-// out of the rendered HTML. The service auto-escalates to the headed CapSolver
-// solver when it sees a captcha, so we never force `solve`. Extraction is
-// best-effort and every tile is parsed in its own try/catch — one bad tile never
-// aborts the whole parse.
+// approval), so this fn is render-based exactly like homedepot: it fetches
+// Amazon's search or product page — passing the active AWS WAF / Robot Check bot
+// wall a plain fetch can't — and lifts products out of the rendered HTML.
+//
+// Rendering goes through `retailRender`, a mac→cf fallback. The mac backend (a
+// residential patched browser) is PRIMARY — best track record against Amazon's
+// wall, and it auto-escalates to the headed CapSolver solver on a captcha, so we
+// never force `solve`. When the mac node is down, it falls back to Cloudflare
+// Browser Rendering with residential routing + stealth — a PROVEN pass for
+// Amazon's wall (verified live), unlike Walmart's press-and-hold which only the
+// mac gesture solves. Both backends funnel through the SAME extractor below.
+//
+// Extraction is best-effort and every tile is parsed in its own try/catch — one
+// bad tile never aborts the whole parse.
 
 const NO_PRODUCTS_MSG = "amazon: no products extracted (layout change).";
 // Markers Amazon serves on its bot wall / captcha interstitial. If the render
@@ -134,9 +141,9 @@ export const amazon: Fn = {
 	name: "amazon",
 	cost: 5,
 	description:
-		"Amazon product search / product-detail via the mac render backend (a residential patched browser that renders Amazon's page — Amazon has no usable free API and walls plain fetches; the backend auto-escalates to a captcha solver when challenged). " +
-		"`action`: search (products for a `term`) or product (one product by `asin`). Extraction is best-effort from the rendered page, normalized to the shared retail shape (id=ASIN/title/price/image/url; brand for product). " +
-		"`limit` caps search results (default 15, max 40). Slower than an API and dependent on the mac render backend being up.",
+		"Amazon product search / product-detail via a rendered browser (Amazon has no usable free API and walls plain fetches). Renders through the mac backend (a residential patched browser that auto-escalates to a captcha solver when challenged), falling back to Cloudflare Browser Rendering with residential routing + stealth when the mac node is down. " +
+			"`action`: search (products for a `term`) or product (one product by `asin`). Extraction is best-effort from the rendered page, normalized to the shared retail shape (id=ASIN/title/price/image/url; brand for product). " +
+			"`limit` caps search results (default 15, max 40). Slower than an API.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -166,9 +173,8 @@ export const amazon: Fn = {
 		}
 		const limit = Math.min(40, Math.max(1, Number(args?.limit) || 15));
 
-		const r = await macRender(env, {
+		const r = await retailRender(env, {
 			url,
-			as: "html",
 			block_resources: true,
 			wait_until: "networkidle2",
 			wait_ms: 6000,
