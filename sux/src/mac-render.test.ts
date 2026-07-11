@@ -74,6 +74,32 @@ describe("macRender", () => {
 		expect(u.searchParams.get("sig")).toBe(await hmacHex("s3cr3t", `${u.searchParams.get("ts")}\n${body}`));
 	});
 
+	it.each([
+		["networkidle0", "networkidle"],
+		["networkidle2", "networkidle"],
+		["domcontentloaded", "domcontentloaded"],
+		["load", "load"],
+	])("normalizes puppeteer wait_until %s → playwright %s on the wire", async (given, wire) => {
+		// The node renders with playwright, whose goto rejects networkidle0/networkidle2;
+		// macRender folds them onto `networkidle` (other values pass through untouched)
+		// so the render fn's puppeteer-vocabulary default can't break the node.
+		fetchSpy.mockResolvedValueOnce(macJson({ status: 200, content_type: "text/html", body: "<html>ok</html>" }));
+		await macRender(ENV, { url: "https://x", wait_until: given });
+		const [endpoint, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+		const body = init.body as string;
+		expect(JSON.parse(body).wait_until).toBe(wire);
+		// Normalization happens before signing, so the sig still covers the exact wire body.
+		const u = new URL(endpoint);
+		expect(u.searchParams.get("sig")).toBe(await hmacHex("s3cr3t", `${u.searchParams.get("ts")}\n${body}`));
+	});
+
+	it("omits wait_until from the wire when the spec doesn't set it", async () => {
+		fetchSpy.mockResolvedValueOnce(macJson({ status: 200, content_type: "text/html", body: "ok" }));
+		await macRender(ENV, { url: "https://x" });
+		const body = (fetchSpy.mock.calls[0] as any)[1].body as string;
+		expect(JSON.parse(body)).not.toHaveProperty("wait_until");
+	});
+
 	it("carries a base64 screenshot envelope through (bodyEncoding preserved)", async () => {
 		fetchSpy.mockResolvedValueOnce(macJson({ status: 200, content_type: "image/png", bodyEncoding: "base64", body: "iVBOR" }));
 		const r = await macRender(ENV, { url: "https://homedepot.com", as: "screenshot" });

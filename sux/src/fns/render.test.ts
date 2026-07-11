@@ -410,7 +410,9 @@ describe("render", () => {
 			expect(payload).toMatchObject({
 				url: "https://homedepot.com/p/123",
 				as: "html",
-				wait_until: "networkidle0",
+				// The render fn's default is puppeteer's "networkidle0"; the shared macRender
+				// client folds it onto playwright's "networkidle" before it reaches the node.
+				wait_until: "networkidle",
 				wait_ms: 500,
 				block_resources: false,
 				full_page: false,

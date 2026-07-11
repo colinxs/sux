@@ -1,5 +1,6 @@
 import puppeteer from "@cloudflare/puppeteer";
-import { hmacHex, isBlockedTarget, smartFetch } from "../proxy";
+import { type MacRenderSpec, macRender } from "../mac-render";
+import { isBlockedTarget, smartFetch } from "../proxy";
 import { type Fn, type RtEnv, type ToolResult, failWith, ok } from "../registry";
 import { clamp, deliverBytes, fromB64, inlineB64, isHttpUrl } from "./_util";
 
@@ -112,68 +113,26 @@ async function handleRequest(
 	}
 }
 
-const MAC_TIMEOUT_MARGIN_MS = 10_000;
-const MAC_TIMEOUT_CAP_MS = 70_000;
-
-type MacRenderPayload = {
-	url: string;
-	as: string;
-	wait_until: string;
-	wait_ms: number;
-	block_resources: boolean;
-	full_page: boolean;
-	timeout_ms: number;
-	solve?: boolean;
-};
-
-type MacRenderResponse = {
-	status?: number;
-	content_type?: string;
-	body?: string;
-	bodyEncoding?: "base64";
-	error?: string;
-};
-
-async function renderViaMac(env: RtEnv, payload: MacRenderPayload, delivery: string | undefined): Promise<ToolResult> {
-	if (!env.MAC_RENDER_URL || !env.MAC_RENDER_SECRET) {
-		return failWith("not_configured", "Mac render backend not configured (MAC_RENDER_URL/MAC_RENDER_SECRET).");
+// backend:"mac" routes through the shared, breaker-aware macRender client (the
+// same one the retailer fns use) instead of a private HMAC-signing copy — one code
+// path, one circuit breaker, one wait_until normalization. This wrapper only maps
+// its {ok,body} envelope onto a ToolResult: base64 screenshot/pdf → deliverBytes,
+// html/text → clamped ok, and macRender's unconfigured/error strings → failWith.
+async function renderViaMac(env: RtEnv, spec: MacRenderSpec, delivery: string | undefined): Promise<ToolResult> {
+	const r = await macRender(env, spec);
+	if (!r.ok) {
+		if (r.error.includes("not configured")) {
+			return failWith("not_configured", "Mac render backend not configured (MAC_RENDER_URL/MAC_RENDER_SECRET).");
+		}
+		return failWith("upstream_error", r.error);
 	}
-	const body = JSON.stringify(payload);
-	const ts = String(Date.now());
-	const sig = await hmacHex(env.MAC_RENDER_SECRET, `${ts}\n${body}`);
-
-	const endpoint = new URL("/render", env.MAC_RENDER_URL).href;
-	const signedEndpoint = `${endpoint}?ts=${ts}&sig=${sig}`;
-	const timeout = Math.min(payload.timeout_ms + MAC_TIMEOUT_MARGIN_MS, MAC_TIMEOUT_CAP_MS);
-	let resp: Response;
-	try {
-		resp = await fetch(signedEndpoint, {
-			method: "POST",
-			headers: { "content-type": "application/json", "x-timestamp": ts, "x-signature": sig },
-			body,
-			signal: AbortSignal.timeout(timeout),
-		});
-	} catch (e) {
-		return failWith("upstream_error", `mac render failed: ${String((e as Error).message ?? e)}`);
-	}
-	let data: MacRenderResponse;
-	try {
-		data = (await resp.json()) as MacRenderResponse;
-	} catch {
-		return failWith("upstream_error", `mac render failed: unreadable response (HTTP ${resp.status}).`);
-	}
-	if (!resp.ok || data.error) {
-		return failWith("upstream_error", `mac render failed: ${data.error ?? `HTTP ${resp.status}`}`);
-	}
-	const text = typeof data.body === "string" ? data.body : "";
-	if (payload.as === "screenshot" || payload.as === "pdf") {
-
-		const bytes = fromB64(text);
-		const contentType = data.content_type ?? (payload.as === "pdf" ? "application/pdf" : "image/png");
+	const as = spec.as;
+	if (as === "screenshot" || as === "pdf") {
+		const bytes = fromB64(r.body);
+		const contentType = r.contentType ?? (as === "pdf" ? "application/pdf" : "image/png");
 		return deliverBytes(env, bytes, contentType, delivery ?? "url", () => inlineB64(bytes, contentType));
 	}
-
-	return ok(clamp(text, MAX_OUTPUT_BYTES));
+	return ok(clamp(r.body, MAX_OUTPUT_BYTES));
 }
 
 export const render: Fn = {

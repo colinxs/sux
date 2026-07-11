@@ -21,6 +21,7 @@ export type MacRenderSpec = {
 	wait_until?: string;
 	wait_ms?: number;
 	block_resources?: boolean;
+	full_page?: boolean;
 	timeout_ms?: number;
 	// Force the CapSolver-equipped headed solver tier (captchas/press-and-hold).
 	// The service auto-escalates when a page looks blocked; set for always-walled
@@ -63,6 +64,16 @@ const MAC_BREAKER_THRESHOLD = 5;
 const MAC_BREAKER_COOLDOWN_MS = 30_000;
 const macBreaker = { failures: 0, openUntil: 0 };
 
+// The Mac node renders with patchright (playwright), whose page.goto only accepts
+// load|domcontentloaded|networkidle|commit — NOT puppeteer's networkidle0/
+// networkidle2. Both the render fn's schema and the retailer fns speak the
+// puppeteer vocabulary, so fold either idle variant onto playwright's single
+// `networkidle` before the spec crosses the wire (an un-normalized value would make
+// the node's goto throw). Everything else passes through untouched.
+function normalizeWaitUntil(wait: string): string {
+	return wait === "networkidle0" || wait === "networkidle2" ? "networkidle" : wait;
+}
+
 function macBreakerOnResponse(): void {
 	macBreaker.failures = 0;
 	macBreaker.openUntil = 0;
@@ -94,7 +105,8 @@ export async function macRender(env: RtEnv, spec: MacRenderSpec): Promise<MacRen
 	if (macBreaker.openUntil > Date.now()) {
 		return { ok: false, error: "mac render backend circuit-open" };
 	}
-	const payload = JSON.stringify({ as: "html", ...spec });
+	const normalized = spec.wait_until === undefined ? spec : { ...spec, wait_until: normalizeWaitUntil(spec.wait_until) };
+	const payload = JSON.stringify({ as: "html", ...normalized });
 	const ts = String(Date.now());
 	const sig = await hmacHex(env.MAC_RENDER_SECRET, `${ts}\n${payload}`);
 	// ts+sig ride the query string (same rationale as fetchViaTailscale: some CGI
