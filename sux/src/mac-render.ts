@@ -97,7 +97,12 @@ export async function macRender(env: RtEnv, spec: MacRenderSpec): Promise<MacRen
 	if (macBreaker.openUntil > Date.now()) {
 		return { ok: false, error: "mac render backend circuit-open" };
 	}
-	const payload = JSON.stringify({ as: "html", ...spec });
+	// The Mac service is Playwright/patchright, whose page.goto(wait_until) accepts
+	// load|domcontentloaded|networkidle|commit — NOT Puppeteer's networkidle0/2 (which
+	// the cf backend + callers use). Passing those threw "expected one of …" → 502 on
+	// every mac render carrying the default. Normalize to Playwright's vocabulary.
+	const macSpec = { ...spec, ...(typeof spec.wait_until === "string" ? { wait_until: spec.wait_until.replace(/^networkidle[02]$/, "networkidle") } : {}) };
+	const payload = JSON.stringify({ as: "html", ...macSpec });
 	const ts = String(Date.now());
 	const sig = await hmacHex(env.MAC_RENDER_SECRET, `${ts}\n${payload}`);
 	// ts+sig ride the query string (same rationale as fetchViaTailscale: some CGI

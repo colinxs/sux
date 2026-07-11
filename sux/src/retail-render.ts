@@ -27,30 +27,39 @@ export type RetailRenderSpec = {
 	solve?: boolean;
 };
 
-/**
- * Render a retail page with a mac→cf fallback. Returns the same never-throw
- * envelope as `macRender` ({ ok, contentType, body } | { ok:false, error }) so
- * callers switch to it with no other change. The cf leg forces residential+stealth
- * (its only shot at a bot wall) and reuses the caller's wait/timeout/block knobs.
- */
-export async function retailRender(env: RtEnv, spec: RetailRenderSpec): Promise<MacRenderResult> {
-	const primary = await macRender(env, { as: "html", ...spec });
-	if (primary.ok) return primary;
+export type RetailRenderOpts = {
+	// Try cf-residential FIRST (mac as fallback). Right for AWS-WAF sites (Amazon) where
+	// cf+residential+stealth is a proven pass — avoids the flaky mac node on the common
+	// path. Leave false for PerimeterX/Akamai sites (Walmart/HomeDepot) where only the
+	// mac node's gesture + solver tiers get through.
+	preferCf?: boolean;
+};
 
-	const fallback = await cfRender(env, {
-		url: spec.url,
-		as: "html",
-		wait_until: spec.wait_until,
-		wait_ms: spec.wait_ms,
-		block_resources: spec.block_resources,
-		timeout_ms: spec.timeout_ms,
-		residential: true,
-		stealth: true,
-	});
-	// cf's html result carries a string `body`; hand it back in the mac envelope.
-	if (fallback.ok && "body" in fallback) {
-		return { ok: true, contentType: fallback.contentType, body: fallback.body };
-	}
-	// Both backends down — the mac error is the primary, more actionable signal.
-	return primary;
+// Both legs run sequentially inside the 60s FN_DEADLINE_MS, and the mac leg's HTTP
+// timeout is its render budget + a ~15s margin — so the FIRST leg must be capped well
+// under the deadline or the fallback never runs (the bug this fixes). Budgets chosen so
+// worst case (first + second + mac margin) lands ~52s, leaving an 8s buffer.
+const FIRST_LEG_MS = 25_000;
+const SECOND_LEG_MS = 12_000;
+
+/**
+ * Render a retail page across the mac + cf backends with a deadline-safe fallback.
+ * Order is mac→cf by default, cf→mac when opts.preferCf. Returns the never-throw mac
+ * envelope; on total failure it surfaces the first (primary) backend's error.
+ */
+export async function retailRender(env: RtEnv, spec: RetailRenderSpec, opts: RetailRenderOpts = {}): Promise<MacRenderResult> {
+	const order: Array<"mac" | "cf"> = opts.preferCf ? ["cf", "mac"] : ["mac", "cf"];
+	const firstBudget = Math.min(spec.timeout_ms ?? FIRST_LEG_MS, FIRST_LEG_MS);
+
+	const runLeg = async (backend: "mac" | "cf", budget: number): Promise<MacRenderResult> => {
+		if (backend === "mac") return macRender(env, { as: "html", ...spec, timeout_ms: budget });
+		const cf = await cfRender(env, { url: spec.url, as: "html", wait_until: spec.wait_until, wait_ms: spec.wait_ms, block_resources: spec.block_resources, timeout_ms: budget, residential: true, stealth: true });
+		if (cf.ok && "body" in cf) return { ok: true, contentType: cf.contentType, body: cf.body };
+		return { ok: false, error: cf.ok ? "cf render returned a non-HTML result" : cf.error };
+	};
+
+	const first = await runLeg(order[0], firstBudget);
+	if (first.ok) return first;
+	const second = await runLeg(order[1], SECOND_LEG_MS);
+	return second.ok ? second : first; // surface the primary (first-choice) backend's error
 }

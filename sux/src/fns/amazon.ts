@@ -173,13 +173,13 @@ export const amazon: Fn = {
 		}
 		const limit = Math.min(40, Math.max(1, Number(args?.limit) || 15));
 
-		const r = await retailRender(env, {
-			url,
-			block_resources: true,
-			wait_until: "networkidle2",
-			wait_ms: 6000,
-			timeout_ms: 55000,
-		});
+		// Amazon is behind AWS WAF, which cf+residential+stealth is a PROVEN pass for
+		// (verified live) — so try cf FIRST and keep the flaky mac node as the fallback.
+		const r = await retailRender(
+			env,
+			{ url, block_resources: true, wait_until: "networkidle2", wait_ms: 6000 },
+			{ preferCf: true },
+		);
 		if (!r.ok) return fail(`amazon: blocked or render failed — ${r.error}`);
 
 		let products = action === "product" ? fromProduct(r.body, asin) : fromSearch(r.body);

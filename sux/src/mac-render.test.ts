@@ -61,6 +61,21 @@ describe("macRender", () => {
 		expect(headers["x-signature"]).toBe(sig);
 	});
 
+	it("normalizes Puppeteer wait_until (networkidle0/2) → Playwright's networkidle for the mac service", async () => {
+		// The mac node is Playwright; page.goto rejects networkidle0/2 (Puppeteer's names)
+		// with a 502 — the real cause of 'mac render broken'. Normalize on the wire.
+		for (const [sent, wire] of [
+			["networkidle0", "networkidle"],
+			["networkidle2", "networkidle"],
+			["domcontentloaded", "domcontentloaded"],
+		] as const) {
+			fetchSpy.mockResolvedValueOnce(macJson({ status: 200, content_type: "text/html", body: "<html>ok</html>" }));
+			await macRender(ENV, { url: "https://x.com", wait_until: sent });
+			const b = JSON.parse((fetchSpy.mock.calls.at(-1)![1] as RequestInit).body as string);
+			expect(b.wait_until).toBe(wire);
+		}
+	});
+
 	it("lets the spec override `as` and passes extra knobs (solve, wait_ms) into the signed body", async () => {
 		fetchSpy.mockResolvedValueOnce(macJson({ status: 200, content_type: "text/plain", body: "text" }));
 

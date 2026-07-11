@@ -14,8 +14,9 @@ const macRenderMock = vi.mocked(macRender);
 const cfRenderMock = vi.mocked(cfRender);
 
 beforeEach(() => {
-	// vi.mock factory mocks aren't reset by restoreAllMocks, so clear cf's call
-	// history each test; default the cf leg to unavailable (no BROWSER binding).
+	// vi.mock factory mocks aren't reset by restoreAllMocks, so clear both backends'
+	// call history each test; default the cf leg to unavailable (no BROWSER binding).
+	macRenderMock.mockReset();
 	cfRenderMock.mockReset();
 	cfRenderMock.mockResolvedValue({ ok: false, error: "Browser Rendering is not configured (BROWSER binding)." });
 });
@@ -94,17 +95,15 @@ describe("amazon", () => {
 		expect(j.products[1]).toMatchObject({ id: "B0XYZ98765", title: "Fire TV Stick 4K", price: 39.99, image: "https://m.media-amazon.com/firetv.jpg", url: "https://www.amazon.com/dp/B0XYZ98765" });
 	});
 
-	it("uses the mac backend and never touches the cf fallback when mac succeeds", async () => {
-		macRenderMock.mockResolvedValueOnce({ ok: true, contentType: "text/html", body: SEARCH_HTML });
+	it("uses cf-first (Amazon = AWS WAF) and never touches the mac fallback when cf succeeds", async () => {
+		cfRenderMock.mockResolvedValueOnce({ ok: true, contentType: "text/html", body: SEARCH_HTML });
 		const r = await amazon.run({ MAC_RENDER_URL: "x", MAC_RENDER_SECRET: "y" } as any, { action: "search", term: "echo dot" });
 		expect(r.isError).toBeFalsy();
-		expect(cfRenderMock).not.toHaveBeenCalled();
+		expect(macRenderMock).not.toHaveBeenCalled();
 	});
 
-	it("falls back to cf-residential when the mac node is down (502) and runs the SAME extractor", async () => {
-		// Mac 502 → retailRender retries via cf; the identical search HTML from cf must
-		// flow through fromSearch and yield the same two products.
-		macRenderMock.mockResolvedValueOnce({ ok: false, error: "mac render failed: HTTP 502" });
+	it("renders Amazon via cf-residential (the preferred leg) and runs the extractor", async () => {
+		// cf is the primary leg for Amazon; its HTML flows through fromSearch and yields two products.
 		cfRenderMock.mockResolvedValueOnce({ ok: true, contentType: "text/html", body: SEARCH_HTML });
 		const r = await amazon.run({ MAC_RENDER_URL: "x", MAC_RENDER_SECRET: "y" } as any, { action: "search", term: "echo dot" });
 		expect(r.isError).toBeFalsy();
@@ -116,21 +115,20 @@ describe("amazon", () => {
 		expect(cfRenderMock.mock.calls[0][1]).toMatchObject({ as: "html", residential: true, stealth: true });
 	});
 
-	it("a cf fallback that returns Amazon's Robot Check still reports the challenge distinctly", async () => {
-		macRenderMock.mockResolvedValueOnce({ ok: false, error: "mac render failed: HTTP 502" });
+	it("a cf result that is Amazon's Robot Check reports the challenge distinctly", async () => {
 		cfRenderMock.mockResolvedValueOnce({ ok: true, contentType: "text/html", body: "<html><body>Robot Check — Enter the characters you see below</body></html>" });
 		const r = await amazon.run({ MAC_RENDER_URL: "x", MAC_RENDER_SECRET: "y" } as any, { action: "search", term: "x" });
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toMatch(/challenged the request/);
 	});
 
-	it("when BOTH backends fail, surfaces the mac error (the primary signal)", async () => {
-		macRenderMock.mockResolvedValueOnce({ ok: false, error: "mac render backend circuit-open" });
+	it("when BOTH backends fail, surfaces the cf error (the first-choice signal)", async () => {
 		cfRenderMock.mockResolvedValueOnce({ ok: false, error: "Browser Rendering is not configured (BROWSER binding)." });
+		macRenderMock.mockResolvedValueOnce({ ok: false, error: "mac render backend circuit-open" });
 		const r = await amazon.run({ MAC_RENDER_URL: "x", MAC_RENDER_SECRET: "y" } as any, { action: "search", term: "x" });
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toMatch(/blocked or render failed/);
-		expect(r.content[0].text).toMatch(/circuit-open/);
+		expect(r.content[0].text).toMatch(/Browser Rendering is not configured/);
 	});
 
 	it("fails with no backend configured (macRender ok:false)", async () => {
@@ -143,7 +141,7 @@ describe("amazon", () => {
 	});
 
 	it("reports an Amazon challenge distinctly", async () => {
-		macRenderMock.mockResolvedValueOnce({
+		cfRenderMock.mockResolvedValueOnce({
 			ok: true,
 			contentType: "text/html",
 			body: "<html><body>Robot Check — Enter the characters you see below</body></html>",
@@ -154,7 +152,7 @@ describe("amazon", () => {
 	});
 
 	it("fails with a layout-change message when the page parses clean but empty", async () => {
-		macRenderMock.mockResolvedValueOnce({ ok: true, contentType: "text/html", body: "<html><body>nothing here</body></html>" });
+		cfRenderMock.mockResolvedValueOnce({ ok: true, contentType: "text/html", body: "<html><body>nothing here</body></html>" });
 		const r = await amazon.run({ MAC_RENDER_URL: "x", MAC_RENDER_SECRET: "y" } as any, { action: "search", term: "x" });
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toMatch(/no products extracted/);
