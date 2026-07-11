@@ -1,5 +1,6 @@
 import { withRetry } from "../proxy";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
+import { getClientToken, mintClientToken, type OAuthClientCreds } from "./_oauth";
 import { normalizeMoney, type RetailProduct } from "./_retail";
 import { errMsg } from "./_util";
 
@@ -7,59 +8,36 @@ import { errMsg } from "./_util";
 // One fn covers Kroger and every banner it owns (QFC, Fred Meyer, Ralphs, …) via
 // the locations chain filter. Auth is OAuth2 client-credentials; the bearer token
 // is minted once and cached in KV (env.OAUTH_KV) until just before it expires, so
-// we never re-mint per call.
+// we never re-mint per call. Token lifecycle lives in _oauth (shared with ebay/tailscale).
 
 const API = "https://api.kroger.com/v1";
-const TOKEN_URL = `${API}/connect/oauth2/token`;
 const TOKEN_KEY = "sux:kroger:token";
-
-
-/** Mint a fresh bearer token from the OAuth endpoint and cache it in KV. */
-async function mintToken(env: RtEnv): Promise<string> {
-	const basic = btoa(`${env.KROGER_CLIENT_ID}:${env.KROGER_CLIENT_SECRET}`);
-	// A client-credentials mint has no side effect (it just issues a bearer), so it
-	// is safe to retry a transient/rate-limit blip with backoff — same as an idempotent GET.
-	const resp = await withRetry(() =>
-		fetch(TOKEN_URL, {
-			method: "POST",
-			headers: { Authorization: `Basic ${basic}`, "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
-			body: "grant_type=client_credentials&scope=product.compact",
-		}),
-	);
-	if (!resp.ok) throw new Error(`OAuth token HTTP ${resp.status}: ${(await resp.text().catch(() => "")).slice(0, 300)}`);
-	const j: any = await resp.json();
-	const token = String(j?.access_token ?? "");
-	if (!token) throw new Error("OAuth token response had no access_token.");
-	// TTL = expires_in - 60 so the cached token is never used in its final minute;
-	// clamp to Cloudflare KV's 60s floor.
-	const ttl = Math.max(60, (Number(j?.expires_in) || 1800) - 60);
-	await env.OAUTH_KV.put(TOKEN_KEY, token, { expirationTtl: ttl });
-	return token;
-}
-
-/** Get a valid bearer token — from KV if present, else mint one and cache it. */
-async function getToken(env: RtEnv): Promise<string> {
-	const cached = await env.OAUTH_KV.get(TOKEN_KEY);
-	if (cached) return cached;
-	return mintToken(env);
-}
+const oauth = (env: RtEnv): OAuthClientCreds => ({
+	tokenUrl: `${API}/connect/oauth2/token`,
+	clientId: String(env.KROGER_CLIENT_ID ?? ""),
+	clientSecret: String(env.KROGER_CLIENT_SECRET ?? ""),
+	cacheKey: TOKEN_KEY,
+	scope: "product.compact",
+	retry: true, // a client-credentials mint has no side effect — safe to retry a transient/rate-limit blip
+	defaultTtl: 1800,
+});
 
 /**
  * GET an authed Kroger endpoint, throwing a status-carrying error on failure.
  * Self-heals a revoked/rejected token: on a 401/403 it drops the cached token,
  * re-mints once, and retries — so a token invalidated before its TTL recovers
- * without waiting out the cache. The retry mints directly (not via getToken) so
- * KV read-after-delete eventual consistency can't hand back the rejected token.
+ * without waiting out the cache. The retry mints directly (not via getClientToken)
+ * so KV read-after-delete eventual consistency can't hand back the rejected token.
  */
 async function api(env: RtEnv, path: string): Promise<any> {
 	// GETs are idempotent, so retry transient/rate-limit failures with backoff. A
 	// 401/403 is NOT transient — withRetry passes it straight through, so the
 	// re-mint self-heal below still fires on exactly the first rejected response.
 	const get = (token: string) => withRetry(() => fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } }));
-	let resp = await get(await getToken(env));
+	let resp = await get(await getClientToken(env, oauth(env)));
 	if (resp.status === 401 || resp.status === 403) {
 		await env.OAUTH_KV.delete(TOKEN_KEY);
-		resp = await get(await mintToken(env));
+		resp = await get(await mintClientToken(env, oauth(env)));
 	}
 	if (!resp.ok) throw new Error(`Kroger API HTTP ${resp.status}: ${(await resp.text().catch(() => "")).slice(0, 300)}`);
 	return resp.json();

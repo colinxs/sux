@@ -1,3 +1,4 @@
+import { getClientToken, mintClientToken, type OAuthClientCreds } from "./_oauth";
 import { type Fn, fail, ok, type RtEnv } from "../registry";
 import { normalizeMoney, type RetailProduct } from "./_retail";
 import { errMsg } from "./_util";
@@ -5,46 +6,28 @@ import { errMsg } from "./_util";
 // eBay Browse API (api.ebay.com) — official, clean REST, no bot wall. Auth is
 // OAuth2 client-credentials (same shape as kroger): the app token is minted once
 // and cached in KV (env.OAUTH_KV) until just before it expires, so we never
-// re-mint per call.
+// re-mint per call. Token lifecycle lives in _oauth (shared with kroger/tailscale).
 
 const API = "https://api.ebay.com/buy/browse/v1";
-const TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token";
 const TOKEN_KEY = "sux:ebay:token";
-const SCOPE = "https://api.ebay.com/oauth/api_scope";
-
-
-/** Mint a fresh app token and cache it in KV. */
-async function mintToken(env: RtEnv): Promise<string> {
-	const basic = btoa(`${env.EBAY_CLIENT_ID}:${env.EBAY_CLIENT_SECRET}`);
-	const resp = await fetch(TOKEN_URL, {
-		method: "POST",
-		headers: { Authorization: `Basic ${basic}`, "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
-		body: `grant_type=client_credentials&scope=${encodeURIComponent(SCOPE)}`,
-	});
-	if (!resp.ok) throw new Error(`OAuth token HTTP ${resp.status}: ${(await resp.text().catch(() => "")).slice(0, 300)}`);
-	const j: any = await resp.json();
-	const token = String(j?.access_token ?? "");
-	if (!token) throw new Error("OAuth token response had no access_token.");
-	const ttl = Math.max(60, (Number(j?.expires_in) || 7200) - 60);
-	await env.OAUTH_KV.put(TOKEN_KEY, token, { expirationTtl: ttl });
-	return token;
-}
-
-/** Get a valid app token — from KV if present, else mint one and cache it. */
-async function getToken(env: RtEnv): Promise<string> {
-	const cached = await env.OAUTH_KV.get(TOKEN_KEY);
-	return cached || mintToken(env);
-}
+const oauth = (env: RtEnv): OAuthClientCreds => ({
+	tokenUrl: "https://api.ebay.com/identity/v1/oauth2/token",
+	clientId: String(env.EBAY_CLIENT_ID ?? ""),
+	clientSecret: String(env.EBAY_CLIENT_SECRET ?? ""),
+	cacheKey: TOKEN_KEY,
+	scope: "https://api.ebay.com/oauth/api_scope",
+	defaultTtl: 7200,
+});
 
 /** GET an authed eBay endpoint; self-heals a stale app token (401/403) by re-minting once — matching kroger/reddit/tailscale. */
 async function api(env: RtEnv, url: string): Promise<any> {
 	const get = (token: string) => fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } });
-	let resp = await get(await getToken(env));
+	let resp = await get(await getClientToken(env, oauth(env)));
 	if (resp.status === 401 || resp.status === 403) {
 		// eBay invalidated the token before its ~2h TTL → drop the cache and re-mint DIRECTLY (not via
-		// getToken, so KV read-after-delete eventual consistency can't hand back the rejected token).
+		// getClientToken, so KV read-after-delete eventual consistency can't hand back the rejected token).
 		await env.OAUTH_KV.delete(TOKEN_KEY).catch(() => {});
-		resp = await get(await mintToken(env));
+		resp = await get(await mintClientToken(env, oauth(env)));
 	}
 	if (!resp.ok) throw new Error(`eBay API HTTP ${resp.status}: ${(await resp.text().catch(() => "")).slice(0, 300)}`);
 	return resp.json();
