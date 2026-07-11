@@ -151,6 +151,38 @@ describe("ingest (capture → vault)", () => {
 		expect(out.blob.link).toBe("https://www.dropbox.com/s/x/big.zip");
 	});
 
+	it("falls through to R2 when the Dropbox upload FAILS (token lapse/5xx), never losing the capture", async () => {
+		// Dropbox is configured (so today's code would have returned fail) but the
+		// upload 500s — the capture must still land, in R2, stamped as such.
+		const gh = ghMock();
+		const big = new Uint8Array(1_100_000);
+		routes.handler = (url, init) => {
+			if (url.includes("api.github.com")) return gh.handler(url, init);
+			return new Response(big, { status: 200, headers: { "content-type": "application/zip" } });
+		};
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (u: string | URL) => {
+				if (String(u).endsWith("/files/upload")) return new Response(JSON.stringify({ error_summary: "internal_error/" }), { status: 500 });
+				return new Response("{}", { status: 200 });
+			}),
+		);
+		const r2puts: Array<[string, Uint8Array]> = [];
+		const env = {
+			...ENV,
+			DROPBOX_TOKEN: "dbx",
+			R2: { put: async (k: string, b: Uint8Array) => void r2puts.push([k, b]) },
+			OAUTH_KV: { get: async () => null, put: async () => {}, delete: async () => {} },
+		} as any;
+		const r = await ingest.run(env, { url: "https://files.example/big.zip" });
+		const out = JSON.parse(r.content[0].text);
+		expect(r.isError).toBeUndefined();
+		expect(out.blob.placement).toBe("r2 (dropbox upload failed)"); // NOT a fail(), NOT "not configured"
+		expect(out.blob.link).toMatch(/^https:\/\/.*\/s\//); // resolvable R2 handle
+		expect(r2puts).toHaveLength(1); // bytes actually stored
+		expect(gh.puts[out.note]).toContain(`(${out.blob.link})`); // note links the R2 blob
+	});
+
 	it("explicit path overrides the Inbox default", async () => {
 		const gh = ghMock();
 		routes.handler = gh.handler;

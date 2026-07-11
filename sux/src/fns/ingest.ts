@@ -150,11 +150,18 @@ export const ingest: Fn = {
 							// reflects the real stored name. hasDropbox — NOT env.DROPBOX_TOKEN —
 							// so the durable refresh-token config (the production path) routes here.
 							const up = await dropboxPut(env, `/attachments/${date}-${name}`, bytes, { overwrite: false });
-							if ("error" in up) return fail(up.error);
-							blob = { placement: "dropbox", link: up.url ?? up.path, size: bytes.length, content_type: ct || undefined };
-						} else {
+							if ("error" in up) {
+								// Token lapse / Dropbox 5xx: don't drop the capture — R2 still takes
+								// the bytes so the note lands with a resolvable link. Distinct from the
+								// unconfigured case so the note records that Dropbox was tried and failed.
+								console.warn(`ingest: dropbox upload failed, falling back to R2 — ${up.error}`);
+							} else {
+								blob = { placement: "dropbox", link: up.url ?? up.path, size: bytes.length, content_type: ct || undefined };
+							}
+						}
+						if (!blob) {
 							const ref = await putBlob(env, bytes, ct || "application/octet-stream");
-							blob = { placement: "r2 (Dropbox not configured)", link: ref.url, size: bytes.length, content_type: ct || undefined };
+							blob = { placement: hasDropbox(env) ? "r2 (dropbox upload failed)" : "r2 (Dropbox not configured)", link: ref.url, size: bytes.length, content_type: ct || undefined };
 						}
 						body = [
 							/^https?:/.test(blob.link) ? `[${name}](${blob.link})` : `Dropbox: \`${blob.link}\` (no shared link minted — check the token's sharing scope)`,
