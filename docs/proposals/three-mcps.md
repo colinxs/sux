@@ -34,7 +34,7 @@ All behind the same `workers-oauth-provider` flow, so each appears as its own co
 
 ## `vault` MCP — the built surface (git, cloud, v1)
 
-Nine tools (`vault-mcp.ts`), all dispatching through the `obsidian` fn's git backend. Prior art: `jimprosser/obsidian-web-mcp` (confirm-gated delete, daily verbs, tight schemas — kept; its OAuth/atomic-write/path-guard machinery — not re-implemented, we have our own).
+Fourteen tools (`vault-mcp.ts`), all over the git backend — the `obsidian` fn's store for CRUD, plus a KV-cached vault-graph scan (`vault-graph.ts`) for the backlinks/query/tags/patch tier. Prior art: `jimprosser/obsidian-web-mcp` (confirm-gated delete, daily verbs, tight schemas — kept; its OAuth/atomic-write/path-guard machinery — not re-implemented, we have our own).
 
 | tool | contract |
 |---|---|
@@ -47,8 +47,13 @@ Nine tools (`vault-mcp.ts`), all dispatching through the `obsidian` fn's git bac
 | `vault_capture` | url \| text \| query → `Inbox/` with provenance frontmatter (via the `ingest` fn); optional summarize/compress; never overwrites |
 | `vault_daily_read` | read today's daily note |
 | `vault_daily_append` | append to today's daily (the quick task/jot surface) |
+| `vault_batch_append` | idempotent fan-out append to MANY notes in one call; `dry_run` previews |
+| `vault_backlinks` | notes that `[[link]]` to a target (resolves wikilinks by basename) |
+| `vault_query` | find notes by **frontmatter** — simple field/value or a JsonLogic-lite `filter` (and/or/not, ==,!=,>,<,>=,<=, in); NOT full-text |
+| `vault_patch` | structural edit — target exactly one of `heading` / `block` / `frontmatter_field` (replace/append/prepend) |
+| `vault_tags` | tag index — list notes for a tag (frontmatter ∪ inline `#tags`), or enumerate all tags with counts |
 
-This is the **note tier + capture + daily** — the primitives. It's done and shippable.
+This is the **note tier + capture + daily + graph/query tier** — the CRUD primitives plus the backlinks / frontmatter-query / tags / structural-patch graph. It's done and live.
 
 ---
 
@@ -57,7 +62,7 @@ This is the **note tier + capture + daily** — the primitives. It's done and sh
 The primitives are built. What is NOT yet built, and where my earlier "verbs" belong:
 
 **As tools (server-side), the genuine additions:**
-- `vault_search` — full-text/structured search. Deferred: needs the live host (git code-search is dead on private repos), lands with the tier-2 `vpc` backend. The one primitive still missing.
+- `vault_search` — **full-text** search across note bodies. Still deferred: needs the live host (git code-search is dead on private repos), lands with the tier-2 `vpc` backend. (Structured search **shipped** — `vault_query` filters by frontmatter over the vault graph; it is explicitly *not* full-text.)
 
 **As SKILLS (Claude-side, not server tools) — this is the correction to my earlier design:**
 The lifecycle and the oracle are **skills that orchestrate the tools above**, per the core decision (two skills). They are NOT vault-MCP verbs:
@@ -69,9 +74,9 @@ So the corrected model: **vault MCP = primitive tools; the knowledge lifecycle +
 
 ---
 
-## `mail` MCP — planned (`/mail/mcp`, sux-mail plugin)
+## `mail` MCP — **live** (`/mail/mcp`, sux-mail plugin)
 
-Full JMAP per [[jmap.md]]: `mail` (ergonomic: search/read/send/draft/archive/label/masked) + `jmap` (raw full-protocol escape hatch). Token as worker secret; send/destroy gated; `cacheable:false`. Same namespace pattern as vault.
+Shipped (`mail-mcp.ts`): ergonomic `mail_*` verbs — search/read/thread/mailboxes/identities, draft/send (with reply/reply-all/forward via `mode`+`reply_to`, and `send_at` scheduling), schedule/scheduled/unschedule, upload, archive/move, masked (list/create/disable/enable/delete) — plus `contact_*` (over `ContactCard`, RFC 9610) and a CalDAV `cal_*`/`task_*` subsystem, over the raw `jmap` + `caldav` escape hatches. Token as worker secret; send/destroy gated; `cacheable:false`. Same namespace pattern as vault. (`mail_vacation`/`mail_quota` exist but gate to `not_configured` — Fastmail API tokens don't grant those scopes.)
 
 ## `sux` MCP — the universal endpoint (`/mcp`)
 
@@ -85,13 +90,14 @@ No namespace calls another; Claude composes. `vault_capture` from a `mail` read;
 
 ## Plan (corrected)
 
-1. **vault primitives — DONE.** `vault_*` CRUD + capture + daily are built and shippable.
-2. **`vault_search`** — add with the tier-2 `vpc` backend (or lean on the mcp-gate live path on desktop meanwhile).
-3. **The two skills** — capture/remember + organize/consolidate, orchestrating the vault tools. (The paused "fun part.")
-4. **`ask`** — the oracle skill (retrieval ladder + citations).
-5. **`/mail/mcp`** — the sux-mail plugin + JMAP tools; wire into capture + ask.
+1. **vault primitives — DONE.** `vault_*` CRUD + capture + daily + the graph/query tier (backlinks/query/tags/patch) are built and live.
+2. **`/mail/mcp` — DONE.** The sux-mail plugin + `mail_*`/`contact_*`/`cal_*`/`task_*` verbs over the raw `jmap`+`caldav` conduits are live.
+3. **`/files/mcp` — DONE.** The sux-files plugin (Mode A + gated Mode B, incl. `files_transform`) is live.
+4. **`vault_search`** (full-text) — still to add, with the tier-2 `vpc` backend (or lean on the mcp-gate live path on desktop meanwhile).
+5. **The two skills** — capture/remember + organize/consolidate, orchestrating the vault tools. (The paused "fun part.")
+6. **`ask`** — the oracle skill (retrieval ladder + citations).
 
-The vault namespace is real and usable today; the work left is the search primitive + the skills + the mail namespace.
+The vault, mail, and files namespaces are all live today; the work left is the full-text search primitive + the two skills + the `ask` oracle.
 
 ## Related
 
