@@ -163,6 +163,84 @@ describe("mail_* ergonomic tools", () => {
 		expect(sub.envelope.rcptTo).toEqual([{ email: "x@y.com" }, { email: "c@y.com" }]); // all recipients listed
 	});
 
+	// Reply/forward threading: install a fetch whose Email/get returns a rich source
+	// message and whose Email/set records the created draft, so we can assert the
+	// derived headers/recipients/subject/quote.
+	function installReplyFetch(src: any) {
+		let createdDraft: any = null;
+		const f = vi.fn(async (input: any, init?: any) => {
+			const url = String(input?.url ?? input);
+			if (url.includes("/jmap/session")) return json(SESSION);
+			if (url.includes("/jmap/api")) {
+				const body = init?.body ? JSON.parse(init.body) : {};
+				const methodResponses = (body.methodCalls ?? []).map((c: any) => {
+					const [m, args] = c;
+					if (m === "Email/get") return [m, { list: [src] }, c[2]];
+					if (m === "Mailbox/get") return [m, { list: MAILBOXES }, c[2]];
+					if (m === "Identity/get") return [m, { list: [{ id: "id1", name: "Me", email: "me@fastmail.com" }] }, c[2]];
+					if (m === "Email/set") {
+						createdDraft = args?.create?.draft ?? null;
+						return [m, { created: { draft: { id: "new-1" } } }, c[2]];
+					}
+					if (m === "EmailSubmission/set") return [m, { created: { sub: { id: "sub-1" } } }, c[2]];
+					return [m, {}, c[2]];
+				});
+				return json({ methodResponses, sessionState: "s1" });
+			}
+			return json({}, 404);
+		});
+		global.fetch = f as any;
+		return () => createdDraft;
+	}
+	const SRC = { id: "e1", threadId: "t1", messageId: ["<orig@site>"], references: ["<root@site>"], subject: "Question", from: [{ email: "boss@corp.com", name: "Boss" }], to: [{ email: "me@fastmail.com" }], cc: [{ email: "team@corp.com" }], receivedAt: "2026-07-09T00:00:00Z", textBody: [{ partId: "p1", type: "text/plain" }], bodyValues: { p1: { value: "original question" } } };
+
+	it("mail_send mode=reply threads (In-Reply-To/References), derives Re: subject + recipient, quotes", async () => {
+		const draftOf = installReplyFetch(SRC);
+		const out = parse(await tool("mail_send").run(env(), { mode: "reply", reply_to: "e1", text: "my answer" }));
+		expect(out).toMatchObject({ sent: true });
+		const d = draftOf();
+		expect(d.inReplyTo).toEqual(["<orig@site>"]);
+		expect(d.references).toEqual(["<root@site>", "<orig@site>"]);
+		expect(d.subject).toBe("Re: Question");
+		expect(d.to).toEqual([{ email: "boss@corp.com" }]); // reply → the sender, not the whole list
+		expect(d.cc).toBeUndefined();
+		expect(d.bodyValues.b.value).toContain("my answer");
+		expect(d.bodyValues.b.value).toContain("> original question");
+	});
+
+	it("mail_send mode=reply-all adds the other recipients to Cc, excluding self", async () => {
+		const draftOf = installReplyFetch(SRC);
+		await tool("mail_send").run(env(), { mode: "reply-all", reply_to: "e1", text: "hi all" });
+		const d = draftOf();
+		expect(d.to).toEqual([{ email: "boss@corp.com" }]);
+		expect(d.cc).toEqual([{ email: "team@corp.com" }]); // original Cc kept; me@fastmail.com (self) dropped
+	});
+
+	it("mail_send mode=forward prefixes Fwd:, needs explicit to, includes the forwarded block, no threading", async () => {
+		const draftOf = installReplyFetch(SRC);
+		const out = parse(await tool("mail_send").run(env(), { mode: "forward", reply_to: "e1", to: ["fwd@x.com"], text: "fyi" }));
+		expect(out).toMatchObject({ sent: true });
+		const d = draftOf();
+		expect(d.subject).toBe("Fwd: Question");
+		expect(d.to).toEqual([{ email: "fwd@x.com" }]);
+		expect(d.inReplyTo).toBeUndefined();
+		expect(d.bodyValues.b.value).toContain("Forwarded message");
+		expect(d.bodyValues.b.value).toContain("original question");
+	});
+
+	it("mail_send reply already tagged Re: doesn't double-prefix", async () => {
+		const draftOf = installReplyFetch({ ...SRC, subject: "Re: Question" });
+		await tool("mail_send").run(env(), { mode: "reply", reply_to: "e1", text: "ok" });
+		expect(draftOf().subject).toBe("Re: Question");
+	});
+
+	it("mail_send mode=reply requires reply_to", async () => {
+		installReplyFetch(SRC);
+		const r = await tool("mail_send").run(env(), { mode: "reply", text: "x" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toContain("reply_to");
+	});
+
 	it("mail_send rejects a past send_at", async () => {
 		installFetch();
 		const r = await tool("mail_send").run(env(), { to: ["x@y.com"], subject: "s", text: "t", send_at: "2000-01-01T00:00:00Z" });
