@@ -1,3 +1,4 @@
+import { DROPBOX_API as API, DROPBOX_CONTENT as CONTENT, type DropboxScope, dropboxFetch, dropboxRpc, headerSafeJson, MAX_INLINE_BYTES, scopeConfigured, TEXT_EXT } from "./_dropbox-core";
 import { type Fn, fail, ok, type RtEnv } from "../registry";
 import { fromB64, toB64 } from "./_util";
 
@@ -6,63 +7,30 @@ import { fromB64, toB64 } from "./_util";
 // see anything outside /Apps/<app>/, so the credential scope is the safety
 // boundary and no mutation gates are needed (docs/proposals/domains.md
 // §2-dropbox). All paths here are relative to the app-folder root.
-const API = "https://api.dropboxapi.com/2";
-const CONTENT = "https://content.dropboxapi.com/2";
-const OAUTH_TOKEN_URL = "https://api.dropbox.com/oauth2/token";
-const TOKEN_KEY = "sux:dropbox:token";
-
-// Dropbox access tokens are SHORT-LIVED (~4h `sl.` tokens) — a static
-// DROPBOX_TOKEN would expire mid-day. The durable path mirrors fns/kroger.ts:
-// store a long-lived REFRESH token + the app key/secret, mint short-lived
-// access tokens on demand, and cache them in KV until just before they expire.
-// A static DROPBOX_TOKEN is still honored as a quick-test fallback.
-async function dropboxToken(env: RtEnv): Promise<string> {
-	if (env.DROPBOX_REFRESH_TOKEN && env.DROPBOX_APP_KEY) {
-		const cached = await env.OAUTH_KV?.get(TOKEN_KEY);
-		if (cached) return cached;
-		// Confidential client (app secret set) → HTTP Basic auth. Public client (PKCE,
-		// no secret) → client_id in the body, no Authorization header. Both are valid
-		// Dropbox refresh flows; the public path lets the Worker hold NO long-lived
-		// app secret at all — only the app key (public) + the refresh token.
-		const hasSecret = Boolean(env.DROPBOX_APP_SECRET);
-		const headers: Record<string, string> = { "Content-Type": "application/x-www-form-urlencoded" };
-		if (hasSecret) headers.Authorization = `Basic ${btoa(`${env.DROPBOX_APP_KEY}:${env.DROPBOX_APP_SECRET}`)}`;
-		const resp = await fetch(OAUTH_TOKEN_URL, {
-			method: "POST",
-			headers,
-			body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(String(env.DROPBOX_REFRESH_TOKEN))}${hasSecret ? "" : `&client_id=${encodeURIComponent(String(env.DROPBOX_APP_KEY))}`}`,
-			signal: AbortSignal.timeout(20_000),
-		});
-		const j: any = await resp.json().catch(() => null);
-		if (!resp.ok || !j?.access_token) throw new Error(`Dropbox token refresh HTTP ${resp.status}: ${j?.error_description ?? j?.error ?? "no access_token"}`);
-		const ttl = Math.max(60, (Number(j?.expires_in) || 14_400) - 60); // clamp to KV's 60s floor
-		await env.OAUTH_KV?.put(TOKEN_KEY, String(j.access_token), { expirationTtl: ttl });
-		return String(j.access_token);
-	}
-	if (env.DROPBOX_TOKEN) return String(env.DROPBOX_TOKEN);
-	throw new Error("Dropbox not configured. Set DROPBOX_REFRESH_TOKEN + DROPBOX_APP_KEY (+ DROPBOX_APP_SECRET) for the durable refresh flow, or DROPBOX_TOKEN for a short-lived quick test.");
-}
+//
+// Dropbox access tokens are SHORT-LIVED (~4h `sl.` tokens) — a static DROPBOX_TOKEN
+// would expire mid-day. The durable path stores a long-lived REFRESH token + app
+// key/secret and mints short-lived access tokens on demand (the shared _dropbox-core
+// lifecycle — cache + 401 self-heal identical to Mode B). A static DROPBOX_TOKEN is
+// honored as a quick-test fallback.
+const appFolderScope = (env: RtEnv): DropboxScope => ({
+	tokenKey: "sux:dropbox:token",
+	refreshToken: env.DROPBOX_REFRESH_TOKEN,
+	appKey: env.DROPBOX_APP_KEY,
+	appSecret: env.DROPBOX_APP_SECRET,
+	staticToken: env.DROPBOX_TOKEN,
+	label: "Dropbox",
+	notConfigured: "Dropbox not configured. Set DROPBOX_REFRESH_TOKEN + DROPBOX_APP_KEY (+ DROPBOX_APP_SECRET) for the durable refresh flow, or DROPBOX_TOKEN for a short-lived quick test.",
+});
 
 /** True when Dropbox is usable by EITHER path — the durable refresh flow or a
  * static token. Callers (incl. ingest's blob routing) must gate on this, not on
  * env.DROPBOX_TOKEN alone, or the recommended durable-only config looks unset. */
-export const hasDropbox = (env: RtEnv): boolean => Boolean((env.DROPBOX_REFRESH_TOKEN && env.DROPBOX_APP_KEY) || env.DROPBOX_TOKEN);
+export const hasDropbox = (env: RtEnv): boolean => scopeConfigured(appFolderScope(env));
 
-/** Drop the cached access token so the next call re-mints from the refresh token.
- * Called on a 401 so a server-side revocation (app disconnect / password change)
- * self-heals on the next request instead of failing for the whole KV TTL (~4h). */
-async function invalidateToken(env: RtEnv): Promise<void> {
-	try {
-		await env.OAUTH_KV?.delete(TOKEN_KEY);
-	} catch {}
-}
-const TEXT_EXT = /\.(md|txt|json|csv|tsv|ya?ml|xml|html?|js|ts|css)$/i;
-/** Above this, get returns metadata + a share hint instead of inlining bytes. */
-const MAX_INLINE_BYTES = 4 * 1024 * 1024;
-
-// Dropbox requires the Dropbox-API-Arg header to be HTTP-header-safe JSON:
-// every char >= 0x7F escaped as \uXXXX (raw UTF-8 header bytes get a 400).
-const headerSafeJson = (v: unknown): string => JSON.stringify(v).replace(/[\u007f-\uffff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+// Thin per-scope binders so the call sites below read as before (dbxFetch/rpc take env).
+const dbxFetch = (env: RtEnv, url: string, build: (token: string) => RequestInit): Promise<Response> => dropboxFetch(env, appFolderScope(env), url, build);
+const rpc = (env: RtEnv, path: string, body: unknown): Promise<{ status: number; json: any }> => dropboxRpc(env, appFolderScope(env), path, body);
 
 const norm = (p: unknown): string => {
 	const s = String(p ?? "")
@@ -71,28 +39,9 @@ const norm = (p: unknown): string => {
 	return s ? `/${s}` : "";
 };
 
-// Direct fetch throughout: Dropbox is a public API — no residential-proxy
-// routing needed (same call as obsidian's remoteFetch to its Funnel). All calls
-// go through dbxFetch: it resolves the (KV-cached) bearer and, on a 401 under the
-// refresh flow, drops the cache and re-mints once — so a server-side revocation
-// self-heals on the next request instead of failing for the whole ~4h TTL.
-async function dbxFetch(env: RtEnv, url: string, build: (token: string) => RequestInit): Promise<Response> {
-	const first = await fetch(url, build(await dropboxToken(env)));
-	if (first.status !== 401 || !(env.DROPBOX_REFRESH_TOKEN && env.DROPBOX_APP_KEY)) return first;
-	await invalidateToken(env);
-	return fetch(url, build(await dropboxToken(env)));
-}
-
-async function rpc(env: RtEnv, path: string, body: unknown): Promise<{ status: number; json: any }> {
-	const resp = await dbxFetch(env, `${API}${path}`, (token) => ({
-		method: "POST",
-		headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-		body: JSON.stringify(body),
-		signal: AbortSignal.timeout(20_000),
-	}));
-	const json: any = await resp.json().catch(() => null);
-	return { status: resp.status, json };
-}
+// Direct fetch throughout (via the shared _dropbox-core plumbing): Dropbox is a
+// public API — no residential-proxy routing needed. dbxFetch resolves the KV-cached
+// bearer and, on a 401 under the refresh flow, drops the cache and re-mints once.
 
 /** Create a shared link for a path, reusing the existing one on 409. */
 async function sharedLink(env: RtEnv, path: string): Promise<string | undefined> {
