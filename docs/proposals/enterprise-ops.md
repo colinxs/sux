@@ -275,8 +275,12 @@ guarantee a message is triaged once, forever.
 ## 6. (D) The 3-way task fan-out — vault + Fastmail/JMAP calendar + Todoist
 
 This is the WRITE-side heart of the layer. It is specified in full in `vault-backends.md` Part 2;
-summarized here as it is used by §2.2. **Not Google** — the calendar leg is Fastmail JMAP
-`CalendarEvent`, riding the mail namespace's `jmap` surface.
+summarized here as it is used by §2.2. **Not Google** — the calendar leg is the **Fastmail
+calendar**. **[Shipped correction 2026-07-11:** it rides the **CalDAV** subsystem
+(`cal_*`/`task_*` verbs over `_caldav.ts`, app-password gated), **not** a JMAP `CalendarEvent`
+over the `jmap` surface — Fastmail advertises no JMAP calendars capability. Every
+`create_event`/`update_event`/`delete_event` / `CalendarEvent/set` reference in this doc
+(incl. the §1 namespace tables) should read as `cal_create`/`cal_delete`/`task_*` on CalDAV.]**
 
 **A converging replica set, vault as tie-break hub** (no single writer):
 

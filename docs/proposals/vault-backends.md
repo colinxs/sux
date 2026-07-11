@@ -265,8 +265,14 @@ the conflict marker file. git history is the undo — any bad converge is `git r
 
 **Colin LOCKED:** full 3-way sync between the **vault** (canonical checkbox + context —
 the HUB), **Todoist** (task semantics: inbox / projects / priorities), and the
-**Fastmail JMAP calendar** (the time-block CalendarEvent — NOT Google Calendar). Colin is
+**Fastmail calendar** (the time-block event — NOT Google Calendar). Colin is
 **RESUMING Todoist** (domains.md previously said *no* Todoist; that is now reversed).
+
+> **Shipped correction (2026-07-11):** the calendar leg is **CalDAV, not JMAP**. Fastmail
+> advertises no JMAP calendars capability, so the shipped calendar/tasks surface is a
+> CalDAV subsystem (`sux/src/fns/_caldav.ts` + `cal_*`/`task_*` verbs in `mail-mcp.ts`,
+> app-password gated), not `CalendarEvent/set` over `jmap`. This design's calendar leg must
+> ride `cal_create`/`task_create` (VEVENT/VTODO), not a JMAP `CalendarEvent`.
 
 ## 2.1 Model — a converging replica set (no single writer)
 
