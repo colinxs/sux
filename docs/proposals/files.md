@@ -95,20 +95,22 @@ The corpus — the whole Dropbox account, and (Class B, later) local disk — is
 |---|---|---|---|
 | `files_search` | Find across the corpus. **Filename/metadata** via Dropbox `files/search_v2` (server-side, instant); **full-text** over document contents via the index (§8) or computed on demand. Filters: `path_prefix`, `ext`, `modified_after`, `size`. **Read-only — cannot mutate.** | **returns** `[{ path, rev, size, modified, snippet? }]` — **handles + metadata + optional snippet, never full bodies** | multiple queries fan out concurrently; cursor-honest paging |
 | `files_read` | Extract the text of **one** corpus file (the explicit single-read exception to §0). Routes by type: PDF→`pdf`/text layer, image→`ocr`, HTML→`extract` readability, office→`extract`. Binary with no text layer → returns a **download-link handle + metadata**, not bytes. **Read-only.** | **accepts** one path/rev handle; **returns** extracted text (or a download-link handle) | for many, use `files_search` → `files_operate` with an `extract` transform, not a fan of reads into context |
-| `files_operate` | **The find→transform→write-back primitive.** Takes a **find spec** (a `files_search` query) **or an explicit list of handles**, a **transform**, and a **write-back policy**. Runs the whole pipeline **server-side** — search, fetch bytes edge-side, transform via the content-op fns, write the result back — and returns **only a report of handles**. Write-intent → **plan→confirm→mutate→report** (§6). | **accepts** a find spec or list of handles; **returns** `{ inputs:[handles], output:handle, replaced:bool, backup:handle }` | **this verb *is* the fan-out** — it takes the list and reduces server-side (extends `batch`'s `reduce_with`) |
+| `files_operate` | **The find→plan→apply primitive for set operations.** Takes a **find spec** (a `files_search` query) **or an explicit list of handles**, an **action** (`move`/`delete`), and runs it **server-side** over the whole set, returning **only a report of handles**. Write-intent → **plan→confirm→mutate→report** (§6). | **accepts** a find spec or list of handles; **returns** `{ matched/applied, action, targets/results }` | **this verb *is* the fan-out** — it takes the list and reduces server-side (extends `batch`'s `reduce_with`) |
+| `files_transform` | **The content-transform primitive** (the merge leg of the foobar case). `op:'merge'` joins 2..20 source handles into one `dest` (raw-byte `concat`, or `pdf` render+merge via the `pdf` fn); `op:'extract'` slices ONE source by `byte_range`/`line_range` into `dest`. Bytes are fetched edge-side; the result is written back through the **same** write firewall as `files_write full:true` (§6) — dry-run by default, fence, rev-safety, `/.sux-trash` backup, output cap. | **accepts** source handles + a `dest`; **returns** `{ op, inputs:[{path,size}], output_bytes, …write-report }` | it *is* the reduce — N handles → one written file, zero bytes through context |
 
-**Transforms `files_operate` supports** (each is an existing content-op fn, composed server-side):
+**What landed vs. the fuller catalog.** The shipped split is deliberate: `files_operate` owns the **set** actions (move/delete — organize + cleanup), and `files_transform` owns the **content** actions whose input shapes (`sources`/`source`/ranges) don't map onto operate's `find`/`handles`. Landed transforms compose only the primitives that exist to compose:
 
-| transform | fn(s) | example |
+| transform | fn(s) | status |
 |---|---|---|
-| **merge** | `pdf` (`sources:[…]` merged in order) | the canonical foobar case (§5) |
-| **split** | `pdf` (`pages:'1-3,5,8-'`) | burst a scan into per-section PDFs |
-| **compress** | `image_convert` (quality/resize) · `compress` (lossless) | shrink a folder of photos in place |
-| **convert** | `image_convert` (png/jpeg/webp/avif) · `pdf` (anything→PDF) | HEIC→JPEG a camera-roll folder |
-| **extract / ocr** | `extract` · `ocr` | dump text sidecars for a scanned-doc folder |
-| **rename / move** | Dropbox `move_v2` | normalize `IMG_*.jpg` → dated names |
+| **merge** | `pdf` (`sources:[…]` merged in order) or raw-byte concat | **landed** — `files_transform op:merge` (the canonical foobar case, §5) |
+| **extract (byte/line slice)** | written fresh (no fn slices an arbitrary file's bytes/lines) | **landed** — `files_transform op:extract` |
+| **split** | `pdf` (`pages:'1-3,5,8-'`) | future — burst a scan into per-section PDFs |
+| **compress** | `image_convert` (quality/resize) · `compress` (lossless) | future — shrink a folder of photos in place |
+| **convert** | `image_convert` (png/jpeg/webp/avif) · `pdf` (anything→PDF) | future — HEIC→JPEG a camera-roll folder |
+| **ocr** | `ocr` · `extract` | future — dump text sidecars for a scanned-doc folder |
+| **rename / move** | Dropbox `move_v2` | **landed** — `files_operate action:move` |
 
-The transform runs on **bytes the Worker fetched from a handle** (Dropbox `download_link` / `files/download`), never on bytes the model carried. The output is `put` back via the write-back policy (§6).
+The transform runs on **bytes the Worker fetched from a handle** (Dropbox `download_link` / `files/download`), never on bytes the model carried. The output is written back via the write firewall (§6). Note the merge fidelity caveat: `pdf`-mode merge always renders through the PDF pipeline, so merging non-PDF sources means "each source → PDF page(s), then concatenate," not a raw byte join — use `mode:concat` when you want the literal bytes.
 
 ---
 
@@ -124,6 +126,8 @@ files_operate({
                backup: true }                         // pre-op copies originals to /Apps/sux/.trash/
 })
 ```
+
+**As shipped**, this is a two-verb pipeline (the transform inputs don't fit `files_operate`'s set shape, so merge lives in `files_transform`): `files_search({query:"foobar", ext:["pdf"]})` returns the handles → `files_transform({op:"merge", sources:[…the matches…], dest:"<first match>", overwrite:true})`. `files_transform` defaults to a dry-run plan (resolved sources, sizes, would-overwrite); pass `dry_run:false` to apply. The originals move to backup with a follow-up `files_operate({action:"move", handles:[…the rest…], dest:"/…/.trash/…"})` — each step behind the §6 firewall.
 
 **What runs, all edge-side, zero bytes in context:**
 1. `files_search("foobar", ext:pdf)` → a list of `{path, rev}` **handles** (say 4 PDFs). *Read step — presented to Colin as the plan: "4 PDFs match; merge into `<first>`, moving the 4 originals to backup. Confirm?"*
@@ -178,7 +182,7 @@ Two layers, and the doc is explicit about which is server-side-instant and which
 
 | tier | how | when | cost |
 |---|---|---|---|
-| **now — compute on demand** | `files_search` filename-filters to a candidate set, then `files_operate({transform:'extract'})` pulls text edge-side and greps it | v1 | O(candidates) extraction per query — fine for a bounded folder, not for "grep my whole Dropbox" |
+| **now — compute on demand** | `files_search` filename-filters to a candidate set, then `files_read` pulls each candidate's text edge-side and greps it (a future `files_transform` text-extract op would batch this) | v1 | O(candidates) extraction per query — fine for a bounded folder, not for "grep my whole Dropbox" |
 | **later — KV content index** | a background sweep extracts text once and writes an inverted index / per-file text sidecar into **KV** (`files:ft:<sha>` — content-addressed, so re-indexing dedupes and a changed file re-keys); `files_search(full_text:true)` reads the index | when on-demand grep gets slow | one-time extraction per file + KV storage; incremental on change |
 | **someday — vector recall** | embeddings over the extracted text (mirrors the vault's Smart-Connections trigger) | only if keyword full-text misses at scale | not v1, trigger written down |
 
@@ -223,7 +227,7 @@ So the build is **mostly wiring**: a `files-mcp.ts` protocol shell + tool table 
 5. Cursor-honest paging; "which layer answered" labeling.
 
 **Phase 2 — Mode B operate tier** *(the payoff)*
-6. `files_operate`: find→fetch→transform→write-back, server-side, with the §6 plan→confirm→mutate→report firewall and the `.trash/` backup. Transforms: merge/split/compress/convert/extract/rename. Canonical foobar example is the acceptance test.
+6. `files_operate` (set actions: move/rename + delete) and `files_transform` (content actions: merge N→1, extract a byte/line slice) — server-side, with the §6 plan→confirm→mutate→report firewall and the `/.sux-trash` backup. **Landed.** Remaining transforms (split/compress/convert/ocr) are future additions on the same firewall. Canonical foobar example is the acceptance test.
 7. Decide Option 1 vs 2 for volume: add `DROPBOX_FULL_*` secrets if server-side fan-out is wanted.
 
 **Phase 3 — full-text search** *(only if on-demand grep gets slow)*
