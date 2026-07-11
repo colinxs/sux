@@ -20,7 +20,7 @@ related: ["[[keys]]", "[[token-setup]]", "[[Functions-MOC]]"]
 **BLOCKED — build deferred, not designed-away.** Research invalidated the task's core
 premise. PWS has **no public/anonymous tier**: it is a **single tier**, gated by
 **mutual TLS (x509 client cert)** at the TLS handshake. A plain `fetch()` — what all
-~91 existing fns use — cannot reach it. Getting a cert is a real UW-IT approval
+~95 existing fns use — cannot reach it. Getting a cert is a real UW-IT approval
 workflow, not a config toggle, so it can't be satisfied inside this session or by a
 Worker secret alone.
 
