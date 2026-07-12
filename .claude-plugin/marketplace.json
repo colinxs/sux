@@ -1,19 +1,13 @@
 {
   "name": "sux",
-  "description": "Marketplace for sux: ONE universal OAuth-gated connector (https://sux.colinxs.workers.dev/mcp) whose front-door verbs cover web/data/compute — search, scrape/render, papers, shopping, transforms, pipe/batch — plus `recall` and the `fn` escape hatch, alongside the sux-life memory skill. Your personal namespaces live behind separate /<domain>/mcp connectors on the same Worker (vault_/mail_/files_/cal_/contact_ verbs) — live and OAuth-authorized, but hidden from the default discovery manifest (opt in with `?all=1`).",
+  "description": "Marketplace for sux: ONE OAuth-gated plugin — one universal connector (https://sux.colinxs.workers.dev/mcp) whose front-door verbs cover web/data/compute — search, scrape/render, papers, shopping, transforms, pipe/batch — plus `recall` and the `fn` escape hatch, bundled with both the `sux` routing skill and the `life` memory skill. Your personal namespaces live behind separate /<domain>/mcp connectors on the same Worker (vault_/mail_/files_/cal_/contact_ verbs) — live and OAuth-authorized, but hidden from the default discovery manifest (opt in with `?all=1`).",
   "owner": { "name": "colinxs" },
   "plugins": [
     {
-      "name": "sux-router",
-      "source": "./plugins/sux-router",
-      "description": "The one sux connector (https://sux.colinxs.workers.dev/mcp) + the `sux` routing skill. A single OAuth-gated front door: web search, scraping/rendering, papers, shopping, documents, transforms, pipe/batch composition, plus `recall` and the `fn` escape hatch. Personal vault/mail/files live behind their own /<domain>/mcp connectors (`vault_`/`mail_`/`files_`/`cal_`/`contact_` verbs) — reachable and OAuth-authorized, but not advertised in the default manifest. OAuth in-browser on first connect.",
-      "version": "0.3.0"
-    },
-    {
-      "name": "sux-life",
-      "source": "./plugins/sux-life",
-      "description": "The digital-life MEMORY layer — a skill (no separate connector) that turns the one sux connector into a second brain: capture, remember durable facts/people/decisions, recall across notes + mail + files + web with citations, triage the inbox, consolidate into a linked graph. Git is the undo. Rides on sux-router's front door.",
-      "version": "0.2.0"
+      "name": "sux",
+      "source": "./plugins/sux",
+      "description": "The one sux connector (https://sux.colinxs.workers.dev/mcp) + both skills: the `sux` routing skill AND the `life` memory skill. A single OAuth-gated front door — web search, scraping/rendering, papers, shopping, documents, transforms, pipe/batch composition, plus `recall` and the `fn` escape hatch; the `life` skill turns it into a second brain (capture, remember durable facts/people/decisions, recall with citations, triage the inbox, consolidate into a linked graph). Personal vault/mail/files live behind their own /<domain>/mcp connectors (`vault_`/`mail_`/`files_`/`cal_`/`contact_` verbs) — reachable and OAuth-authorized, but not advertised in the default manifest. One install, one connector, everything behind it. OAuth in-browser on first connect.",
+      "version": "0.4.0"
     }
   ]
 }

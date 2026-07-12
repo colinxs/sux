@@ -544,7 +544,7 @@ describe("rtServer.fetch — connector manifest + dormant namespace routes", () 
 
 	type Manifest = { name: string; connectors: Array<{ name: string; url: string; tools: number | null }> };
 
-	it("GET /mcp/connectors default view surfaces only the advertised sux-router connector", async () => {
+	it("GET /mcp/connectors default view surfaces only the advertised sux connector", async () => {
 		const { kv } = makeKv();
 		const res = await rtServer.fetch(new Request("https://sux.example.dev/mcp/connectors"), makeEnv(kv), gateCtx());
 		expect(res.status).toBe(200);
