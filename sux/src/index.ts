@@ -12,6 +12,7 @@ import { hasAI, llm } from "./ai";
 // would cost more than the tokens it saves, and may even grow the text).
 const SUMMARIZE_MIN_CHARS = 400;
 import { FUNCTIONS } from "./fns";
+import { selfImproveTick } from "./fns/_self_improve";
 import { recordCall } from "./metrics";
 import { shipToLoki } from "./grafana";
 import { handleObservability } from "./observability";
@@ -487,10 +488,13 @@ export function oauthErrorResponse(e: unknown): Response {
 // redirect_uri), which Cloudflare surfaces as a raw 1101 error page. Wrap it so
 // those become clean JSON errors: 400 for client mistakes, 500 otherwise.
 export default {
-	// Cron Trigger entrypoint. Best-effort only: the whole tick is deferred via
-	// ctx.waitUntil and self-contained in try/catch so it never throws.
+	// Cron Trigger entrypoint. Best-effort only: each tick is deferred via
+	// ctx.waitUntil and self-contained in try/catch so it never throws. The
+	// self-improvement tick rides the SAME daily cron beside the Kroger refresh; it
+	// ships dormant (fail-closed) and no-ops entirely unless SELF_IMPROVE_ENABLE is set.
 	async scheduled(_event: ScheduledController, env: RtEnv, ctx: ExecutionContext): Promise<void> {
 		ctx.waitUntil(maintenanceTick(env));
+		ctx.waitUntil(selfImproveTick(env).then(() => {}));
 	},
 	async fetch(request: Request, env: RtEnv, ctx: ExecutionContext): Promise<Response> {
 		// Public, unauthenticated observability routes (health/metrics/dashboard)

@@ -44,6 +44,7 @@ import { kv_put } from "./kv_put";
 import { kv_list } from "./kv_list";
 import { kv_delete } from "./kv_delete";
 import { issue } from "./issue";
+import { suggest } from "./suggest";
 import { imageConvert } from "./image_convert";
 import { recall } from "./recall";
 import { ace } from "./ace";
@@ -144,6 +145,7 @@ export const FUNCTIONS: Fn[] = [
 	kv_list,
 	kv_delete,
 	issue,
+	suggest,
 	imageConvert,
 	recall,
 	ace,
