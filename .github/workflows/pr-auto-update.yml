@@ -1,0 +1,59 @@
+# The missing "auto-update-behind" limb: branch protection is strict=true (a PR
+# must be up-to-date with main to merge), but nothing re-bases open PRs when main
+# moves. So when one PR merges, every other armed-auto-merge PR flips BEHIND and
+# stalls until a human clicks "Update branch". This runs `gh pr update-branch` on
+# armed-but-BEHIND PRs so the queue self-drains. Verified needed this session:
+# #143 and #144 both required a manual update-branch before the bot could merge.
+#
+# update-branch pushes to the PR branch (never main), so the push:main trigger
+# cannot self-loop. Only mutates armed PRs (auto-merge enabled) that are BEHIND
+# and not held — update-branch is reversible (it just merges main into the PR).
+name: PR auto-update (self-drain)
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 */2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: pr-auto-update
+  cancel-in-progress: false
+
+jobs:
+  update-behind:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update armed BEHIND PRs onto main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          prs=$(gh pr list --state open --limit 100 \
+            --json number,mergeStateStatus,isDraft,autoMergeRequest,labels \
+            --jq '.[]
+              | select(.isDraft == false)
+              | select(.autoMergeRequest != null)
+              | select(.mergeStateStatus == "BEHIND")
+              | select(([.labels[].name] | index("hold")) | not)
+              | .number')
+          if [ -z "$prs" ]; then
+            echo "No armed BEHIND PRs to update."
+            exit 0
+          fi
+          for n in $prs; do
+            echo "::group::update-branch PR #$n"
+            if gh pr update-branch "$n"; then
+              echo "updated #$n onto main"
+            else
+              echo "::warning::update-branch failed for #$n (skipping, will retry next run)"
+            fi
+            echo "::endgroup::"
+            sleep 3
+          done
