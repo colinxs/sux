@@ -1,5 +1,6 @@
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { smartFetch } from "../proxy";
+import { unlockerRender } from "../unlocker-render";
 import { normalizeMoney, type RetailProduct, type RetailResult } from "./_retail";
 import { errMsg } from "./_util";
 
@@ -8,8 +9,11 @@ import { errMsg } from "./_util";
 // coherent Chrome TLS/HTTP2) reaches its search HTML where a datacenter fetch is
 // blocked. So we force the residential proxy, pull the CatalogSearch results
 // page, and extract products out of the HTML — embedded JSON first, product
-// tiles as the fallback. Best-effort throughout: parsing never throws, and a
-// zero-product result is disambiguated (Akamai block vs. layout change).
+// tiles as the fallback. When Akamai still blocks the proxy fetch, the ladder
+// escalates to the paid residential unlocker (gated behind UNLOCKER_API_*; no-ops
+// when unset). Costco has NO render backend — the mac/cf render nodes are never
+// tried here. Best-effort throughout: parsing never throws, and a zero-product
+// result is disambiguated (Akamai block vs. layout change).
 
 
 /** Absolute costco.com URL from a possibly-relative href. */
@@ -177,7 +181,7 @@ export const costco: Fn = {
 	name: "costco",
 	description:
 		"Costco product search. Costco is behind Akamai but its wall is JA3/fingerprint-centric, so this fetches the CatalogSearch results HTML through the residential curl-impersonate proxy and extracts normalized products. " +
-		"`action`: search (only). Best-effort HTML extraction; if Akamai blocks the page it fails with a hint to try render backend:mac. Returns normalized JSON.",
+		"`action`: search (only). Best-effort HTML extraction; if Akamai blocks the proxy fetch it escalates to the paid residential unlocker when configured, else fails as blocked. Returns normalized JSON.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -205,12 +209,21 @@ export const costco: Fn = {
 			return failWith("upstream_error", `costco: fetch failed — ${errMsg(e)}`);
 		}
 
-		const products = extractProducts(html).slice(0, limit);
+		let products = extractProducts(html).slice(0, limit);
 		if (!products.length) {
 			const blocked = /Access Denied|sec-cpt/i.test(html) || html.trim().length < 1000;
-			return blocked
-				? failWith("blocked", "costco: blocked by Akamai (try render:mac) — no products")
-				: failWith("layout_change", "costco: no products extracted (layout change)");
+			if (blocked) {
+				// Akamai blocked the residential proxy fetch — escalate to the paid unlocker.
+				// No-ops instantly when UNLOCKER_API_* is unset, falling straight through to
+				// the blocked failure below.
+				const u = await unlockerRender(env, { url });
+				if (u.ok) products = extractProducts(u.body).slice(0, limit);
+			}
+			if (!products.length) {
+				return blocked
+					? failWith("blocked", "costco: blocked by Akamai — no products (unlocker unset or also blocked)")
+					: failWith("layout_change", "costco: no products extracted (layout change)");
+			}
 		}
 
 		const result: RetailResult = { retailer: "costco", action: "search", count: products.length, products };

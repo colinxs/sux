@@ -133,6 +133,13 @@ export type RtEnv = Env &
 		MAC_RENDER_URL?: string;
 		MAC_RENDER_SECRET?: string;
 
+		// Paid residential "web unlocker" (Bright Data / Zyte / Oxylabs) — the last rung
+		// of the retail escalation ladder (homedepot/costco) after cf + mac fail. Optional
+		// pair, same fail-closed convention as MAC_RENDER_*: unset → the rung no-ops. See
+		// sux/src/unlocker-render.ts.
+		UNLOCKER_API_URL?: string;
+		UNLOCKER_API_KEY?: string;
+
 		// Grafana Cloud Loki push (observability). All three required to ship logs;
 		// absent → sux emits metrics locally only. See sux/src/grafana.ts.
 		GRAFANA_LOKI_URL?: string;

@@ -3,15 +3,15 @@ import { type Fn, fail, ok, type RtEnv } from "../registry";
 import { normalizeMoney, type RetailProduct } from "./_retail";
 
 // Lowe's has no public product API and serves its catalog from a client-side React
-// app, so a plain fetch returns a shell with no products. The mac render backend (a
-// residential patched browser) renders the client-side grid, so this fn renders
-// Lowe's search page and lifts products out of the rendered HTML. Rendering goes
-// through `retailRender`: the mac backend is primary, with a Cloudflare Browser
-// Rendering (residential + stealth) fallback when the mac node is down. Lowe's renders
-// fine without a captcha; the backend auto-escalates its solver only if a wall
-// appears, so we do NOT force-solve. Extraction is best-effort and two-tier: prefer
-// an embedded state blob when present, else parse the `/pd/…` product anchors. Every
-// step guards/try-catches — never throws.
+// app, so a plain fetch returns a shell with no products. This fn renders Lowe's
+// search page through `retailRender` and lifts products out of the rendered HTML.
+// Rendering defaults to Cloudflare Browser Rendering (residential + stealth); the mac
+// render backend (a residential patched browser) is the dormant fallback for when cf
+// can't clear a wall. Lowe's renders fine without a captcha; the backend
+// auto-escalates its solver only if a wall appears, so we do NOT force-solve.
+// Extraction is best-effort and two-tier: prefer an embedded state blob when present,
+// else parse the `/pd/…` product anchors. Every step guards/try-catches — never
+// throws.
 
 const NO_PRODUCTS_MSG = "lowes: no products extracted (layout change).";
 // Emitted instead of the layout-change message when the rendered page looks like a
@@ -177,9 +177,9 @@ export const lowes: Fn = {
 	name: "lowes",
 	cost: 5,
 	description:
-		"Lowe's product lookup via the mac render backend (a residential patched browser that renders Lowe's client-side React catalog — Lowe's has no public product API and a plain fetch returns an empty shell). " +
+		"Lowe's product lookup via a rendered browser (Lowe's has no public product API and serves a client-side React catalog a plain fetch returns empty). Renders through Cloudflare Browser Rendering (residential + stealth) by default, falling back to the mac render backend (a residential patched browser) when cf can't clear a wall. " +
 		"`action`: search (products for a `term`) or product (a single item by `item_id`). Extraction is best-effort from the rendered page (embedded state blob when present, else `/pd/…` product tiles), normalized to the shared retail shape (id/title/price/image/url). " +
-		"`limit` caps results (default 15, max 40). Slower than an API and falls back to Cloudflare Browser Rendering (residential + stealth) if the mac render backend is down.",
+		"`limit` caps results (default 15, max 40). Slower than an API.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,

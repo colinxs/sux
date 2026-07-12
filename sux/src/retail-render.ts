@@ -1,16 +1,18 @@
-// Resilient render for the retailer fns: try the Mac backend first, fall back to
-// Cloudflare Browser Rendering (residential + stealth) when it's down.
+// Resilient render for the retailer fns: try Cloudflare Browser Rendering
+// (residential + stealth) FIRST, fall back to the Mac patched-browser backend only
+// when cf can't clear a given wall.
 //
-// The Mac node is primary because it has the best track record against active bot
-// walls and owns the solver tiers the cf path CANNOT replicate — the PerimeterX
-// press-and-hold gesture and the CapSolver captcha tier. But when the node is
-// off/502/circuit-open, a mac-only retailer fn fails outright. cf-residential is a
-// PROVEN fallback for at least Amazon's AWS WAF (verified live), and worst-case it
-// matches today's behavior since it only fires AFTER mac has already failed.
+// cf-residential is the DEFAULT backend: a stealthed headless Chromium egressing
+// from a home IP, a proven pass for the WAF/soft-bot walls the retailers hit on the
+// common path (Amazon's AWS WAF, verified live) with no dependency on the single
+// flaky Mac node. The Mac node is now a DORMANT fallback — it still owns the solver
+// tiers cf CANNOT replicate (the PerimeterX press-and-hold gesture, the CapSolver
+// captcha pass), so a call facing a gesture/captcha wall opts back into mac-first
+// per call (opts.preferMac) or reaches the node explicitly via backend:mac.
 //
 // Whichever backend answers, the caller runs the SAME extractor on the returned
 // HTML (the extractors are backend-agnostic). Never throws — if BOTH fail we
-// surface the mac error, the more informative signal and the message callers match.
+// surface the first (primary) backend's error, the signal callers match on.
 
 import { cfRender } from "./cf-render";
 import { type MacRenderResult, macRender } from "./mac-render";
@@ -28,33 +30,56 @@ export type RetailRenderSpec = {
 };
 
 export type RetailRenderOpts = {
-	// Try cf-residential FIRST (mac as fallback). Right for AWS-WAF sites (Amazon) where
-	// cf+residential+stealth is a proven pass — avoids the flaky mac node on the common
-	// path. Leave false for PerimeterX/Akamai sites (Walmart/HomeDepot) where only the
-	// mac node's gesture + solver tiers get through.
-	preferCf?: boolean;
+	// Opt back into mac-FIRST (cf as the fallback) for a specific retailer/call. cf is
+	// the universal default; set this ONLY when cf regresses on a wall that needs the
+	// mac node's gesture/captcha tiers up front (a PerimeterX press-and-hold or a real
+	// captcha wall) so the flaky-but-capable node leads instead of trailing.
+	preferMac?: boolean;
 };
 
-// Both legs run sequentially inside the 60s FN_DEADLINE_MS, and the mac leg's HTTP
-// timeout is its render budget + a ~15s margin — so the FIRST leg must be capped well
-// under the deadline or the fallback never runs (the bug this fixes). Budgets chosen so
-// worst case (first + second + mac margin) lands ~52s, leaving an 8s buffer.
+// Both legs run sequentially inside the 60s FN_DEADLINE_MS, and the mac (fallback)
+// leg's HTTP timeout is its render budget + a ~15s margin — so the FIRST (cf) leg
+// must be capped well under the deadline or the fallback never runs. Budgets chosen
+// so worst case (first + second + mac margin) lands ~52s, leaving an 8s buffer. A
+// caller adding a THIRD escalation rung (e.g. the paid unlocker on homedepot/costco)
+// must keep its own budget inside that buffer — FN_DEADLINE_MS is the hard backstop.
 const FIRST_LEG_MS = 25_000;
 const SECOND_LEG_MS = 12_000;
 
+// A bot WALL comes back as a "successful" fetch of a block/challenge page, not a transport
+// error — so a leg that returns HTML isn't necessarily a win. Treat a page carrying these
+// signatures as a FAILURE so the ladder escalates (cf→mac, and the caller's unlocker rung)
+// instead of returning the wall as content. MARKER-based only (no blanket length check — a
+// legitimately short page must not read as blocked): Akamai (Access Denied / sec-cpt /
+// Reference #), PerimeterX-HUMAN (Pardon Our Interruption / verify you are human / px-captcha),
+// Cloudflare/Imperva challenge.
+const BLOCK_RE = /Access Denied|sec-cpt|Pardon Our Interruption|verify you are (a )?human|px-captcha|Attention Required|Just a moment|Incapsula|Request unsuccessful|Reference #\d/i;
+export const looksBlocked = (html: string | undefined): boolean => !!html && BLOCK_RE.test(html);
+
 /**
- * Render a retail page across the mac + cf backends with a deadline-safe fallback.
- * Order is mac→cf by default, cf→mac when opts.preferCf. Returns the never-throw mac
+ * Render a retail page across the cf + mac backends with a deadline-safe fallback.
+ * Order is cf→mac by default, mac→cf when opts.preferMac. Returns the never-throw mac
  * envelope; on total failure it surfaces the first (primary) backend's error.
  */
 export async function retailRender(env: RtEnv, spec: RetailRenderSpec, opts: RetailRenderOpts = {}): Promise<MacRenderResult> {
-	const order: Array<"mac" | "cf"> = opts.preferCf ? ["cf", "mac"] : ["mac", "cf"];
+	const order: Array<"mac" | "cf"> = opts.preferMac ? ["mac", "cf"] : ["cf", "mac"];
 	const firstBudget = Math.min(spec.timeout_ms ?? FIRST_LEG_MS, FIRST_LEG_MS);
 
 	const runLeg = async (backend: "mac" | "cf", budget: number): Promise<MacRenderResult> => {
-		if (backend === "mac") return macRender(env, { as: "html", ...spec, timeout_ms: budget });
+		if (backend === "mac") {
+			const m = await macRender(env, { as: "html", ...spec, timeout_ms: budget });
+			// A mac leg that returns a wall (rare — mac solves challenges — but possible) must
+			// also escalate, not pass the block page through as content.
+			if (m.ok && "body" in m && looksBlocked(m.body)) return { ok: false, error: "mac render blocked (bot wall)" };
+			return m;
+		}
 		const cf = await cfRender(env, { url: spec.url, as: "html", wait_until: spec.wait_until, wait_ms: spec.wait_ms, block_resources: spec.block_resources, timeout_ms: budget, residential: true, stealth: true });
-		if (cf.ok && "body" in cf) return { ok: true, contentType: cf.contentType, body: cf.body };
+		if (cf.ok && "body" in cf) {
+			// cf cleared transport but may have fetched a bot wall — a "successful" block page.
+			// Treat it as a failure so the ladder escalates to mac / the paid unlocker.
+			if (looksBlocked(cf.body)) return { ok: false, error: "cf render blocked (bot wall)" };
+			return { ok: true, contentType: cf.contentType, body: cf.body };
+		}
 		return { ok: false, error: cf.ok ? "cf render returned a non-HTML result" : cf.error };
 	};
 

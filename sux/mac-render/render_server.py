@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
-import os, json, hmac, hashlib, base64, asyncio
+import os, json, hmac, hashlib, base64, asyncio, time
 from aiohttp import web
 from patchright.async_api import async_playwright
 
 SECRET = os.environ.get("RENDER_SECRET", "").encode()
 PORT = int(os.environ.get("PORT", "8790"))
 CONC = int(os.environ.get("CONCURRENCY", "4"))
+# The Worker signs `${ts}\n${body}` with ts = Date.now() (epoch MILLISECONDS). The
+# HMAC proves the ts wasn't forged, but a *captured* signed request stays valid
+# forever unless we also bound its age — so reject anything whose ts is more than
+# MAX_TS_SKEW_MS old (or that far in the future, for clock drift). Kills replay of a
+# sniffed /render call.
+MAX_TS_SKEW_MS = 300_000
 BLOCK = {"image", "media", "font", "stylesheet"}
 
 def _read_key():
@@ -139,6 +145,12 @@ async def h_render(req):
     calc = hmac.new(SECRET, (ts + "\n").encode() + raw, hashlib.sha256).hexdigest()
     if not sig or not hmac.compare_digest(calc, sig):
         return web.json_response({"error": "unauthorized"}, status=401)
+    try:
+        age = abs(time.time() * 1000 - int(ts))
+    except ValueError:
+        return web.json_response({"error": "unauthorized"}, status=401)
+    if age > MAX_TS_SKEW_MS:
+        return web.json_response({"error": "stale_timestamp"}, status=401)
     try:
         spec = json.loads(raw)
     except Exception:

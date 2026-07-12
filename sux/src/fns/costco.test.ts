@@ -1,11 +1,23 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../proxy", () => ({
 	smartFetch: vi.fn(async () => new Response("", { status: 200 })),
 }));
+vi.mock("../unlocker-render", () => ({ unlockerRender: vi.fn() }));
 
 import { smartFetch } from "../proxy";
+import { unlockerRender } from "../unlocker-render";
 import { costco } from "./costco";
+
+const unlockerRenderMock = vi.mocked(unlockerRender);
+
+beforeEach(() => {
+	// Default the unlocker to unconfigured (the fail-closed production default); the
+	// escalation test overrides it.
+	unlockerRenderMock.mockReset();
+	unlockerRenderMock.mockResolvedValue({ ok: false, error: "unlocker not configured" });
+});
+afterEach(() => vi.restoreAllMocks());
 
 // A couple of realistic Costco search-result product tiles: an image thumbnail
 // anchor and a description anchor both pointing at `<slug>.product.<id>.html`,
@@ -109,11 +121,31 @@ describe("costco", () => {
 		expect(j.products[1]).toMatchObject({ id: "2", title: "Second Widget", price: 5 });
 	});
 
-	it("fails as an Akamai block on a tiny/denied body", async () => {
+	it("fails as an Akamai block on a tiny/denied body when the unlocker is unconfigured", async () => {
 		mockHtml("Access Denied");
 		const r = await costco.run({} as any, { action: "search", term: "kirkland" });
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toMatch(/blocked by Akamai/);
+		// Rung fired but no-op'd (unset) — never threw.
+		expect(unlockerRenderMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("escalates to the paid unlocker when Akamai blocks the proxy fetch", async () => {
+		mockHtml("Access Denied");
+		unlockerRenderMock.mockReset();
+		unlockerRenderMock.mockResolvedValueOnce({ ok: true, contentType: "text/html", body: SEARCH_HTML });
+		const r = await costco.run({ UNLOCKER_API_URL: "u", UNLOCKER_API_KEY: "k" } as any, { action: "search", term: "kirkland" });
+		expect(r.isError).toBeFalsy();
+		const j = JSON.parse(r.content[0].text);
+		expect(j.count).toBe(2);
+		expect(unlockerRenderMock).toHaveBeenCalledTimes(1);
+		expect(unlockerRenderMock.mock.calls[0][1]).toMatchObject({ url: expect.stringContaining("CatalogSearch?keyword=kirkland") });
+	});
+
+	it("does NOT reach the unlocker on a successful proxy fetch", async () => {
+		mockHtml(SEARCH_HTML);
+		await costco.run({ UNLOCKER_API_URL: "u", UNLOCKER_API_KEY: "k" } as any, { action: "search", term: "kirkland" });
+		expect(unlockerRenderMock).not.toHaveBeenCalled();
 	});
 
 	it("fails as a layout change when a full page yields no products", async () => {

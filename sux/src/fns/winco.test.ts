@@ -120,7 +120,7 @@ describe("winco", () => {
 		macRenderMock.mockResolvedValueOnce({ ok: true, contentType: "text/html", body: "<html><body>Access Denied</body></html>" });
 		const r = await winco.run(goodEnv, { action: "locations" });
 		expect(r.isError).toBe(true);
-		expect(r.content[0].text).toMatch(/blocked or empty render/);
+		expect(r.content[0].text).toMatch(/blocked/i); // walled render → blocked (ladder block-escalation or empty-render hint)
 	});
 
 	it("fails cleanly when the page renders but has no store cards", async () => {

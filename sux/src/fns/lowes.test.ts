@@ -103,7 +103,7 @@ describe("lowes", () => {
 		macRenderMock.mockResolvedValueOnce({ ok: true, contentType: "text/html", body: "<html><body>Access Denied</body></html>" });
 		const r = await lowes.run({ MAC_RENDER_URL: "x", MAC_RENDER_SECRET: "y" } as any, { action: "search", term: "drill" });
 		expect(r.isError).toBe(true);
-		expect(r.content[0].text).toMatch(/blocked or empty/);
+		expect(r.content[0].text).toMatch(/blocked/i); // detected as a wall (either the ladder's block-escalation or the empty-page hint)
 	});
 
 	it("fails with a layout-change hint when a full page yields no products", async () => {

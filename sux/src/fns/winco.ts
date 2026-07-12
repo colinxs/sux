@@ -2,9 +2,10 @@ import { retailRender } from "../retail-render";
 import { type Fn, fail, ok, type RtEnv } from "../registry";
 
 // WinCo Foods has no online product catalog — this fn is a STORE LOCATOR only.
-// wincofoods.com 403s plain/datacenter fetches, so we render through the mac
-// backend (a residential patched browser), with a Cloudflare Browser Rendering
-// (residential + stealth) fallback when the mac node is down. The store directory at /stores is a
+// wincofoods.com 403s plain/datacenter fetches, so we render through `retailRender`:
+// Cloudflare Browser Rendering (residential + stealth) by default, with the mac
+// render backend (a residential patched browser) as the dormant fallback when cf
+// can't clear a wall. The store directory at /stores is a
 // Drupal + AngularJS SPA: the full ~130-store list is rendered client-side into
 // `<li id="store-list-item-<locationID>">` cards (there is NO embedded store-JSON
 // blob and no per-store lat/lng in the markup), so extraction parses those cards.
@@ -102,9 +103,9 @@ export const winco: Fn = {
 	name: "winco",
 	cost: 5,
 	description:
-		"WinCo Foods store locator via the mac render backend (a residential patched browser — wincofoods.com 403s plain/datacenter fetches). " +
+		"WinCo Foods store locator via a rendered browser (wincofoods.com 403s plain/datacenter fetches). Renders through Cloudflare Browser Rendering (residential + stealth) by default, falling back to the mac render backend (a residential patched browser) when cf can't clear a wall. " +
 		"WinCo has NO online product catalog, so this is locations-only: it renders the /stores directory (a client-side AngularJS list of all ~130 stores) and lifts each store into a normalized shape (id/name/address/city/state/zip/phone/hours). " +
-		"`action`: locations. `zip` (5-digit) and `state` (2-letter) are optional post-fetch filters; `limit` caps results (default 25, max 100). Slower than an API and falls back to Cloudflare Browser Rendering (residential + stealth) if the mac render backend is down.",
+		"`action`: locations. `zip` (5-digit) and `state` (2-letter) are optional post-fetch filters; `limit` caps results (default 25, max 100). Slower than an API.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
