@@ -214,6 +214,13 @@ export type RtEnv = Env &
 		GRAFANA_LOKI_USER?: string;
 		GRAFANA_LOKI_TOKEN?: string;
 
+		// Grafana Cloud Prometheus push (metrics snapshot) — the cron ships the KV-backed
+		// counters + /health/SLO gauges here as Influx line protocol. Both required to arm;
+		// the shared Grafana token is reused (scope it +metrics:write). Absent → the snapshot
+		// push is a pure no-op. See shipMetricsSnapshot in sux/src/grafana.ts.
+		GRAFANA_PROM_URL?: string;
+		GRAFANA_PROM_USER?: string;
+
 		MCP_RATE_LIMITER?: { limit: (opts: { key: string }) => Promise<{ success: boolean }> };
 		// Coarse per-IP limiter for the anonymous observability/content routes
 		// (/metrics, /logs, /feedback, /s/*), which the MCP gate never touches.

@@ -1,0 +1,106 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_PROM",
+      "label": "Prometheus",
+      "description": "The Grafana Cloud Prometheus (Mimir) datasource that receives the sux worker's cron-pushed sux_* metric snapshot.",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
+    }
+  ],
+  "__requires": [
+    { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "10.0.0" },
+    { "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" },
+    { "type": "panel", "id": "timeseries", "name": "Time series", "version": "" },
+    { "type": "panel", "id": "stat", "name": "Stat", "version": "" }
+  ],
+  "annotations": { "list": [{ "builtIn": 1, "datasource": { "type": "grafana", "uid": "-- Grafana --" }, "enable": true, "hide": true, "name": "Annotations & Alerts", "type": "dashboard" }] },
+  "description": "sux Cloudflare Worker — long-retention counters + /health/SLO gauges pushed once per cron tick by shipMetricsSnapshot (sux/src/grafana.ts) as Influx line protocol into Grafana Cloud Prometheus. Complements the Loki dashboard (per-event data); this one is the durable metrics view.",
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "title": "Call rate (per-min, from lifetime counter)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "targets": [
+        { "refId": "A", "expr": "rate(sux_calls_total[15m]) * 60", "legendFormat": "calls/min" },
+        { "refId": "B", "expr": "rate(sux_errors_total[15m]) * 60", "legendFormat": "errors/min" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "title": "Recent-window latency (ms)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "targets": [
+        { "refId": "A", "expr": "sux_latency_ms{quantile=\"0.5\"}", "legendFormat": "p50" },
+        { "refId": "B", "expr": "sux_latency_ms{quantile=\"0.95\"}", "legendFormat": "p95" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] }
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "title": "Success rate (recent window)",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 8 },
+      "id": 3,
+      "targets": [{ "refId": "A", "expr": "sux_success_rate" }],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 0.95 }, { "color": "green", "value": 0.98 }] } }, "overrides": [] }
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "title": "Cache-hit rate",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 8 },
+      "id": 4,
+      "targets": [{ "refId": "A", "expr": "sux_cache_hit_rate" }],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 0.3 }, { "color": "green", "value": 0.4 }] } }, "overrides": [] }
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "title": "Residential egress ratio",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 8 },
+      "id": 5,
+      "targets": [{ "refId": "A", "expr": "sux_residential_ratio" }],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] }
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "title": "SLO breaches (cron freshness = no data)",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 8 },
+      "id": 6,
+      "description": "sux_slo_breaches is the count of SLO targets currently breached. If this panel goes 'No data', the */5 cron snapshot push has stalled — the freshness signal (see prometheus-alerts.json StaleSnapshot).",
+      "targets": [{ "refId": "A", "expr": "sux_slo_breaches" }],
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } }, "overrides": [] }
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "title": "Calls by tool (per-min)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 14 },
+      "id": 7,
+      "targets": [{ "refId": "A", "expr": "topk(10, rate(sux_tool_calls_total[15m]) * 60)", "legendFormat": "{{tool}}" }],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+    }
+  ],
+  "refresh": "5m",
+  "schemaVersion": 39,
+  "tags": ["sux", "prometheus"],
+  "templating": { "list": [] },
+  "time": { "from": "now-24h", "to": "now" },
+  "timezone": "",
+  "title": "sux — metrics & SLO (Prometheus)",
+  "uid": "sux-metrics-prom",
+  "version": 1,
+  "weekStart": ""
+}

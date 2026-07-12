@@ -1,4 +1,4 @@
-import { clipErr, type CallEvent } from "./metrics";
+import { clipErr, type CallEvent, deriveMetrics, type Metrics, readMetrics, sloReport } from "./metrics";
 import type { FetchRoute } from "./proxy";
 import type { RtEnv } from "./registry";
 
@@ -120,4 +120,82 @@ export function shipEgress(env: LokiEnv, ctx: { waitUntil(p: Promise<unknown>): 
 		// Never let audit bookkeeping throw into the hot fetch path.
 		console.warn(`grafana egress ship failed: ${String((err as Error)?.message ?? err)}`);
 	}
+}
+
+// Escape an Influx line-protocol tag value: commas, spaces and equals signs must
+// be backslash-escaped (measurement/field names here are fixed constants, so only
+// tag values — tool names, routes, quantiles — need it).
+function escapeTag(v: string): string {
+	return v.replace(/([,= ])/g, "\\$1");
+}
+
+// Build the once-per-tick Prometheus snapshot as Influx line protocol — one line
+// per series, `measurement[,tags] value=n <ts_ns>`. Pure over its inputs (easy to
+// unit-test), and it reuses the ALREADY-COMPUTED derivations verbatim: the raw KV
+// counters, deriveMetrics() rates, and the SLO/latency view. Null rates (no sample)
+// are OMITTED, never emitted — Influx rejects NaN, same discipline as the /health
+// "—" rendering. Non-finite values are dropped for the same reason.
+export function buildInfluxSnapshot(m: Metrics, atMs: number): string {
+	const ts = `${atMs}000000`; // Influx wants nanosecond timestamps.
+	const lines: string[] = [];
+	const push = (name: string, value: number, tags?: Record<string, string>): void => {
+		if (!Number.isFinite(value)) return;
+		const tagStr =
+			tags && Object.keys(tags).length ? `,${Object.entries(tags).map(([k, v]) => `${k}=${escapeTag(v)}`).join(",")}` : "";
+		lines.push(`${name}${tagStr} value=${value} ${ts}`);
+	};
+
+	push("sux_calls_total", m.total);
+	push("sux_errors_total", m.errors);
+	push("sux_cache_hits_total", m.cache_hits);
+	for (const [tool, t] of Object.entries(m.tools)) {
+		push("sux_tool_calls_total", t.calls, { tool });
+		push("sux_tool_errors_total", t.errors, { tool });
+		push("sux_tool_latency_ms_avg", t.calls ? Math.round(t.total_ms / t.calls) : 0, { tool });
+	}
+	for (const [route, n] of Object.entries(m.routes ?? {})) push("sux_fetch_route_total", n, { route });
+
+	const d = deriveMetrics(m);
+	if (d.error_rate != null) push("sux_error_rate", d.error_rate);
+	if (d.cache_hit_rate != null) push("sux_cache_hit_rate", d.cache_hit_rate);
+	if (d.residential_ratio != null) push("sux_residential_ratio", d.residential_ratio);
+
+	const slo = sloReport(m);
+	push("sux_latency_ms", slo.latency_ms.p50, { quantile: "0.5" });
+	push("sux_latency_ms", slo.latency_ms.p95, { quantile: "0.95" });
+	push("sux_success_rate", slo.success_rate);
+	push("sux_slo_breaches", slo.breaches.length);
+
+	return lines.join("\n");
+}
+
+// Push the pre-aggregated metrics snapshot to Grafana Cloud Prometheus once per
+// cron tick. The KISS split from shipToLoki: high-cardinality per-event data rides
+// the Loki stream (already built); the low-cardinality, long-retention counters +
+// /health/SLO gauges go to Prometheus here — via Influx line protocol, NOT snappy-
+// protobuf remote-write (no deps, mirrors how toPrometheus builds text).
+//
+// Same secret-gate + fire-and-forget shape as shipToLoki: a pure no-op (no KV read,
+// no throw, no log noise) unless GRAFANA_PROM_URL + GRAFANA_PROM_USER are set. The
+// bearer is the SHARED Grafana access-policy token GRAFANA_LOKI_TOKEN (scope it
+// +metrics:write) — no second key to mint. Given GRAFANA_LOKI_* is already live,
+// shipping this leaves Prometheus dormant until Colin sets the two new secrets.
+export async function shipMetricsSnapshot(env: RtEnv, ctx: { waitUntil(p: Promise<unknown>): void }): Promise<void> {
+	const url = env.GRAFANA_PROM_URL;
+	const user = env.GRAFANA_PROM_USER;
+	const token = env.GRAFANA_LOKI_TOKEN;
+	if (!url || !user || !token) return;
+
+	const m = await readMetrics(env);
+	const body = buildInfluxSnapshot(m, Date.now());
+	if (!body) return; // nothing to ship (cold start, all rates null) — skip the POST.
+	const authorization = `Basic ${btoa(`${user}:${token}`)}`;
+
+	ctx.waitUntil(
+		fetch(url, { method: "POST", headers: { "content-type": "text/plain", authorization }, body })
+			.then((r) => {
+				if (!r.ok) console.warn(`grafana metrics push HTTP ${r.status}`);
+			})
+			.catch((err) => console.warn(`grafana metrics push failed: ${String((err as Error)?.message ?? err)}`)),
+	);
 }

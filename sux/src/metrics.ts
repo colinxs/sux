@@ -89,6 +89,32 @@ export async function readMetrics(env: RtEnv): Promise<Metrics> {
 	return parts.length ? mergeMetrics(parts) : emptyMetrics(Date.now());
 }
 
+/** Caching-proxy effectiveness derived from the KV-backed metrics (presentation only).
+ * Mirrors observability.ts: r4() 4-dp rounding, rate = hits/calls. Route counts are the
+ * lifetime tally {proxied, direct, proxy_fallback, binary_refetch}; residential_ratio is
+ * the fraction that actually egressed residentially. Rates are null when there's no sample
+ * (guarded 0-denominators) so callers can render "—"/omit instead of NaN. */
+export function deriveMetrics(m: Metrics): {
+	calls: number;
+	cache_hit_rate: number | null;
+	residential_ratio: number | null;
+	error_rate: number | null;
+	proxied: number;
+	route_total: number;
+} {
+	const r4 = (n: number) => Math.round(n * 10000) / 10000;
+	const routeTotal = Object.values(m.routes ?? {}).reduce((a, b) => a + b, 0);
+	const proxied = m.routes?.proxied ?? 0;
+	return {
+		calls: m.total,
+		cache_hit_rate: m.total ? r4(m.cache_hits / m.total) : null,
+		residential_ratio: routeTotal ? r4(proxied / routeTotal) : null,
+		error_rate: m.total ? r4(m.errors / m.total) : null,
+		proxied,
+		route_total: routeTotal,
+	};
+}
+
 export type CallEvent = { tool: string; ms: number; cache?: boolean; error?: boolean; err?: string; at?: number; routes?: Record<string, number> };
 
 /** Truncate an error message to its first ~200 chars (undefined stays undefined/empty). */

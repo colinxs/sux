@@ -1,0 +1,65 @@
+{
+  "apiVersion": 1,
+  "groups": [
+    {
+      "orgId": 1,
+      "name": "sux-metrics-prom",
+      "folder": "sux",
+      "interval": "1m",
+      "rules": [
+        {
+          "uid": "sux-snapshot-stale",
+          "title": "sux metrics snapshot stale (cron stalled)",
+          "condition": "C",
+          "for": "15m",
+          "noDataState": "Alerting",
+          "execErrState": "Error",
+          "annotations": {
+            "summary": "sux has not pushed a metrics snapshot in 15m",
+            "description": "sux_calls_total (pushed by the */5 cron via shipMetricsSnapshot) has gone stale — the scheduled snapshot push is not reaching Grafana Cloud Prometheus. Check the Worker's Cron Triggers and the GRAFANA_PROM_* secrets."
+          },
+          "labels": { "service": "sux", "severity": "warning" },
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": { "from": 900, "to": 0 },
+              "datasourceUid": "${DS_PROM}",
+              "model": { "refId": "A", "expr": "count(sux_calls_total)", "instant": true, "datasource": { "type": "prometheus", "uid": "${DS_PROM}" } }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": { "refId": "C", "type": "threshold", "expression": "A", "conditions": [{ "evaluator": { "type": "lt", "params": [1] } }], "datasource": { "type": "__expr__", "uid": "__expr__" } }
+            }
+          ]
+        },
+        {
+          "uid": "sux-slo-breach",
+          "title": "sux SLO breach",
+          "condition": "C",
+          "for": "10m",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "annotations": {
+            "summary": "sux has one or more SLO targets breached",
+            "description": "sux_slo_breaches > 0 for 10m: at least one of success-rate (>=98%), cache-hit (>=40%) or p95 (<=2000ms) is breached over the recent window. Cross-check the Loki 'resilience & observability' dashboard to attribute it."
+          },
+          "labels": { "service": "sux", "severity": "warning" },
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": { "from": 600, "to": 0 },
+              "datasourceUid": "${DS_PROM}",
+              "model": { "refId": "A", "expr": "max_over_time(sux_slo_breaches[10m])", "instant": true, "datasource": { "type": "prometheus", "uid": "${DS_PROM}" } }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": { "refId": "C", "type": "threshold", "expression": "A", "conditions": [{ "evaluator": { "type": "gt", "params": [0] } }], "datasource": { "type": "__expr__", "uid": "__expr__" } }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

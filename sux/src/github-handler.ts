@@ -10,7 +10,7 @@ import {
 	validateCSRFToken,
 } from "./workers-oauth-utils";
 import { hmacHex, isTailscaleConfigured, proxyEnabled, smartFetch, type TailscaleEnv } from "./proxy";
-import { type Metrics, readMetrics } from "./metrics";
+import { deriveMetrics, readMetrics } from "./metrics";
 import { readHeartbeats } from "./cron-heartbeat";
 import type { RtEnv } from "./registry";
 
@@ -138,31 +138,9 @@ export function bindingsOk(b: any): boolean {
 	return Boolean(b?.kv?.ok && b?.r2?.ok && b?.ai?.bound && b?.images?.bound && b?.browser?.bound);
 }
 
-/** Caching-proxy effectiveness derived from the KV-backed metrics (presentation only).
- * Mirrors observability.ts: r4() 4-dp rounding, rate = hits/calls. Route counts are the
- * lifetime tally {proxied, direct, proxy_fallback, binary_refetch}; residential_ratio is
- * the fraction that actually egressed residentially. Rates are null when there's no sample
- * (guarded 0-denominators) so the UI can render "—" instead of NaN. */
-export function deriveMetrics(m: Metrics): {
-	calls: number;
-	cache_hit_rate: number | null;
-	residential_ratio: number | null;
-	error_rate: number | null;
-	proxied: number;
-	route_total: number;
-} {
-	const r4 = (n: number) => Math.round(n * 10000) / 10000;
-	const routeTotal = Object.values(m.routes ?? {}).reduce((a, b) => a + b, 0);
-	const proxied = m.routes?.proxied ?? 0;
-	return {
-		calls: m.total,
-		cache_hit_rate: m.total ? r4(m.cache_hits / m.total) : null,
-		residential_ratio: routeTotal ? r4(proxied / routeTotal) : null,
-		error_rate: m.total ? r4(m.errors / m.total) : null,
-		proxied,
-		route_total: routeTotal,
-	};
-}
+// deriveMetrics now lives beside the other Metrics derivations in ./metrics; re-
+// exported here so existing importers (and the health page below) keep working.
+export { deriveMetrics };
 
 async function gatherHealth(env: HandlerEnv): Promise<Record<string, unknown>> {
 	const config = {

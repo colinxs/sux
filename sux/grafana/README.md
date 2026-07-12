@@ -1,9 +1,24 @@
-# sux — Grafana dashboard & alert (as code)
+# sux — Grafana dashboards & alerts (as code)
 
-Dashboard-as-code for the sux Cloudflare Worker MCP server. Everything here is
-derived from the `{service="sux"}` log stream that `sux/src/grafana.ts` ships to
-Grafana Cloud Loki (fire-and-forget, one JSON line per tool call). Nothing is
-scraped; there is no Prometheus dependency.
+Dashboard-as-code for the sux Cloudflare Worker MCP server. Two complementary
+halves, both shipped from `sux/src/grafana.ts` — nothing is scraped:
+
+- **Loki (logs / per-event)** — the `{service="sux"}` log stream, one JSON line
+  per tool call (`shipToLoki`) plus per-fetch egress lines (`shipEgress`). Rates,
+  latencies and error ratios are derived from it via LogQL. This is the
+  high-cardinality, short-retention half.
+- **Prometheus (metrics snapshot / durable gauges)** — once per cron tick
+  `shipMetricsSnapshot` pushes the KV-backed lifetime counters + the `/health`/SLO
+  gauges as **Influx line protocol** to Grafana Cloud Prometheus (Mimir). This is
+  the low-cardinality, long-retention half. It is **dormant until the two
+  `GRAFANA_PROM_*` secrets are set** (see below).
+
+Why Influx line protocol and not Prometheus `remote_write`: remote-write is
+snappy-compressed protobuf, which is a lot of hand-rolled encoding to carry in a
+dependency-free Worker. The Grafana Cloud Influx push endpoint lands in the same
+Mimir store and shows up as the same `sux_*` Prometheus series, built with a plain
+string join — the KISS choice, honestly a tradeoff of wire-format purity for zero
+deps.
 
 ## The log line these queries read
 
@@ -21,12 +36,30 @@ LogQL parses that with `| json`, so `ms` is available to `unwrap` and `error` /
 
 | File | What it is |
 | --- | --- |
-| `dashboard.json` | Importable Grafana dashboard, Loki datasource. Panels: call rate by tool, latency p50/p95/p99 (`quantile_over_time` on unwrapped `ms`), error ratio, cache-hit ratio, throughput-vs-errors, errors by tool. |
-| `alerts.json` | Grafana-managed alert rule: **error ratio sustained above 5% for 10m**. |
+| `dashboard.json` | Importable Grafana dashboard, **Loki** datasource. Panels: call rate by tool, latency p50/p95/p99 (`quantile_over_time` on unwrapped `ms`), error ratio, cache-hit ratio, throughput-vs-errors, errors by tool. |
+| `alerts.json` | Grafana-managed alert rule (Loki): **error ratio sustained above 5% for 10m**. |
+| `prometheus-dashboard.json` | Importable Grafana dashboard, **Prometheus** datasource, over the cron-pushed `sux_*` snapshot. Panels: call/error rate, recent-window latency p50/p95, success / cache-hit / residential rates, SLO breaches (+ cron freshness), calls by tool. |
+| `prometheus-alerts.json` | Grafana-managed alert rules (Prometheus): **metrics snapshot stale for 15m** (cron stalled) and **any SLO target breached for 10m**. |
+
+### The metric series (Prometheus half)
+
+`shipMetricsSnapshot` pushes each series as one Influx line
+`sux_<name>[,tag=v] value=<n> <ts_ns>` — e.g. `sux_calls_total value=42 …`,
+`sux_tool_calls_total,tool=fetch value=10 …`, `sux_latency_ms,quantile=0.95 value=…`.
+Counters (`*_total`) are lifetime cumulative — query them with `rate()`/`increase()`;
+the rest (`sux_error_rate`, `sux_cache_hit_rate`, `sux_residential_ratio`,
+`sux_success_rate`, `sux_latency_ms`, `sux_slo_breaches`) are point-in-time gauges.
+Null rates (no sample) are omitted rather than emitted as `NaN`.
+
+> **Metric naming note:** some Grafana Cloud Influx receivers name the resulting
+> Prometheus series `<measurement>_value` (i.e. `sux_calls_total_value`). If the
+> `prometheus-dashboard.json` panels show "No data", check your instance's
+> influx-write naming and add the `_value` suffix to the queries.
 
 ## Prerequisites
 
-The worker must be shipping logs — set the three secrets and redeploy:
+**Loki (logs)** — the worker must be shipping logs; set the three secrets and
+redeploy:
 
 ```sh
 npm run secret:sux GRAFANA_LOKI_URL     # the …/loki/api/v1/push endpoint
@@ -35,6 +68,25 @@ npm run secret:sux GRAFANA_LOKI_TOKEN   # Access Policy token, scope logs:write
 ```
 
 Until all three are set, `shipToLoki` is inert and no data reaches Loki.
+
+**Prometheus (metrics snapshot)** — set the two additional secrets and redeploy.
+The token is **reused** from the Loki triplet (one Access Policy token can carry
+both `logs:write` and `metrics:write` — scope it accordingly), so there is no
+second token to mint:
+
+```sh
+npm run secret:sux GRAFANA_PROM_URL     # the …/api/v1/push/influx/write endpoint
+npm run secret:sux GRAFANA_PROM_USER    # numeric Prometheus/Mimir instance id (basic-auth user)
+# token: reuse GRAFANA_LOKI_TOKEN — scope it +metrics:write in Grafana
+```
+
+Until both `GRAFANA_PROM_URL` and `GRAFANA_PROM_USER` are set, `shipMetricsSnapshot`
+is a pure no-op (no KV read, no push) and no metrics reach Prometheus. Force a push
+during setup with the manual ops trigger (bearer = `SUX_CRON_TOKEN`):
+
+```sh
+curl -sS -X POST "$SUX_URL/admin/tick?job=maintenance" -H "authorization: Bearer $SUX_CRON_TOKEN"
+```
 
 ## Import the dashboard
 

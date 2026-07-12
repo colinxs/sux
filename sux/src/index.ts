@@ -16,7 +16,7 @@ import { SUX_SKILL_DESCRIPTION, SUX_SKILL_PROMPT } from "./skill-prompt";
 import { selfImproveTick } from "./fns/_self_improve";
 import { runSubJob } from "./cron-heartbeat";
 import { recordCall } from "./metrics";
-import { shipToLoki } from "./grafana";
+import { shipMetricsSnapshot, shipToLoki } from "./grafana";
 import { handleObservability } from "./observability";
 import { normalizeArgs, normalizeText } from "./normalize";
 
@@ -506,10 +506,15 @@ function tokenEq(a: string, b: string): boolean {
 	return diff === 0;
 }
 
+// The frequent Cron Trigger reserved for the Prometheus metrics-snapshot push —
+// must match the second entry in wrangler.jsonc's `triggers.crons`. Any other cron
+// (the daily 13:00 UTC one) runs the full maintenance tick.
+const METRICS_CRON = "*/5 * * * *";
+
 // Each sub-job runs via runSubJob: swallows failures (a bad one never blocks the
 // rest) and stamps a {ok,at,error?} heartbeat into KV, so gatherHealth can surface
 // last-success + staleness for the unattended cron parts on the public status page.
-async function maintenanceTick(env: RtEnv): Promise<void> {
+async function maintenanceTick(env: RtEnv, ctx: ExecutionContext): Promise<void> {
 	await runSubJob(env, "kroger_token", () => refreshKrogerToken(env));
 	await runSubJob(env, "mail_triage", () => mailTriageTick(env));
 	await runSubJob(env, "weekly_recall", () => weeklyRecallTick(env));
@@ -520,6 +525,14 @@ async function maintenanceTick(env: RtEnv): Promise<void> {
 		const { refreshAdblockEngine } = await import("./fns/_adblock");
 		await refreshAdblockEngine(env);
 	});
+	try {
+		// Push the pre-aggregated metrics snapshot to Grafana Cloud Prometheus. Self-
+		// contained + idempotent: a pure no-op unless the GRAFANA_PROM_* secrets are set,
+		// and a push error is swallowed so it never fails the tick.
+		await shipMetricsSnapshot(env, ctx);
+	} catch (e) {
+		console.warn(`sux scheduled maintenance: metrics snapshot push skipped: ${String((e as Error)?.message ?? e)}`);
+	}
 }
 
 // Maps an exception thrown out of the OAuth provider into a clean JSON error
@@ -548,8 +561,16 @@ export default {
 	// ctx.waitUntil and self-contained in try/catch so it never throws. The
 	// self-improvement tick rides the SAME daily cron beside the Kroger refresh; it
 	// ships dormant (fail-closed) and no-ops entirely unless SELF_IMPROVE_ENABLE is set.
-	async scheduled(_event: ScheduledController, env: RtEnv, ctx: ExecutionContext): Promise<void> {
-		ctx.waitUntil(maintenanceTick(env));
+	async scheduled(event: ScheduledController, env: RtEnv, ctx: ExecutionContext): Promise<void> {
+		// Two crons on one handler (wrangler.jsonc): the frequent */5 trigger only
+		// pushes the Prometheus metrics snapshot (cheap, so the gauges aren't stuck at a
+		// once-daily cadence); the daily trigger runs the full maintenance + self-improve
+		// ticks (maintenanceTick pushes a snapshot too, so the daily run is also covered).
+		if (event.cron === METRICS_CRON) {
+			ctx.waitUntil(shipMetricsSnapshot(env, ctx));
+			return;
+		}
+		ctx.waitUntil(maintenanceTick(env, ctx));
 		ctx.waitUntil(runSubJob(env, "self_improve", () => selfImproveTick(env)));
 	},
 	async fetch(request: Request, env: RtEnv, ctx: ExecutionContext): Promise<Response> {
@@ -577,7 +598,7 @@ export default {
 					else if (job === "weekly-recall") out = await weeklyRecallTick(env);
 					else if (job === "briefing") out = await briefingTick(env);
 					else if (job === "self-improve") out = await selfImproveTick(env);
-					else if (job === "maintenance") { await maintenanceTick(env); out = { ok: true }; }
+					else if (job === "maintenance") { await maintenanceTick(env, ctx); out = { ok: true }; }
 					else return new Response(JSON.stringify({ error: "unknown job", jobs: ["mail-triage", "weekly-recall", "briefing", "self-improve", "maintenance"] }), { status: 400, headers: { "content-type": "application/json" } });
 					return new Response(JSON.stringify({ ok: true, job, result: out }, null, 2), { headers: { "content-type": "application/json" } });
 				} catch (e) {

@@ -51,7 +51,8 @@ provider follows).
 | `TAILSCALE_PROXY_URL/SECRET`, `TAILSCALE_PROXY_ALL` | residential egress ([[fetch-ladder]]) | ✅ set |
 | `MAC_RENDER_URL`, `MAC_RENDER_SECRET` | Mac render tier + **iMessage spoke reach** | ✅ set |
 | `TAILSCALE_OAUTH_CLIENT_ID/SECRET`, `TAILSCALE_TAILNET`, `CONTROLD_API_TOKEN` | infra read fns | ✅ optional |
-| `GRAFANA_LOKI_URL/USER/TOKEN` | observability | ✅ set |
+| `GRAFANA_LOKI_URL/USER/TOKEN` | observability (Loki logs) | ✅ set |
+| `GRAFANA_PROM_URL`, `GRAFANA_PROM_USER` | observability (Prometheus metrics snapshot; token reuses `GRAFANA_LOKI_TOKEN`, scope +`metrics:write`) | ⬜ optional — dormant until set |
 
 ## Needed for the new plan — **please add these**
 

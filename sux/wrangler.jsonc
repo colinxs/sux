@@ -24,9 +24,12 @@
 	"browser": { "binding": "BROWSER" },
 	// QUIC/HTTP-3 is automatic at the edge; observability = persistent logs (both services).
 	"observability": { "enabled": true, "head_sampling_rate": 1 },
-	// Daily Cron Trigger (13:00 UTC) → the scheduled() handler in src/index.ts runs
-	// a safe, best-effort maintenance tick (keeps the Kroger OAuth token warm in KV).
-	"triggers": { "crons": ["0 13 * * *"] },
+	// Cron Triggers → the scheduled() handler in src/index.ts. The daily 13:00 UTC tick
+	// runs the full best-effort maintenance (Kroger token warm, mail triage, adblock,
+	// metrics snapshot). The */5 tick pushes ONLY the Grafana Cloud Prometheus metrics
+	// snapshot (dormant until GRAFANA_PROM_* are set) so the gauges refresh every 5 min
+	// instead of once a day. scheduled() branches on event.cron (METRICS_CRON).
+	"triggers": { "crons": ["0 13 * * *", "*/5 * * * *"] },
 	// MAIL_TRIAGE_ENABLED arms the classify+suggest+digest loop (suggest-only: it classifies and
 	// writes the daily digest but MUTATES NOTHING). MAIL_TRIAGE_ACT is deliberately NOT set here —
 	// Colin flips it (dashboard/secret) to move from suggest-only to acting on the reversible-only

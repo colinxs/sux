@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { shipEgress, shipToLoki } from "./grafana";
-import type { CallEvent } from "./metrics";
+import { buildInfluxSnapshot, shipEgress, shipMetricsSnapshot, shipToLoki } from "./grafana";
+import { applyEvent, type CallEvent, emptyMetrics } from "./metrics";
 import type { RtEnv } from "./registry";
 
 // A ctx whose waitUntil collects the fire-and-forget promises so tests can await
@@ -149,5 +149,105 @@ describe("shipEgress", () => {
 		const line = JSON.parse(payload.streams[0].values[0][1]);
 		expect(Object.keys(line).sort()).toEqual(["host", "residential", "rung"]);
 		expect(line).toEqual({ host: "example.com", rung: "direct", residential: false });
+	});
+});
+
+// A KV stub whose single map backs every OAUTH_KV.get so readMetrics sees the doc.
+function fakeEnv(kv: Record<string, string>, extra: Partial<RtEnv> = {}): RtEnv {
+	const get = vi.fn(async (k: string) => kv[k] ?? null);
+	return { ...extra, OAUTH_KV: { get } as unknown } as unknown as RtEnv;
+}
+
+const PROM_CONFIGURED = {
+	GRAFANA_PROM_URL: "https://prom.test/api/v1/push/influx/write",
+	GRAFANA_PROM_USER: "12345",
+	GRAFANA_LOKI_TOKEN: "t1",
+} as const;
+
+describe("buildInfluxSnapshot", () => {
+	it("emits Influx line protocol reusing the raw counters, derived rates and SLO gauges", () => {
+		let m = emptyMetrics(0);
+		m = applyEvent(m, { tool: "fetch", ms: 100, cache: true, routes: { proxied: 3, direct: 1 } });
+		m = applyEvent(m, { tool: "fetch", ms: 200, error: true, err: "boom" });
+		const body = buildInfluxSnapshot(m, 1_700_000_000_000);
+		const lines = body.split("\n");
+		// Every line carries the same nanosecond timestamp and a `value=` field.
+		for (const l of lines) expect(l).toMatch(/ value=-?\d+(\.\d+)? 1700000000000000000$/);
+		// Lifetime counters.
+		expect(lines).toContain("sux_calls_total value=2 1700000000000000000");
+		expect(lines).toContain("sux_errors_total value=1 1700000000000000000");
+		expect(lines).toContain("sux_cache_hits_total value=1 1700000000000000000");
+		// Per-tool series carry the tool as a tag.
+		expect(lines).toContain("sux_tool_calls_total,tool=fetch value=2 1700000000000000000");
+		expect(lines).toContain("sux_tool_errors_total,tool=fetch value=1 1700000000000000000");
+		expect(lines).toContain("sux_tool_latency_ms_avg,tool=fetch value=150 1700000000000000000");
+		// Fetch-route tally.
+		expect(lines).toContain("sux_fetch_route_total,route=proxied value=3 1700000000000000000");
+		expect(lines).toContain("sux_fetch_route_total,route=direct value=1 1700000000000000000");
+		// Derived rates (deriveMetrics): error 1/2, cache 1/2, residential 3/4.
+		expect(lines).toContain("sux_error_rate value=0.5 1700000000000000000");
+		expect(lines).toContain("sux_cache_hit_rate value=0.5 1700000000000000000");
+		expect(lines).toContain("sux_residential_ratio value=0.75 1700000000000000000");
+		// SLO/latency gauges.
+		expect(lines).toContain("sux_latency_ms,quantile=0.5 value=100 1700000000000000000");
+		expect(lines).toContain("sux_latency_ms,quantile=0.95 value=200 1700000000000000000");
+		expect(lines).toContain("sux_slo_breaches value=0 1700000000000000000");
+	});
+
+	it("omits null rates instead of emitting NaN (empty metrics have no sample)", () => {
+		const body = buildInfluxSnapshot(emptyMetrics(0), 1_700_000_000_000);
+		expect(body).not.toContain("NaN");
+		// deriveMetrics rates are null with no calls → those series are omitted.
+		expect(body).not.toContain("sux_error_rate");
+		expect(body).not.toContain("sux_cache_hit_rate");
+		expect(body).not.toContain("sux_residential_ratio");
+		// But the raw counters and the always-defined SLO gauges are still present.
+		expect(body).toContain("sux_calls_total value=0 1700000000000000000");
+		expect(body).toContain("sux_success_rate value=1 1700000000000000000");
+	});
+});
+
+describe("shipMetricsSnapshot", () => {
+	it("is a pure no-op (no KV read, no fetch) unless both GRAFANA_PROM_* secrets and the token are set", async () => {
+		const fetchSpy = vi.fn(async () => new Response(null, { status: 204 }));
+		vi.stubGlobal("fetch", fetchSpy);
+		const partials: Partial<typeof PROM_CONFIGURED>[] = [
+			{},
+			{ GRAFANA_PROM_URL: PROM_CONFIGURED.GRAFANA_PROM_URL },
+			{ GRAFANA_PROM_USER: PROM_CONFIGURED.GRAFANA_PROM_USER },
+			{ GRAFANA_LOKI_TOKEN: PROM_CONFIGURED.GRAFANA_LOKI_TOKEN },
+			{ GRAFANA_PROM_URL: PROM_CONFIGURED.GRAFANA_PROM_URL, GRAFANA_PROM_USER: PROM_CONFIGURED.GRAFANA_PROM_USER },
+			{ GRAFANA_PROM_URL: PROM_CONFIGURED.GRAFANA_PROM_URL, GRAFANA_LOKI_TOKEN: PROM_CONFIGURED.GRAFANA_LOKI_TOKEN },
+			{ GRAFANA_PROM_USER: PROM_CONFIGURED.GRAFANA_PROM_USER, GRAFANA_LOKI_TOKEN: PROM_CONFIGURED.GRAFANA_LOKI_TOKEN },
+		];
+		for (const extra of partials) {
+			const env = fakeEnv({}, extra as Partial<RtEnv>);
+			const { ctx, promises } = fakeCtx();
+			await shipMetricsSnapshot(env, ctx);
+			expect(promises).toHaveLength(0);
+			// Dormant means no KV read at all — not just a suppressed POST.
+			expect((env.OAUTH_KV.get as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+		}
+		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
+	it("posts the Influx snapshot with basic auth from the shared Loki token", async () => {
+		const fetchSpy = vi.fn(async () => new Response(null, { status: 204 }));
+		vi.stubGlobal("fetch", fetchSpy);
+		let m = emptyMetrics(1_700_000_000_000);
+		m = applyEvent(m, { tool: "dns", ms: 5 });
+		const env = fakeEnv({ "sux:metrics:0": JSON.stringify(m) }, PROM_CONFIGURED as Partial<RtEnv>);
+		const { ctx, settle } = fakeCtx();
+		await shipMetricsSnapshot(env, ctx);
+		await settle();
+
+		expect(fetchSpy).toHaveBeenCalledTimes(1);
+		const [url, init] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
+		expect(url).toBe(PROM_CONFIGURED.GRAFANA_PROM_URL);
+		expect(init.method).toBe("POST");
+		const headers = init.headers as Record<string, string>;
+		expect(headers["content-type"]).toBe("text/plain");
+		expect(headers.authorization).toBe(`Basic ${btoa("12345:t1")}`);
+		expect(init.body as string).toContain("sux_tool_calls_total,tool=dns value=1");
 	});
 });
