@@ -2,22 +2,30 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { cfRender } from "../cf-render";
 import { macRender } from "../mac-render";
+import { unlockerRender } from "../unlocker-render";
 import { homedepot } from "./homedepot";
 
-// Both render backends are mocked at the module boundary: the fn now renders via
-// retailRender's mac→cf fallback. cf defaults to unavailable (no BROWSER binding);
-// the fallback test overrides it to prove mac→cf hands the SAME HTML to the extractor.
+// All three rungs are mocked at the module boundary: the fn renders via retailRender's
+// cf→mac ladder (cf is now the DEFAULT leg, mac the fallback), then escalates to the
+// paid unlocker when both render backends miss. cf defaults to unavailable (no BROWSER
+// binding); the unlocker defaults to unconfigured — fallback tests override each.
 vi.mock("../mac-render", () => ({ macRender: vi.fn() }));
 vi.mock("../cf-render", () => ({ cfRender: vi.fn() }));
+vi.mock("../unlocker-render", () => ({ unlockerRender: vi.fn() }));
 
 const macRenderMock = vi.mocked(macRender);
 const cfRenderMock = vi.mocked(cfRender);
+const unlockerRenderMock = vi.mocked(unlockerRender);
 
 beforeEach(() => {
-	// vi.mock factory mocks aren't reset by restoreAllMocks, so clear cf's call
-	// history each test; default the cf leg to unavailable (no BROWSER binding).
+	// vi.mock factory mocks aren't reset by restoreAllMocks, so clear call history each
+	// test; default the cf leg to unavailable (no BROWSER binding) and the unlocker to
+	// unconfigured (the fail-closed production default).
+	macRenderMock.mockReset();
 	cfRenderMock.mockReset();
 	cfRenderMock.mockResolvedValue({ ok: false, error: "Browser Rendering is not configured (BROWSER binding)." });
+	unlockerRenderMock.mockReset();
+	unlockerRenderMock.mockResolvedValue({ ok: false, error: "unlocker not configured" });
 });
 
 // A rendered Home Depot search page with two product-pod tiles (the client-side
@@ -65,11 +73,37 @@ describe("homedepot", () => {
 		expect(j.count).toBe(1);
 	});
 
-	it("fails when macRender fails", async () => {
+	it("fails when both render backends fail and the unlocker is unconfigured", async () => {
 		macRenderMock.mockResolvedValueOnce({ ok: false, error: "Mac render backend not configured." });
 		const r = await homedepot.run({} as any, { action: "search", term: "drill" });
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toMatch(/blocked or render failed/);
+	});
+
+	it("renders via cf (the primary leg) and never touches the mac fallback when cf succeeds", async () => {
+		cfRenderMock.mockReset();
+		cfRenderMock.mockResolvedValueOnce({ ok: true, contentType: "text/html", body: PODS_HTML });
+		const r = await homedepot.run({ MAC_RENDER_URL: "x", MAC_RENDER_SECRET: "y", BROWSER: {} } as any, { action: "search", term: "drill" });
+		expect(r.isError).toBeFalsy();
+		expect(JSON.parse(r.content[0].text).count).toBe(2);
+		expect(cfRenderMock).toHaveBeenCalledTimes(1);
+		expect(macRenderMock).not.toHaveBeenCalled();
+	});
+
+	it("escalates to the paid unlocker after cf AND mac both fail", async () => {
+		// cf unavailable (beforeEach default) → mac 502 → unlocker returns the SAME HTML,
+		// which flows through the identical extractor and yields the products.
+		macRenderMock.mockResolvedValueOnce({ ok: false, error: "mac render failed: HTTP 502" });
+		unlockerRenderMock.mockReset();
+		unlockerRenderMock.mockResolvedValueOnce({ ok: true, contentType: "text/html", body: PODS_HTML });
+		const r = await homedepot.run(
+			{ MAC_RENDER_URL: "x", MAC_RENDER_SECRET: "y", UNLOCKER_API_URL: "u", UNLOCKER_API_KEY: "k" } as any,
+			{ action: "search", term: "drill" },
+		);
+		expect(r.isError).toBeFalsy();
+		expect(JSON.parse(r.content[0].text).count).toBe(2);
+		expect(unlockerRenderMock).toHaveBeenCalledTimes(1);
+		expect(unlockerRenderMock.mock.calls[0][1]).toMatchObject({ url: "https://www.homedepot.com/s/drill" });
 	});
 
 	it("fails when no products can be extracted (challenge or layout change)", async () => {
@@ -78,18 +112,21 @@ describe("homedepot", () => {
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toMatch(/no products extracted/);
 	});
-	it("falls back to cf-residential when the mac node is down and runs the same extractor", async () => {
-		// Mac fails (e.g. node 502) → retailRender retries via cf; the identical rendered
-		// HTML from cf flows through the SAME extractor and yields the same results.
-		macRenderMock.mockResolvedValueOnce({ ok: false, error: "mac render failed: HTTP 502" });
+	it("cf forces residential + stealth as the primary leg", async () => {
+		cfRenderMock.mockReset();
 		cfRenderMock.mockResolvedValueOnce({ ok: true, contentType: "text/html", body: PODS_HTML });
-		const r = await homedepot.run({ MAC_RENDER_URL: "x", MAC_RENDER_SECRET: "y" } as any, { action: "search", term: "drill" });
-		expect(r.isError).toBeFalsy();
-		const j = JSON.parse(r.content[0].text);
-		expect(j.count).toBe(2);
-		// cf fired once, forcing residential + stealth (its only shot at the wall).
+		await homedepot.run({ MAC_RENDER_URL: "x", MAC_RENDER_SECRET: "y", BROWSER: {} } as any, { action: "search", term: "drill" });
 		expect(cfRenderMock).toHaveBeenCalledTimes(1);
 		expect(cfRenderMock.mock.calls[0][1]).toMatchObject({ as: "html", residential: true, stealth: true });
 	});
 
+	it("does NOT reach the unlocker when a render backend succeeds", async () => {
+		macRenderMock.mockResolvedValueOnce({ ok: true, contentType: "text/html", body: PODS_HTML });
+		const r = await homedepot.run(
+			{ MAC_RENDER_URL: "x", MAC_RENDER_SECRET: "y", UNLOCKER_API_URL: "u", UNLOCKER_API_KEY: "k" } as any,
+			{ action: "search", term: "drill" },
+		);
+		expect(r.isError).toBeFalsy();
+		expect(unlockerRenderMock).not.toHaveBeenCalled();
+	});
 });

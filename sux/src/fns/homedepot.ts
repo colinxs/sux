@@ -1,15 +1,19 @@
 import { retailRender } from "../retail-render";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
+import { unlockerRender } from "../unlocker-render";
 import { normalizeMoney, type RetailProduct } from "./_retail";
 
 // Home Depot sits behind an ACTIVE Akamai `_abck` JS challenge a plain fetch can't
-// pass. The mac render backend (a residential patched browser) warms the sensor
-// and renders the client-side product grid, so this fn renders HD's search page
-// and lifts products out of the rendered HTML. Rendering goes through `retailRender`:
-// the mac backend is primary, with Cloudflare Browser Rendering (residential +
-// stealth) as a fallback when the mac node is down. HD builds its tiles client-side, so
-// extraction is best-effort: prefer an embedded state blob if present, else parse
-// the product-pod anchors. Every step guards/try-catches — never throws.
+// pass, so this fn renders HD's search page and lifts products out of the rendered
+// HTML. Rendering goes through `retailRender`: Cloudflare Browser Rendering
+// (residential + stealth) is the default backend, with the mac render backend (a
+// residential patched browser that warms the Akamai sensor and owns the captcha
+// solver tier) as the dormant fallback. When BOTH clear neither — HD's Akamai wall
+// is the hardest of the retailers — the ladder escalates to the paid residential
+// unlocker (gated behind UNLOCKER_API_*; no-ops when unset). HD builds its tiles
+// client-side, so extraction is best-effort: prefer an embedded state blob if
+// present, else parse the product-pod anchors. Every step guards/try-catches — never
+// throws.
 
 const NO_PRODUCTS_MSG = "homedepot: no products extracted (challenge or layout change).";
 
@@ -118,9 +122,9 @@ export const homedepot: Fn = {
 	name: "homedepot",
 	cost: 5,
 	description:
-		"Home Depot product search via the mac render backend (a residential patched browser that warms Home Depot's active Akamai `_abck` sensor and renders the client-side product grid — a plain fetch can't). " +
+		"Home Depot product search via a rendered browser (Home Depot runs an active Akamai `_abck` JS challenge a plain fetch can't pass). Renders through Cloudflare Browser Rendering (residential + stealth) by default, falling back to the mac render backend (a residential patched browser that warms the Akamai sensor) when cf can't clear the wall, and finally to a paid residential unlocker when configured. " +
 		"`action`: search (products for a `term`). Extraction is best-effort from the rendered page (embedded state blob when present, else product-pod tiles), normalized to the shared retail shape (id/title/price/image/url). " +
-		"`zip` optionally localizes the store; `limit` caps results (default 15, max 40). Slower than an API and falls back to Cloudflare Browser Rendering (residential + stealth) if the mac render backend is down.",
+		"`zip` optionally localizes the store; `limit` caps results (default 15, max 40). Slower than an API.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -138,18 +142,30 @@ export const homedepot: Fn = {
 		if (!term) return failWith("bad_input", "action=search requires a `term`.");
 		const limit = Math.min(40, Math.max(1, Number(args?.limit) || 15));
 
+		const url = `https://www.homedepot.com/s/${encodeURIComponent(term)}`;
 		const r = await retailRender(env, {
-			url: `https://www.homedepot.com/s/${encodeURIComponent(term)}`,
+			url,
 			block_resources: true,
 			wait_until: "networkidle2",
 			wait_ms: 6000,
 			timeout_ms: 55000,
 		});
-		if (!r.ok) return failWith("blocked", `homedepot: blocked or render failed — ${r.error}`);
+		// cf (default) → mac (fallback) → paid unlocker: HD's Akamai wall is the hardest
+		// of the retailers, so when both render backends miss, escalate to the residential
+		// unlocker. It no-ops instantly when UNLOCKER_API_* is unset, so the common path is
+		// unchanged; its budget stays inside the retailRender deadline buffer.
+		let html: string;
+		if (r.ok) {
+			html = r.body;
+		} else {
+			const u = await unlockerRender(env, { url, timeout_ms: 8000 });
+			if (!u.ok) return failWith("blocked", `homedepot: blocked or render failed — ${r.error}`);
+			html = u.body;
+		}
 
 		// Prefer an embedded state blob (richer), fall back to DOM pod parsing.
-		let products = fromStateBlob(r.body);
-		if (products.length === 0) products = fromPods(r.body);
+		let products = fromStateBlob(html);
+		if (products.length === 0) products = fromPods(html);
 		products = products.filter((p) => p.id && p.title).slice(0, limit);
 		if (products.length === 0) return failWith("layout_change", NO_PRODUCTS_MSG);
 		return ok(JSON.stringify({ retailer: "homedepot", action: "search", count: products.length, products }, null, 2));
