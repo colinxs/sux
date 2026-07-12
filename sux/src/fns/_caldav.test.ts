@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { buildVEvent, buildVTodo, caldavFetch, hasCalDav, icalStamp, listCalendars, parseICal, reportObjects } from "./_caldav";
+import { buildVEvent, buildVTodo, caldavFetch, dateProp, hasCalDav, icalDateToIso, icalStamp, listCalendars, parseICal, replaceProps, reportObjects, textProp } from "./_caldav";
+
+const octets = (s: string) => new TextEncoder().encode(s).length;
 
 const env = () => ({ FASTMAIL_CALDAV_USER: "me@fastmail.com", FASTMAIL_APP_PASSWORD: "app-pw" }) as any;
 
@@ -42,6 +44,114 @@ describe("_caldav iCal build/parse", () => {
 		expect(comp.props.SUMMARY).toBe("A, B; C"); // unescaped
 		expect(comp.props.DESCRIPTION).toBe(long); // folded then unfolded intact
 		expect(comp.props.UID).toBe("u3");
+	});
+
+	it("folding counts UTF-8 octets at 75 and never splits a multibyte sequence", () => {
+		// A multibyte (emoji + accented) summary long enough to fold several times.
+		const summary = "café 🎉 déjà vu — ".repeat(12);
+		const ical = buildVEvent({ uid: "u4", summary, start: "2026-07-11T09:00:00Z", dtstamp: "2026-07-10T00:00:00Z" });
+		for (const line of ical.split("\r\n")) expect(octets(line)).toBeLessThanOrEqual(75); // no physical line exceeds 75 octets
+		// A byte-level split would corrupt a code point; round-trip proves every sequence stayed whole.
+		expect(parseICal(ical)[0].props.SUMMARY).toBe(summary);
+	});
+});
+
+describe("_caldav parseICal — component isolation + normalization", () => {
+	it("a VALARM's DESCRIPTION never overwrites the VEVENT's props", () => {
+		const ical = [
+			"BEGIN:VCALENDAR",
+			"BEGIN:VEVENT",
+			"UID:evt-1",
+			"SUMMARY:Real Meeting",
+			"DTSTART:20260711T090000Z",
+			"BEGIN:VALARM",
+			"ACTION:DISPLAY",
+			"DESCRIPTION:ALARM POPUP TEXT",
+			"TRIGGER:-PT15M",
+			"END:VALARM",
+			"END:VEVENT",
+			"END:VCALENDAR",
+		].join("\r\n");
+		const [comp] = parseICal(ical);
+		expect(comp.props.SUMMARY).toBe("Real Meeting");
+		expect(comp.props.DESCRIPTION).toBeUndefined(); // the alarm's DESCRIPTION did NOT bleed in
+		expect(comp.props.TRIGGER).toBeUndefined();
+		expect(comp.props.ACTION).toBeUndefined();
+	});
+
+	it("a sibling VTIMEZONE's DTSTART never becomes the event's start; TZID is surfaced", () => {
+		const ical = [
+			"BEGIN:VCALENDAR",
+			"BEGIN:VTIMEZONE",
+			"TZID:America/New_York",
+			"BEGIN:STANDARD",
+			"DTSTART:20241103T020000",
+			"TZOFFSETTO:-0500",
+			"END:STANDARD",
+			"END:VTIMEZONE",
+			"BEGIN:VEVENT",
+			"UID:evt-2",
+			"DTSTART;TZID=America/New_York:20260711T090000",
+			"SUMMARY:NY Event",
+			"END:VEVENT",
+			"END:VCALENDAR",
+		].join("\r\n");
+		const [comp] = parseICal(ical);
+		expect(comp.start).toBe("2026-07-11T09:00:00"); // the event's wall time, NOT 2024-11-03 from VTIMEZONE
+		expect(comp.tz).toBe("America/New_York"); // non-UTC zone preserved, not coerced to Z
+		expect(comp.all_day).toBe(false);
+		expect(comp.props.TZOFFSETTO).toBeUndefined();
+	});
+
+	it("icalDateToIso: UTC → Z, VALUE=DATE → all-day, TZID → floating wall time + zone", () => {
+		expect(icalDateToIso("20260711T090000Z")).toEqual({ iso: "2026-07-11T09:00:00Z", all_day: false, tz: null });
+		expect(icalDateToIso("20261225", { VALUE: "DATE" })).toEqual({ iso: "2026-12-25", all_day: true, tz: null });
+		expect(icalDateToIso("20260711T090000", { TZID: "Europe/Berlin" })).toEqual({ iso: "2026-07-11T09:00:00", all_day: false, tz: "Europe/Berlin" });
+	});
+
+	it("parses every top-level VEVENT in a multi-event blob", () => {
+		const ical = ["BEGIN:VCALENDAR", "BEGIN:VEVENT", "UID:a", "SUMMARY:One", "END:VEVENT", "BEGIN:VEVENT", "UID:b", "SUMMARY:Two", "END:VEVENT", "END:VCALENDAR"].join("\r\n");
+		const comps = parseICal(ical);
+		expect(comps.map((c) => c.props.UID)).toEqual(["a", "b"]);
+	});
+
+	it("buildVTodo COMPLETED carries a COMPLETED stamp + PERCENT-COMPLETE:100", () => {
+		const ical = buildVTodo({ uid: "t9", summary: "done", status: "COMPLETED", completed: "2026-07-11T10:00:00Z", dtstamp: "2026-07-11T10:00:00Z" });
+		expect(ical).toContain("STATUS:COMPLETED");
+		expect(ical).toContain("COMPLETED:20260711T100000Z");
+		expect(ical).toContain("PERCENT-COMPLETE:100");
+	});
+});
+
+describe("_caldav replaceProps", () => {
+	it("rewrites requested props in place, preserving UID, TZID encoding, and the VALARM", () => {
+		const ical = [
+			"BEGIN:VCALENDAR",
+			"BEGIN:VEVENT",
+			"UID:keep-me",
+			"DTSTART;TZID=America/New_York:20260711T090000",
+			"SUMMARY:Old Title",
+			"BEGIN:VALARM",
+			"ACTION:DISPLAY",
+			"TRIGGER:-PT15M",
+			"END:VALARM",
+			"END:VEVENT",
+			"END:VCALENDAR",
+		].join("\r\n");
+		const out = replaceProps(ical, "VEVENT", { SUMMARY: textProp("SUMMARY", "New Title"), LOCATION: textProp("LOCATION", "Room 5") });
+		const [comp] = parseICal(out);
+		expect(comp.props.UID).toBe("keep-me"); // untouched
+		expect(comp.props.SUMMARY).toBe("New Title"); // replaced in place
+		expect(comp.props.LOCATION).toBe("Room 5"); // appended
+		expect(comp.tz).toBe("America/New_York"); // the TZID DTSTART line survived verbatim
+		expect(out).toContain("BEGIN:VALARM"); // the alarm was preserved
+		expect(out).toContain("TRIGGER:-PT15M");
+	});
+
+	it("a null set deletes a property", () => {
+		const ical = ["BEGIN:VCALENDAR", "BEGIN:VEVENT", "UID:x", "SUMMARY:s", "LOCATION:gone", "END:VEVENT", "END:VCALENDAR"].join("\r\n");
+		const out = replaceProps(ical, "VEVENT", { LOCATION: null });
+		expect(parseICal(out)[0].props.LOCATION).toBeUndefined();
 	});
 });
 
@@ -89,5 +199,95 @@ describe("_caldav discovery + report", () => {
 		expect(objs).toHaveLength(1);
 		expect(objs[0]).toMatchObject({ etag: '"e1"' });
 		expect(parseICal(objs[0].ical)[0].props.SUMMARY).toBe("Standup");
+	});
+
+	it("bounds a VEVENT REPORT with a default time-range; leaves VTODO unbounded unless a window is given", async () => {
+		const bodies: string[] = [];
+		global.fetch = vi.fn(async (_url: any, init: any) => {
+			bodies.push(String(init?.body ?? ""));
+			return new Response(`<d:multistatus xmlns:d="DAV:"></d:multistatus>`, { status: 207 });
+		}) as any;
+		await reportObjects(env(), "/cal/", "VEVENT"); // default now..+90d
+		expect(bodies[0]).toMatch(/<c:time-range start="\d{8}T\d{6}Z" end="\d{8}T\d{6}Z"\/>/);
+		await reportObjects(env(), "/cal/", "VTODO"); // undated tasks must survive → no filter
+		expect(bodies[1]).not.toContain("time-range");
+		await reportObjects(env(), "/cal/", "VTODO", { start: "2026-01-01", end: "2026-12-31" }); // explicit window opts in
+		expect(bodies[2]).toContain("<c:time-range");
+	});
+});
+
+// A fuzz/property sweep: malformed, non-UTC, TZID-bearing, VALARM-laden, folded iCal fed into
+// parseICal must NEVER throw and NEVER cross-contaminate one component's props with another's
+// (a VALARM/VTIMEZONE child, or a following component).
+describe("_caldav parseICal fuzz", () => {
+	function mulberry32(seed: number) {
+		return () => {
+			seed |= 0;
+			seed = (seed + 0x6d2b79f5) | 0;
+			let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+			t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+			return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+		};
+	}
+
+	// Harmless junk that may appear anywhere — none of it carries a contaminant marker, so if it
+	// lands directly in a component that's legitimate, not contamination.
+	const NOISE = [
+		"",
+		"   ",
+		"\t",
+		":::",
+		"NOCOLONHERE",
+		"X-JUNK;PARAM=val:whatever",
+		"DTSTART", // no colon
+		"SUMMARY:", // empty value (would only overwrite with empty, still CANON-free)
+		"COMMENT:with, commas; and \\n escapes \\\\ and semicolons",
+		"BEGIN:", // malformed BEGIN
+		"END:", // malformed END
+		"café 🎉 unfolded noise 🚀",
+	];
+	// A properly-nested VALARM whose DESCRIPTION must NOT reach the enclosing event.
+	const VALARM = ["BEGIN:VALARM", "ACTION:DISPLAY", "DESCRIPTION:ALARM-CONTAMINANT", "TRIGGER:-PT10M", "END:VALARM"];
+
+	it("never throws and never cross-contaminates over random blobs", () => {
+		const rnd = mulberry32(0xc0ffee);
+		for (let i = 0; i < 800; i++) {
+			const lines: string[] = ["BEGIN:VCALENDAR"];
+			// A sibling VTIMEZONE (its TZID/DTSTART must never reach a real component).
+			if (rnd() < 0.5) lines.push("BEGIN:VTIMEZONE", "TZID:Poison/Zone", "DTSTART:19700101T000000", "END:VTIMEZONE");
+			const nComps = 1 + Math.floor(rnd() * 3);
+			for (let c = 0; c < nComps; c++) {
+				const isTodo = rnd() < 0.5;
+				lines.push(isTodo ? "BEGIN:VTODO" : "BEGIN:VEVENT");
+				lines.push(`UID:comp-${i}-${c}`);
+				lines.push(`SUMMARY:CANON-${i}-${c}`);
+				if (rnd() < 0.4) lines.push(`DTSTART;TZID=Antarctica/Troll:20260711T1230${String(c).padStart(2, "0")}`);
+				const noiseCount = Math.floor(rnd() * 6);
+				for (let n = 0; n < noiseCount; n++) lines.push(NOISE[Math.floor(rnd() * NOISE.length)]);
+				if (rnd() < 0.6) lines.push(...VALARM); // a nested alarm block
+				// Randomly drop the END to simulate truncation/corruption.
+				if (rnd() < 0.85) lines.push(isTodo ? "END:VTODO" : "END:VEVENT");
+			}
+			if (rnd() < 0.9) lines.push("END:VCALENDAR");
+			// Fold some lines at arbitrary points to stress the unfolder.
+			const raw = lines
+				.map((l) => (l.length > 8 && rnd() < 0.3 ? `${l.slice(0, 5)}\r\n ${l.slice(5)}` : l))
+				.join(rnd() < 0.5 ? "\r\n" : "\n");
+
+			let comps: ReturnType<typeof parseICal>;
+			expect(() => (comps = parseICal(raw))).not.toThrow();
+			for (const comp of comps!) {
+				// The alarm/timezone contaminants must never land on a real component.
+				expect(comp.props.DESCRIPTION).not.toBe("ALARM-CONTAMINANT");
+				expect(comp.props.TZID).not.toBe("Poison/Zone");
+				expect(comp.props.TRIGGER).toBeUndefined();
+				expect(comp.props.ACTION).toBeUndefined();
+				expect(comp.props.TZOFFSETTO).toBeUndefined();
+				// UID is written only by real components (never by noise/alarm/timezone), so a captured
+				// component's UID is always a canonical marker — proof no foreign frame leaked its identity
+				// in. (trailing whitespace can accrue from a space-led continuation line, hence trimEnd.)
+				if (comp.props.UID !== undefined) expect(comp.props.UID.replace(/\s+$/, "")).toMatch(/^comp-\d+-\d+$/);
+			}
+		}
 	});
 });

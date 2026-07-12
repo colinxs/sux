@@ -92,18 +92,43 @@ export async function listCalendars(env: RtEnv): Promise<CalendarRef[]> {
 
 // ---- iCalendar (RFC 5545) build + parse ----
 
-/** Fold + escape one property line (RFC 5545 §3.1 line folding, §3.3.11 TEXT escaping). */
-function icalLine(name: string, value: string): string {
-	const escaped = String(value).replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\n/g, "\\n");
-	const line = `${name}:${escaped}`;
-	if (line.length <= 73) return line;
-	const chunks: string[] = [line.slice(0, 73)];
-	let rest = line.slice(73);
-	while (rest.length) {
-		chunks.push(` ${rest.slice(0, 72)}`);
-		rest = rest.slice(72);
+const enc = new TextEncoder();
+
+/** RFC 5545 §3.1 content-line folding at 75 OCTETS (not chars). Iterating by code point
+ *  (for…of) never splits a multibyte UTF-8 sequence; each continuation line starts with a
+ *  single space, which counts toward its 75-octet budget so unfolding restores it exactly. */
+function foldLine(logical: string): string {
+	const out: string[] = [];
+	let cur = "";
+	let bytes = 0;
+	for (const ch of logical) {
+		const b = enc.encode(ch).length;
+		if (bytes + b > 75) {
+			out.push(cur);
+			cur = ` ${ch}`; // the leading space is part of this line's octet count
+			bytes = 1 + b;
+		} else {
+			cur += ch;
+			bytes += b;
+		}
 	}
-	return chunks.join("\r\n");
+	out.push(cur);
+	return out.join("\r\n");
+}
+
+function escapeText(value: string): string {
+	return String(value).replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\n/g, "\\n");
+}
+
+/** One unfolded TEXT property line (escaped) — the caller folds it (buildVEvent) or hands it to replaceProps (which folds). */
+export function textProp(name: string, value: string): string {
+	return `${name}:${escapeText(value)}`;
+}
+
+/** One unfolded date/date-time property line: `NAME:20260711T090000Z` or `NAME;VALUE=DATE:20261225`. */
+export function dateProp(name: string, iso: string): string {
+	const { value, dateOnly } = icalStamp(iso);
+	return dateOnly ? `${name};VALUE=DATE:${value}` : `${name}:${value}`;
 }
 
 /** ISO-8601 → iCal UTC stamp (20260711T090000Z). A date-only value stays a VALUE=DATE. */
@@ -117,11 +142,6 @@ export function icalStamp(iso: string): { value: string; dateOnly: boolean } {
 
 export type EventInput = { uid: string; summary: string; start: string; end?: string; description?: string; location?: string; dtstamp: string };
 
-function dtProp(name: string, iso: string): string {
-	const { value, dateOnly } = icalStamp(iso);
-	return dateOnly ? `${name};VALUE=DATE:${value}` : icalLine(name, value);
-}
-
 /** Build a VCALENDAR wrapping one VEVENT. `dtstamp` is passed in (Workers forbid Date.now() ambient use elsewhere, but a real send needs a stamp). */
 export function buildVEvent(e: EventInput): string {
 	const lines = [
@@ -129,68 +149,209 @@ export function buildVEvent(e: EventInput): string {
 		"VERSION:2.0",
 		"PRODID:-//sux//caldav//EN",
 		"BEGIN:VEVENT",
-		icalLine("UID", e.uid),
-		dtProp("DTSTAMP", e.dtstamp),
-		dtProp("DTSTART", e.start),
-		...(e.end ? [dtProp("DTEND", e.end)] : []),
-		icalLine("SUMMARY", e.summary),
-		...(e.description ? [icalLine("DESCRIPTION", e.description)] : []),
-		...(e.location ? [icalLine("LOCATION", e.location)] : []),
+		foldLine(textProp("UID", e.uid)),
+		foldLine(dateProp("DTSTAMP", e.dtstamp)),
+		foldLine(dateProp("DTSTART", e.start)),
+		...(e.end ? [foldLine(dateProp("DTEND", e.end))] : []),
+		foldLine(textProp("SUMMARY", e.summary)),
+		...(e.description ? [foldLine(textProp("DESCRIPTION", e.description))] : []),
+		...(e.location ? [foldLine(textProp("LOCATION", e.location))] : []),
 		"END:VEVENT",
 		"END:VCALENDAR",
 	];
 	return lines.join("\r\n");
 }
 
-export type TaskInput = { uid: string; summary: string; due?: string; description?: string; status?: string; dtstamp: string };
+export type TaskInput = { uid: string; summary: string; due?: string; description?: string; status?: string; completed?: string; dtstamp: string };
 
-/** Build a VCALENDAR wrapping one VTODO. */
+/** Build a VCALENDAR wrapping one VTODO. A COMPLETED status carries its completion stamp + PERCENT-COMPLETE:100. */
 export function buildVTodo(t: TaskInput): string {
+	const status = t.status ?? "NEEDS-ACTION";
+	const done = status.toUpperCase() === "COMPLETED";
 	const lines = [
 		"BEGIN:VCALENDAR",
 		"VERSION:2.0",
 		"PRODID:-//sux//caldav//EN",
 		"BEGIN:VTODO",
-		icalLine("UID", t.uid),
-		dtProp("DTSTAMP", t.dtstamp),
-		...(t.due ? [dtProp("DUE", t.due)] : []),
-		icalLine("SUMMARY", t.summary),
-		...(t.description ? [icalLine("DESCRIPTION", t.description)] : []),
-		icalLine("STATUS", t.status ?? "NEEDS-ACTION"),
+		foldLine(textProp("UID", t.uid)),
+		foldLine(dateProp("DTSTAMP", t.dtstamp)),
+		...(t.due ? [foldLine(dateProp("DUE", t.due))] : []),
+		foldLine(textProp("SUMMARY", t.summary)),
+		...(t.description ? [foldLine(textProp("DESCRIPTION", t.description))] : []),
+		foldLine(textProp("STATUS", status)),
+		...(done ? [foldLine(dateProp("COMPLETED", t.completed ?? t.dtstamp)), "PERCENT-COMPLETE:100"] : []),
 		"END:VTODO",
 		"END:VCALENDAR",
 	];
 	return lines.join("\r\n");
 }
 
-/** Unfold (RFC 5545 §3.1) + parse an iCal blob into flat property maps per component. */
-export function parseICal(text: string): Array<{ component: string; props: Record<string, string> }> {
+export type ParsedComponent = {
+	component: string;
+	props: Record<string, string>;
+	params: Record<string, Record<string, string>>;
+	start: string | null;
+	end: string | null;
+	all_day: boolean;
+	tz: string | null;
+};
+
+/** iCal date/date-time value + its parameters → a normalized ISO-ish string, all-day flag, and zone.
+ *  `20261225` / VALUE=DATE → all-day date; `…Z` → UTC (`…Z`); a TZID or floating value keeps its wall
+ *  time and surfaces the zone (never silently coerced to UTC). */
+export function icalDateToIso(value: string, params: Record<string, string> = {}): { iso: string; all_day: boolean; tz: string | null } {
+	const tz = params.TZID ?? null;
+	const m = /^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z)?)?/.exec(value.trim());
+	if (!m) return { iso: value, all_day: params.VALUE === "DATE", tz };
+	const [, y, mo, d, hh, mm, ss, z] = m;
+	if (!hh || params.VALUE === "DATE") return { iso: `${y}-${mo}-${d}`, all_day: true, tz: null };
+	const wall = `${y}-${mo}-${d}T${hh}:${mm}:${ss ?? "00"}`;
+	return z ? { iso: `${wall}Z`, all_day: false, tz: null } : { iso: wall, all_day: false, tz };
+}
+
+function splitPropName(namePart: string): { name: string; params: Record<string, string> } {
+	const segs = namePart.split(";");
+	const params: Record<string, string> = {};
+	for (const seg of segs.slice(1)) {
+		const eq = seg.indexOf("=");
+		if (eq < 0) continue;
+		params[seg.slice(0, eq).toUpperCase()] = seg.slice(eq + 1);
+	}
+	return { name: segs[0].toUpperCase(), params };
+}
+
+function finalizeComponent(component: string, props: Record<string, string>, params: Record<string, Record<string, string>>): ParsedComponent {
+	const s = props.DTSTART ? icalDateToIso(props.DTSTART, params.DTSTART) : null;
+	const e = props.DTEND ? icalDateToIso(props.DTEND, params.DTEND) : null;
+	return { component, props, params, start: s?.iso ?? null, end: e?.iso ?? null, all_day: s?.all_day ?? false, tz: s?.tz ?? null };
+}
+
+/** Unfold (RFC 5545 §3.1) + tokenize an iCal blob into its top-level VEVENT/VTODO components.
+ *  Once a component is open, a `sub` counter tracks every nested BEGIN…END (VALARM, VTIMEZONE
+ *  sub-parts, or any child) and props are captured ONLY while sub===0 — so a VALARM's DESCRIPTION
+ *  or a timezone's DTSTART can never bleed into the event, even under malformed/unbalanced nesting.
+ *  Never throws; a truncated or garbage blob simply yields whatever closed. */
+export function parseICal(text: string): ParsedComponent[] {
 	const unfolded = text.replace(/\r\n[ \t]/g, "").replace(/\n[ \t]/g, "");
 	const lines = unfolded.split(/\r\n|\n/);
-	const out: Array<{ component: string; props: Record<string, string> }> = [];
-	let cur: { component: string; props: Record<string, string> } | null = null;
+	const out: ParsedComponent[] = [];
+	let cur: { component: string; props: Record<string, string>; params: Record<string, Record<string, string>> } | null = null;
+	let sub = 0; // depth of nested components inside the open target
 	for (const line of lines) {
-		if (/^BEGIN:(VEVENT|VTODO)/i.test(line)) cur = { component: line.split(":")[1].toUpperCase(), props: {} };
-		else if (/^END:(VEVENT|VTODO)/i.test(line)) {
-			if (cur) out.push(cur);
-			cur = null;
-		} else if (cur) {
-			const idx = line.indexOf(":");
-			if (idx < 0) continue;
-			const rawName = line.slice(0, idx).split(";")[0].toUpperCase();
-			const value = line.slice(idx + 1).replace(/\\n/g, "\n").replace(/\\,/g, ",").replace(/\\;/g, ";").replace(/\\\\/g, "\\");
-			if (rawName) cur.props[rawName] = value;
+		const begin = /^BEGIN:(.+)$/i.exec(line);
+		if (begin) {
+			const name = begin[1].trim().toUpperCase();
+			if (cur) sub++; // a child component (VALARM/…) of the open target — suppress capture
+			else if (name === "VEVENT" || name === "VTODO") {
+				cur = { component: name, props: {}, params: {} };
+				sub = 0;
+			}
+			continue;
 		}
+		const end = /^END:(.+)$/i.exec(line);
+		if (end) {
+			if (cur) {
+				if (sub > 0) sub--; // closing a child — resume capture at the target level
+				else {
+					out.push(finalizeComponent(cur.component, cur.props, cur.params));
+					cur = null;
+				}
+			}
+			continue;
+		}
+		if (!cur || sub > 0) continue; // only capture directly inside the target, never inside a child
+		const idx = line.indexOf(":");
+		if (idx < 0) continue;
+		const { name, params } = splitPropName(line.slice(0, idx));
+		if (!name) continue;
+		cur.props[name] = line.slice(idx + 1).replace(/\\n/g, "\n").replace(/\\N/g, "\n").replace(/\\,/g, ",").replace(/\\;/g, ";").replace(/\\\\/g, "\\");
+		if (Object.keys(params).length) cur.params[name] = params;
 	}
 	return out;
 }
 
-/** REPORT a calendar collection for its VEVENT/VTODO objects in a time-agnostic query. */
-export async function reportObjects(env: RtEnv, calendarHref: string, comp: "VEVENT" | "VTODO"): Promise<Array<{ href: string; etag: string | null; ical: string }>> {
+/** Rewrite properties of the first VEVENT/VTODO in an iCal blob, preserving everything else
+ *  (VALARM, VTIMEZONE, TZID-bearing DTSTART, unknown props). `sets` maps a PROPERTY name to a
+ *  full unfolded property line (from textProp/dateProp) to set, or null to delete. Missing
+ *  properties are appended before END. The result is re-folded. Used by cal_update/task_*. */
+export function replaceProps(ical: string, comp: "VEVENT" | "VTODO", sets: Record<string, string | null>): string {
+	const norm: Record<string, string | null> = {};
+	for (const [k, v] of Object.entries(sets)) norm[k.toUpperCase()] = v;
+	const unfolded = ical.replace(/\r\n[ \t]/g, "").replace(/\n[ \t]/g, "");
+	const lines = unfolded.split(/\r\n|\n/);
+	const out: string[] = [];
+	const applied = new Set<string>();
+	let inTarget = false;
+	let sub = 0;
+	let done = false;
+	for (const line of lines) {
+		const begin = /^BEGIN:(.+)$/i.exec(line);
+		if (begin) {
+			if (inTarget) sub++;
+			else if (!done && begin[1].trim().toUpperCase() === comp) {
+				inTarget = true;
+				sub = 0;
+			}
+			out.push(line);
+			continue;
+		}
+		const end = /^END:(.+)$/i.exec(line);
+		if (end) {
+			if (inTarget && sub > 0) sub--;
+			else if (inTarget) {
+				for (const [k, v] of Object.entries(norm)) if (v !== null && !applied.has(k)) out.push(foldLine(v));
+				inTarget = false;
+				done = true;
+			}
+			out.push(line);
+			continue;
+		}
+		if (inTarget && sub === 0) {
+			const idx = line.indexOf(":");
+			const propName = idx >= 0 ? line.slice(0, idx).split(";")[0].toUpperCase() : "";
+			if (propName && propName in norm) {
+				applied.add(propName);
+				const repl = norm[propName];
+				if (repl === null) continue; // delete: drop the line
+				out.push(foldLine(repl));
+				continue;
+			}
+		}
+		out.push(line);
+	}
+	return out.join("\r\n");
+}
+
+/** now..+90d as CalDAV UTC stamps, or a caller override. Absent bound → the default. */
+function timeRangeFilter(comp: "VEVENT" | "VTODO", window?: { start?: string; end?: string } | null): string {
+	// A time-range on VTODO would drop undated tasks (RFC 4791 §9.9), so only bound events by
+	// default; a VTODO window is emitted only when the caller explicitly asks for one.
+	const explicit = !!(window && (window.start || window.end));
+	if (comp === "VTODO" && !explicit) return "";
+	const now = Date.now();
+	const stamp = (iso: string): string => {
+		const d = new Date(iso);
+		if (Number.isNaN(d.getTime())) throw new Error(`invalid time-range bound '${iso}' (want ISO-8601).`);
+		return icalStamp(d.toISOString()).value;
+	};
+	const start = stamp(window?.start ?? new Date(now).toISOString());
+	const end = stamp(window?.end ?? new Date(now + 90 * 24 * 60 * 60 * 1000).toISOString());
+	return `<c:time-range start="${start}" end="${end}"/>`;
+}
+
+/** REPORT a calendar collection for its VEVENT/VTODO objects, bounded by a time-range so a
+ *  multi-year calendar can't blow the deadline/output ceiling. Events default to now..+90d
+ *  (caller-overridable via `window`); tasks are unbounded unless a window is passed. */
+export async function reportObjects(
+	env: RtEnv,
+	calendarHref: string,
+	comp: "VEVENT" | "VTODO",
+	window?: { start?: string; end?: string } | null,
+): Promise<Array<{ href: string; etag: string | null; ical: string }>> {
 	const body = `<?xml version="1.0" encoding="utf-8"?>
 <c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
   <d:prop><d:getetag/><c:calendar-data/></d:prop>
-  <c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="${comp}"/></c:comp-filter></c:filter>
+  <c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="${comp}">${timeRangeFilter(comp, window)}</c:comp-filter></c:comp-filter></c:filter>
 </c:calendar-query>`;
 	const r = await caldavFetch(env, "REPORT", calendarHref, { body, contentType: "application/xml; charset=utf-8", depth: "1" });
 	if (!r.ok && r.status !== 207) throw new Error(`CalDAV REPORT failed: HTTP ${r.status}`);

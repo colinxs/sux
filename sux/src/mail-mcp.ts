@@ -1,10 +1,10 @@
 import { checkArgs, FN_DEADLINE_MS, withDeadline } from "./index";
 import { type JsonRpc, sseResponse } from "./mcp-util";
-import { fail, type RtEnv, type ToolResult } from "./registry";
+import { fail, failWith, type RtEnv, type ToolResult } from "./registry";
 import { staged } from "./stage";
 import { jmap } from "./fns/jmap";
 import { doUpload, jstr, scopeProbe } from "./fns/_jmap";
-import { buildVEvent, buildVTodo, CALDAV_NOT_CONFIGURED, type CalendarRef, caldavFetch, calendarHome, hasCalDav, listCalendars, parseICal, reportObjects } from "./fns/_caldav";
+import { buildVEvent, buildVTodo, CALDAV_NOT_CONFIGURED, type CalendarRef, caldavFetch, calendarHome, dateProp, hasCalDav, icalDateToIso, listCalendars, parseICal, replaceProps, reportObjects, textProp } from "./fns/_caldav";
 import { htmlToMd } from "./fns/_markup";
 import { errMsg } from "./fns/_util";
 
@@ -126,8 +126,79 @@ function shapeCalObject(o: { href: string; etag: string | null; ical: string }):
 	if (!comp) return null;
 	const p = comp.props;
 	const base = { uid: p.UID, summary: p.SUMMARY, href: o.href, etag: o.etag };
-	if (comp.component === "VTODO") return { ...base, due: p.DUE ?? null, status: p.STATUS ?? null, description: p.DESCRIPTION ?? undefined };
-	return { ...base, start: p.DTSTART ?? null, end: p.DTEND ?? null, location: p.LOCATION ?? undefined, description: p.DESCRIPTION ?? undefined };
+	if (comp.component === "VTODO") {
+		const due = p.DUE ? icalDateToIso(p.DUE, comp.params.DUE) : null;
+		return { ...base, due: due?.iso ?? null, ...(due?.all_day ? { all_day: true } : {}), ...(due?.tz ? { tz: due.tz } : {}), status: p.STATUS ?? null, description: p.DESCRIPTION ?? undefined };
+	}
+	return { ...base, start: comp.start, end: comp.end, all_day: comp.all_day, ...(comp.tz ? { tz: comp.tz } : {}), location: p.LOCATION ?? undefined, description: p.DESCRIPTION ?? undefined };
+}
+
+class NotFound extends Error {}
+
+/** Property-set for a cal_update/task_update/task_complete rewrite. DTSTAMP (and, for a COMPLETED
+ *  task, the COMPLETED stamp) are stamped fresh here — call it at write time, never at stage, so the
+ *  timestamps aren't baked into the payload the commit_token is bound to. `null` deletes a property. */
+function buildCalSets(a: any, comp: "VEVENT" | "VTODO"): Record<string, string | null> {
+	const clear = (v: unknown) => String(v) === "";
+	const sets: Record<string, string | null> = { DTSTAMP: dateProp("DTSTAMP", new Date().toISOString()) };
+	if (a?.summary !== undefined) sets.SUMMARY = textProp("SUMMARY", String(a.summary));
+	if (a?.description !== undefined) sets.DESCRIPTION = clear(a.description) ? null : textProp("DESCRIPTION", String(a.description));
+	if (comp === "VEVENT") {
+		if (a?.start !== undefined) sets.DTSTART = dateProp("DTSTART", String(a.start));
+		if (a?.end !== undefined) sets.DTEND = clear(a.end) ? null : dateProp("DTEND", String(a.end));
+		if (a?.location !== undefined) sets.LOCATION = clear(a.location) ? null : textProp("LOCATION", String(a.location));
+	} else {
+		if (a?.due !== undefined) sets.DUE = clear(a.due) ? null : dateProp("DUE", String(a.due));
+		if (a?.status !== undefined) sets.STATUS = textProp("STATUS", String(a.status));
+		if (String(a?.status ?? "").toUpperCase() === "COMPLETED") {
+			sets.COMPLETED = dateProp("COMPLETED", new Date().toISOString());
+			sets["PERCENT-COMPLETE"] = "PERCENT-COMPLETE:100";
+		}
+	}
+	return sets;
+}
+
+/** The fields a caller meaningfully changed (excludes the always-stamped DTSTAMP + COMPLETED consequences). */
+const CHANGE_KEYS = ["SUMMARY", "DESCRIPTION", "DTSTART", "DTEND", "LOCATION", "DUE", "STATUS"];
+
+/** Shared cal_update/task_update/task_complete: GET the object, rewrite the requested properties in
+ *  place (UID/alarms/timezone-encoding preserved), PUT with an If-Match guard. Stage-then-commit. */
+async function calPatch(env: RtEnv, a: any, comp: "VEVENT" | "VTODO"): Promise<ToolResult> {
+	const noun = comp === "VTODO" ? "task" : "event";
+	if (!hasCalDav(env)) return failWith("not_configured", CALDAV_NOT_CONFIGURED);
+	if (!a?.href) return failWith("bad_input", `${noun} update requires the object \`href\`.`);
+	const href = String(a.href);
+	// Validate + compute the changed field set up front (a bad date surfaces as bad_input, not a 5xx).
+	let changed: string[];
+	try {
+		changed = Object.keys(buildCalSets(a, comp)).filter((k) => CHANGE_KEYS.includes(k));
+	} catch (e) {
+		return failWith("bad_input", errMsg(e));
+	}
+	if (!changed.length) return failWith("bad_input", `nothing to update — pass at least one ${noun} field to change.`);
+	const kind = comp === "VTODO" ? (a?._complete ? "task_complete" : "task_update") : "cal_update";
+	// Payload is args-derived (deterministic) so the stage→commit hash is stable across the two calls.
+	const fields: Record<string, unknown> = {};
+	for (const k of ["summary", "start", "end", "description", "location", "due", "status"]) if (a?.[k] !== undefined) fields[k] = a[k];
+	const payload = { href, comp, complete: a?._complete === true, etag: a?.etag ?? null, ...fields };
+	const preview = { action: a?._complete ? "complete task" : `update ${noun}`, href, changes: changed };
+	const mutate = async () => {
+		const cur = await caldavFetch(env, "GET", href);
+		if (cur.status === 404) throw new NotFound(`no ${noun} at '${href}' — list it with ${comp === "VTODO" ? "task_list" : "cal_events"}.`);
+		if (!cur.ok) throw new Error(`fetch-for-update failed: HTTP ${cur.status}`);
+		const body = replaceProps(cur.text, comp, buildCalSets(a, comp));
+		const ifMatch = a?.etag ? String(a.etag) : (cur.etag ?? undefined);
+		const r = await caldavFetch(env, "PUT", href, { body, contentType: "text/calendar; charset=utf-8", ...(ifMatch ? { ifMatch } : {}) });
+		if (!r.ok) throw new Error(`${noun} update failed: HTTP ${r.status} ${r.text.slice(0, 200)}`);
+		return { updated: true, href, etag: r.etag, changed };
+	};
+	try {
+		const out = await staged(env, kind, { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, payload, preview, mutate);
+		return ok("stageResult" in out ? out.stageResult : out.result);
+	} catch (e) {
+		if (e instanceof NotFound) return failWith("not_found", errMsg(e));
+		return fail(errMsg(e));
+	}
 }
 
 /** Map ergonomic contact args (plain strings) to a JSCard ContactCard patch — only the provided fields.
@@ -306,7 +377,7 @@ const TOOLS: MailTool[] = [
 		description: "Read one message in full — headers plus the plain-text body. The one deliberate 'return the bytes' verb; use mail_search first to find the id.",
 		inputSchema: { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string", description: "Email id from mail_search." } } },
 		run: async (env, a) => {
-			if (!a?.id) return fail("mail_read requires an `id`.");
+			if (!a?.id) return failWith("bad_input", "mail_read requires an `id`.");
 			try {
 				const resp = await jmapCall(env, {
 					calls: [
@@ -316,7 +387,7 @@ const TOOLS: MailTool[] = [
 				});
 				const boxNames: Record<string, string> = Object.fromEntries((resultFor(resp, "Mailbox/get")?.list ?? []).map((b: any) => [b?.id, b?.name]));
 				const e = resultFor(resp, "Email/get")?.list?.[0];
-				if (!e) return fail(`No message '${a.id}'.`);
+				if (!e) return failWith("not_found", `No message '${a.id}'.`);
 				const attachments = Array.isArray(e.attachments) ? e.attachments.map((x: any) => ({ blobId: x?.blobId, name: x?.name, type: x?.type, size: x?.size })) : [];
 				return ok({ ...shapeRef(e, boxNames), body: extractBody(e), attachments });
 			} catch (e) {
@@ -335,7 +406,7 @@ const TOOLS: MailTool[] = [
 					const r0 = await jmapCall(env, { method: "Email/get", args: { ids: [String(a.id)], properties: ["threadId"] } });
 					threadId = resultFor(r0, "Email/get")?.list?.[0]?.threadId ?? "";
 				}
-				if (!threadId) return fail("mail_thread needs a `threadId` or an email `id`.");
+				if (!threadId) return failWith("bad_input", "mail_thread needs a `threadId` or an email `id`.");
 				const resp = await jmapCall(env, {
 					calls: [
 						["Thread/get", { ids: [threadId] }, "t"],
@@ -447,7 +518,7 @@ const TOOLS: MailTool[] = [
 		description: "Cancel a pending scheduled send by its submission id (undoStatus → canceled) before it releases. Idempotent: a submission that's already canceled or released reports success rather than erroring.",
 		inputSchema: { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string", description: "The submissionId from mail_send/mail_schedule or a mail_scheduled list." } } },
 		run: async (env, a) => {
-			if (!a?.id) return fail("mail_unschedule requires the submission `id`.");
+			if (!a?.id) return failWith("bad_input", "mail_unschedule requires the submission `id`.");
 			try {
 				const id = String(a.id);
 				const resp = await jmapCall(env, { calls: [["EmailSubmission/set", { update: { [id]: { undoStatus: "canceled" } } }, "u"]] });
@@ -467,7 +538,7 @@ const TOOLS: MailTool[] = [
 		inputSchema: { type: "object", additionalProperties: false, properties: { ref: { type: "string", description: "A sux /s/<uuid> CAS handle to stream up." }, data: { type: "string", description: "Base64 bytes (small files only)." }, type: { type: "string", description: "MIME type (default application/octet-stream)." }, name: { type: "string" } } },
 		run: async (env, a) => {
 			const src = a?.ref ?? a?.data;
-			if (!src) return fail("mail_upload needs `ref` (a sux /s/<uuid> handle) or `data` (base64).");
+			if (!src) return failWith("bad_input", "mail_upload needs `ref` (a sux /s/<uuid> handle) or `data` (base64).");
 			try {
 				const up = (await doUpload(env, String(src), String(a?.type ?? "application/octet-stream"))) as any;
 				return ok({ blobId: up.blobId, type: up.type ?? a?.type ?? "application/octet-stream", size: up.size, ...(a?.name ? { name: a.name } : {}) });
@@ -517,7 +588,7 @@ const TOOLS: MailTool[] = [
 					return ok("stageResult" in out ? out.stageResult : out.result);
 				}
 				if (action === "disable" || action === "enable" || action === "delete") {
-					if (!a?.id) return fail(`mail_masked ${action} requires an \`id\`.`);
+					if (!a?.id) return failWith("bad_input", `mail_masked ${action} requires an \`id\`.`);
 					const id = String(a.id);
 					const state = action === "delete" ? "deleted" : action === "disable" ? "disabled" : "enabled";
 					const mutate = async () => {
@@ -547,13 +618,13 @@ const TOOLS: MailTool[] = [
 		inputSchema: { type: "object", additionalProperties: false, properties: { action: { type: "string", enum: ["get", "set"] }, enabled: { type: "boolean" }, subject: { type: "string" }, text: { type: "string", description: "Plain-text auto-reply body." }, fromDate: { type: "string", description: "ISO-8601 start (optional)." }, toDate: { type: "string", description: "ISO-8601 end (optional)." }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
 		run: async (env, a) => {
 			const gate = await scopeGate(env, "vacationresponse");
-			if (gate) return fail(gate);
+			if (gate) return failWith("not_configured", gate);
 			try {
 				if ((a?.action ?? "get") === "get") {
 					const resp = await jmapCall(env, { calls: [["VacationResponse/get", { ids: ["singleton"] }, "g"]] });
 					return ok({ vacation: resultFor(resp, "VacationResponse/get")?.list?.[0] ?? null });
 				}
-				if (typeof a?.enabled !== "boolean" || !a?.subject || a?.text === undefined) return fail("mail_vacation set needs enabled (bool), subject, and text.");
+				if (typeof a?.enabled !== "boolean" || !a?.subject || a?.text === undefined) return failWith("bad_input", "mail_vacation set needs enabled (bool), subject, and text.");
 				const patch: Record<string, unknown> = { isEnabled: a.enabled, subject: String(a.subject), textBody: String(a.text), fromDate: a?.fromDate ?? null, toDate: a?.toDate ?? null };
 				const mutate = async () => {
 					const resp = await jmapCall(env, { allow_destroy: true, calls: [["VacationResponse/set", { update: { singleton: patch } }, "s"]] });
@@ -574,7 +645,7 @@ const TOOLS: MailTool[] = [
 		inputSchema: { type: "object", additionalProperties: false, properties: {} },
 		run: async (env) => {
 			const gate = await scopeGate(env, "quota");
-			if (gate) return fail(gate);
+			if (gate) return failWith("not_configured", gate);
 			try {
 				const resp = await jmapCall(env, { calls: [["Quota/get", {}, "g"]] });
 				const list = resultFor(resp, "Quota/get")?.list ?? [];
@@ -590,7 +661,7 @@ const TOOLS: MailTool[] = [
 		inputSchema: { type: "object", additionalProperties: false, properties: { text: { type: "string", description: "Free-text query over name/email." }, limit: { type: "integer", minimum: 1, maximum: 100 } } },
 		run: async (env, a) => {
 			const gate = await scopeGate(env, "contacts");
-			if (gate) return fail(gate);
+			if (gate) return failWith("not_configured", gate);
 			try {
 				const limit = clamp(a?.limit, 1, 100, 25);
 				const filter = a?.text ? { text: String(a.text) } : {};
@@ -608,12 +679,12 @@ const TOOLS: MailTool[] = [
 		inputSchema: { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string" } } },
 		run: async (env, a) => {
 			const gate = await scopeGate(env, "contacts");
-			if (gate) return fail(gate);
-			if (!a?.id) return fail("contact_get requires an `id`.");
+			if (gate) return failWith("not_configured", gate);
+			if (!a?.id) return failWith("bad_input", "contact_get requires an `id`.");
 			try {
 				const resp = await jmapCall(env, { calls: [["ContactCard/get", { ids: [String(a.id)] }, "g"]] });
 				const c = resultFor(resp, "ContactCard/get")?.list?.[0];
-				if (!c) return fail(`No contact '${a.id}'.`);
+				if (!c) return failWith("not_found", `No contact '${a.id}'.`);
 				return ok({ ...shapeContact(c), raw: c });
 			} catch (e) {
 				return fail(errMsg(e));
@@ -626,10 +697,10 @@ const TOOLS: MailTool[] = [
 		inputSchema: { type: "object", additionalProperties: false, properties: { firstName: { type: "string" }, lastName: { type: "string" }, company: { type: "string" }, emails: { type: "array", items: { type: "string" } }, phones: { type: "array", items: { type: "string" } }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
 		run: async (env, a) => {
 			const gate = await scopeGate(env, "contacts");
-			if (gate) return fail(gate);
+			if (gate) return failWith("not_configured", gate);
 			try {
 				const card = contactCard(a);
-				if (!Object.keys(card).length) return fail("contact_create needs at least one of firstName/lastName/company/emails/phones.");
+				if (!Object.keys(card).length) return failWith("bad_input", "contact_create needs at least one of firstName/lastName/company/emails/phones.");
 				const mutate = async () => {
 					const resp = await jmapCall(env, { calls: [["ContactCard/set", { create: { c: { "@type": "Card", version: "1.0", ...card } } }, "s"]] });
 					const created = resultFor(resp, "ContactCard/set")?.created?.c;
@@ -649,12 +720,12 @@ const TOOLS: MailTool[] = [
 		inputSchema: { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string" }, firstName: { type: "string" }, lastName: { type: "string" }, company: { type: "string" }, emails: { type: "array", items: { type: "string" } }, phones: { type: "array", items: { type: "string" } }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
 		run: async (env, a) => {
 			const gate = await scopeGate(env, "contacts");
-			if (gate) return fail(gate);
-			if (!a?.id) return fail("contact_update requires an `id`.");
+			if (gate) return failWith("not_configured", gate);
+			if (!a?.id) return failWith("bad_input", "contact_update requires an `id`.");
 			try {
 				const id = String(a.id);
 				const patch = contactCard(a);
-				if (!Object.keys(patch).length) return fail("contact_update needs at least one field to change.");
+				if (!Object.keys(patch).length) return failWith("bad_input", "contact_update needs at least one field to change.");
 				const mutate = async () => {
 					const resp = await jmapCall(env, { calls: [["ContactCard/set", { update: { [id]: patch } }, "s"]] });
 					const setR = resultFor(resp, "ContactCard/set");
@@ -674,8 +745,8 @@ const TOOLS: MailTool[] = [
 		inputSchema: { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string" }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
 		run: async (env, a) => {
 			const gate = await scopeGate(env, "contacts");
-			if (gate) return fail(gate);
-			if (!a?.id) return fail("contact_delete requires an `id`.");
+			if (gate) return failWith("not_configured", gate);
+			if (!a?.id) return failWith("bad_input", "contact_delete requires an `id`.");
 			try {
 				const id = String(a.id);
 				const mutate = async () => {
@@ -696,7 +767,7 @@ const TOOLS: MailTool[] = [
 		description: "List your Fastmail calendars (and task lists) — {href, name, isTasks}. Use the href with cal_events/cal_create. Needs FASTMAIL_CALDAV_USER + FASTMAIL_APP_PASSWORD (CalDAV).",
 		inputSchema: { type: "object", additionalProperties: false, properties: {} },
 		run: async (env) => {
-			if (!hasCalDav(env)) return fail(CALDAV_NOT_CONFIGURED);
+			if (!hasCalDav(env)) return failWith("not_configured", CALDAV_NOT_CONFIGURED);
 			try {
 				const cals = await listCalendars(env);
 				return ok({ count: cals.length, calendars: cals.map((c) => ({ href: c.href, name: c.name, isTasks: c.isTasks, ...(c.description ? { description: c.description } : {}) })) });
@@ -707,13 +778,14 @@ const TOOLS: MailTool[] = [
 	},
 	{
 		name: "cal_events",
-		description: "List events in a calendar (references: {uid, summary, start, end, href, etag}). Pass `calendar` (an href from cal_list) or omit to use your first calendar. Needs CalDAV credentials.",
-		inputSchema: { type: "object", additionalProperties: false, properties: { calendar: { type: "string", description: "Calendar href from cal_list (defaults to your first calendar)." } } },
+		description: "List events in a calendar (references: {uid, summary, start, end, all_day, tz, href, etag}). Pass `calendar` (an href from cal_list) or omit to use your first calendar. The window defaults to now..+90 days — override with `start`/`end` (ISO-8601) to look further out or back. Needs CalDAV credentials.",
+		inputSchema: { type: "object", additionalProperties: false, properties: { calendar: { type: "string", description: "Calendar href from cal_list (defaults to your first calendar)." }, start: { type: "string", description: "Window start (ISO-8601); default now." }, end: { type: "string", description: "Window end (ISO-8601); default +90 days." } } },
 		run: async (env, a) => {
-			if (!hasCalDav(env)) return fail(CALDAV_NOT_CONFIGURED);
+			if (!hasCalDav(env)) return failWith("not_configured", CALDAV_NOT_CONFIGURED);
 			try {
 				const cal = await pickCalendar(env, false, a?.calendar ? String(a.calendar) : undefined);
-				const objs = await reportObjects(env, cal.href, "VEVENT");
+				const window = a?.start || a?.end ? { start: a?.start ? String(a.start) : undefined, end: a?.end ? String(a.end) : undefined } : undefined;
+				const objs = await reportObjects(env, cal.href, "VEVENT", window);
 				return ok({ calendar: cal.href, count: objs.length, events: objs.map(shapeCalObject).filter(Boolean) });
 			} catch (e) {
 				return fail(errMsg(e));
@@ -725,8 +797,8 @@ const TOOLS: MailTool[] = [
 		description: "Create a calendar event. Provide summary + start (ISO-8601; a date-only value is all-day), optional end/description/location and `calendar` (href). Routes through stage-then-commit. Needs CalDAV credentials.",
 		inputSchema: { type: "object", additionalProperties: false, required: ["summary", "start"], properties: { calendar: { type: "string" }, summary: { type: "string" }, start: { type: "string", description: "ISO-8601 start; date-only (YYYY-MM-DD) = all-day." }, end: { type: "string" }, description: { type: "string" }, location: { type: "string" }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
 		run: async (env, a) => {
-			if (!hasCalDav(env)) return fail(CALDAV_NOT_CONFIGURED);
-			if (!a?.summary || !a?.start) return fail("cal_create needs summary and start.");
+			if (!hasCalDav(env)) return failWith("not_configured", CALDAV_NOT_CONFIGURED);
+			if (!a?.summary || !a?.start) return failWith("bad_input", "cal_create needs summary and start.");
 			try {
 				const cal = await pickCalendar(env, false, a?.calendar ? String(a.calendar) : undefined);
 				const payload = { calendar: cal.href, summary: String(a.summary), start: String(a.start), end: a?.end ?? null, description: a?.description ?? null, location: a?.location ?? null };
@@ -746,12 +818,30 @@ const TOOLS: MailTool[] = [
 		},
 	},
 	{
+		name: "cal_update",
+		description: "Update a calendar event by its href (from cal_events) — pass only the fields to change (summary/start/end/description/location). The existing VEVENT is fetched and rewritten in place, so its UID, alarms, and any timezone/all-day encoding survive. Pass etag to guard against a concurrent edit. Routes through stage-then-commit. Needs CalDAV credentials.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["href"], properties: { href: { type: "string", description: "Event href from cal_events." }, summary: { type: "string" }, start: { type: "string", description: "ISO-8601 start; date-only (YYYY-MM-DD) = all-day." }, end: { type: "string" }, description: { type: "string" }, location: { type: "string" }, etag: { type: "string", description: "If set, update only if the object still matches (If-Match)." }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
+		run: async (env, a) => calPatch(env, a, "VEVENT"),
+	},
+	{
+		name: "task_update",
+		description: "Update a task (VTODO) by its href (from task_list) — pass only the fields to change (summary/due/description/status). The existing VTODO is fetched and rewritten in place (UID + other properties preserved). To mark a task done prefer task_complete. Routes through stage-then-commit. Needs CalDAV credentials.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["href"], properties: { href: { type: "string", description: "Task href from task_list." }, summary: { type: "string" }, due: { type: "string", description: "ISO-8601 due; date-only = all-day." }, description: { type: "string" }, status: { type: "string", enum: ["NEEDS-ACTION", "IN-PROCESS", "COMPLETED", "CANCELLED"], description: "VTODO status." }, etag: { type: "string" }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
+		run: async (env, a) => calPatch(env, a, "VTODO"),
+	},
+	{
+		name: "task_complete",
+		description: "Mark a task (VTODO) complete by its href (from task_list) — sets STATUS:COMPLETED, a COMPLETED timestamp, and PERCENT-COMPLETE:100, preserving the rest of the task. Pass etag to guard a concurrent edit. Routes through stage-then-commit. Needs CalDAV credentials.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["href"], properties: { href: { type: "string", description: "Task href from task_list." }, etag: { type: "string" }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
+		run: async (env, a) => calPatch(env, { ...a, status: "COMPLETED", _complete: true }, "VTODO"),
+	},
+	{
 		name: "cal_delete",
 		description: "Delete a calendar event or task by its href (from cal_events/task_list). Pass etag to guard against a concurrent edit. Routes through stage-then-commit. Needs CalDAV credentials.",
 		inputSchema: { type: "object", additionalProperties: false, required: ["href"], properties: { href: { type: "string", description: "Object href from cal_events/task_list." }, etag: { type: "string", description: "If set, delete only if the object still matches (If-Match)." }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
 		run: async (env, a) => {
-			if (!hasCalDav(env)) return fail(CALDAV_NOT_CONFIGURED);
-			if (!a?.href) return fail("cal_delete requires the object `href`.");
+			if (!hasCalDav(env)) return failWith("not_configured", CALDAV_NOT_CONFIGURED);
+			if (!a?.href) return failWith("bad_input", "cal_delete requires the object `href`.");
 			try {
 				const href = String(a.href);
 				const mutate = async () => {
@@ -771,7 +861,7 @@ const TOOLS: MailTool[] = [
 		description: "List tasks (VTODO) in a task list — {uid, summary, due, status, href, etag}. Pass `calendar` (a task-list href from cal_list) or omit for your first task list. Needs CalDAV credentials.",
 		inputSchema: { type: "object", additionalProperties: false, properties: { calendar: { type: "string" } } },
 		run: async (env, a) => {
-			if (!hasCalDav(env)) return fail(CALDAV_NOT_CONFIGURED);
+			if (!hasCalDav(env)) return failWith("not_configured", CALDAV_NOT_CONFIGURED);
 			try {
 				const cal = await pickCalendar(env, true, a?.calendar ? String(a.calendar) : undefined);
 				const objs = await reportObjects(env, cal.href, "VTODO");
@@ -786,8 +876,8 @@ const TOOLS: MailTool[] = [
 		description: "Create a task (VTODO). Provide summary, optional due (ISO-8601)/description and `calendar` (task-list href). Routes through stage-then-commit. Needs CalDAV credentials.",
 		inputSchema: { type: "object", additionalProperties: false, required: ["summary"], properties: { calendar: { type: "string" }, summary: { type: "string" }, due: { type: "string" }, description: { type: "string" }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
 		run: async (env, a) => {
-			if (!hasCalDav(env)) return fail(CALDAV_NOT_CONFIGURED);
-			if (!a?.summary) return fail("task_create needs a summary.");
+			if (!hasCalDav(env)) return failWith("not_configured", CALDAV_NOT_CONFIGURED);
+			if (!a?.summary) return failWith("bad_input", "task_create needs a summary.");
 			try {
 				const cal = await pickCalendar(env, true, a?.calendar ? String(a.calendar) : undefined);
 				const payload = { calendar: cal.href, summary: String(a.summary), due: a?.due ?? null, description: a?.description ?? null };
@@ -811,8 +901,8 @@ const TOOLS: MailTool[] = [
 		description: "Raw CalDAV escape hatch — issue a PROPFIND/REPORT/GET/PUT/DELETE against Fastmail CalDAV with Basic auth injected. {method, path (from host or full URL), body, depth, contentType}. Returns {status, text, etag}. Needs CalDAV credentials.",
 		inputSchema: { type: "object", additionalProperties: false, required: ["method", "path"], properties: { method: { type: "string" }, path: { type: "string", description: "Absolute-from-host path (e.g. the calendar-home) or full URL." }, body: { type: "string" }, depth: { type: "string", enum: ["0", "1", "infinity"] }, contentType: { type: "string" }, home: { type: "boolean", description: "Ignore path and target your calendar-home collection." } } },
 		run: async (env, a) => {
-			if (!hasCalDav(env)) return fail(CALDAV_NOT_CONFIGURED);
-			if (!a?.method || (!a?.path && a?.home !== true)) return fail("caldav needs method and path (or home:true).");
+			if (!hasCalDav(env)) return failWith("not_configured", CALDAV_NOT_CONFIGURED);
+			if (!a?.method || (!a?.path && a?.home !== true)) return failWith("bad_input", "caldav needs method and path (or home:true).");
 			try {
 				const path = a?.home === true ? calendarHome(env) : String(a.path);
 				const r = await caldavFetch(env, String(a.method).toUpperCase(), path, { body: a?.body ? String(a.body) : undefined, contentType: a?.contentType ? String(a.contentType) : "application/xml; charset=utf-8", depth: a?.depth ? String(a.depth) : undefined });
@@ -835,7 +925,7 @@ const TOOLS: MailTool[] = [
  * threading, build the batch, dispatch. */
 async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResult> {
 	const mode = a?.mode ? String(a.mode) : "";
-	if (mode && !["reply", "reply-all", "forward"].includes(mode)) return fail("mode must be reply, reply-all, or forward.");
+	if (mode && !["reply", "reply-all", "forward"].includes(mode)) return failWith("bad_input", "mode must be reply, reply-all, or forward.");
 	let subject = a?.subject !== undefined ? String(a.subject) : undefined;
 	let to: string[] = Array.isArray(a?.to) ? a.to.map(String) : a?.to ? [String(a.to)] : [];
 	const cc: string[] = Array.isArray(a?.cc) ? a.cc.map(String) : [];
@@ -848,13 +938,13 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 		let src: any = null;
 		if (mode) {
 			const srcId = a?.reply_to ? String(a.reply_to) : "";
-			if (!srcId) return fail(`mode=${mode} requires \`reply_to\` — the email id to ${mode === "forward" ? "forward" : "reply to"}.`);
+			if (!srcId) return failWith("bad_input", `mode=${mode} requires \`reply_to\` — the email id to ${mode === "forward" ? "forward" : "reply to"}.`);
 			const r = await jmapCall(env, {
 				method: "Email/get",
 				args: { ids: [srcId], properties: ["messageId", "inReplyTo", "references", "subject", "from", "to", "cc", "replyTo", "receivedAt", "textBody", "htmlBody", "bodyValues"], fetchTextBodyValues: true, fetchHTMLBodyValues: true, maxBodyValueBytes: 200_000 },
 			});
 			src = resultFor(r, "Email/get")?.list?.[0];
-			if (!src) return fail(`no message '${srcId}' to ${mode}.`);
+			if (!src) return failWith("not_found", `no message '${srcId}' to ${mode}.`);
 			if (subject === undefined) subject = tagSubject(String(src.subject ?? ""), mode === "forward" ? "Fwd:" : "Re:");
 			bodyText = quoteBody(mode, bodyText, src);
 			if (mode !== "forward") {
@@ -883,7 +973,7 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 			// An explicit `from` that matches no identity must FAIL — never silently send from a
 			// different address than the caller asked for. Matches exact OR a *@domain wildcard (§1a).
 			identity = resolveIdentity(identities, fromWanted);
-			if (!identity) return fail(`no sending identity for from address '${fromWanted}' (no exact or *@domain-wildcard match) — check mail_identities.`);
+			if (!identity) return failWith("bad_input", `no sending identity for from address '${fromWanted}' (no exact or *@domain-wildcard match) — check mail_identities.`);
 		} else {
 			identity = identities[0];
 		}
@@ -901,8 +991,8 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 			}
 		}
 
-		if (!to.length) return fail(mode ? `mode=${mode} resolved no recipient — pass \`to\`.` : "provide to[] (recipients).");
-		if (subject === undefined) return fail("provide a subject.");
+		if (!to.length) return failWith("bad_input", mode ? `mode=${mode} resolved no recipient — pass \`to\`.` : "provide to[] (recipients).");
+		if (subject === undefined) return failWith("bad_input", "provide a subject.");
 		const addrs = (xs: string[]) => xs.map((e) => ({ email: String(e) }));
 
 		const draft: Record<string, unknown> = {
@@ -940,9 +1030,9 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 		let holdFor = 0;
 		if (a?.send_at !== undefined && a?.send_at !== null && a?.send_at !== "") {
 			const at = Date.parse(String(a.send_at));
-			if (!Number.isFinite(at)) return fail("send_at must be an ISO-8601 date-time, e.g. '2026-07-11T09:00:00Z'.");
+			if (!Number.isFinite(at)) return failWith("bad_input", "send_at must be an ISO-8601 date-time, e.g. '2026-07-11T09:00:00Z'.");
 			holdFor = Math.ceil((at - Date.now()) / 1000);
-			if (holdFor <= 0) return fail("send_at must be in the future.");
+			if (holdFor <= 0) return failWith("bad_input", "send_at must be in the future.");
 		}
 
 		// The mutation (draft create + submit) runs behind stage-then-commit: stage:true previews
@@ -985,11 +1075,11 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 /** Move messages into a target mailbox — REPLACES the mailbox set (a real move, not an add). */
 async function moveMessages(env: RtEnv, ids: unknown, target: string): Promise<ToolResult> {
 	const list = Array.isArray(ids) ? ids.map(String) : [];
-	if (!list.length || !target) return fail("provide ids[] and a target mailbox.");
+	if (!list.length || !target) return failWith("bad_input", "provide ids[] and a target mailbox.");
 	try {
 		const map = await mailboxMap(env);
 		const targetId = resolveMailboxId(map, target);
-		if (!targetId) return fail(`unknown mailbox '${target}'.`);
+		if (!targetId) return failWith("bad_input", `unknown mailbox '${target}'.`);
 		// A MOVE sets mailboxIds to EXACTLY the target — the additive `mailboxIds/<id>:true`
 		// patch left the message in its origin mailbox too (move-to-trash stayed in the Inbox).
 		const update: Record<string, unknown> = {};

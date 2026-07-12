@@ -439,6 +439,110 @@ describe("mail_* ergonomic tools", () => {
 		expect(done).toMatchObject({ created: true, etag: '"new"' });
 	});
 
+	it("cal_events bounds the REPORT with a default time-range window (§2)", async () => {
+		const e = calEnv();
+		let reportBody = "";
+		global.fetch = vi.fn(async (_input: any, init: any) => {
+			const method = init?.method ?? "GET";
+			if (method === "PROPFIND") return new Response(CALS_XML, { status: 207 });
+			if (method === "REPORT") {
+				reportBody = String(init?.body ?? "");
+				return new Response(`<d:multistatus xmlns:d="DAV:"></d:multistatus>`, { status: 207 });
+			}
+			return new Response("", { status: 200 });
+		}) as any;
+		await tool("cal_events").run(e, {});
+		expect(reportBody).toMatch(/<c:time-range start="\d{8}T\d{6}Z" end="\d{8}T\d{6}Z"\/>/);
+	});
+
+	// A stored VEVENT with a TZID + an alarm, so cal_update's GET→rewrite→PUT can be asserted to
+	// preserve the zone/alarm while changing only the requested property.
+	const STORED_EVENT = ["BEGIN:VCALENDAR", "VERSION:2.0", "BEGIN:VEVENT", "UID:evt-keep", "DTSTART;TZID=America/New_York:20260711T090000", "SUMMARY:Old", "BEGIN:VALARM", "ACTION:DISPLAY", "TRIGGER:-PT15M", "END:VALARM", "END:VEVENT", "END:VCALENDAR"].join("\r\n");
+	const STORED_TASK = ["BEGIN:VCALENDAR", "VERSION:2.0", "BEGIN:VTODO", "UID:task-keep", "SUMMARY:Do it", "STATUS:NEEDS-ACTION", "END:VTODO", "END:VCALENDAR"].join("\r\n");
+	function installCalPatch(stored: string) {
+		let putBody = "";
+		const f = vi.fn(async (_input: any, init: any) => {
+			const method = init?.method ?? "GET";
+			if (method === "GET") return new Response(stored, { status: 200, headers: { etag: '"cur"' } });
+			if (method === "PUT") {
+				putBody = String(init?.body ?? "");
+				return new Response("", { status: 200, headers: { etag: '"next"' } });
+			}
+			return new Response("", { status: 200 });
+		});
+		global.fetch = f as any;
+		return { f, put: () => putBody };
+	}
+
+	it("cal_update rewrites one field in place, preserving UID/TZID/alarm, guarded by If-Match (§3)", async () => {
+		const e = calEnv();
+		const { f, put } = installCalPatch(STORED_EVENT);
+		const st = parse(await tool("cal_update").run(e, { href: "/dav/cal/evt-keep.ics", summary: "New Title", stage: true }));
+		expect(st).toMatchObject({ staged: true, kind: "cal_update" });
+		expect(f.mock.calls.some((c: any) => (c[1]?.method ?? "GET") === "PUT")).toBe(false); // stage did not write
+		const done = parse(await tool("cal_update").run(e, { href: "/dav/cal/evt-keep.ics", summary: "New Title", commit_token: st.commit_token }));
+		expect(done).toMatchObject({ updated: true, etag: '"next"' });
+		const body = put();
+		expect(body).toContain("SUMMARY:New Title");
+		expect(body).toContain("UID:evt-keep");
+		expect(body).toContain("DTSTART;TZID=America/New_York:20260711T090000"); // zone preserved
+		expect(body).toContain("BEGIN:VALARM"); // alarm preserved
+		const putCall = f.mock.calls.find((c: any) => c[1]?.method === "PUT");
+		expect(putCall![1].headers["If-Match"]).toBe('"cur"'); // concurrency guard from the GET etag
+	});
+
+	it("task_complete sets STATUS:COMPLETED + COMPLETED stamp + PERCENT-COMPLETE (§3)", async () => {
+		const e = calEnv();
+		const { put } = installCalPatch(STORED_TASK);
+		const st = parse(await tool("task_complete").run(e, { href: "/dav/cal/task-keep.ics", stage: true }));
+		expect(st).toMatchObject({ staged: true, kind: "task_complete" });
+		parse(await tool("task_complete").run(e, { href: "/dav/cal/task-keep.ics", commit_token: st.commit_token }));
+		const body = put();
+		expect(body).toContain("STATUS:COMPLETED");
+		expect(body).toMatch(/COMPLETED:\d{8}T\d{6}Z/);
+		expect(body).toContain("PERCENT-COMPLETE:100");
+		expect(body).toContain("UID:task-keep"); // task identity preserved
+	});
+
+	it("task_update changes the due date, keeping the rest of the task (§3)", async () => {
+		const e = calEnv();
+		const { put } = installCalPatch(STORED_TASK);
+		const st = parse(await tool("task_update").run(e, { href: "/dav/cal/task-keep.ics", due: "2026-08-01", stage: true }));
+		parse(await tool("task_update").run(e, { href: "/dav/cal/task-keep.ics", due: "2026-08-01", commit_token: st.commit_token }));
+		const body = put();
+		expect(body).toContain("DUE;VALUE=DATE:20260801");
+		expect(body).toContain("SUMMARY:Do it");
+	});
+
+	it("calPatch verbs surface typed error codes: not_configured, bad_input, not_found (§5)", async () => {
+		// not_configured: no CalDAV creds.
+		const g = await tool("cal_update").run(env(), { href: "/x", summary: "y" });
+		expect(g.isError).toBe(true);
+		expect((g as any).errorCode).toBe("not_configured");
+		// bad_input: nothing to change.
+		installCalPatch(STORED_EVENT);
+		const b = await tool("cal_update").run(calEnv(), { href: "/x" });
+		expect((b as any).errorCode).toBe("bad_input");
+		// not_found: the object 404s on GET at commit.
+		global.fetch = vi.fn(async (_i: any, init: any) => new Response("", { status: (init?.method ?? "GET") === "GET" ? 404 : 200 })) as any;
+		const nf = await tool("cal_update").run(calEnv(), { href: "/gone", summary: "z" });
+		expect((nf as any).errorCode).toBe("not_found");
+	});
+
+	it("routes gate/missing-id/missing-required errors through typed failWith codes (§5)", async () => {
+		installFetch();
+		expect((await tool("mail_read").run(env(), {}) as any).errorCode).toBe("bad_input"); // missing required id
+		expect((await tool("cal_list").run(env(), {}) as any).errorCode).toBe("not_configured"); // no CalDAV creds
+		// The default mock's Email/get returns EMAIL for any id, so force an empty list to hit not_found.
+		global.fetch = vi.fn(async (input: any, init?: any) => {
+			const url = String(input?.url ?? input);
+			if (url.includes("/jmap/session")) return json(SESSION);
+			if (url.includes("/jmap/api")) return json({ methodResponses: (JSON.parse(init.body).methodCalls ?? []).map((c: any) => [c[0], c[0] === "Email/get" ? { list: [] } : {}, c[2]]), sessionState: "s1" });
+			return json({}, 404);
+		}) as any;
+		expect((await tool("mail_read").run(env(), { id: "missing" }) as any).errorCode).toBe("not_found");
+	});
+
 	it("exposes the raw jmap escape hatch", () => {
 		expect(tool("jmap")).toBeTruthy();
 	});
