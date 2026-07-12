@@ -20,6 +20,25 @@ There are **three separate stores**, and they don't see each other:
 - You **cannot** extract existing values out of Worker/GitHub to backfill op — both are write-only. op is populated **going forward** (or by re-sourcing a value from its origin / rotating it).
 - Therefore: **op-first.** Put the value in op, then `scripts/secret-sync.sh` pushes it to the store(s) that need it.
 
+## Can I pull existing values out to seed op? (the recurring question)
+
+- **Cloudflare Worker secrets — no.** There is no `wrangler secret get`. The Worker's own code *can* read `env.X` at runtime, but exposing that over an endpoint is a security hole — don't. Re-source (Fastmail/Dropbox/… console) or **rotate** instead.
+- **GitHub Actions secrets — technically yes, not worth it.** A workflow *can* read a secret's value at runtime (it's injected as env) and could pipe it into op — but GitHub masks secrets in logs, you'd need an op service-account token stored *as a GitHub secret* (chicken-and-egg), and it's only ~5 CI values you already have. Just re-enter those into op by hand.
+
+Bottom line: **there is no safe bulk-extract.** op is seeded from the values you hold (or by rotation), once, then it's the hub forever.
+
+## Three tiers — secrets vs settings vs switches (the model we're standardizing on)
+
+The mess came from cramming three different things into "wrangler secret." They're distinct:
+
+| Tier | Examples | Where it lives | Why |
+|---|---|---|---|
+| **1. Credentials** (must stay hidden) | API keys, tokens, passwords | **op → Worker/GitHub** via `secret-sync.sh` | never in git; op is source of truth |
+| **2. Settings** (non-sensitive tuning) | caps (≤5 PR, ≤10 commits), model choices, mail categories, timeouts, `DEBUG_MCP` | **`wrangler.jsonc` `[vars]`** (or a committed `config.ts`) | version-controlled, reviewable, PR-gated, revertable via git |
+| **3. Switches** (the "big red buttons") | `MAIL_TRIAGE_ENABLED/ACT`, `SELF_IMPROVE_ENABLE/PR/ARM/KILL` | **Worker secrets** (set deliberately, out of git) | arming an autonomous bot should be a conscious act, not a merged diff; fail-closed by default |
+
+Rule of thumb: **secret it if leaking it is bad; `[vars]` it if you'd want it in a code review; switch it (Worker secret) if flipping it makes a bot act on the world.**
+
 ## Which secret goes where
 
 **GitHub Actions** (CI/CD): `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` (deploy), `SUX_MCP_URL`, `SUX_MCP_TOKEN` (skill-sync `--live` probe), `ANTHROPIC_API_KEY` (Claude bot).
