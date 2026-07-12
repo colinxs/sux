@@ -151,24 +151,21 @@ JSON-RPC 2.0 over a single-shot SSE response (`sseResponse`, `mcp-util.ts`):
 
 ## 4. The connector surface (`connectors.ts`)
 
-`sux/src/connectors.ts` is deliberately the ONE place enumerating sux's MCP connectors, replacing three formerly hand-synced places (index.ts routing, the discovery manifest, `marketplace.json`):
+`sux/src/connectors.ts` is deliberately the ONE place enumerating sux's MCP connectors, replacing three formerly hand-synced places (index.ts routing, the discovery manifest, `marketplace.json`). There is now exactly ONE connector — the single `/mcp` front door:
 
 ```ts
 export const CONNECTORS: Connector[] = [
-  { path:"/mcp",       name:"sux",   plugin:"sux-router", summary:"…" },                  // advertised (default)
-  { path:"/vault/mcp", name:"vault", plugin:"sux-vault",  summary:"…", advertised:false },
-  { path:"/mail/mcp",  name:"mail",  plugin:"sux-mail",   summary:"…", advertised:false },
-  { path:"/files/mcp", name:"files", plugin:"sux-files",  summary:"…", advertised:false },
+  { path:"/mcp", name:"sux", plugin:"sux", summary:"…" },
 ];
 export const CONNECTOR_PATHS = CONNECTORS.map(c => c.path); // feeds BOTH OAuth apiRoute AND per-path dispatch
 ```
 
-- `CONNECTOR_PATHS` is the OAuth `apiRoute` — a namespace is authorized purely by appearing here; it is **never filtered by `advertised`**.
-- `advertised:false` on vault/mail/files means: still routed, still OAuth-gated, just **hidden from the default `GET /mcp/connectors` manifest** — reachable one deliberate `?all=1` away, mirroring the `fn` escape's "one call away" philosophy. `buildManifest(origin, counts, {all})` is a pure, unit-tested function (`connectors.test.ts` covers both views).
-- `connectorCounts()` dynamically imports `./fns`, `./vault-mcp`, `./mail-mcp`, `./files-mcp` ONLY to read their tool-count exports for the manifest — keeping those modules lazy on the hot `tools/call` path (they're dynamically imported again, per-request, in the actual per-path dispatch).
-- **`connectors.test.ts` is a drift guard**: `advertised !== false` connectors must have a `plugin` that exists in `.claude-plugin/marketplace.json`; retired (`advertised:false`) connectors must have NO `plugin` field. The marketplace currently ships only `sux-router` (the `/mcp` connector + `sux` skill) and `sux-life` (memory-only skill, no connector). The `sux-vault`/`sux-mail`/`sux-files` plugin *directories* still exist under `plugins/` but are not listed in the marketplace — consistent with those namespaces being `advertised:false`.
+- `CONNECTOR_PATHS` is the OAuth `apiRoute` — a namespace is authorized purely by appearing here.
+- The personal namespaces (vault/mail/files/cal/contact) are no longer separate `/<domain>/mcp` connectors: they're ordinary `surface:"front"` verbs (`vault_`/`mail_`/`files_`/`cal_`/`contact_`) on the one `/mcp` connector, so they appear directly in the standard `tools/list`. There is no `advertised` field and no `?all=1` opt-in — `buildManifest(origin, counts)` renders the single connector, and `connectors.test.ts` asserts `CONNECTOR_PATHS === ["/mcp"]`.
+- `connectorCounts()` reads the live tool count for the `/mcp` connector for the manifest.
+- **`connectors.test.ts` is a drift guard**: every connector's `plugin` must exist in `.claude-plugin/marketplace.json`. The marketplace ships one plugin, `sux` (the `/mcp` connector + both the `sux` routing skill and the `life` memory skill); the only plugin directory under `plugins/` is `plugins/sux`.
 
-> **Direction locked with Colin (2026-07-11):** consolidate to ONE connector (`/mcp`); the mail/vault/files connectors/plugins go dormant (routed, not deleted) once the front door fully lands.
+> **Direction (landed 2026-07-11, via #105/#126/#128):** consolidated to ONE connector (`/mcp`); the former `/vault/mcp`, `/mail/mcp`, `/files/mcp` connector routes were fully retired and their capabilities moved to front-door verbs on `/mcp`.
 
 ---
 

@@ -32,7 +32,15 @@ export async function weightedRateLimit(env: RtEnv, login: string, rpc: JsonRpc 
 	const effectiveName = unwrapFnCall(rpc.params, FUNCTIONS)?.name ?? String(rpc.params?.name ?? "");
 	const extra = extraCost(effectiveName);
 	for (let i = 0; i < extra; i++) {
-		const { success } = await env.MCP_RATE_LIMITER.limit({ key: login });
+		// Fail OPEN if the limiter throws — an unavailable limiter must never itself
+		// become an outage (mirrors the presence-check fail-open above).
+		let success = true;
+		try {
+			success = (await env.MCP_RATE_LIMITER.limit({ key: login })).success;
+		} catch (e) {
+			console.warn(`weighted rate limiter threw, failing open: ${String((e as Error)?.message ?? e)}`);
+			break;
+		}
 		if (!success) return rateLimited();
 	}
 	return null;

@@ -390,8 +390,15 @@ export const rtServer = {
 			return new Response(JSON.stringify({ error: "forbidden" }), { status: 403, headers: { "content-type": "application/json" } });
 		}
 		if (env.MCP_RATE_LIMITER) {
-			const { success } = await env.MCP_RATE_LIMITER.limit({ key: login! });
-			if (!success) return new Response(JSON.stringify({ error: "rate_limited" }), { status: 429, headers: { "content-type": "application/json", "retry-after": "10" } });
+			// Fail OPEN if the limiter itself throws — an unavailable limiter must never
+			// become an outage (matches the intent of the presence check above).
+			let allowed = true;
+			try {
+				allowed = (await env.MCP_RATE_LIMITER.limit({ key: login! })).success;
+			} catch (e) {
+				console.warn(`rate limiter threw, failing open: ${String((e as Error)?.message ?? e)}`);
+			}
+			if (!allowed) return new Response(JSON.stringify({ error: "rate_limited" }), { status: 429, headers: { "content-type": "application/json", "retry-after": "10" } });
 		}
 
 		const isBodyless = request.method === "GET" || request.method === "HEAD";

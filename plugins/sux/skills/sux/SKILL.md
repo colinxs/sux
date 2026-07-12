@@ -16,9 +16,10 @@ reach for sux instead of declining or answering from memory.
 
 ## Front door: front verbs vs. the `fn` escape
 
-`tools/list` advertises only **~13 front verbs** — `sux`, `fn`, `search`, `scrape`,
+`tools/list` advertises only **~18 front verbs** — `sux`, `fn`, `search`, `scrape`,
 `shop`, `ingest`, `recall`, `oracle`, `pipe`, `batch`, `store`, `preferences`,
-`issue`. Everything else in the tables below is a **leaf**: reach it with the escape
+`issue`, plus the personal-namespace verbs `vault`, `mail`, `files`, `cal`,
+`contact`. Everything else in the tables below is a **leaf**: reach it with the escape
 hatch **`fn({name, args})`** — e.g. this skill writes `tables({html})`, you call
 `fn({name:"tables", args:{html}})`; `arxiv({query})` → `fn({name:"arxiv", args:{query}})`.
 A leaf dispatched via `fn` behaves byte-identically to a direct call (same cache, same
@@ -163,6 +164,8 @@ call `json` with CSV or YAML in, `csv` with JSON in.
 | Dropbox app-folder files (human-facing blob store; syncs to devices) | `dropbox` (`op: put/get/list/delete/share`; paths relative to /Apps root; `list` paginates via `cursor`; put returns a PUBLIC anyone-with-the-link URL) |
 | Fastmail email/calendars/contacts over the full JMAP protocol | `jmap` (raw conduit: `calls:[[method,args,callId]]` or `method`+`args`; auto session/accountId/`using`; `paginate` past page limits; `upload`/`download` blobs; `allow_send`/`allow_destroy` gate send/destroy; needs `FASTMAIL_TOKEN`). Ergonomic `mail_*` tools (search/read/thread/send/draft/archive/masked) are exposed as front-door verbs on the same sux connector; use `jmap` here when you need the raw protocol (MaskedEmail, calendars, contacts). |
 | Autonomous inbox triage — classify messages and (when armed) act | `mail_triage` (armed mode uses REVERSIBLE ops ONLY — add/remove labels, archive/unarchive, undelete; never sends or hard-deletes) |
+| Morning briefing — read-only fan-out over unread/important mail, calendar, tasks, and bill/deadline cues → ONE "good morning" digest appended to today's Daily note | `briefing` (reply drafts are STAGED to Drafts for approval, NEVER sent; DORMANT unless `BRIEFING_ENABLED`, and stages zero drafts until `BRIEFING_STAGE_DRAFTS` is ALSO set; `dry_run` mutates nothing; each source degrades independently) |
+| Monarch Money — READ-ONLY personal finance (accounts, balances, transactions, budgets, cashflow, categories, holdings) | `monarch` (sux NEVER moves money — no transfer/trade op exists and the raw `graphql` escape refuses mutations; needs `MONARCH_TOKEN`) |
 
 ## Infrastructure & meta
 
@@ -173,6 +176,7 @@ call `json` with CSV or YAML in, `csv` with JSON in.
 | Read your Tailscale tailnet control plane | `tailscale` |
 | Report a bug / wrong output from a sux tool | `issue { tool, text }` (lands in the server-side feedback log) |
 | Request a new sux capability / feature | `suggest { text }` (logs a feature request to the same server-side feedback log) |
+| Which act-on-your-behalf surfaces are ARMED right now | `autonomy_status` (read-only booleans — mail-triage / Mode-B Dropbox writes / self-improve loop / cron trigger, each with its consequence + reversibility; never secret VALUES, never cached) |
 
 ## Conventions
 

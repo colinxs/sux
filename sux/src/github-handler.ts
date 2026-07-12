@@ -262,6 +262,8 @@ function renderHealthHtml(h: any): string {
 	const cronCard = `<div class="card"><h2>daily cron · heartbeats</h2>
  ${cronRow("Kroger token", cron.kroger_token)}
  ${cronRow("Mail triage", cron.mail_triage)}
+ ${cronRow("Weekly recall", cron.weekly_recall)}
+ ${cronRow("Briefing", cron.briefing)}
  ${cronRow("Adblock engine", cron.adblock)}
  ${cronRow("Self-improve", cron.self_improve)}
 </div>`;
