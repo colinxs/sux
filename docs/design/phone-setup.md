@@ -47,8 +47,8 @@ tasks (Todoist), health (Epic/Apple), and the dormant retail/social APIs.
 
 ## Drive it: the memory workflow
 
-Install the **`sux-life`** skill (the "second brain" over these connectors) — or just
-ask in plain language. The six moves:
+Install the **`sux` plugin** — it bundles the **`life`** memory skill (the "second
+brain" over these connectors) — or just ask in plain language. The six moves:
 
 - **Capture** — "note this / remember this / add to today" → lands in your vault Inbox or daily note in seconds.
 - **Remember** — "remember that Dr. Chen is my oncologist, Tuesdays" → a durable, typed, linked memory note.

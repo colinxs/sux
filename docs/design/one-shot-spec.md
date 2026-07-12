@@ -36,7 +36,7 @@ ARCHITECTURE
   generator writes src/fns/index.ts (the FUNCTIONS array) and FUNCTIONS.md from those files —
   both are committed and CI fails if stale. Never hand-edit them.
 - Personal domains are exposed as FRONT-DOOR VERB FAMILIES on the single `/mcp` connector — a thin
-  tool layer over the fns, all shipped by the one `sux-router` plugin on the same Worker + OAuth:
+  tool layer over the fns, all shipped by the one `sux` plugin on the same Worker + OAuth:
     /mcp  sux  — the ONE connector: universal tools (web/papers/shopping/transforms/pipe+batch),
                  domain-agnostic, PLUS the personal namespaces reached by verb prefix:
         vault_*                     — Obsidian knowledge base over a git-backed store (every write a revertible commit).

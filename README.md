@@ -31,16 +31,19 @@ Two artifacts teach Claude to pick the right sux tool for a query:
   intent→tool routing map (search, fetch/render ladder, research, shopping,
   documents, transforms, `pipe`/`batch` composition). Loaded automatically in
   Claude Code sessions in this repo.
-- **The `sux-router` plugin** — the same skill packaged for installation
-  anywhere Claude Code runs (CLI, desktop app, IDE extensions). This repo is
-  its marketplace (`.claude-plugin/marketplace.json` → `plugins/sux-router/`):
+- **The `sux` plugin** — one install that bundles the sux connector (its
+  `mcpServers` → `/mcp`) plus **both** skills: the `sux` routing skill and the
+  `life` memory skill. Packaged for installation anywhere Claude Code runs (CLI,
+  desktop app, IDE extensions). This repo is its marketplace
+  (`.claude-plugin/marketplace.json` → `plugins/sux/`):
   ```
   /plugin marketplace add colinxs/sux
-  /plugin install sux-router@sux
+  /plugin install sux@sux
   ```
-  The plugin ships only the routing skill; connect the sux server itself
-  separately (`claude mcp add --transport http sux https://<worker>/mcp`, or a
-  claude.ai custom connector).
+  Installing it registers the `/mcp` connector and loads both skills; OAuth runs
+  in-browser on first connect. (You can also connect the server standalone with
+  `claude mcp add --transport http sux https://<worker>/mcp`, or a claude.ai
+  custom connector.)
 - **`docs/claude-profile-snippet.md`** — a compact snippet to paste into
   claude.ai → Settings → Profile, for chats where skills aren't available.
 
@@ -76,7 +79,7 @@ npm run docs        # regenerate sux/FUNCTIONS.md
   **check** job runs on PRs touching the skill / functions / gen-docs / script,
   and weekly: `node scripts/check-skill-sync.mjs --offline` enforces that
   `sux/FUNCTIONS.md` matches `npm run docs`, every function is named in
-  `.claude/skills/sux/SKILL.md`, and `plugins/sux-router/skills/` mirrors
+  `.claude/skills/sux/SKILL.md`, and `plugins/sux/skills/` mirrors
   `.claude/skills/`. Its **fix** job (schedule / manual dispatch) regenerates
   FUNCTIONS.md and re-mirrors the plugin skill (`--write`), opening/refreshing a
   PR on `bot/docs-update` when anything changed.

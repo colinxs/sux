@@ -5,7 +5,7 @@
 // Truth lives in source:
 //   sux/src/fns/*.ts  --(npm run docs)-->  sux/FUNCTIONS.md   (the tool inventory)
 //   sux/FUNCTIONS.md  --------------------> .claude/skills/sux/SKILL.md  (every fn named)
-//   .claude/skills/   --------------------> plugins/sux-router/skills/   (byte-for-byte mirror)
+//   .claude/skills/   --------------------> plugins/sux/skills/          (byte-for-byte mirror)
 //
 // Modes:
 //   node scripts/check-skill-sync.mjs            offline, source-derived check (default)
@@ -34,7 +34,7 @@ const FUNCTIONS = R('sux', 'FUNCTIONS.md');
 const REGISTRY = R('sux', 'src', 'registry.ts');
 const SKILL = R('.claude', 'skills', 'sux', 'SKILL.md');
 const SKILLS_DIR = R('.claude', 'skills');
-const PLUGIN_SKILLS_DIR = R('plugins', 'sux-router', 'skills');
+const PLUGIN_SKILLS_DIR = R('plugins', 'sux', 'skills');
 const SNIPPET = R('docs', 'claude-profile-snippet.md');
 
 const has = (flag) => process.argv.includes(flag);
@@ -211,9 +211,9 @@ async function main() {
   const changed = srcFiles
     .filter((f) => dstFiles.includes(f))
     .filter((f) => readFileSync(join(SKILLS_DIR, f), 'utf8') !== readFileSync(join(PLUGIN_SKILLS_DIR, f), 'utf8'));
-  drift = report(`Files in .claude/skills/ missing from plugins/sux-router/skills/`, missing) || drift;
-  drift = report(`Files in plugins/sux-router/skills/ not in .claude/skills/`, extra) || drift;
-  drift = report(`Files that differ between .claude/skills/ and plugins/sux-router/skills/`, changed) || drift;
+  drift = report(`Files in .claude/skills/ missing from plugins/sux/skills/`, missing) || drift;
+  drift = report(`Files in plugins/sux/skills/ not in .claude/skills/`, extra) || drift;
+  drift = report(`Files that differ between .claude/skills/ and plugins/sux/skills/`, changed) || drift;
 
   // The profile snippet claims to name every function (so skill-less chats can
   // still route) — hold it to that, same as SKILL.md, so it can't silently rot.

@@ -10,7 +10,7 @@
 - [[files]] (shipped) — The files blob namespace — unblocked App-folder workspace (Mode A) + gated in-place corpus ops (Mode B); files_operate moves zero bytes through the model.
 - [[jmap]] (shipped) — The full JMAP protocol as one typed conduit verb forwarding raw batches to Fastmail; _jmap.ts session/limit engine; MaskedEmail/Contacts/Calendars.
 - [[mail]] (shipped) — A dozen ergonomic mail_* verbs over the jmap conduit — scheduled send, remote search, batching, pagination; open 13-fns-vs-one decision.
-- [[three-mcps]] (shipped) — Point-in-time proposal: one Worker, N per-domain /mcp connectors (vault/mail/files). SUPERSEDED — those connectors were later retired into the single /mcp front door; the namespaces now ship as vault_/mail_/files_ verbs on the one sux-router connector. Read as history.
+- [[three-mcps]] (shipped) — Point-in-time proposal: one Worker, N per-domain /mcp connectors (vault/mail/files). SUPERSEDED — those connectors were later retired into the single /mcp front door; the namespaces now ship as vault_/mail_/files_ verbs on the one sux connector. Read as history.
 - [[domains]] (designed) — Maps nine personal-data domains onto vault-hub + conduit verbs; derives the unblocked/gated law from reversibility; three transport classes.
 - [[sux-verbs]] (designed) — Collapses ~90 leaf fns into ten front-door verbs + batch/pipe; handle discipline (references-not-payloads) makes the shared fan-out/reduce cheap.
 - [[vault-backends]] (designed) — Locks four vault backends + git-as-the-sync-bus; adds 3-way task sync (vault-Todoist-JMAP) and citation management on the same store verbs.
@@ -55,7 +55,7 @@
 - [[wiki-conventions]] (reference) — The rules every wiki note obeys so the vault stays coherent and the generator
 
 ## Concept graph
-- [[connector-surface-policy]] (shipped) — The sux marketplace ships two plugins today, but only one connector.
+- [[connector-surface-policy]] (shipped) — The sux marketplace ships one plugin and one connector.
 - [[content-addressed-cache]] (shipped) — Every cacheable fn in the [[fn-registry]] gets a KV entry keyed by cacheKey: a sha256 of the fn name (namespaced ::summarize when the universal summarize flag is set) plus a stably-stringified copy of its normalized arguments — same inputs, same key, regardless of key order.
 - [[fanout]] (parked) — The shared parallel-dispatch core, sux/src/fns/_fanout.ts, extracted from three hand-rolled Promise.allSettled loops so every fan-out verb gets error isolation and ledger accounting for free.
 - [[fetch-ladder]] (shipped) — Cloudflare Workers egress from datacenter IPs, and datacenter IPs get blocked on reputation alone — residential egress is why sux exists at all.

@@ -17,7 +17,7 @@ plus **remember** for the things that must never be lost.
 
 ## The stores (what you're writing to)
 
-Everything rides the one sux connector (`/mcp`, the `sux-router` plugin) — vault/mail/files are
+Everything rides the one sux connector (`/mcp`, the `sux` plugin) — vault/mail/files are
 front-door verb families on it, not separate connectors.
 
 | Store | Verbs (all on the one `/mcp` connector) | Tools |

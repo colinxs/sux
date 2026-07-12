@@ -25,7 +25,7 @@ export type Connector = {
 };
 
 export const CONNECTORS: Connector[] = [
-	{ path: "/mcp", name: "sux", plugin: "sux-router", summary: "Universal research + data tools (web, papers, shopping, transforms, pipe/batch)." },
+	{ path: "/mcp", name: "sux", plugin: "sux", summary: "Universal research + data tools (web, papers, shopping, transforms, pipe/batch)." },
 	{ path: "/vault/mcp", name: "vault", summary: "Obsidian knowledge base — read/write/edit/capture + daily notes over the git store.", advertised: false },
 	{ path: "/mail/mcp", name: "mail", summary: "Fastmail/JMAP — search/read/thread/send/draft/archive + masked-email + raw jmap.", advertised: false },
 	{ path: "/files/mcp", name: "files", summary: "Dropbox blobs — app-folder workspace (Mode A) + gated whole-account ops (Mode B).", advertised: false },
