@@ -1,4 +1,5 @@
 import type { BrowserWorker } from "@cloudflare/puppeteer";
+import { normalizeText } from "./normalize";
 import type { TailscaleEnv } from "./proxy";
 
 export type AiBinding = {
@@ -320,7 +321,14 @@ export function unwrapFnCall(params: { name?: string; arguments?: unknown } | un
 	const a = params.arguments;
 	if (!a || typeof a !== "object" || Array.isArray(a)) return null;
 	const inner = (a as Record<string, unknown>).name;
-	const innerName = typeof inner === "string" ? inner.trim() : "";
+	// Resolve the inner name against the SAME normalization the dispatcher applies to
+	// every string arg (fullwidth/styled-Latin fold + zero-width/control strip). If we
+	// matched the raw string, `fn({name:"ｒｅｎｄｅｒ"})` (fullwidth) or a zero-width-spaced
+	// name would fail to resolve HERE — so the limiter charges the cheap `fn` cost — yet
+	// normalizeArgs would later fold it to a real leaf and fnEscape.run would execute it:
+	// a weighted-cost + cache bypass. Normalizing here keeps both resolution sites (this
+	// and fn.ts) in lockstep with the dispatcher, so raw-resolvable == effective.
+	const innerName = typeof inner === "string" ? normalizeText(inner).trim() : "";
 	if (!innerName || innerName === "fn" || !findFn(fns, innerName)) return null;
 	const innerArgs = (a as Record<string, unknown>).args;
 	return { name: innerName, args: innerArgs && typeof innerArgs === "object" && !Array.isArray(innerArgs) ? (innerArgs as Record<string, unknown>) : {} };

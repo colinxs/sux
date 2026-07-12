@@ -167,6 +167,10 @@ describe("registry conformance", () => {
 		expect(unwrapFnCall({ name: "fn", arguments: {} }, FUNCTIONS)).toBeNull();
 		// Non-object arguments → null.
 		expect(unwrapFnCall({ name: "fn", arguments: "nope" }, FUNCTIONS)).toBeNull();
+		// A Unicode-obfuscated inner name resolves to the real leaf (same normalization
+		// the dispatcher applies) — so it can't split resolution from the cost/cache path.
+		expect(unwrapFnCall({ name: "fn", arguments: { name: "ｈａｓｈ", args: { text: "x" } } }, FUNCTIONS)).toEqual({ name: "hash", args: { text: "x" } });
+		expect(unwrapFnCall({ name: "fn", arguments: { name: "ha​sh" } }, FUNCTIONS)).toEqual({ name: "hash", args: {} });
 	});
 
 	it("flags: kv_* are not cacheable; hash/encode/compress are raw", () => {

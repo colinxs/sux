@@ -1,3 +1,4 @@
+import { normalizeText } from "../normalize";
 import { failWith, type Fn, findFn } from "../registry";
 import { FUNCTIONS } from "./index";
 
@@ -30,7 +31,10 @@ export const fnEscape: Fn = {
 		},
 	},
 	run: async (env, args) => {
-		const target = typeof args?.name === "string" ? args.name.trim() : "";
+		// Resolve through the same normalization the dispatcher + unwrapFnCall use, so
+		// this fallback path can never resolve a leaf the unwrap rejected (which would
+		// re-open the cost/cache bypass) — the two sites stay in lockstep.
+		const target = typeof args?.name === "string" ? normalizeText(args.name).trim() : "";
 		if (!target) return failWith("bad_input", 'fn requires a `name` — the leaf tool to call, e.g. fn({name:"scrape", args:{url:"…"}}). Call sux() for the list.');
 		if (target === "fn") return failWith("bad_input", "fn cannot call itself.");
 		const leaf = findFn(FUNCTIONS, target);

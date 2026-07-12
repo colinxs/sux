@@ -64,4 +64,18 @@ describe("weightedRateLimit", () => {
 		expect(await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, "u", call("fn"))).toBeNull();
 		expect(rl.calls()).toBe(0); // fn itself has default cost
 	});
+
+	// A Unicode-obfuscated inner name must NOT dodge the weighted cost: the limiter
+	// resolves it through the same normalization the dispatcher will, so a fullwidth or
+	// zero-width-spaced leaf is charged exactly as its plain form.
+	it("charges the real leaf's weight even when the `fn` inner name is Unicode-obfuscated", async () => {
+		const fullwidthRender = "ｒｅｎｄｅｒ"; // ｒｅｎｄｅｒ
+		const zeroWidthRender = "ren​der";
+		for (const obf of [fullwidthRender, zeroWidthRender]) {
+			const rl = limiter(10);
+			const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, "u", fnCall(obf));
+			expect(r).toBeNull();
+			expect(rl.calls(), `obfuscated ${JSON.stringify(obf)} should charge render's 4 extra`).toBe(4);
+		}
+	});
 });

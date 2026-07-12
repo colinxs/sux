@@ -31,6 +31,7 @@ const R = (...p) => join(ROOT, ...p);
 
 const GEN_DOCS = R('sux', 'scripts', 'gen-docs.mjs');
 const FUNCTIONS = R('sux', 'FUNCTIONS.md');
+const REGISTRY = R('sux', 'src', 'registry.ts');
 const SKILL = R('.claude', 'skills', 'sux', 'SKILL.md');
 const SKILLS_DIR = R('.claude', 'skills');
 const PLUGIN_SKILLS_DIR = R('plugins', 'sux-router', 'skills');
@@ -64,6 +65,16 @@ function fnNamesFrom(md) {
 }
 
 const mentioned = (text, name) => new RegExp(`\\b${name}\\b`).test(text);
+
+// The front verbs — the only tools the deployed tools/list advertises (the rest are
+// leaves, reached via the `fn` escape or by name). Parsed from registry.ts so the
+// --live probe checks against the real advertised surface, not the full FUNCTIONS.md.
+function frontVerbsFrom() {
+  const src = readFileSync(REGISTRY, 'utf8');
+  const block = src.match(/FRONT_VERBS\s*=\s*new Set<string>\(\[([\s\S]*?)\]\)/);
+  if (!block) die('could not parse FRONT_VERBS from registry.ts — did the declaration move?');
+  return new Set([...block[1].matchAll(/"([a-z0-9_]+)"/g)].map((m) => m[1]));
+}
 
 // Recursively list files under dir as paths relative to dir (sorted).
 function walk(dir) {
@@ -210,18 +221,26 @@ async function main() {
   if (unSnippeted.length)
     console.log(`\nFYI (not failing): ${unSnippeted.length} functions not in the profile snippet: ${unSnippeted.join(', ')}`);
 
-  // Optional live probe: does the deployed tool surface match FUNCTIONS.md?
+  // Optional live probe: the deployed tools/list is the FRONT DOOR — only the front
+  // verbs, not every fn. So diff live against FRONT_VERBS (leaves stay reachable via
+  // the `fn` escape, deliberately absent from the list), while still asserting every
+  // advertised tool is a real fn in FUNCTIONS.md.
   if (live) {
     const liveNames = await fetchLiveTools();
     const fnSet = new Set(fnNames);
     const liveSet = new Set(liveNames);
+    const frontVerbs = frontVerbsFrom();
     drift = report(
       'Tools on the live server but NOT in FUNCTIONS.md (deploy is ahead of main — regenerate/redeploy)',
       liveNames.filter((n) => !fnSet.has(n)),
     ) || drift;
     drift = report(
-      'Functions in FUNCTIONS.md but NOT on the live server (main is ahead of deploy — redeploy)',
-      fnNames.filter((n) => !liveSet.has(n)),
+      'Front verbs missing from the live server (main is ahead of deploy — redeploy)',
+      [...frontVerbs].filter((n) => !liveSet.has(n)).sort(),
+    ) || drift;
+    drift = report(
+      'Tools advertised by the live server that are not front verbs (unexpected surface — front-door filter drift)',
+      liveNames.filter((n) => !frontVerbs.has(n)),
     ) || drift;
   }
 
