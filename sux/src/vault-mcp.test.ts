@@ -89,6 +89,87 @@ describe("vault MCP server (/vault/mcp)", () => {
 		expect(t.tags.map((x: any) => x.tag).sort()).toEqual(["idea", "project"]);
 	});
 
+	it("scanVault serves the HEAD-keyed KV index — ~N note reads collapse to 1, rebuilt only on HEAD change", async () => {
+		// In-memory KV so vaultHead + the index blob are exercised (the earlier scan
+		// test has no OAUTH_KV and rides the direct fallback).
+		const store = new Map<string, string>();
+		const kv = { get: async (k: string) => store.get(k) ?? null, put: async (k: string, v: string) => void store.set(k, v), delete: async (k: string) => void store.delete(k) };
+		const env = { OBSIDIAN_VAULT_REPO: "me/vault", OAUTH_KV: kv } as any;
+		const notes: Record<string, string> = {
+			"Projects/sux.md": "---\nstatus: active\ntags: [project]\n---\n# sux\ncore",
+			"Notes/a.md": "---\nstatus: draft\n---\nsee [[sux]] and #idea",
+			"Notes/b.md": "plain, no links",
+		};
+		let head = "head-1";
+		const reads: string[] = [];
+		routes.handler = (url, init) => {
+			if (url.includes("/git/ref/heads/")) return new Response(JSON.stringify({ object: { sha: head } }), { status: 200 });
+			if (url.includes("/git/trees/")) return new Response(JSON.stringify({ tree: Object.keys(notes).map((p) => ({ type: "blob", path: p })) }), { status: 200 });
+			const m = /\/contents\/(.+?)(\?|$)/.exec(url);
+			const path = m ? decodeURIComponent(m[1]) : "";
+			if (init?.method === "PUT") {
+				notes[path] = Buffer.from(JSON.parse(init.body).content, "base64").toString("utf8");
+				return new Response(JSON.stringify({ commit: { sha: head } }), { status: 201 });
+			}
+			if (notes[path] === undefined) return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+			reads.push(path);
+			return new Response(JSON.stringify({ content: b64(notes[path]), sha: head }), { status: 200 });
+		};
+		const call = async (name: string, args: any) => JSON.parse((await parse(await handleVaultRpc(env, CTX, rpc("tools/call", { name, arguments: args })))).result.content[0].text);
+
+		// First scan builds the index: reads every note once.
+		const t1 = await call("vault_tags", {});
+		expect(t1.tags.map((x: any) => x.tag).sort()).toEqual(["idea", "project"]);
+		expect(reads.length).toBe(3);
+
+		// Two more scans at the same HEAD read ZERO notes — served from the index blob.
+		reads.length = 0;
+		const q = await call("vault_query", { field: "status", value: "active" });
+		expect(q.notes.map((x: any) => x.path)).toEqual(["Projects/sux.md"]);
+		const bl = await call("vault_backlinks", { path: "Projects/sux.md" });
+		expect(bl.backlinks.map((x: any) => x.path)).toEqual(["Notes/a.md"]);
+		expect(reads.length).toBe(0);
+
+		// A write lands (through the same vault) → the commit sha becomes the new HEAD
+		// and the note cache is warmed inline → the index blob's sha no longer matches,
+		// so the next scan rebuilds BEFORE returning and reflects the new note. Never
+		// stale: a sux-driven write invalidates the index the moment it commits.
+		head = "head-2";
+		await call("vault_write", { path: "Notes/c.md", content: "---\nstatus: active\n---\nfresh" });
+		reads.length = 0;
+		const q2 = await call("vault_query", { field: "status", value: "active" });
+		expect(q2.notes.map((x: any) => x.path).sort()).toEqual(["Notes/c.md", "Projects/sux.md"]);
+	});
+
+	it("scanVault index respects folder scoping and cap", async () => {
+		const store = new Map<string, string>();
+		const kv = { get: async (k: string) => store.get(k) ?? null, put: async (k: string, v: string) => void store.set(k, v), delete: async (k: string) => void store.delete(k) };
+		const env = { OBSIDIAN_VAULT_REPO: "me/vault", OAUTH_KV: kv } as any;
+		const notes: Record<string, string> = {
+			"Projects/a.md": "#work",
+			"Projects/b.md": "#work",
+			"Notes/c.md": "#idea",
+		};
+		routes.handler = (url) => {
+			if (url.includes("/git/ref/heads/")) return new Response(JSON.stringify({ object: { sha: "h" } }), { status: 200 });
+			if (url.includes("/git/trees/")) return new Response(JSON.stringify({ tree: Object.keys(notes).map((p) => ({ type: "blob", path: p })) }), { status: 200 });
+			const m = /\/contents\/(.+?)(\?|$)/.exec(url);
+			const path = m ? decodeURIComponent(m[1]) : "";
+			if (notes[path] === undefined) return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+			return new Response(JSON.stringify({ content: b64(notes[path]), sha: "h" }), { status: 200 });
+		};
+		const call = async (name: string, args: any) => JSON.parse((await parse(await handleVaultRpc(env, CTX, rpc("tools/call", { name, arguments: args })))).result.content[0].text);
+
+		const folder = await call("vault_tags", { folder: "Projects" });
+		expect(folder.tags.map((x: any) => x.tag)).toEqual(["work"]); // Notes/c.md's #idea excluded
+		expect(folder.scanned).toBe(2);
+
+		const capped = await call("vault_tags", { cap: 1 });
+		expect(capped.scanned).toBe(1);
+		expect(capped.total).toBe(3);
+		expect(capped.truncated).toBe(true);
+	});
+
 	it("vault_query JsonLogic filter + vault_patch on the git backend (§obsidian)", async () => {
 		const call = async (name: string, args: any) => JSON.parse((await parse(await handleVaultRpc(ENV, CTX, rpc("tools/call", { name, arguments: args })))).result.content[0].text);
 		const notes: Record<string, string> = {

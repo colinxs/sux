@@ -50,6 +50,7 @@ const normPath = (p: string) => p.replace(/^\/+/, "");
 const headKey = (cfg: VaultCfg) => `cache:vault:git:${cfg.repo}@${cfg.branch}:head`;
 const gitNoteKey = (cfg: VaultCfg, p: string) => `cache:vault:git:${cfg.repo}@${cfg.branch}:note:${cfg.inVault(normPath(p))}`;
 const gitListKey = (cfg: VaultCfg, filter: string) => `cache:vault:git:${cfg.repo}@${cfg.branch}:list:${filter || "/"}`;
+const gitIndexKey = (cfg: VaultCfg) => `cache:vault:git:${cfg.repo}@${cfg.branch}:index`;
 const remoteNoteKey = (p: string) => `cache:vault:remote:note:${normPath(p)}`;
 
 async function cacheGet(env: any, key: string): Promise<any | null> {
@@ -71,7 +72,17 @@ async function cacheDel(env: any, key: string): Promise<void> {
 	} catch {}
 }
 
-async function vaultHead(env: any, cfg: VaultCfg): Promise<string | null> {
+// The derived-scan index (fns/obsidian owns it because HEAD resolution + the KV
+// keyspace live here). The blob shape is opaque to this module — vault-mcp owns
+// it and stamps the HEAD sha it was built at, so a HEAD change invalidates it.
+export async function readVaultIndexBlob(env: any, cfg: VaultCfg): Promise<any | null> {
+	return cacheGet(env, gitIndexKey(cfg));
+}
+export async function writeVaultIndexBlob(env: any, cfg: VaultCfg, blob: unknown): Promise<void> {
+	return cachePut(env, gitIndexKey(cfg), blob);
+}
+
+export async function vaultHead(env: any, cfg: VaultCfg): Promise<string | null> {
 	const cached = await cacheGet(env, headKey(cfg));
 	const now = Date.now();
 	if (cached?.sha && now - cached.at < HEAD_RECHECK_MS) return cached.sha;
