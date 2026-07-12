@@ -24,6 +24,8 @@ const ROUTES: Record<string, Route> = {
 	lowes: { fn: "lowes", args: ({ term, limit }) => ({ action: "search", term, limit }) },
 	ace: { fn: "ace", args: ({ term, limit }) => ({ action: "search", term, limit }) },
 	costco: { fn: "costco", args: ({ term, limit }) => ({ action: "search", term, limit }) },
+	bestbuy: { fn: "bestbuy", args: ({ term, limit }) => ({ action: "search", term, limit }) },
+	ebay: { fn: "ebay", args: ({ term, limit }) => ({ action: "search", term, limit }) },
 	kroger: { fn: "kroger", args: ({ term, limit, zip }) => withZip({ action: "search", term, limit }, zip) },
 	// Fred Meyer is a Kroger banner — same API, selected via the chain filter.
 	fred_meyer: { fn: "kroger", args: ({ term, limit, zip }) => withZip({ action: "search", term, limit, chain: "Fred Meyer" }, zip) },
@@ -38,7 +40,7 @@ export const shop: Fn = {
 	cost: 3,
 	description:
 		"Product search — a router over the dedicated retail fns (no Google Shopping / SerpAPI; that path is dead). Pick a retailer with `store` and pass `query`; shop dispatches to that fn and returns its normalized result. " +
-		`\`store\`: ${STORES.join(", ")} — amazon/walmart/lowes/ace/costco (mac render), home_depot→homedepot (mac render, honors \`zip\`), kroger and fred_meyer (Kroger API, \`zip\` auto-resolves a store for prices; fred_meyer via the Kroger chain filter), and deals→weekly_ad (Flipp grocery flyer, requires a 5-digit \`zip\`). ` +
+		`\`store\`: ${STORES.join(", ")} — amazon/walmart/lowes/ace/costco (mac render), home_depot→homedepot (mac render, honors \`zip\`), bestbuy (Best Buy Products API) and ebay (eBay Browse API), kroger and fred_meyer (Kroger API, \`zip\` auto-resolves a store for prices; fred_meyer via the Kroger chain filter), and deals→weekly_ad (Flipp grocery flyer, requires a 5-digit \`zip\`). ` +
 		"`limit` caps results (1..25, default 10). For the full arg surface / product-detail lookups, call the retailer fn directly.",
 	inputSchema: {
 		type: "object",

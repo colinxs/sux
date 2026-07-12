@@ -15,7 +15,7 @@ import type { RetailProduct } from "./_retail";
 
 // The retailers we fan across, in a stable default order. kroger alone consumes a
 // `zip` (to resolve a store for prices); the rest ignore it.
-const RETAILERS = ["kroger", "walmart", "homedepot", "amazon", "lowes", "costco", "ace"] as const;
+const RETAILERS = ["kroger", "walmart", "homedepot", "amazon", "lowes", "costco", "ace", "bestbuy", "ebay"] as const;
 
 /** A merged product carries which retailer it came from alongside the shared shape. */
 type TaggedProduct = RetailProduct & { retailer: string };
@@ -43,7 +43,7 @@ export const product_search: Fn = {
 	name: "product_search",
 	cost: 5,
 	description:
-		"Multi-retailer product search — fan one `term` across the retailer fns (kroger, walmart, homedepot, amazon, lowes, costco, ace) concurrently and merge their results into one normalized product list. " +
+		"Multi-retailer product search — fan one `term` across the retailer fns (kroger, walmart, homedepot, amazon, lowes, costco, ace, bestbuy, ebay) concurrently and merge their results into one normalized product list. " +
 		"`retailers` (optional) narrows the fan-out to a subset; `zip` is passed through to kroger (for store prices); `limit` caps the merged list (default 30). " +
 		"Per-retailer failure is isolated — a retailer that errors, is unconfigured, or is blocked lands in `errors` and never aborts the rest. " +
 		"Returns JSON { term, count, by_retailer:{ retailer:n }, products:[{ …product, retailer }], errors:[{ retailer, error }] }.",
