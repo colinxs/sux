@@ -48,6 +48,17 @@ code you commit. It's best-effort: a tooling hiccup warns but never blocks the
 commit (CI is the real gate). Manual runs (`npm run wiki`, `npm run check:wiki`)
 still work for tightening the loop mid-session.
 
+**Merge/rebase conflicts.** The three fully-generated files
+(`sux/src/fns/index.ts`, `sux/FUNCTIONS.md`, `llms.txt`) carry a `merge=ours`
+attribute (`.gitattributes`, driver registered by `npm run prepare`) so
+`git rebase main` / a PR merge never hand-conflicts on them — the
+`scripts/hooks/post-merge` + `post-rewrite` hooks regenerate and re-stage them
+afterwards (commit/amend before pushing; CI gates on their being in sync). The
+two hybrid MOCs (`Functions-MOC.md`, `Status-Dashboard.md`) are deliberately
+left on normal git merge: on a conflict, resolve the hand-authored section
+_above_ the `<!-- GENERATED -->` marker by hand, then let `npm run wiki`
+(auto-run by those same hooks) rebuild everything below it.
+
 **2. Curated layer — updated by the same session that changes the thing.**
 
 Home, the MOCs, and the concept notes are hand-written. The rule that keeps them

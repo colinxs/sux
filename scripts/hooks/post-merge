@@ -1,0 +1,6 @@
+#!/bin/sh
+# Fires after `git merge` completes. The merge=ours driver dodged textual
+# conflicts on the fully-generated files by keeping one side; regenerate them
+# for real and stage the result. See scripts/hooks/_regen-and-stage.sh.
+"$(git rev-parse --show-toplevel)/scripts/hooks/_regen-and-stage.sh" 2>/dev/null
+exit 0

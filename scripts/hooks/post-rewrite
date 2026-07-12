@@ -1,0 +1,7 @@
+#!/bin/sh
+# Fires after `git rebase` / `git commit --amend` rewrites history. After a
+# rebase onto main, merge=ours kept main's copy of the generated files, so
+# regenerate+stage them; you must commit/amend before pushing (CI gates sync).
+# See scripts/hooks/_regen-and-stage.sh.
+"$(git rev-parse --show-toplevel)/scripts/hooks/_regen-and-stage.sh" 2>/dev/null
+exit 0

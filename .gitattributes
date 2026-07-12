@@ -1,0 +1,13 @@
+# Fully machine-generated, zero hand-authored content — never hand-merge,
+# regenerate instead. The `ours` driver is registered locally by
+# `npm run prepare` (see package.json). If not yet registered (fresh clone,
+# no `npm install` run yet), these safely fall back to a normal 3-way
+# merge/conflict — zero regression risk.
+#
+# Scoped deliberately to the three 100%-generated files. NOT applied to
+# docs/wiki/MOCs/Functions-MOC.md or Status-Dashboard.md: those are hybrid
+# (hand-authored prose above a `<!-- GENERATED -->` marker), where merge=ours
+# would silently discard real edits. See docs/wiki/Meta/wiki-protocol.md.
+sux/src/fns/index.ts merge=ours
+sux/FUNCTIONS.md merge=ours
+llms.txt merge=ours

@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "scripts": {
-    "prepare": "git config core.hooksPath scripts/hooks || true",
+    "prepare": "git config core.hooksPath scripts/hooks || true; git config merge.ours.driver true || true",
     "deploy": "wrangler deploy --config sux/wrangler.jsonc",
     "deploy:sux": "wrangler deploy --config sux/wrangler.jsonc",
     "secret:sux": "wrangler secret put --config sux/wrangler.jsonc",
