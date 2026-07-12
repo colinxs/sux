@@ -35,11 +35,16 @@ type UrlResult = {
 	error?: string;
 };
 
+// Raw-byte cap for as:"url" downloads, exported so `put` (which composes
+// fetchBytes) shares the same store-size guard.
+export { MAX_STORE_BYTES };
+
 /** Fetch raw bytes for as:"url", preserving the HTTP status (a 4xx error page is
  * still transport content here) and short-circuiting the worker's own /s/<uuid>
  * CAS refs to a direct KV→R2 read. Binary-safe: smartFetch decodes base64 proxy
- * bodies to raw bytes so images/pdfs/zips survive byte-for-byte. */
-async function fetchBytes(
+ * bodies to raw bytes so images/pdfs/zips survive byte-for-byte. Exported so `put`
+ * reuses the exact download path instead of re-hand-rolling it. */
+export async function fetchBytes(
 	env: RtEnv,
 	url: string,
 	method: string,

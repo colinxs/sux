@@ -84,6 +84,7 @@ import { pipe } from "./pipe";
 import { places } from "./places";
 import { preferences } from "./preferences";
 import { product_search } from "./product_search";
+import { put } from "./put";
 import { reddit } from "./reddit";
 import { render } from "./render";
 import { selftest } from "./selftest";
@@ -186,6 +187,7 @@ export const FUNCTIONS: Fn[] = [
 	places,
 	preferences,
 	product_search,
+	put,
 	reddit,
 	render,
 	selftest,
