@@ -61,7 +61,7 @@ export const DOMAINS: DomainSpec[] = [
 	{ key: "tasks", blurb: "Todoist tasks & projects, plus calendar + tasks via the `cal` namespace verb (Fastmail CalDAV).", leaves: ["todoist", "cal"] },
 	{ key: "mail", blurb: "Fastmail over the raw JMAP conduit (byte-exact methodCalls + auth + gates), plus the `mail` + `contact` namespace verbs on the one /mcp connector.", leaves: ["jmap", "mail", "contact"] },
 	{ key: "compose", blurb: "Server-side combinators — map+reduce (batch), parallel fetch (batch_fetch), and {{prev}}-piping (pipe).", leaves: ["batch", "batch_fetch", "pipe"] },
-	{ key: "meta", blurb: "This map (sux), the `fn` escape hatch (call any leaf by name), preferences, feedback issues, and self-diagnostics.", leaves: ["sux", "fn", "preferences", "issue", "selftest"] },
+	{ key: "meta", blurb: "This map (sux), the `fn` escape hatch (call any leaf by name), preferences, feedback issues, self-diagnostics, and the autonomy-gate mirror.", leaves: ["sux", "fn", "preferences", "issue", "selftest", "autonomy_status"] },
 ];
 
 // The three personal-data namespaces mount as SEPARATE /<domain>/mcp connectors, not
