@@ -1,6 +1,6 @@
 ---
 name: sux
-description: Route a task to the right sux edge function and chain them when needed — web search (Kagi, native Google, Brave, DDG, Tavily, Exa), scrape/render through a residential proxy with an escalation ladder (scrape → render → render:mac) for bot-walled sites, crawl, extract/parse HTML (links, tables, metadata, readability, feeds, sitemaps, contacts, entities, subtitles), research databases (arxiv, pubmed, openalex, crossref, semantic_scholar, clinical_trials, stackexchange, reddit), convert formats (markdown, html, csv, json, xml, yaml), build/fill PDFs, OCR, convert images, compress/archive/encode/hash, declutter + token-pack, Workers-AI text (summarize, translate, classify, redact), archived snapshots (wayback), product/price/store search (shop + named retailers), places/people, crypto (coingecko), YouTube, Obsidian notes, vault capture (ingest url/text/query with blob routing), and storage (R2 store + KV + Dropbox app folder). Use whenever the user wants any web fetch, scrape/render of a page (including Akamai/PerimeterX-walled sites), data transform, extraction, research lookup, or lightweight compute done at the edge via the sux MCP connector.
+description: Route a task to the right sux edge function and chain them when needed — web search (Kagi, native Google, Brave, DDG, Tavily, Exa), scrape/render through a residential proxy with an escalation ladder (scrape → render → render:mac) for bot-walled sites, crawl, extract/parse HTML (links, tables, metadata, readability, feeds, sitemaps, extract_contacts, entities, subtitles), research databases (arxiv, pubmed, openalex, crossref, semantic_scholar, clinical_trials, stackexchange, reddit), convert formats (markdown, html, csv, json, xml, yaml), build/fill PDFs, OCR, convert images, compress/archive/encode/hash, declutter + token-pack, Workers-AI text (summarize, translate, classify, redact), archived snapshots (wayback), product/price/store search (shop + named retailers), places/people, crypto (coingecko), YouTube, Obsidian notes, vault capture (ingest url/text/query with blob routing), and storage (R2 store + KV + Dropbox app folder). Use whenever the user wants any web fetch, scrape/render of a page (including Akamai/PerimeterX-walled sites), data transform, extraction, research lookup, or lightweight compute done at the edge via the sux MCP connector.
 ---
 
 # sux — the edge function engine
@@ -67,7 +67,7 @@ capability map, or `sux({domain})` to zoom one group.
 | Regex over a page or text | `grep` |
 | HTML tables → JSON/CSV | `tables` |
 | Title/OG/twitter meta | `metadata` |
-| Emails/phones/social links on a page | `contacts` |
+| Emails/phones/social links on a page | `extract_contacts` |
 | Subtitles / transcript track ↔ SRT/WebVTT | `subtitles` |
 | Redirect chain, robots.txt, sitemap, RSS/Atom | `redirects`, `robots`, `sitemap`, `feed` |
 | Historical snapshot / change history | `wayback` |

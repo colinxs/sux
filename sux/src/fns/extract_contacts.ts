@@ -35,8 +35,8 @@ function extractSocials(source: string): Record<string, string[]> {
 	return out;
 }
 
-export const contacts: Fn = {
-	name: "contacts",
+export const extract_contacts: Fn = {
+	name: "extract_contacts",
 	description:
 		"Extract contact info — email addresses, phone numbers (US and E.164-style), and social profiles (twitter/x, github, linkedin, instagram, facebook, youtube, tiktok, mastodon, telegram, bluesky) — from a page or text. Pass `url`, `html`, or plain `text`. Social links are read from the raw source (hrefs); emails/phones from the stripped text. Returns JSON { emails, phones, socials } (deduped).",
 	inputSchema: {

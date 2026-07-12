@@ -369,7 +369,7 @@ export const TOOL_ANNOTATIONS: Record<string, ToolAnnotations> = {
 	// format converters, and the read side of KV. No environment mutation, no network.
 	...Object.fromEntries(
 		[
-			"extract", "readability", "tables", "metadata", "contacts", "entities", "select", "grep",
+			"extract", "readability", "tables", "metadata", "extract_contacts", "entities", "select", "grep",
 			"summarize", "translate", "classify", "redact", "ocr",
 			"markdown", "html", "csv", "json", "xml", "yaml", "encode", "hash", "compress", "archive", "pack", "declutter", "fontcase",
 			"kv_get", "kv_list",

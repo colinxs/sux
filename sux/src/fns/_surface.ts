@@ -21,7 +21,7 @@ export const DOMAINS: DomainSpec[] = [
 	{
 		key: "extract",
 		blurb: "Parse HTML/text into structure — links, tables, metadata, readability, feeds, sitemaps, contacts, entities, CSS-select, grep, subtitles.",
-		leaves: ["extract", "readability", "tables", "metadata", "feed", "sitemap", "contacts", "entities", "select", "grep", "subtitles"],
+		leaves: ["extract", "readability", "tables", "metadata", "feed", "sitemap", "extract_contacts", "entities", "select", "grep", "subtitles"],
 	},
 	{
 		key: "research",

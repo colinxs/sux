@@ -10,7 +10,7 @@ export const IMPORTANCE = [
 	// Tier 2 — high-value transforms + batching
 	"batch", "batch_fetch", "metadata", "tables", "html_markdown", "csv_json", "archive", "encode", "hash", "diff", "dedupe",
 	// Tier 3 — extraction + AI text
-	"feed", "sitemap", "gtin", "contacts", "entities", "redact", "translate", "classify", "embed", "ocr",
+	"feed", "sitemap", "gtin", "extract_contacts", "entities", "redact", "translate", "classify", "embed", "ocr",
 	// Tier 4 — net/intel + geo + remaining convert + flagship queries
 	"pubmed", "clinical_trials", "youtube", "local_shop", "wayback", "barcode_lookup", "latency",
 	"dns", "headers", "redirects", "robots", "whois", "ip_geo", "tls_info", "crawl",

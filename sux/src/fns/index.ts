@@ -24,7 +24,7 @@ import { encode } from "./encode";
 import { hash } from "./hash";
 import { feed } from "./feed";
 import { sitemap } from "./sitemap";
-import { contacts } from "./contacts";
+import { extract_contacts } from "./extract_contacts";
 import { entities } from "./entities";
 import { redact } from "./redact";
 import { translate } from "./translate";
@@ -135,7 +135,7 @@ export const FUNCTIONS: Fn[] = [
 	hash,
 	feed,
 	sitemap,
-	contacts,
+	extract_contacts,
 	entities,
 	redact,
 	translate,
