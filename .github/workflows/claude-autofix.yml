@@ -48,13 +48,21 @@ jobs:
 
           # Find the open PR for this head branch.
           pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$HEAD_BRANCH" --state open \
-                 --json number,labels,title,isDraft --jq '.[0]' 2>/dev/null || echo '')
+                 --json number,labels,title,isDraft,authorAssociation,isCrossRepository --jq '.[0]' 2>/dev/null || echo '')
           if [ -z "$pr" ] || [ "$pr" = "null" ]; then echo "no open PR for $HEAD_BRANCH → skip"; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
           num=$(echo "$pr" | jq -r .number)
           title=$(echo "$pr" | jq -r .title)
           draft=$(echo "$pr" | jq -r .isDraft)
           labels=$(echo "$pr" | jq -r '[.labels[].name] | join(",")')
-          echo "PR #$num  title=$title  labels=$labels  draft=$draft"
+          assoc=$(echo "$pr" | jq -r .authorAssociation)
+          fork=$(echo "$pr" | jq -r .isCrossRepository)
+          echo "PR #$num  title=$title  labels=$labels  draft=$draft  author=$assoc  fork=$fork"
+
+          # PUBLIC-REPO RCE GUARD: this job checks out and RUNS the PR's code with a
+          # write token + ANTHROPIC_API_KEY. Only ever do that for a trusted author's
+          # same-repo branch — never a fork or external contributor's untrusted code.
+          case "$assoc" in OWNER|MEMBER|COLLABORATOR) ;; *) echo "untrusted author ($assoc) → refuse to run PR code"; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0;; esac
+          if [ "$fork" = "true" ]; then echo "cross-repo/fork PR → refuse to run PR code"; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
 
           has(){ echo ",$labels," | grep -qi ",$1,"; }
           if has hold || has needs-human; then echo "hold/needs-human → skip"; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi

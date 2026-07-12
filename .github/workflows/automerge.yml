@@ -30,7 +30,12 @@ concurrency:
 jobs:
   enable-automerge:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.state == 'open'
+    # PUBLIC REPO: only auto-merge PRs from trusted authors. A fork/external PR
+    # (author_association CONTRIBUTOR/NONE/FIRST_TIME_*) can NEVER auto-merge — else a
+    # malicious `fix:`-titled PR would auto-deploy to production on green CI.
+    if: >
+      github.event.pull_request.state == 'open' &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
     steps:
       - name: Decide eligibility and enable auto-merge
         env:

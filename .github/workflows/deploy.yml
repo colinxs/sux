@@ -16,7 +16,7 @@ name: Deploy
 
 on:
   push:
-    branches: [main, sux-engine]
+    branches: [main]  # only the branch-protected, CI-gated main auto-deploys to prod
   workflow_dispatch: # allow manual "Run workflow" from the Actions tab
 
 permissions:
