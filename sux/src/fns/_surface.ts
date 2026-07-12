@@ -31,7 +31,7 @@ export const DOMAINS: DomainSpec[] = [
 	{
 		key: "shop",
 		blurb: "Product / price / store search — fan-out (shop, product_search) or a named retailer.",
-		leaves: ["shop", "product_search", "amazon", "walmart", "costco", "homedepot", "lowes", "kroger", "bestbuy", "ebay", "ace", "winco", "weekly_ad"],
+		leaves: ["shop", "product_search", "amazon", "walmart", "costco", "homedepot", "lowes", "kroger", "bestbuy", "ebay", "ace", "weekly_ad"],
 	},
 	{
 		key: "convert",

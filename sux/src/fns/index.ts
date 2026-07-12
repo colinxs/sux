@@ -110,7 +110,6 @@ import { walmart } from "./walmart";
 import { watch } from "./watch";
 import { webSearch } from "./web_search";
 import { weekly_ad } from "./weekly_ad";
-import { winco } from "./winco";
 import { xml } from "./xml";
 import { yaml } from "./yaml";
 
@@ -221,7 +220,6 @@ export const FUNCTIONS: Fn[] = [
 	watch,
 	webSearch,
 	weekly_ad,
-	winco,
 	xml,
 	yaml,
 ];
