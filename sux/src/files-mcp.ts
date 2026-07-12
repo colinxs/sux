@@ -4,6 +4,7 @@ import { fail, failWith, type RtEnv, type ToolResult } from "./registry";
 import { dropbox } from "./fns/dropbox";
 import { deleteFull, hasDropboxFull, listFull, moveFull, operateFull, readFull, searchFull, transformFull, writeBytes, writeFull } from "./fns/_dropbox-full";
 import { fingerprint, ledger } from "./ledger";
+import { staged } from "./stage";
 import { errMsg } from "./fns/_util";
 
 // The files MCP server — the personal blob workspace, served at /files/mcp behind
@@ -14,9 +15,10 @@ import { errMsg } from "./fns/_util";
 // (Mode A — the bidirectional app workspace). Mode B (whole-Dropbox) rides a SEPARATE
 // full-scope credential (_dropbox-full.ts): read/search (files_search + files_read/
 // files_list `full:true`) and, behind the write firewall (files.md §6), gated mutation —
-// files_write/files_upload/files_delete/files_move `full:true` with dry-run-by-default,
-// confirm-on-delete, rev-conditioning, a protected-prefix deny-list, and /.sux-trash
-// recoverability. files_operate (set organize/cleanup) and files_transform (merge N→1 /
+// files_write/files_upload/files_delete/files_move `full:true` route through the default-on
+// smart guard (stage.ts: stage a preview by default, then commit_token/force to apply),
+// over rev-conditioning, a protected-prefix deny-list, and /.sux-trash recoverability.
+// files_operate (set organize/cleanup) and files_transform (merge N→1 /
 // extract a slice) compose those same gated primitives server-side, no bytes through
 // context. Nothing in Mode B fires without the deliberate second credential.
 //
@@ -48,6 +50,19 @@ const rejectModeBFlags = (a: any): ToolResult | null =>
 
 type FileTool = { name: string; description: string; inputSchema: unknown; run: (env: RtEnv, args: any) => Promise<ToolResult> };
 const ok = (v: unknown): ToolResult => ({ content: [{ type: "text", text: JSON.stringify(v, null, 2) }] });
+
+/** The stage-guard arg triplet (mirrors mail-mcp). Threads stage/commit_token/force uniformly
+ *  at every Mode-B staged() call site so the guard — not an ad-hoc dry_run/confirm pair — gates. */
+const gateArgs = (a: any) => ({ stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined, force: a?.force === true });
+
+/** Run a Mode-B mutation through the smart guard. `preview` is the primitive's dry-run plan (the
+ *  stage preview supersedes the old dry_run default); `mutate` applies it (supersedes dry_run:false).
+ *  The primitive's own firewall — fenceFull, rev-safety, /.sux-trash backup, protected-prefix deny —
+ *  stays inside `mutate`, fully intact; only the outer plan/apply gate becomes the stage guard. */
+async function guard(env: RtEnv, a: any, kind: string, payload: unknown, preview: unknown, mutate: () => Promise<unknown>): Promise<ToolResult> {
+	const out = await staged(env, kind, gateArgs(a), payload, preview, mutate);
+	return ok("stageResult" in out ? out.stageResult : out.result);
+}
 
 const TOOLS: FileTool[] = [
 	{
@@ -111,14 +126,19 @@ const TOOLS: FileTool[] = [
 	},
 	{
 		name: "files_write",
-		description: "Write a text file. Default: create/overwrite in the app-folder workspace (returns path + shareable link). `full:true` writes an ABSOLUTE path in your whole Dropbox (Mode B) behind the write firewall: dry_run defaults TRUE (returns the plan, writes nothing), existing files need overwrite:true OR a matching rev, and an overwrite is backed up to /.sux-trash first. For binary, use files_upload.",
-		inputSchema: { type: "object", additionalProperties: false, required: ["path", "text"], properties: { path: { type: "string" }, text: { type: "string", description: "UTF-8 text to write." }, full: { type: "boolean", description: "Write into the whole Dropbox (Mode B) instead of the app folder." }, dry_run: { type: "boolean", description: "full mode: default true — returns the plan without writing. Pass false to apply." }, overwrite: { type: "boolean", description: "full mode: allow replacing an existing file." }, rev: { type: "string", description: "full mode: conditional update — write only if the file still has this rev." }, backup: { type: "boolean", description: "full mode: pre-op copy an overwritten file to /.sux-trash (default true)." } } },
+		description: "Write a text file. Default: create/overwrite in the app-folder workspace (returns path + shareable link). `full:true` writes an ABSOLUTE path in your whole Dropbox (Mode B) behind the write firewall: STAGES A PREVIEW BY DEFAULT (returns the plan + commit_token, writes nothing) — re-call with the commit_token, or pass force:true, to apply. Existing files need overwrite:true OR a matching rev; an overwrite is backed up to /.sux-trash first. For binary, use files_upload.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["path", "text"], properties: { path: { type: "string" }, text: { type: "string", description: "UTF-8 text to write." }, full: { type: "boolean", description: "Write into the whole Dropbox (Mode B) instead of the app folder." }, overwrite: { type: "boolean", description: "full mode: allow replacing an existing file." }, rev: { type: "string", description: "full mode: conditional update — write only if the file still has this rev." }, backup: { type: "boolean", description: "full mode: pre-op copy an overwritten file to /.sux-trash (default true)." }, stage: { type: "boolean", description: "Preview only: returns {preview, commit_token}, writes nothing." }, commit_token: { type: "string", description: "Apply a previously staged plan (payload must match)." }, force: { type: "boolean", description: "Apply in one shot, skipping the default stage (the ! override)." } } },
 		run: async (env, a) => {
 			if (!a?.path || a?.text === undefined) return failWith("bad_input", "files_write requires `path` and `text`.");
 			try {
 				if (a?.full === true) {
 					if (!hasDropboxFull(env)) return failWith("not_configured", "full-Dropbox (Mode B) write not configured — set DROPBOX_FULL_*. Without it, files_write covers the app-folder workspace only.");
-					return ok(await writeFull(env, { path: String(a.path), bytes: writeBytes(String(a.text), undefined), rev: a?.rev ? String(a.rev) : undefined, overwrite: a?.overwrite === true, backup: a?.backup !== false, dryRun: a?.dry_run !== false }));
+					const path = String(a.path), text = String(a.text);
+					const rev = a?.rev ? String(a.rev) : undefined, overwrite = a?.overwrite === true, backup = a?.backup !== false;
+					const opts = { path, bytes: writeBytes(text, undefined), rev, overwrite, backup };
+					const payload = { path, text, rev: rev ?? null, overwrite, backup };
+					const preview = await writeFull(env, { ...opts, dryRun: true });
+					return guard(env, a, "files_write_full", payload, preview, () => writeFull(env, { ...opts, dryRun: false }));
 				}
 				const g = rejectModeBFlags(a);
 				if (g) return g;
@@ -130,14 +150,19 @@ const TOOLS: FileTool[] = [
 	},
 	{
 		name: "files_upload",
-		description: "Upload binary content (base64) — an image, PDF, or export. Default: the app-folder workspace (returns path + shareable link). `full:true` uploads to an ABSOLUTE whole-Dropbox path (Mode B) under the same write firewall as files_write (dry_run default true, overwrite/rev gated, /.sux-trash backup).",
-		inputSchema: { type: "object", additionalProperties: false, required: ["path", "base64"], properties: { path: { type: "string" }, base64: { type: "string", description: "Base64-encoded bytes." }, full: { type: "boolean", description: "Upload into the whole Dropbox (Mode B) instead of the app folder." }, dry_run: { type: "boolean", description: "full mode: default true — returns the plan without writing. Pass false to apply." }, overwrite: { type: "boolean", description: "full mode: allow replacing an existing file." }, rev: { type: "string", description: "full mode: conditional update — write only if the file still has this rev." }, backup: { type: "boolean", description: "full mode: pre-op copy an overwritten file to /.sux-trash (default true)." } } },
+		description: "Upload binary content (base64) — an image, PDF, or export. Default: the app-folder workspace (returns path + shareable link). `full:true` uploads to an ABSOLUTE whole-Dropbox path (Mode B) under the same write firewall as files_write (stages a preview by default — commit_token/force to apply; overwrite/rev gated, /.sux-trash backup).",
+		inputSchema: { type: "object", additionalProperties: false, required: ["path", "base64"], properties: { path: { type: "string" }, base64: { type: "string", description: "Base64-encoded bytes." }, full: { type: "boolean", description: "Upload into the whole Dropbox (Mode B) instead of the app folder." }, overwrite: { type: "boolean", description: "full mode: allow replacing an existing file." }, rev: { type: "string", description: "full mode: conditional update — write only if the file still has this rev." }, backup: { type: "boolean", description: "full mode: pre-op copy an overwritten file to /.sux-trash (default true)." }, stage: { type: "boolean", description: "Preview only: returns {preview, commit_token}, writes nothing." }, commit_token: { type: "string", description: "Apply a previously staged plan (payload must match)." }, force: { type: "boolean", description: "Apply in one shot, skipping the default stage (the ! override)." } } },
 		run: async (env, a) => {
 			if (!a?.path || !a?.base64) return failWith("bad_input", "files_upload requires `path` and `base64`.");
 			try {
 				if (a?.full === true) {
 					if (!hasDropboxFull(env)) return failWith("not_configured", "full-Dropbox (Mode B) upload not configured — set DROPBOX_FULL_*. Without it, files_upload covers the app-folder workspace only.");
-					return ok(await writeFull(env, { path: String(a.path), bytes: writeBytes(undefined, String(a.base64)), rev: a?.rev ? String(a.rev) : undefined, overwrite: a?.overwrite === true, backup: a?.backup !== false, dryRun: a?.dry_run !== false }));
+					const path = String(a.path), base64 = String(a.base64);
+					const rev = a?.rev ? String(a.rev) : undefined, overwrite = a?.overwrite === true, backup = a?.backup !== false;
+					const opts = { path, bytes: writeBytes(undefined, base64), rev, overwrite, backup };
+					const payload = { path, base64, rev: rev ?? null, overwrite, backup };
+					const preview = await writeFull(env, { ...opts, dryRun: true });
+					return guard(env, a, "files_upload_full", payload, preview, () => writeFull(env, { ...opts, dryRun: false }));
 				}
 				const g = rejectModeBFlags(a);
 				if (g) return g;
@@ -209,14 +234,16 @@ const TOOLS: FileTool[] = [
 	},
 	{
 		name: "files_move",
-		description: "Move or rename a file/folder. App-folder mode (`from`→`to`) is scope-fenced, no confirm. `full:true` moves within your whole Dropbox (Mode B): dry_run defaults TRUE (preview); reversible by moving back.",
-		inputSchema: { type: "object", additionalProperties: false, required: ["from", "to"], properties: { from: { type: "string", description: "Source path." }, to: { type: "string", description: "Destination path (rename or relocate)." }, full: { type: "boolean", description: "Move within the whole Dropbox (Mode B) instead of the app folder." }, dry_run: { type: "boolean", description: "full mode: default true — previews the move. Pass false to apply." } } },
+		description: "Move or rename a file/folder. App-folder mode (`from`→`to`) is scope-fenced, no confirm. `full:true` moves within your whole Dropbox (Mode B): stages a preview by default — commit_token/force to apply; reversible by moving back.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["from", "to"], properties: { from: { type: "string", description: "Source path." }, to: { type: "string", description: "Destination path (rename or relocate)." }, full: { type: "boolean", description: "Move within the whole Dropbox (Mode B) instead of the app folder." }, stage: { type: "boolean", description: "Preview only: returns {preview, commit_token}, writes nothing." }, commit_token: { type: "string", description: "Apply a previously staged plan (payload must match)." }, force: { type: "boolean", description: "Apply in one shot, skipping the default stage (the ! override)." } } },
 		run: async (env, a) => {
 			if (!a?.from || !a?.to) return failWith("bad_input", "files_move requires `from` and `to`.");
 			if (a?.full === true) {
 				if (!hasDropboxFull(env)) return failWith("not_configured", "full-Dropbox (Mode B) move not configured — set DROPBOX_FULL_*. Without it, files_move covers the app-folder workspace only.");
 				try {
-					return ok(await moveFull(env, { from: String(a.from), to: String(a.to), dryRun: a?.dry_run !== false }));
+					const from = String(a.from), to = String(a.to);
+						const preview = await moveFull(env, { from, to, dryRun: true });
+						return await guard(env, a, "files_move_full", { from, to }, preview, () => moveFull(env, { from, to, dryRun: false }));
 				} catch (e) {
 					return fail(errMsg(e));
 				}
@@ -230,16 +257,16 @@ const TOOLS: FileTool[] = [
 	},
 	{
 		name: "files_delete",
-		description: "Delete a file (moves it to your Dropbox 'Deleted files' — recoverable there). App-folder mode requires confirm:true. `full:true` deletes an ABSOLUTE whole-Dropbox path (Mode B): dry_run defaults TRUE (preview the plan), and applying (dry_run:false) requires confirm:true — two gates on the one whole-account destructive verb.",
-		inputSchema: { type: "object", additionalProperties: false, required: ["path"], properties: { path: { type: "string" }, confirm: { type: "boolean", description: "Must be true to actually delete — a deliberate two-step." }, full: { type: "boolean", description: "Delete from the whole Dropbox (Mode B) instead of the app folder." }, dry_run: { type: "boolean", description: "full mode: default true — previews the delete. Pass false (+confirm:true) to apply." } } },
+		description: "Delete a file (moves it to your Dropbox 'Deleted files' — recoverable there). App-folder mode requires confirm:true. `full:true` deletes an ABSOLUTE whole-Dropbox path (Mode B): stages a preview by default (the plan + commit_token) — re-call with the commit_token, or pass force:true, to apply. Recoverable in Dropbox 'Deleted files'.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["path"], properties: { path: { type: "string" }, confirm: { type: "boolean", description: "Must be true to actually delete — a deliberate two-step." }, full: { type: "boolean", description: "Delete from the whole Dropbox (Mode B) instead of the app folder." }, stage: { type: "boolean", description: "Preview only: returns {preview, commit_token}, writes nothing." }, commit_token: { type: "string", description: "Apply a previously staged plan (payload must match)." }, force: { type: "boolean", description: "Apply in one shot, skipping the default stage (the ! override)." } } },
 		run: async (env, a) => {
 			if (!a?.path) return failWith("bad_input", "files_delete requires a `path`.");
 			if (a?.full === true) {
 				if (!hasDropboxFull(env)) return failWith("not_configured", "full-Dropbox (Mode B) delete not configured — set DROPBOX_FULL_*. Without it, files_delete covers the app-folder workspace only.");
-				const dryRun = a?.dry_run !== false;
-				if (!dryRun && a?.confirm !== true) return failWith("bad_input", "files_delete full:true requires confirm:true to apply (dry_run:false). Omit dry_run to preview the plan first.");
-				try {
-					return ok(await deleteFull(env, { path: String(a.path), dryRun }));
+								try {
+						const path = String(a.path);
+						const preview = await deleteFull(env, { path, dryRun: true });
+						return await guard(env, a, "files_delete_full", { path }, preview, () => deleteFull(env, { path, dryRun: false }));
 				} catch (e) {
 					return fail(errMsg(e));
 				}
@@ -255,7 +282,7 @@ const TOOLS: FileTool[] = [
 	{
 		name: "files_operate",
 		description:
-			"Operate over a SEARCHED set of whole-Dropbox files in ONE call (Mode B), zero bytes through context. `find` (a files_search spec: {query, path_prefix?, ext?}) OR explicit `handles` [path] select the set; `action` is move (relocate the set into `dest`) or delete. PLAN by default (apply omitted/false) — returns the matched files + what would happen, changing nothing. Pass apply:true to execute (delete also needs confirm:true). Each op rides the same firewall as files_move/files_delete — path-fence, rev-safety, Dropbox-trash recoverability — and the set is capped at `max` (default 100). For content transforms (merge N files→one, extract a byte/line slice) use files_transform. Needs DROPBOX_FULL_*.",
+			"Operate over a SEARCHED set of whole-Dropbox files in ONE call (Mode B), zero bytes through context. `find` (a files_search spec: {query, path_prefix?, ext?}) OR explicit `handles` [path] select the set; `action` is move (relocate the set into `dest`) or delete. STAGES A PLAN by default — returns the matched files + what would happen, changing nothing, with a commit_token. Re-call with the commit_token, or pass force:true, to execute. Each op rides the same firewall as files_move/files_delete — path-fence, rev-safety, Dropbox-trash recoverability — and the set is capped at `max` (default 100). For content transforms (merge N files→one, extract a byte/line slice) use files_transform. Needs DROPBOX_FULL_*.",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -265,8 +292,9 @@ const TOOLS: FileTool[] = [
 				find: { type: "object", additionalProperties: false, properties: { query: { type: "string" }, path_prefix: { type: "string" }, ext: { type: "array", items: { type: "string" } } }, description: "A whole-Dropbox search spec selecting the set." },
 				handles: { type: "array", items: { type: "string" }, description: "Explicit absolute paths (instead of a find)." },
 				dest: { type: "string", description: "move: destination folder for the set." },
-				apply: { type: "boolean", description: "false/omitted = plan only. true = execute." },
-				confirm: { type: "boolean", description: "delete apply: required true." },
+				stage: { type: "boolean", description: "Preview only: returns {plan, commit_token}, changes nothing." },
+				commit_token: { type: "string", description: "Apply a previously staged plan (payload must match)." },
+				force: { type: "boolean", description: "Apply in one shot, skipping the default stage (the ! override)." },
 				max: { type: "integer", minimum: 1, maximum: 500, description: "Cap the set size (default 100)." },
 			},
 		},
@@ -275,7 +303,10 @@ const TOOLS: FileTool[] = [
 			const action = String(a?.action ?? "");
 			if (action !== "move" && action !== "delete") return failWith("bad_input", "files_operate action must be 'move' or 'delete'.");
 			try {
-				return ok(await operateFull(env, { find: a?.find, handles: Array.isArray(a?.handles) ? a.handles : undefined, action, dest: a?.dest ? String(a.dest) : undefined, apply: a?.apply === true, confirm: a?.confirm === true, max: a?.max }));
+				const base = { find: a?.find, handles: Array.isArray(a?.handles) ? a.handles : undefined, action: action as "move" | "delete", dest: a?.dest ? String(a.dest) : undefined, max: a?.max };
+				const payload = { action, find: a?.find ?? null, handles: Array.isArray(a?.handles) ? a.handles : null, dest: a?.dest ?? null, max: a?.max ?? null };
+				const preview = await operateFull(env, { ...base, apply: false });
+				return await guard(env, a, "files_operate", payload, preview, () => operateFull(env, { ...base, apply: true, confirm: true }));
 			} catch (e) {
 				return fail(errMsg(e));
 			}
@@ -284,7 +315,7 @@ const TOOLS: FileTool[] = [
 	{
 		name: "files_transform",
 		description:
-			"Compose whole-Dropbox files into a NEW file, server-side (Mode B) — zero bytes through context. `op:'merge'` joins `sources` (2..20 absolute paths) into `dest`: mode 'concat' (default) is a raw-byte join in listed order; mode 'pdf' (default when every source is .pdf) renders each source to PDF page(s) and merges them (via the pdf fn). `op:'extract'` slices ONE `source` into `dest` by `byte_range` OR `line_range` ([start,end), 0-indexed half-open; line ranges need a text source). Sources are read edge-side (oversize link-only files are refused, never silently skipped); the result is written through the SAME firewall as files_write full:true — dry_run defaults TRUE (returns the plan: resolved sources, sizes, would-overwrite), existing/overlapping dest needs overwrite:true, an overwrite is backed up to /.sux-trash, and output is capped. Needs DROPBOX_FULL_*.",
+			"Compose whole-Dropbox files into a NEW file, server-side (Mode B) — zero bytes through context. `op:'merge'` joins `sources` (2..20 absolute paths) into `dest`: mode 'concat' (default) is a raw-byte join in listed order; mode 'pdf' (default when every source is .pdf) renders each source to PDF page(s) and merges them (via the pdf fn). `op:'extract'` slices ONE `source` into `dest` by `byte_range` OR `line_range` ([start,end), 0-indexed half-open; line ranges need a text source). Sources are read edge-side (oversize link-only files are refused, never silently skipped); the result is written through the SAME firewall as files_write full:true — STAGES A PREVIEW BY DEFAULT (the plan: resolved sources, sizes, would-overwrite, + a commit_token; re-call with it or pass force:true to apply), existing/overlapping dest needs overwrite:true, an overwrite is backed up to /.sux-trash, and output is capped. Needs DROPBOX_FULL_*.",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -297,7 +328,9 @@ const TOOLS: FileTool[] = [
 				byte_range: { type: "array", items: { type: "integer" }, minItems: 2, maxItems: 2, description: "extract: [start,end) byte offsets (0-indexed, half-open)." },
 				line_range: { type: "array", items: { type: "integer" }, minItems: 2, maxItems: 2, description: "extract: [start,end) line indices (0-indexed, half-open); text sources only." },
 				dest: { type: "string", description: "Absolute destination path for the result." },
-				dry_run: { type: "boolean", description: "Default true — returns the plan without writing. Pass false to apply." },
+				stage: { type: "boolean", description: "Preview only: returns {preview, commit_token}, writes nothing." },
+				commit_token: { type: "string", description: "Apply a previously staged plan (payload must match)." },
+				force: { type: "boolean", description: "Apply in one shot, skipping the default stage (the ! override)." },
 				overwrite: { type: "boolean", description: "Allow replacing an existing dest (required when dest is also a source)." },
 				backup: { type: "boolean", description: "Pre-op copy an overwritten dest to /.sux-trash (default true)." },
 			},
@@ -308,20 +341,20 @@ const TOOLS: FileTool[] = [
 			if (op !== "merge" && op !== "extract") return failWith("bad_input", "files_transform op must be 'merge' or 'extract'.");
 			if (!a?.dest) return failWith("bad_input", "files_transform requires a `dest`.");
 			try {
-				return ok(
-					await transformFull(env, {
-						op,
-						sources: Array.isArray(a?.sources) ? a.sources.map(String) : undefined,
-						mode: a?.mode === "pdf" || a?.mode === "concat" ? a.mode : undefined,
-						source: a?.source ? String(a.source) : undefined,
-						byte_range: Array.isArray(a?.byte_range) ? (a.byte_range.map(Number) as [number, number]) : undefined,
-						line_range: Array.isArray(a?.line_range) ? (a.line_range.map(Number) as [number, number]) : undefined,
-						dest: String(a.dest),
-						dryRun: a?.dry_run !== false,
-						overwrite: a?.overwrite === true,
-						backup: a?.backup !== false,
-					}),
-				);
+				const base = {
+					op: op as "merge" | "extract",
+					sources: Array.isArray(a?.sources) ? a.sources.map(String) : undefined,
+					mode: (a?.mode === "pdf" || a?.mode === "concat" ? a.mode : undefined) as "pdf" | "concat" | undefined,
+					source: a?.source ? String(a.source) : undefined,
+					byte_range: Array.isArray(a?.byte_range) ? (a.byte_range.map(Number) as [number, number]) : undefined,
+					line_range: Array.isArray(a?.line_range) ? (a.line_range.map(Number) as [number, number]) : undefined,
+					dest: String(a.dest),
+					overwrite: a?.overwrite === true,
+					backup: a?.backup !== false,
+				};
+				const payload = { op, sources: base.sources ?? null, mode: base.mode ?? null, source: base.source ?? null, byte_range: base.byte_range ?? null, line_range: base.line_range ?? null, dest: base.dest, overwrite: base.overwrite, backup: base.backup };
+				const preview = await transformFull(env, { ...base, dryRun: true });
+				return await guard(env, a, "files_transform", payload, preview, () => transformFull(env, { ...base, dryRun: false }));
 			} catch (e) {
 				return fail(errMsg(e));
 			}

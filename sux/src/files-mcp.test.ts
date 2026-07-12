@@ -185,12 +185,27 @@ describe("full-Dropbox (Mode B) gating — dormant without DROPBOX_FULL_*", () =
 		expect(badAction.content[0].text).toMatch(/must be 'move' or 'delete'/);
 	});
 
-	it("full delete requires confirm:true to APPLY (dry-run needs no confirm)", async () => {
-		const envFull = { DROPBOX_FULL_TOKEN: "ft" } as any; // configured, but we never reach the network
-		const r = await tool("files_delete").run(envFull, { path: "/x.txt", full: true, dry_run: false });
-		expect(r.isError).toBe(true);
-		expect(r.content[0].text).toMatch(/confirm:true/);
-		expect(runMock).not.toHaveBeenCalled();
+	it("full delete STAGES by default — the destructive apply is gated behind the smart guard", async () => {
+		const envFull = { DROPBOX_FULL_TOKEN: "ft", OAUTH_KV: fakeKV() } as any;
+		const origFetch = global.fetch;
+		const calls: string[] = [];
+		global.fetch = vi.fn(async (url: any) => {
+			const u = String(url);
+			calls.push(u);
+			if (u.includes("/files/get_metadata")) return new Response(JSON.stringify({ ".tag": "file", name: "x.txt", path_display: "/x.txt", size: 3, rev: "r1" }), { status: 200 });
+			return new Response(JSON.stringify({ metadata: { path_display: "/x.txt" } }), { status: 200 });
+		}) as any;
+		try {
+			// No stage/force/commit_token → the guard STAGES it (files_delete_full is annotated irreversible),
+			// so the destructive delete_v2 never fires — you must come back with the commit_token or force:true.
+			const staged = parse(await tool("files_delete").run(envFull, { path: "/x.txt", full: true }));
+			expect(staged).toMatchObject({ staged: true, kind: "files_delete_full" });
+			expect(staged.commit_token).toBeTruthy();
+			expect(calls.some((u) => u.includes("/files/delete_v2"))).toBe(false); // nothing deleted at the stage step
+			expect(runMock).not.toHaveBeenCalled(); // Mode A untouched
+		} finally {
+			global.fetch = origFetch;
+		}
 	});
 
 	it("files_transform fails closed without DROPBOX_FULL_* and validates op + dest", async () => {
