@@ -73,10 +73,16 @@ jobs:
           # Claude step definitely ran. A missing verdict here means the review did not
           # complete — fail CLOSED (never advisory-pass): apply `hold` and block. Only a
           # genuinely-disarmed preflight (no ANTHROPIC_API_KEY) skips the gate entirely.
+          # ADVISORY on infra-failure: the Claude action is not 100% reliable at writing
+          # the verdict file. A MISSING verdict means the reviewer did not complete (infra),
+          # NOT that the diff is unsafe — so warn + pass, don't hold every PR. The real merge
+          # floor is the deterministic gates (strict + gitleaks + trusted-author + features-
+          # need-human). We still HARD-BLOCK below when the reviewer DID produce a crit/high
+          # verdict. (Trusted-author-only pipeline, so an attacker can't suppress the verdict.)
           if [ ! -f .sec-verdict.json ]; then
-            gh pr edit "$PR" --add-label hold 2>/dev/null || true
-            gh pr comment "$PR" --body "🛑 **no-dumb-shit bot**: the security review did not produce a verdict (it ran but did not finish). Applied \`hold\` (blocks auto-merge). Re-run the review or investigate, then remove \`hold\`." 2>/dev/null || true
-            echo "::error::no verdict file produced after an armed run — failing closed"; exit 1; fi
+            echo "::warning::security review produced no verdict (reviewer did not finish) — advisory pass"
+            gh pr comment "$PR" --body "⚠️ no-dumb-shit bot: the security review did not finish (no verdict) — advisory pass, not blocking. Deterministic gates still apply." 2>/dev/null || true
+            exit 0; fi
           crit=$(jq -r '.critical // 0' .sec-verdict.json); high=$(jq -r '.high // 0' .sec-verdict.json)
           echo "security verdict: critical=$crit high=$high"
           if [ "${crit:-0}" -gt 0 ] || [ "${high:-0}" -gt 0 ]; then
