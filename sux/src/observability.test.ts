@@ -83,6 +83,19 @@ describe("observability", () => {
 		expect(JSON.stringify(body)).not.toContain("10.0.0.1");
 	});
 
+	it("serves /llms.txt as CDN-cacheable markdown built from the live registry", async () => {
+		const env = fakeEnv();
+		const res = await get(env, "/llms.txt");
+		expect(res!.status).toBe(200);
+		expect(res!.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+		expect(res!.headers.get("cache-control")).toBe("public, max-age=3600");
+		const body = await res!.text();
+		expect(body).toContain("# sux — capability map");
+		expect(body).toContain("## Domains");
+		// Same source as the `sux` root verb — a known leaf must appear in the map.
+		expect(body).toContain("`arxiv`");
+	});
+
 	it("returns null for non-GET requests to observability paths (falls through to OAuth)", async () => {
 		const env = fakeEnv();
 		for (const path of ["/logs", "/metrics", "/feedback"]) {
