@@ -482,6 +482,14 @@ async function maintenanceTick(env: RtEnv): Promise<void> {
 	} catch (e) {
 		console.warn(`sux scheduled maintenance: mail triage skipped: ${String((e as Error)?.message ?? e)}`);
 	}
+	try {
+		// Rebuild the cosmetic-adblock engine blob in R2 — staleness-gated, so the
+		// daily cron only does network work ≈ weekly (see _adblock.refreshAdblockEngine).
+		const { refreshAdblockEngine } = await import("./fns/_adblock");
+		await refreshAdblockEngine(env);
+	} catch (e) {
+		console.warn(`sux scheduled maintenance: adblock engine refresh skipped: ${String((e as Error)?.message ?? e)}`);
+	}
 }
 
 // Maps an exception thrown out of the OAuth provider into a clean JSON error
