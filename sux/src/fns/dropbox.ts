@@ -1,6 +1,6 @@
 import { DROPBOX_API as API, DROPBOX_CONTENT as CONTENT, type DropboxScope, dropboxFetch, dropboxRpc, headerSafeJson, MAX_INLINE_BYTES, scopeConfigured, TEXT_EXT } from "./_dropbox-core";
 import { type Fn, fail, ok, type RtEnv } from "../registry";
-import { maybeCompress, maybeDecompress } from "./_gzip";
+import { maybeDecompress } from "./_gzip";
 import { fromB64, toB64, oj } from "./_util";
 
 // Dropbox as the human-facing blob store (R2 `store` is the machine-facing
@@ -61,11 +61,13 @@ async function sharedLink(env: RtEnv, path: string): Promise<string | undefined>
  * (e.g. "report (1).pdf") and the returned `path` reflects the actual name. */
 export async function dropboxPut(env: RtEnv, path: string, bytes: Uint8Array, opts?: { overwrite?: boolean }): Promise<{ path: string; size: number; url?: string } | { error: string }> {
 	const clobber = opts?.overwrite !== false;
-	// Transparently gzip recognized text files (marker-framed; dropbox get inflates
-	// on read). Gated on the text extension — binary/already-compressed uploads and
-	// unknown types are stored verbatim, so the app-folder stays a faithful mirror
-	// for everything a human would open directly except text notes.
-	const body = TEXT_EXT.test(path) ? await maybeCompress(bytes) : bytes;
+	// Store EVERYTHING verbatim: Dropbox is the human-facing mirror (R2 `store` is the
+	// machine-facing twin that compresses). A gzipped note would sync to the user's
+	// laptop/phone as an opaque binary blob and break Dropbox preview / full-text
+	// search / any third-party tool on the app-folder — the exact legibility this
+	// connector exists for. (`get` still inflates any legacy compressed text frame for
+	// backward compatibility — see the TEXT_EXT-gated maybeDecompress on read.)
+	const body = bytes;
 	const resp = await dbxFetch(env, `${CONTENT}/files/upload`, (token) => ({
 		method: "POST",
 		headers: {
@@ -140,8 +142,13 @@ export const dropbox: Fn = {
 					signal: AbortSignal.timeout(60_000),
 				}));
 				if (resp.status >= 400) return fail(`Dropbox download error: ${(await resp.text().catch(() => "")).slice(0, 200) || `HTTP ${resp.status}`}`);
-				// Inflate a transparent-gzip frame back to the original (raw files pass through).
-				const bytes = await maybeDecompress(new Uint8Array(await resp.arrayBuffer()));
+				// New uploads are stored verbatim; a legacy compressed frame (only ever
+				// written for a TEXT_EXT path) still inflates. Gate the decompress on the
+				// same TEXT_EXT check used at write time so a binary blob whose first bytes
+				// happen to match the gzip marker is never misdecoded — the write invariant
+				// (only text was ever compressed) mirrored on read.
+				const raw = new Uint8Array(await resp.arrayBuffer());
+				const bytes = TEXT_EXT.test(path) ? await maybeDecompress(raw) : raw;
 				if (TEXT_EXT.test(path)) return ok(new TextDecoder().decode(bytes));
 				return ok(oj({ path, size: bytes.length, base64: toB64(bytes) }));
 			}
