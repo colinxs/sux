@@ -355,7 +355,7 @@ export function toolList(fns: Fn[]): Array<{ name: string; description: string; 
 // The FRONT DOOR — the curated root verbs that tools/list actually advertises.
 // Everything else is a leaf: still fully dispatchable (by its own name, or via the
 // `fn` escape), still described by the `sux` map, just not flooding the list. This
-// keeps the advertised surface mobile-legible (~13 tools) without removing any
+// keeps the advertised surface mobile-legible (~18 tools) without removing any
 // capability. The single source of truth for "what's a front verb" — a fn may also
 // self-declare `surface:"front"`, and either inclusion path counts.
 //   sux — the capability map    · fn — call any leaf by name

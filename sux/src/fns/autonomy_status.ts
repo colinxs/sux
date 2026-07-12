@@ -3,6 +3,8 @@ import { oj } from "./_util";
 import { hasMailTriage, hasMailTriageAct } from "./_mail_triage";
 import { hasDropboxFull } from "./_dropbox-full";
 import { canOpenPr, hasSelfImprove, isKilled } from "./_self_improve";
+import { hasBriefing, hasBriefingStageDrafts } from "./_briefing";
+import { hasWeeklyRecall } from "./_weekly_recall";
 
 // "What can act on my behalf right now" — a single read-only mirror of the Worker-side
 // autonomy gates. Several consequential surfaces (mail-triage, Mode-B Dropbox writes,
@@ -22,7 +24,7 @@ type Surface = { surface: string; armed: boolean; mode: string; reversible: bool
 export const autonomy_status: Fn = {
 	name: "autonomy_status",
 	description:
-		"Read-only mirror of which autonomous, act-on-your-behalf surfaces are ARMED right now — one call instead of grepping GitHub secrets + wrangler vars + 1Password. Reports the Worker-side consequential gates as booleans (never their secret VALUES, never any upstream call): the mail-triage bot (dormant / suggest-only / reversible auto-act), Mode-B whole-Dropbox writes (dormant vs. armed behind the dry-run-by-default firewall), the self-improve loop (killed / dormant / suggest-only / may-open-PR), and the manual cron trigger endpoint. Each surface carries its consequence + whether its acts are reversible. Returns JSON { armed_count, armed:[names], surfaces:[{surface, armed, mode, reversible, consequence}], note }. GitHub-side gates (branch auto-merge rule, CI GATE_SECRET tier) live in the repo not the Worker, so they're deliberately out of scope. Never cached.",
+		"Read-only mirror of which autonomous, act-on-your-behalf surfaces are ARMED right now — one call instead of grepping GitHub secrets + wrangler vars + 1Password. Reports the Worker-side consequential gates as booleans (never their secret VALUES, never any upstream call): the mail-triage bot (dormant / suggest-only / reversible auto-act), Mode-B whole-Dropbox writes (dormant vs. armed behind the dry-run-by-default firewall), the self-improve loop (killed / dormant / suggest-only / may-open-PR), the manual cron trigger endpoint, the morning briefing (dormant / digest-only / stages reply drafts), and the weekly-recall digest (read-only, vault-append only). Each surface carries its consequence + whether its acts are reversible. Returns JSON { armed_count, armed:[names], surfaces:[{surface, armed, mode, reversible, consequence}], note }. GitHub-side gates (branch auto-merge rule, CI GATE_SECRET tier) live in the repo not the Worker, so they're deliberately out of scope. Never cached.",
 	inputSchema: { type: "object", additionalProperties: false, required: [], properties: {} },
 	cacheable: false,
 	annotations: { readOnlyHint: true, openWorldHint: false },
@@ -34,6 +36,9 @@ export const autonomy_status: Fn = {
 		const selfOn = hasSelfImprove(env);
 		const selfPr = canOpenPr(env);
 		const cronTrigger = Boolean(env.SUX_CRON_TOKEN);
+		const briefingOn = hasBriefing(env);
+		const briefingDrafts = hasBriefingStageDrafts(env);
+		const weeklyRecall = hasWeeklyRecall(env);
 
 		const surfaces: Surface[] = [
 			{
@@ -63,6 +68,20 @@ export const autonomy_status: Fn = {
 				mode: cronTrigger ? "armed (bearer-gated POST /admin/tick)" : "dormant (endpoint 404s)",
 				reversible: true,
 				consequence: "lets a bearer-holding operator run a mail-triage / self-improve / maintenance cycle on demand. Only triggers the above loops — subject to their own gates.",
+			},
+			{
+				surface: "briefing",
+				armed: briefingDrafts,
+				mode: !briefingOn ? "dormant" : briefingDrafts ? "auto-act (stages reply drafts)" : "suggest-only (digest, no drafts)",
+				reversible: true,
+				consequence: "stages reply drafts to Drafts off flagged personal mail — NEVER sends. Drafts sit editable/deletable and the digest append is git-reversible.",
+			},
+			{
+				surface: "weekly_recall",
+				armed: weeklyRecall,
+				mode: weeklyRecall ? "armed (read-only, appends a weekly digest note)" : "dormant",
+				reversible: true,
+				consequence: "reads your vault/mail/web once a week and appends a recall digest note — read-only + vault-append only, git-reversible. Never sends or deletes.",
 			},
 		];
 

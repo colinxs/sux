@@ -30,8 +30,15 @@ function isMeteredObsPath(pathname: string): boolean {
 
 async function obsRateLimited(request: Request, env: RtEnv): Promise<boolean> {
 	if (!env.OBS_RATE_LIMITER) return false;
-	const { success } = await env.OBS_RATE_LIMITER.limit({ key: request.headers.get("cf-connecting-ip") || "anon" });
-	return !success;
+	// Fail OPEN if the limiter throws — an unavailable limiter must never itself
+	// become an outage (matches the not-configured branch above).
+	try {
+		const { success } = await env.OBS_RATE_LIMITER.limit({ key: request.headers.get("cf-connecting-ip") || "anon" });
+		return !success;
+	} catch (e) {
+		console.warn(`obs rate limiter threw, failing open: ${String((e as Error)?.message ?? e)}`);
+		return false;
+	}
 }
 
 export async function handleObservability(url: URL, request: Request, env: RtEnv): Promise<Response | null> {

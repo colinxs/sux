@@ -12,8 +12,22 @@ describe("autonomy_status — read-only gate mirror", () => {
 		const j = await run();
 		expect(j.armed_count).toBe(0);
 		expect(j.armed).toEqual([]);
-		expect(j.surfaces.map((s: any) => s.surface)).toEqual(["mail_triage", "dropbox_full_write", "self_improve", "cron_trigger"]);
+		expect(j.surfaces.map((s: any) => s.surface)).toEqual(["mail_triage", "dropbox_full_write", "self_improve", "cron_trigger", "briefing", "weekly_recall"]);
 		for (const s of j.surfaces) expect(s.armed).toBe(false);
+	});
+
+	it("briefing arms only when STAGE_DRAFTS is set atop ENABLED; digest-only otherwise", async () => {
+		const byName = (j: any, name: string) => j.surfaces.find((s: any) => s.surface === name);
+		expect(byName(await run({ BRIEFING_ENABLED: "1" }), "briefing")).toMatchObject({ armed: false, mode: "suggest-only (digest, no drafts)" });
+		const j = await run({ BRIEFING_ENABLED: "1", BRIEFING_STAGE_DRAFTS: "1" });
+		expect(byName(j, "briefing")).toMatchObject({ armed: true });
+		expect(j.armed).toContain("briefing");
+	});
+
+	it("weekly_recall arms on its own enable flag", async () => {
+		const j = await run({ WEEKLY_RECALL_ENABLED: "1" });
+		expect(j.surfaces.find((s: any) => s.surface === "weekly_recall")).toMatchObject({ armed: true });
+		expect(j.armed).toContain("weekly_recall");
 	});
 
 	it("mail_triage is armed only when BOTH ENABLED and ACT are truthy; suggest-only otherwise", async () => {
