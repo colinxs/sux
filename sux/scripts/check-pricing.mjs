@@ -12,8 +12,6 @@ import { pathToFileURL } from "node:url";
 export const PRICING = [
 	{ dep: "Kagi Search", price: "$12 / 1k searches", note: "Extract $4/1k — snippet-first, cap extract_count", url: "https://help.kagi.com/kagi/api/search.html", last_checked: "2026-07" },
 	{ dep: "Kagi Summarizer", price: "~$0.12 / page", note: "vs Workers AI ~$0.0003/page (~300x cheaper)", url: "https://help.kagi.com/kagi/api/summarizer.html", last_checked: "2026-07" },
-	{ dep: "SerpAPI", price: "from ~$75/mo (5k searches)", note: "google/amazon/walmart/home_depot engines (shop, web_search google)", url: "https://serpapi.com/pricing", last_checked: "2026-07" },
-	{ dep: "Proxycurl", price: "credit-based (~$0.01-0.03 / lookup)", note: "linkedin fn — cache hard (ttl 24h)", url: "https://nubela.co/proxycurl/pricing", last_checked: "2026-07" },
 	{ dep: "CF Browser Rendering", price: "$0.09 / browser-hr", note: "render fn — needs Workers Paid", url: "https://developers.cloudflare.com/browser-rendering/platform/pricing/", last_checked: "2026-07" },
 	{ dep: "Workers AI", price: "~$0.011 / 1k neurons", note: "summarize/translate/classify/ocr — very cheap", url: "https://developers.cloudflare.com/workers-ai/platform/pricing/", last_checked: "2026-07" },
 	{ dep: "Workers KV", price: "$0.50/M reads, $5/M writes", note: "cache + metrics — compressed payloads (cache-codec)", url: "https://developers.cloudflare.com/workers/platform/pricing/", last_checked: "2026-07" },
