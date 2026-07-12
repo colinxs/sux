@@ -69,6 +69,7 @@ import { ingest } from "./ingest";
 import { jmap } from "./jmap";
 import { json } from "./json";
 import { kroger } from "./kroger";
+import { learn } from "./learn";
 import { linkedin } from "./linkedin";
 import { lowes } from "./lowes";
 import { markdown } from "./markdown";
@@ -168,6 +169,7 @@ export const FUNCTIONS: Fn[] = [
 	jmap,
 	json,
 	kroger,
+	learn,
 	linkedin,
 	lowes,
 	markdown,
