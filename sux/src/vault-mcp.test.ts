@@ -54,6 +54,14 @@ describe("vault MCP server (/vault/mcp)", () => {
 		for (const t of out.result.tools) expect(t.inputSchema).toBeDefined();
 	});
 
+	it("tools/list carries behavior hints on reads and delete", async () => {
+		const out = await parse(await handleVaultRpc(ENV, CTX, rpc("tools/list")));
+		const byName = new Map<string, any>(out.result.tools.map((t: any) => [t.name, t]));
+		expect(byName.get("vault_read")?.annotations).toEqual({ readOnlyHint: true, openWorldHint: true });
+		expect(byName.get("vault_delete")?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
+		expect("annotations" in (byName.get("vault_write") as object)).toBe(false); // revertible commit → unlisted
+	});
+
 	it("vault_read serves through the git backend", async () => {
 		routes.handler = (url) => {
 			expect(url).toContain("/contents/Inbox%2Fidea.md");

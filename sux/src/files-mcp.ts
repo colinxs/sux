@@ -1,6 +1,6 @@
 import { checkArgs, FN_DEADLINE_MS, withDeadline } from "./index";
 import { type JsonRpc, sseResponse } from "./mcp-util";
-import { fail, failWith, type RtEnv, type ToolResult } from "./registry";
+import { fail, failWith, type RtEnv, type ToolAnnotations, type ToolResult, toolListWith } from "./registry";
 import { dropbox } from "./fns/dropbox";
 import { deleteFull, hasDropboxFull, listFull, moveFull, operateFull, readFull, searchFull, transformFull, writeBytes, writeFull } from "./fns/_dropbox-full";
 import { fingerprint, ledger } from "./ledger";
@@ -370,6 +370,19 @@ const TOOLS: FileTool[] = [
 
 export const FILES_TOOLS = TOOLS;
 
+// MCP behavior hints (see registry.ts ToolAnnotations). Dropbox is a third-party API,
+// so reads are openWorld. Only the unambiguous buckets are tagged: pure reads (readOnly)
+// and the destructive verbs — files_delete plus the raw `dropbox` escape hatch (which can
+// delete/overwrite anything in scope) — that a client should confirm before auto-running.
+// The gated writes (write/upload/move/operate/transform) stage a preview by default and
+// land in /.sux-trash-recoverable, so they stay unlisted rather than claim a hint.
+const READ: ToolAnnotations = { readOnlyHint: true, openWorldHint: true };
+const DESTRUCTIVE: ToolAnnotations = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true };
+const FILES_ANNOTATIONS: Record<string, ToolAnnotations> = {
+	...Object.fromEntries(["files_list", "files_search", "files_read"].map((n) => [n, READ])),
+	...Object.fromEntries(["files_delete", "dropbox"].map((n) => [n, DESTRUCTIVE])),
+};
+
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 
 export async function handleFilesRpc(env: RtEnv, _ctx: ExecutionContext, rpc: JsonRpc | undefined, bodyBytes = 0): Promise<Response> {
@@ -385,7 +398,7 @@ export async function handleFilesRpc(env: RtEnv, _ctx: ExecutionContext, rpc: Js
 	}
 	if (method.startsWith("notifications/")) return new Response(null, { status: 202 });
 	if (method === "tools/list") {
-		return sseResponse({ jsonrpc: "2.0", id, result: { tools: TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) } });
+		return sseResponse({ jsonrpc: "2.0", id, result: { tools: toolListWith(TOOLS, FILES_ANNOTATIONS) } });
 	}
 	if (method === "tools/call") {
 		const name = String(rpc?.params?.name ?? "");

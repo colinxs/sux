@@ -1,6 +1,6 @@
 import { checkArgs, FN_DEADLINE_MS, withDeadline } from "./index";
 import { type JsonRpc, sseResponse } from "./mcp-util";
-import { fail, failWith, type RtEnv, type ToolResult } from "./registry";
+import { fail, failWith, type RtEnv, type ToolAnnotations, type ToolResult, toolListWith } from "./registry";
 import { staged } from "./stage";
 import { jmap } from "./fns/jmap";
 import { doUpload, jstr, scopeProbe } from "./fns/_jmap";
@@ -1134,6 +1134,21 @@ export async function labelMessages(env: RtEnv, ids: unknown, label: string, add
 
 export const MAIL_TOOLS = TOOLS;
 
+// MCP behavior hints for this connector's tools (see registry.ts ToolAnnotations).
+// Fastmail is a third-party API, so reads are openWorld. Only the unambiguous buckets
+// are tagged: pure reads (readOnly) and the irreversible mutations (send off the wire,
+// hard-delete a contact/event) that a client should confirm before auto-running. The
+// reversible verbs (draft/archive/move/label, the stage-gated create/update/masked,
+// the raw caldav/jmap escapes) stay unlisted rather than claim a hint they can't honor.
+const READ: ToolAnnotations = { readOnlyHint: true, openWorldHint: true };
+const DESTRUCTIVE: ToolAnnotations = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true };
+const MAIL_ANNOTATIONS: Record<string, ToolAnnotations> = {
+	...Object.fromEntries(
+		["mail_search", "mail_read", "mail_thread", "mail_mailboxes", "mail_identities", "mail_scheduled", "mail_quota", "contact_search", "contact_get", "cal_list", "cal_events", "task_list"].map((n) => [n, READ]),
+	),
+	...Object.fromEntries(["mail_send", "contact_delete", "cal_delete"].map((n) => [n, DESTRUCTIVE])),
+};
+
 // Mirrors handleVaultRpc: the per-request MCP protocol shell with the mail registry.
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 
@@ -1150,7 +1165,7 @@ export async function handleMailRpc(env: RtEnv, _ctx: ExecutionContext, rpc: Jso
 	}
 	if (method.startsWith("notifications/")) return new Response(null, { status: 202 });
 	if (method === "tools/list") {
-		return sseResponse({ jsonrpc: "2.0", id, result: { tools: TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) } });
+		return sseResponse({ jsonrpc: "2.0", id, result: { tools: toolListWith(TOOLS, MAIL_ANNOTATIONS) } });
 	}
 	if (method === "tools/call") {
 		const name = String(rpc?.params?.name ?? "");

@@ -574,6 +574,14 @@ describe("handleMailRpc protocol shell", () => {
 		expect(names).toContain("jmap");
 	});
 
+	it("tools/list carries behavior hints on the classifiable verbs", async () => {
+		const body = await sseJson(await call({ jsonrpc: "2.0", id: 2, method: "tools/list" }));
+		const byName = new Map<string, any>(body.result.tools.map((t: any) => [t.name, t]));
+		expect(byName.get("mail_search")?.annotations).toEqual({ readOnlyHint: true, openWorldHint: true });
+		expect(byName.get("mail_send")?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
+		expect("annotations" in (byName.get("mail_archive") as object)).toBe(false); // reversible → unlisted
+	});
+
 	it("tools/call rejects an unknown tool", async () => {
 		const r = await call({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "nope", arguments: {} } });
 		const body = await sseJson(r);

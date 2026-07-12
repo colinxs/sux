@@ -253,6 +253,15 @@ describe("handleFilesRpc protocol shell", () => {
 		expect(names).toContain("dropbox");
 	});
 
+	it("tools/list carries behavior hints on reads and the destructive verbs", async () => {
+		const body = await sseJson(await call({ jsonrpc: "2.0", id: 2, method: "tools/list" }));
+		const byName = new Map<string, any>(body.result.tools.map((t: any) => [t.name, t]));
+		expect(byName.get("files_read")?.annotations).toEqual({ readOnlyHint: true, openWorldHint: true });
+		expect(byName.get("files_delete")?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
+		expect(byName.get("dropbox")?.annotations).toMatchObject({ destructiveHint: true }); // raw escape hatch
+		expect("annotations" in (byName.get("files_write") as object)).toBe(false); // gated/recoverable → unlisted
+	});
+
 	it("rejects an unknown tool", async () => {
 		const body = await sseJson(await call({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "nope" } }));
 		expect(body.error.code).toBe(-32601);

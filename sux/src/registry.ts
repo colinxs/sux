@@ -311,6 +311,20 @@ export function toolList(fns: Fn[]): Array<{ name: string; description: string; 
 	});
 }
 
+// A namespace connector (mail/vault/files) carries its own tool array, not Fn[], but
+// wants the same tools/list emit: strip run(), attach the behavior hint keyed by name
+// when one is declared. Its per-surface hint map lives at the connector's own site (as
+// TOOL_ANNOTATIONS does for the root), and an unlisted tool simply advertises no hint.
+export function toolListWith<T extends { name: string; description: string; inputSchema: unknown }>(
+	tools: T[],
+	hints: Record<string, ToolAnnotations>,
+): Array<{ name: string; description: string; inputSchema: unknown; annotations?: ToolAnnotations }> {
+	return tools.map(({ name, description, inputSchema }) => {
+		const annotations = hints[name];
+		return annotations ? { name, description, inputSchema, annotations } : { name, description, inputSchema };
+	});
+}
+
 // The FRONT DOOR — the curated root verbs that tools/list actually advertises.
 // Everything else is a leaf: still fully dispatchable (by its own name, or via the
 // `fn` escape), still described by the `sux` map, just not flooding the list. This

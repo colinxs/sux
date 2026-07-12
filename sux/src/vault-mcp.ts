@@ -1,7 +1,7 @@
 import { checkArgs, FN_DEADLINE_MS, withDeadline } from "./index";
 import { fingerprint, ledger } from "./ledger";
 import { type JsonRpc, sseResponse } from "./mcp-util";
-import { fail, failWith, ok, type RtEnv, type ToolResult } from "./registry";
+import { fail, failWith, ok, type RtEnv, type ToolAnnotations, type ToolResult, toolListWith } from "./registry";
 import { ingest } from "./fns/ingest";
 import { obsidian, readGitContents, readVaultIndexBlob, type VaultCfg, vaultCfg, vaultHead, vaultPut, writeVaultIndexBlob } from "./fns/obsidian";
 import { vaultToday } from "./fns/_util";
@@ -379,6 +379,19 @@ const clampCap = (v: unknown): number => Math.min(2000, Math.max(1, Number(v) ||
 
 export const VAULT_TOOLS = TOOLS;
 
+// MCP behavior hints (see registry.ts ToolAnnotations). The git store is a third-party
+// (GitHub) backend, so reads are openWorld. Only the unambiguous buckets are tagged:
+// pure reads (readOnly) and delete (destructive — the one verb that removes a note, so a
+// client should confirm before auto-running). The writes (write/append/edit/patch/
+// capture) are revertible git commits and stay unlisted rather than overclaim a hint.
+const READ: ToolAnnotations = { readOnlyHint: true, openWorldHint: true };
+const VAULT_ANNOTATIONS: Record<string, ToolAnnotations> = {
+	...Object.fromEntries(
+		["vault_read", "vault_list", "vault_daily_read", "vault_backlinks", "vault_query", "vault_tags"].map((n) => [n, READ]),
+	),
+	vault_delete: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+};
+
 // Mirrors handleRpc's protocol shell (initialize / notifications / tools) with
 // the vault registry instead of FUNCTIONS. Stateless per request, like the main
 // server: the MCP session is a per-call formality, all state lives in the store.
@@ -408,7 +421,7 @@ export async function handleVaultRpc(env: RtEnv, _ctx: ExecutionContext, rpc: Js
 	}
 	if (method.startsWith("notifications/")) return new Response(null, { status: 202 });
 	if (method === "tools/list") {
-		return sseResponse({ jsonrpc: "2.0", id, result: { tools: TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) } });
+		return sseResponse({ jsonrpc: "2.0", id, result: { tools: toolListWith(TOOLS, VAULT_ANNOTATIONS) } });
 	}
 	if (method === "tools/call") {
 		const name = String(rpc?.params?.name ?? "");
