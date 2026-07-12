@@ -62,26 +62,43 @@ jobs:
             $GITHUB_WORKSPACE/.sec-verdict.json exactly like: {"critical":N,"high":N,"note":"..."}
             (counts of confirmed high/critical issues). If the diff is clean, write zeros.
           claude_args: "--max-turns 14 --model opus --allowedTools Read,Grep,Glob,Bash,Write,Edit"
-      - name: Gate — block merge on high/critical
+      - name: Gate — scoped fail-closed on missing verdict; block on high/critical
         if: steps.pre.outputs.go == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          # This step only runs when the preflight armed the review (go=true), so the
-          # Claude step definitely ran. A missing verdict here means the review did not
-          # complete — fail CLOSED (never advisory-pass): apply `hold` and block. Only a
-          # genuinely-disarmed preflight (no ANTHROPIC_API_KEY) skips the gate entirely.
-          # ADVISORY on infra-failure: the Claude action is not 100% reliable at writing
-          # the verdict file. A MISSING verdict means the reviewer did not complete (infra),
-          # NOT that the diff is unsafe — so warn + pass, don't hold every PR. The real merge
-          # floor is the deterministic gates (strict + gitleaks + trusted-author + features-
-          # need-human). We still HARD-BLOCK below when the reviewer DID produce a crit/high
-          # verdict. (Trusted-author-only pipeline, so an attacker can't suppress the verdict.)
+          # This step only runs when the preflight armed the review (go=true), so the Claude
+          # step definitely ran. Three outcomes:
+          #   1. A PRODUCED crit/high verdict → HARD-BLOCK: apply `hold` + exit 1 (unchanged).
+          #   2. A MISSING verdict (reviewer did not finish — infra, not proof the diff is
+          #      unsafe) is gated by BLAST RADIUS, not a blanket policy:
+          #        • diff touches .github/workflows/**, auth, or secrets → FAIL CLOSED
+          #          (hold + exit 1): high-blast changes must never merge unreviewed.
+          #        • any other diff → ADVISORY PASS (::warning:: + exit 0): a flaky reviewer
+          #          must never DoS routine merges. The deterministic gates (strict + gitleaks
+          #          + trusted-author + features-need-human) remain the real merge floor.
+          #        • changed-file list unreadable → can't prove low-blast, so FAIL CLOSED.
+          # Trusted-author-only pipeline, so an attacker can't suppress the verdict to sneak a
+          # high-blast diff through — the worst case is a stall on their own PR.
           if [ ! -f .sec-verdict.json ]; then
-            echo "::warning::security review produced no verdict (reviewer did not finish) — advisory pass"
-            gh pr comment "$PR" --body "⚠️ no-dumb-shit bot: the security review did not finish (no verdict) — advisory pass, not blocking. Deterministic gates still apply." 2>/dev/null || true
+            changed=$(gh pr diff "$PR" --name-only 2>/dev/null || true)
+            if [ -z "$changed" ]; then
+              echo "::error::security review produced no verdict AND the changed-file list is unreadable — failing closed (cannot rule out a high-blast diff)"
+              gh pr edit "$PR" --add-label hold 2>/dev/null || true
+              gh pr comment "$PR" --body "🛑 no-dumb-shit bot: security review did not finish and the diff was unreadable — applied \`hold\` (fail-closed). Re-run the review, then remove \`hold\`." 2>/dev/null || true
+              exit 1
+            fi
+            if printf '%s\n' "$changed" | grep -qiE '\.github/workflows/|auth|secret'; then
+              echo "::error::security review produced no verdict AND the diff touches high-blast paths (workflows/auth/secrets) — failing closed"
+              printf '%s\n' "$changed" | grep -iE '\.github/workflows/|auth|secret' | sed 's/^/  high-blast path: /'
+              gh pr edit "$PR" --add-label hold 2>/dev/null || true
+              gh pr comment "$PR" --body "🛑 no-dumb-shit bot: security review did not finish and this PR touches workflows/auth/secrets — applied \`hold\` (fail-closed). Re-run the review or justify, then remove \`hold\`." 2>/dev/null || true
+              exit 1
+            fi
+            echo "::warning::security review produced no verdict (reviewer did not finish) and the diff is not high-blast — advisory pass"
+            gh pr comment "$PR" --body "⚠️ no-dumb-shit bot: the security review did not finish (no verdict) and this diff doesn't touch workflows/auth/secrets — advisory pass, not blocking. Deterministic gates still apply." 2>/dev/null || true
             exit 0; fi
           crit=$(jq -r '.critical // 0' .sec-verdict.json); high=$(jq -r '.high // 0' .sec-verdict.json)
           echo "security verdict: critical=$crit high=$high"

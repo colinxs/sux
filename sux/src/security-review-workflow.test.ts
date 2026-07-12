@@ -24,14 +24,33 @@ describe("security-review workflow is a real, requireable gate", () => {
 		expect(sec).toMatch(/^\s{4}timeout-minutes:\s*\d+\s*$/m);
 	});
 
-	it("fails CLOSED on a missing verdict after an armed run — never advisory-pass", () => {
-		// the missing-verdict branch must apply `hold` and exit 1, not exit 0
-		const gate = sec.slice(sec.indexOf("if [ ! -f .sec-verdict.json ]"));
-		expect(gate).toContain("--add-label hold");
-		expect(gate).toContain("exit 1");
-		// the old fail-open behavior (advisory pass on missing verdict) must be gone
-		expect(sec).not.toContain("treating as advisory pass");
-		expect(sec).not.toMatch(/no verdict file produced[^\n]*exit 0/);
+	it("scopes the missing-verdict branch: fail-closed on high-blast diffs, advisory-pass otherwise", () => {
+		// Isolate ONLY the missing-verdict block — from its `if` guard to where verdict
+		// parsing begins (`crit=$(jq …`) — so these assertions can't leak into the later
+		// crit/high branch and pass vacuously (that earlier slice-to-EOF bug is the whole
+		// point of this test). Both the fail-closed and advisory paths must live in HERE.
+		const start = sec.indexOf("if [ ! -f .sec-verdict.json ]");
+		const end = sec.indexOf("crit=$(jq", start);
+		expect(start).toBeGreaterThan(-1);
+		expect(end).toBeGreaterThan(start);
+		const missing = sec.slice(start, end);
+
+		// It decides by BLAST RADIUS: inspect the changed files, match high-blast paths.
+		expect(missing).toMatch(/gh pr diff\b.*--name-only/);
+		expect(missing).toContain(".github/workflows/");
+		expect(missing).toContain("auth");
+		expect(missing).toContain("secret");
+
+		// High-blast (and unreadable-diff) → FAIL CLOSED: apply `hold` + exit 1, in-block.
+		expect(missing).toContain("--add-label hold");
+		expect(missing).toContain("exit 1");
+		// Non-high-blast → ADVISORY PASS: warn + exit 0, in-block (never a blanket DoS).
+		expect(missing).toContain("::warning::");
+		expect(missing).toContain("exit 0");
+
+		// The old unconditional advisory-pass (exit 0 with no blast-radius check) is gone:
+		// there must be an `exit 1` before the first `exit 0` inside the block.
+		expect(missing.indexOf("exit 1")).toBeLessThan(missing.indexOf("exit 0"));
 	});
 
 	it("only skips the gate when genuinely disarmed (no ANTHROPIC_API_KEY)", () => {
