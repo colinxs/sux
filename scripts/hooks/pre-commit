@@ -1,6 +1,7 @@
 #!/bin/sh
 # Living-wiki: on every commit, regenerate the knowledge artifacts from source
 # and re-stage them so the wiki never drifts from the code you're committing.
+#   sux/src/fns/index.ts          <- sux/src/fns/*.ts   (npm run gen:index)
 #   sux/FUNCTIONS.md              <- sux/src/fns/*.ts   (npm run docs)
 #   docs/wiki/MOCs/Functions-MOC  <- FUNCTIONS.md       (npm run wiki)
 #   docs/wiki/MOCs/Status-Dashboard <- doc frontmatter  (npm run wiki)
@@ -17,10 +18,12 @@ cd "$root" || exit 0
 command -v npm >/dev/null 2>&1 || exit 0
 
 echo "· living-wiki: regenerating knowledge artifacts…"
+npm run gen:index --silent >/dev/null 2>&1 || echo "  (npm run gen:index failed — leaving index.ts as-is)"
 npm run docs --silent >/dev/null 2>&1 || echo "  (npm run docs failed — leaving FUNCTIONS.md as-is)"
 npm run wiki --silent >/dev/null 2>&1 || echo "  (npm run wiki failed — leaving wiki notes as-is)"
 
 git add -- \
+  sux/src/fns/index.ts \
   sux/FUNCTIONS.md \
   docs/wiki/MOCs/Functions-MOC.md \
   docs/wiki/MOCs/Status-Dashboard.md \
