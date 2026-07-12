@@ -188,7 +188,7 @@ describe("mail_* ergonomic tools", () => {
 
 	it("mail_send composes + submits with the identity/mailbox resolved", async () => {
 		const f = installFetch();
-		const out = parse(await tool("mail_send").run(env(), { to: ["x@y.com"], subject: "Hi", text: "yo" }));
+		const out = parse(await tool("mail_send").run(env(), { to: ["x@y.com"], subject: "Hi", text: "yo", force: true }));
 		expect(out).toMatchObject({ sent: true, submissionId: "sub-1" });
 		// The send batch carried allow_send (an EmailSubmission/set create).
 		const sendBody = f.mock.calls.map((c: any) => (c[1]?.body ? JSON.parse(c[1].body) : {})).find((b: any) => (b.methodCalls ?? []).some((mc: any) => mc[0] === "EmailSubmission/set"));
@@ -197,11 +197,20 @@ describe("mail_* ergonomic tools", () => {
 
 	it("mail_send resolves a concrete From against a *@domain wildcard identity (§1a)", async () => {
 		const f = installFetch();
-		const out = parse(await tool("mail_send").run(env(), { to: ["x@y.com"], subject: "s", text: "t", from: "probe@colinxs.com" }));
+		const out = parse(await tool("mail_send").run(env(), { to: ["x@y.com"], subject: "s", text: "t", from: "probe@colinxs.com", force: true }));
 		expect(out).toMatchObject({ sent: true });
 		const body = f.mock.calls.map((c: any) => (c[1]?.body ? JSON.parse(c[1].body) : {})).find((b: any) => (b.methodCalls ?? []).some((mc: any) => mc[0] === "EmailSubmission/set"));
 		const sub = body.methodCalls.find((mc: any) => mc[0] === "EmailSubmission/set")[1].create.sub;
 		expect(sub.identityId).toBe("id2"); // matched the *@colinxs.com wildcard, not a "not verified" throw
+	});
+
+	it("mail_send now STAGES BY DEFAULT (no stage/force) — returns a preview, sends nothing (smart-guard default-on)", async () => {
+		const f = installFetch();
+		const out = parse(await tool("mail_send").run(env(), { to: ["x@y.com"], subject: "Hi", text: "yo" }));
+		expect(out).toMatchObject({ staged: true, kind: "mail_send" });
+		expect(out.commit_token).toBeTruthy();
+		const submitted = f.mock.calls.some((c: any) => c[1]?.body && JSON.parse(c[1].body).methodCalls?.some((mc: any) => mc[0] === "EmailSubmission/set"));
+		expect(submitted).toBe(false); // default stage performed no submission
 	});
 
 	it("mail_send stage:true previews with a commit_token and sends NOTHING; commit sends", async () => {
@@ -218,7 +227,7 @@ describe("mail_* ergonomic tools", () => {
 
 	it("mail_send with send_at SCHEDULES via FUTURERELEASE (HOLDFOR envelope + explicit rcptTo)", async () => {
 		const f = installFetch();
-		const out = parse(await tool("mail_send").run(env(), { to: ["x@y.com"], cc: ["c@y.com"], subject: "Later", text: "yo", send_at: "2999-01-01T00:00:00Z" }));
+		const out = parse(await tool("mail_send").run(env(), { to: ["x@y.com"], cc: ["c@y.com"], subject: "Later", text: "yo", send_at: "2999-01-01T00:00:00Z", force: true }));
 		expect(out).toMatchObject({ scheduled: true, submissionId: "sub-1", send_at: "2999-01-01T00:00:00Z" });
 		const body = f.mock.calls.map((c: any) => (c[1]?.body ? JSON.parse(c[1].body) : {})).find((b: any) => (b.methodCalls ?? []).some((mc: any) => mc[0] === "EmailSubmission/set"));
 		const sub = body.methodCalls.find((mc: any) => mc[0] === "EmailSubmission/set")[1].create.sub;
@@ -259,7 +268,7 @@ describe("mail_* ergonomic tools", () => {
 
 	it("mail_send mode=reply threads (In-Reply-To/References), derives Re: subject + recipient, quotes", async () => {
 		const draftOf = installReplyFetch(SRC);
-		const out = parse(await tool("mail_send").run(env(), { mode: "reply", reply_to: "e1", text: "my answer" }));
+		const out = parse(await tool("mail_send").run(env(), { mode: "reply", reply_to: "e1", text: "my answer", force: true }));
 		expect(out).toMatchObject({ sent: true });
 		const d = draftOf();
 		expect(d.inReplyTo).toEqual(["<orig@site>"]);
@@ -273,7 +282,7 @@ describe("mail_* ergonomic tools", () => {
 
 	it("mail_send mode=reply-all adds the other recipients to Cc, excluding self", async () => {
 		const draftOf = installReplyFetch(SRC);
-		await tool("mail_send").run(env(), { mode: "reply-all", reply_to: "e1", text: "hi all" });
+		await tool("mail_send").run(env(), { mode: "reply-all", reply_to: "e1", text: "hi all", force: true });
 		const d = draftOf();
 		expect(d.to).toEqual([{ email: "boss@corp.com" }]);
 		expect(d.cc).toEqual([{ email: "team@corp.com" }]); // original Cc kept; me@fastmail.com (self) dropped
@@ -281,7 +290,7 @@ describe("mail_* ergonomic tools", () => {
 
 	it("mail_send mode=forward prefixes Fwd:, needs explicit to, includes the forwarded block, no threading", async () => {
 		const draftOf = installReplyFetch(SRC);
-		const out = parse(await tool("mail_send").run(env(), { mode: "forward", reply_to: "e1", to: ["fwd@x.com"], text: "fyi" }));
+		const out = parse(await tool("mail_send").run(env(), { mode: "forward", reply_to: "e1", to: ["fwd@x.com"], text: "fyi", force: true }));
 		expect(out).toMatchObject({ sent: true });
 		const d = draftOf();
 		expect(d.subject).toBe("Fwd: Question");
@@ -293,7 +302,7 @@ describe("mail_* ergonomic tools", () => {
 
 	it("mail_send reply already tagged Re: doesn't double-prefix", async () => {
 		const draftOf = installReplyFetch({ ...SRC, subject: "Re: Question" });
-		await tool("mail_send").run(env(), { mode: "reply", reply_to: "e1", text: "ok" });
+		await tool("mail_send").run(env(), { mode: "reply", reply_to: "e1", text: "ok", force: true });
 		expect(draftOf().subject).toBe("Re: Question");
 	});
 
@@ -313,7 +322,7 @@ describe("mail_* ergonomic tools", () => {
 
 	it("mail_schedule schedules via FUTURERELEASE (sendAt → send_at)", async () => {
 		installFetch();
-		const out = parse(await tool("mail_schedule").run(env(), { to: ["x@y.com"], subject: "s", text: "t", sendAt: "2999-01-01T00:00:00Z" }));
+		const out = parse(await tool("mail_schedule").run(env(), { to: ["x@y.com"], subject: "s", text: "t", sendAt: "2999-01-01T00:00:00Z", force: true }));
 		expect(out).toMatchObject({ scheduled: true, send_at: "2999-01-01T00:00:00Z" });
 	});
 

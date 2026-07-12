@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { commit, stage, staged } from "./stage";
+import { commit, conscience, stage, STAGE_KINDS, staged } from "./stage";
 
 const fakeKV = () => {
 	const s = new Map<string, string>();
@@ -29,24 +29,82 @@ describe("stage-then-commit", () => {
 		await expect(commit(env, "mail_send", s.commit_token, { id: "1" })).rejects.toThrow(/staged for 'cal_delete'/);
 	});
 
-	it("staged() dispatches: stage→preview, token→mutate, neither→mutate", async () => {
+	it("staged() dispatches: stage→preview, token→mutate (an annotated irreversible kind)", async () => {
 		const env = { OAUTH_KV: fakeKV() } as any;
 		const mutate = vi.fn(async () => "DONE");
 		const p = { x: 1 };
 
-		const stageOut = await staged(env, "op", { stage: true }, p, { preview: "y" }, mutate);
+		const stageOut = await staged(env, "mail_send", { stage: true }, p, { preview: "y" }, mutate);
 		expect("stageResult" in stageOut && stageOut.stageResult.staged).toBe(true);
 		expect(mutate).not.toHaveBeenCalled(); // stage never mutates
 
 		const token = (stageOut as any).stageResult.commit_token;
-		const commitOut = await staged(env, "op", { commit_token: token }, p, {}, mutate);
+		const commitOut = await staged(env, "mail_send", { commit_token: token }, p, {}, mutate);
 		expect("result" in commitOut && commitOut.result).toBe("DONE");
 		expect(mutate).toHaveBeenCalledTimes(1);
+	});
 
-		mutate.mockClear();
-		const directOut = await staged(env, "op", {}, p, {}, mutate); // opt-out → direct mutate
-		expect("result" in directOut && directOut.result).toBe("DONE");
+	// The load-bearing regression: staging is ANNOTATION-DRIVEN, default-on, with ZERO per-verb
+	// wiring. Register a brand-new irreversible kind and prove `staged()` with default args
+	// (no stage/force/commit_token) auto-stages and never mutates — nothing about this kind
+	// exists anywhere but the STAGE_KINDS entry.
+	it("a freshly-annotated irreversible kind auto-stages with no per-verb wiring", async () => {
+		const env = { OAUTH_KV: fakeKV() } as any;
+		const kind = "__test_new_irreversible";
+		STAGE_KINDS[kind] = { irreversible: true };
+		try {
+			const mutate = vi.fn(async () => "DONE");
+			const out = await staged(env, kind, {}, { z: 1 }, { preview: "would do it" }, mutate);
+			expect("stageResult" in out && out.stageResult.staged).toBe(true); // default args → auto-stage
+			expect("stageResult" in out && out.stageResult.commit_token).toMatch(/^[0-9a-f]{36}$/);
+			expect(mutate).not.toHaveBeenCalled();
+		} finally {
+			delete STAGE_KINDS[kind];
+		}
+	});
+
+	it("an UNANNOTATED kind fails closed on default args — throws, never mutates", async () => {
+		const env = { OAUTH_KV: fakeKV() } as any;
+		const mutate = vi.fn(async () => "DONE");
+		await expect(staged(env, "op_not_registered", {}, { x: 1 }, {}, mutate)).rejects.toThrow(/no STAGE_KINDS annotation|must never auto-run/);
+		expect(mutate).not.toHaveBeenCalled(); // fail-closed: a forgotten annotation never auto-runs
+	});
+
+	it("an irreversible kind + force:true one-shots the mutate and mints NO token", async () => {
+		const kv = fakeKV();
+		const env = { OAUTH_KV: kv } as any;
+		const mutate = vi.fn(async () => "SENT");
+		const out = await staged(env, "cal_delete", { force: true }, { href: "/x" }, { preview: "p" }, mutate);
+		expect("result" in out && out.result).toBe("SENT");
 		expect(mutate).toHaveBeenCalledTimes(1);
+		expect([...kv.s.keys()]).toHaveLength(0); // force never stages
+	});
+
+	it("an irreversible:false (reversible) kind auto-mutates on default args", async () => {
+		const kv = fakeKV();
+		const env = { OAUTH_KV: kv } as any;
+		const mutate = vi.fn(async () => "CREATED");
+		const out = await staged(env, "contact_create", {}, { name: "x" }, { preview: "p" }, mutate);
+		expect("result" in out && out.result).toBe("CREATED"); // reversible → just run it
+		expect(mutate).toHaveBeenCalledTimes(1);
+		expect([...kv.s.keys()]).toHaveLength(0); // nothing staged
+	});
+
+	it("the conscience advisory rides into a staged mail_send preview for a typo'd recipient", async () => {
+		const env = { OAUTH_KV: fakeKV() } as any;
+		const mutate = vi.fn(async () => "SENT");
+		const payload = { to: ["boss@example.cmo"], subject: "hi", text: "hello" };
+		const out = await staged(env, "mail_send", { stage: true }, payload, { preview: "p" }, mutate);
+		const adv = ("stageResult" in out && out.stageResult.advisory) || [];
+		expect(adv.join(" ")).toMatch(/typo/i);
+		expect(mutate).not.toHaveBeenCalled();
+	});
+
+	it("conscience flags bulk recipients, missing attachment, and phishing tone; is quiet on a clean send", () => {
+		expect(conscience("mail_send", { to: Array.from({ length: 12 }, (_, i) => `u${i}@x.com`) }).join(" ")).toMatch(/recipients/i);
+		expect(conscience("mail_send", { to: ["a@b.com"], text: "see attached" }).join(" ")).toMatch(/attach/i);
+		expect(conscience("mail_send", { to: ["a@b.com"], subject: "URGENT wire transfer needed" }).join(" ")).toMatch(/phishing|urgent-money/i);
+		expect(conscience("mail_send", { to: ["a@b.com"], subject: "lunch?", text: "want to grab lunch" })).toHaveLength(0);
 	});
 
 	it("force:true bypasses the guard — direct mutate, no token minted or consumed", async () => {

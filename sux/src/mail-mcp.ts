@@ -40,6 +40,10 @@ function resultFor(resp: { methodResponses: any[] }, method: string, callId?: st
 
 const clamp = (v: unknown, lo: number, hi: number, dflt: number): number => Math.min(hi, Math.max(lo, Number(v) || dflt));
 
+/** The stage-guard arg triplet, threaded uniformly at every staged() call site. `force` finally
+ *  rides through (was dropped everywhere), so the one-shot `!`-override is live for every mail verb. */
+const gateArgs = (a: any) => ({ stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined, force: a?.force === true });
+
 /** Reduce an Email object to a token-cheap reference (never the body). */
 // RFC 8620 §5.1: Foo/get MAY return records in any order, so it doesn't preserve the
 // Email/query sort. Re-sort the hydrated list by receivedAt (ISO-8601 → lexicographic works).
@@ -193,7 +197,7 @@ async function calPatch(env: RtEnv, a: any, comp: "VEVENT" | "VTODO"): Promise<T
 		return { updated: true, href, etag: r.etag, changed };
 	};
 	try {
-		const out = await staged(env, kind, { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, payload, preview, mutate);
+		const out = await staged(env, kind, gateArgs(a), payload, preview, mutate);
 		return ok("stageResult" in out ? out.stageResult : out.result);
 	} catch (e) {
 		if (e instanceof NotFound) return failWith("not_found", errMsg(e));
@@ -471,7 +475,7 @@ const TOOLS: MailTool[] = [
 	},
 	{
 		name: "mail_send",
-		description: "Send an email. Composes the draft, submits it, and files it in Sent. Provide to/subject/text for a fresh message; cc/bcc/from optional. Reply or forward into an existing thread with `mode` (reply/reply-all/forward) + `reply_to` (the email id) — threading headers, the Re:/Fwd: subject, recipients, and the quoted original are filled in. Dispatches immediately UNLESS you pass `send_at` (an ISO-8601 date-time), which SCHEDULES it via SMTP FUTURERELEASE — held until then, cancelable with mail_unschedule. Review before sending; there's no undo once dispatched.",
+		description: "Send an email. Composes the draft, submits it, and files it in Sent. Provide to/subject/text for a fresh message; cc/bcc/from optional. Reply or forward into an existing thread with `mode` (reply/reply-all/forward) + `reply_to` (the email id) — threading headers, the Re:/Fwd: subject, recipients, and the quoted original are filled in. Dispatches immediately UNLESS you pass `send_at` (an ISO-8601 date-time), which SCHEDULES it via SMTP FUTURERELEASE — held until then, cancelable with mail_unschedule. STAGES A PREVIEW BY DEFAULT (nothing is sent) — re-call with the commit_token to send, or pass force:true to send in one shot. There's no undo once dispatched.",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -488,6 +492,7 @@ const TOOLS: MailTool[] = [
 				send_at: { type: "string", description: "Schedule the send for this ISO-8601 date-time (e.g. '2026-07-11T09:00:00Z'). Held via FUTURERELEASE; omit to send now." },
 				stage: { type: "boolean", description: "Preview only: returns {preview, commit_token} and sends NOTHING. Re-call with the token to commit." },
 				commit_token: { type: "string", description: "Commit a previously staged send (the payload must match what was staged)." },
+				force: { type: "boolean", description: "Send in one shot, skipping the default stage (the ! override). Without it, mail_send stages a preview first." },
 				attachments: ATTACHMENTS_SCHEMA,
 			},
 		},
@@ -495,8 +500,8 @@ const TOOLS: MailTool[] = [
 	},
 	{
 		name: "mail_schedule",
-		description: "Schedule an email for future delivery (SMTP FUTURERELEASE). Like mail_send but `sendAt` (ISO-8601) is required — the message is held until then, cancelable with mail_unschedule. Routes through stage-then-commit (stage:true previews, commit_token commits).",
-		inputSchema: { type: "object", additionalProperties: false, required: ["to", "subject", "text", "sendAt"], properties: { to: { type: "array", items: { type: "string" } }, cc: { type: "array", items: { type: "string" } }, bcc: { type: "array", items: { type: "string" } }, subject: { type: "string" }, text: { type: "string" }, from: { type: "string", description: "Exact identity or any address at an owned *@domain." }, sendAt: { type: "string", description: "ISO-8601 date-time to release the message." }, attachments: ATTACHMENTS_SCHEMA, stage: { type: "boolean" }, commit_token: { type: "string" } } },
+		description: "Schedule an email for future delivery (SMTP FUTURERELEASE). Like mail_send but `sendAt` (ISO-8601) is required — the message is held until then, cancelable with mail_unschedule. Stages a preview by default; re-call with the commit_token to schedule, or pass force:true to schedule in one shot.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["to", "subject", "text", "sendAt"], properties: { to: { type: "array", items: { type: "string" } }, cc: { type: "array", items: { type: "string" } }, bcc: { type: "array", items: { type: "string" } }, subject: { type: "string" }, text: { type: "string" }, from: { type: "string", description: "Exact identity or any address at an owned *@domain." }, sendAt: { type: "string", description: "ISO-8601 date-time to release the message." }, attachments: ATTACHMENTS_SCHEMA, stage: { type: "boolean" }, commit_token: { type: "string" }, force: { type: "boolean", description: "Skip staging and apply in one shot (the ! override). By default this verb stages a preview first." } } },
 		run: async (env, a) => draftOrSend(env, { ...a, send_at: a?.sendAt }, true),
 	},
 	{
@@ -561,7 +566,7 @@ const TOOLS: MailTool[] = [
 	},
 	{
 		name: "mail_masked",
-		description: "Fastmail Masked Email — list, create (forDomain + description), or transition an address: disable (stop delivery, keep it), enable (re-activate), delete (soft-delete → recoverable in Fastmail). create + delete route through stage-then-commit. A privacy superpower a normal mail tool can't reach.",
+		description: "Fastmail Masked Email — list, create (forDomain + description), or transition an address: disable (stop delivery, keep it), enable (re-activate), delete (soft-delete → recoverable in Fastmail). create applies directly (reversible); delete stages a preview by default — commit_token or force:true to apply it. A privacy superpower a normal mail tool can't reach.",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -572,6 +577,7 @@ const TOOLS: MailTool[] = [
 				description: { type: "string", description: "A note to remember what it's for (create)." },
 				stage: { type: "boolean", description: "create/delete: preview + commit_token, no write." },
 				commit_token: { type: "string" },
+				force: { type: "boolean", description: "delete: apply in one shot, skipping the default stage (the ! override)." },
 			},
 		},
 		run: async (env, a) => {
@@ -584,7 +590,7 @@ const TOOLS: MailTool[] = [
 						if (!created) throw new Error(`MaskedEmail create failed: ${JSON.stringify(resultFor(resp, "MaskedEmail/set")?.notCreated ?? {})}`);
 						return { created: { id: created.id, email: created.email, forDomain: created.forDomain, description: created.description } };
 					};
-					const out = await staged(env, "mail_masked_create", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, { forDomain: a?.forDomain ?? null, description: a?.description ?? null }, { action: "create masked address", forDomain: a?.forDomain, description: a?.description }, mutate);
+					const out = await staged(env, "mail_masked_create", gateArgs(a), { forDomain: a?.forDomain ?? null, description: a?.description ?? null }, { action: "create masked address", forDomain: a?.forDomain, description: a?.description }, mutate);
 					return ok("stageResult" in out ? out.stageResult : out.result);
 				}
 				if (action === "disable" || action === "enable" || action === "delete") {
@@ -598,7 +604,7 @@ const TOOLS: MailTool[] = [
 						return { id, state };
 					};
 					if (action === "delete") {
-						const out = await staged(env, "mail_masked_delete", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, { id, state }, { action: "soft-delete masked address", id }, mutate);
+						const out = await staged(env, "mail_masked_delete", gateArgs(a), { id, state }, { action: "soft-delete masked address", id }, mutate);
 						return ok("stageResult" in out ? out.stageResult : out.result);
 					}
 					return ok(await mutate());
@@ -614,8 +620,8 @@ const TOOLS: MailTool[] = [
 	{
 		name: "mail_vacation",
 		description:
-			"Get or set the Fastmail vacation auto-responder. action:'get' (default) returns the current responder; action:'set' updates it (enabled + subject + text; optional fromDate/toDate ISO-8601) and routes through stage-then-commit. Needs a FASTMAIL_TOKEN scoped for vacationresponse.",
-		inputSchema: { type: "object", additionalProperties: false, properties: { action: { type: "string", enum: ["get", "set"] }, enabled: { type: "boolean" }, subject: { type: "string" }, text: { type: "string", description: "Plain-text auto-reply body." }, fromDate: { type: "string", description: "ISO-8601 start (optional)." }, toDate: { type: "string", description: "ISO-8601 end (optional)." }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
+			"Get or set the Fastmail vacation auto-responder. action:'get' (default) returns the current responder; action:'set' updates it (enabled + subject + text; optional fromDate/toDate ISO-8601). Stages a preview by default — commit_token or force:true to apply. Needs a FASTMAIL_TOKEN scoped for vacationresponse.",
+		inputSchema: { type: "object", additionalProperties: false, properties: { action: { type: "string", enum: ["get", "set"] }, enabled: { type: "boolean" }, subject: { type: "string" }, text: { type: "string", description: "Plain-text auto-reply body." }, fromDate: { type: "string", description: "ISO-8601 start (optional)." }, toDate: { type: "string", description: "ISO-8601 end (optional)." }, stage: { type: "boolean" }, commit_token: { type: "string" }, force: { type: "boolean", description: "Skip staging and apply in one shot (the ! override). By default this verb stages a preview first." } } },
 		run: async (env, a) => {
 			const gate = await scopeGate(env, "vacationresponse");
 			if (gate) return failWith("not_configured", gate);
@@ -632,7 +638,7 @@ const TOOLS: MailTool[] = [
 					if (!Object.prototype.hasOwnProperty.call(setR?.updated ?? {}, "singleton")) throw new Error(`vacation set failed: ${JSON.stringify(setR?.notUpdated ?? {})}`);
 					return { vacation: patch, updated: true };
 				};
-				const out = await staged(env, "mail_vacation", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, patch, { action: "set vacation responder", ...patch }, mutate);
+				const out = await staged(env, "mail_vacation", gateArgs(a), patch, { action: "set vacation responder", ...patch }, mutate);
 				return ok("stageResult" in out ? out.stageResult : out.result);
 			} catch (e) {
 				return fail(errMsg(e));
@@ -693,8 +699,8 @@ const TOOLS: MailTool[] = [
 	},
 	{
 		name: "contact_create",
-		description: "Create a contact. Provide firstName/lastName/company + emails[]/phones[] (plain strings). Routes through stage-then-commit. Needs a FASTMAIL_TOKEN scoped for contacts.",
-		inputSchema: { type: "object", additionalProperties: false, properties: { firstName: { type: "string" }, lastName: { type: "string" }, company: { type: "string" }, emails: { type: "array", items: { type: "string" } }, phones: { type: "array", items: { type: "string" } }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
+		description: "Create a contact. Provide firstName/lastName/company + emails[]/phones[] (plain strings). Applies directly (reversible); pass stage:true to preview first. Needs a FASTMAIL_TOKEN scoped for contacts.",
+		inputSchema: { type: "object", additionalProperties: false, properties: { firstName: { type: "string" }, lastName: { type: "string" }, company: { type: "string" }, emails: { type: "array", items: { type: "string" } }, phones: { type: "array", items: { type: "string" } }, stage: { type: "boolean" }, commit_token: { type: "string" }, force: { type: "boolean", description: "Skip staging and apply in one shot (the ! override). By default this verb stages a preview first." } } },
 		run: async (env, a) => {
 			const gate = await scopeGate(env, "contacts");
 			if (gate) return failWith("not_configured", gate);
@@ -707,7 +713,7 @@ const TOOLS: MailTool[] = [
 					if (!created) throw new Error(`contact create failed: ${JSON.stringify(resultFor(resp, "ContactCard/set")?.notCreated ?? {})}`);
 					return { created: { id: created.id, ...shapeContact({ ...card, id: created.id }) } };
 				};
-				const out = await staged(env, "contact_create", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, card, { action: "create contact", ...card }, mutate);
+				const out = await staged(env, "contact_create", gateArgs(a), card, { action: "create contact", ...card }, mutate);
 				return ok("stageResult" in out ? out.stageResult : out.result);
 			} catch (e) {
 				return fail(errMsg(e));
@@ -716,8 +722,8 @@ const TOOLS: MailTool[] = [
 	},
 	{
 		name: "contact_update",
-		description: "Update a contact by id — pass only the fields to change (firstName/lastName/company/emails[]/phones[]). Routes through stage-then-commit. Needs a FASTMAIL_TOKEN scoped for contacts.",
-		inputSchema: { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string" }, firstName: { type: "string" }, lastName: { type: "string" }, company: { type: "string" }, emails: { type: "array", items: { type: "string" } }, phones: { type: "array", items: { type: "string" } }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
+		description: "Update a contact by id — pass only the fields to change (firstName/lastName/company/emails[]/phones[]). Applies directly (reversible); pass stage:true to preview first. Needs a FASTMAIL_TOKEN scoped for contacts.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string" }, firstName: { type: "string" }, lastName: { type: "string" }, company: { type: "string" }, emails: { type: "array", items: { type: "string" } }, phones: { type: "array", items: { type: "string" } }, stage: { type: "boolean" }, commit_token: { type: "string" }, force: { type: "boolean", description: "Skip staging and apply in one shot (the ! override). By default this verb stages a preview first." } } },
 		run: async (env, a) => {
 			const gate = await scopeGate(env, "contacts");
 			if (gate) return failWith("not_configured", gate);
@@ -732,7 +738,7 @@ const TOOLS: MailTool[] = [
 					if (!Object.prototype.hasOwnProperty.call(setR?.updated ?? {}, id)) throw new Error(`contact update failed: ${JSON.stringify(setR?.notUpdated ?? {})}`);
 					return { updated: id, patch };
 				};
-				const out = await staged(env, "contact_update", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, { id, patch }, { action: "update contact", id, ...patch }, mutate);
+				const out = await staged(env, "contact_update", gateArgs(a), { id, patch }, { action: "update contact", id, ...patch }, mutate);
 				return ok("stageResult" in out ? out.stageResult : out.result);
 			} catch (e) {
 				return fail(errMsg(e));
@@ -741,8 +747,8 @@ const TOOLS: MailTool[] = [
 	},
 	{
 		name: "contact_delete",
-		description: "Delete a contact by id (permanent). Routes through stage-then-commit and needs allow_destroy at the JMAP layer. Needs a FASTMAIL_TOKEN scoped for contacts.",
-		inputSchema: { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string" }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
+		description: "Delete a contact by id (permanent). Stages a preview by default — commit_token or force:true to apply — and needs allow_destroy at the JMAP layer. Needs a FASTMAIL_TOKEN scoped for contacts.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string" }, stage: { type: "boolean" }, commit_token: { type: "string" }, force: { type: "boolean", description: "Skip staging and apply in one shot (the ! override). By default this verb stages a preview first." } } },
 		run: async (env, a) => {
 			const gate = await scopeGate(env, "contacts");
 			if (gate) return failWith("not_configured", gate);
@@ -755,7 +761,7 @@ const TOOLS: MailTool[] = [
 					if (!(setR?.destroyed ?? []).includes(id)) throw new Error(`contact delete failed: ${JSON.stringify(setR?.notDestroyed ?? {})}`);
 					return { deleted: id };
 				};
-				const out = await staged(env, "contact_delete", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, { id }, { action: "delete contact (permanent)", id }, mutate);
+				const out = await staged(env, "contact_delete", gateArgs(a), { id }, { action: "delete contact (permanent)", id }, mutate);
 				return ok("stageResult" in out ? out.stageResult : out.result);
 			} catch (e) {
 				return fail(errMsg(e));
@@ -794,8 +800,8 @@ const TOOLS: MailTool[] = [
 	},
 	{
 		name: "cal_create",
-		description: "Create a calendar event. Provide summary + start (ISO-8601; a date-only value is all-day), optional end/description/location and `calendar` (href). Routes through stage-then-commit. Needs CalDAV credentials.",
-		inputSchema: { type: "object", additionalProperties: false, required: ["summary", "start"], properties: { calendar: { type: "string" }, summary: { type: "string" }, start: { type: "string", description: "ISO-8601 start; date-only (YYYY-MM-DD) = all-day." }, end: { type: "string" }, description: { type: "string" }, location: { type: "string" }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
+		description: "Create a calendar event. Provide summary + start (ISO-8601; a date-only value is all-day), optional end/description/location and `calendar` (href). Applies directly (reversible); pass stage:true to preview first. Needs CalDAV credentials.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["summary", "start"], properties: { calendar: { type: "string" }, summary: { type: "string" }, start: { type: "string", description: "ISO-8601 start; date-only (YYYY-MM-DD) = all-day." }, end: { type: "string" }, description: { type: "string" }, location: { type: "string" }, stage: { type: "boolean" }, commit_token: { type: "string" }, force: { type: "boolean", description: "Skip staging and apply in one shot (the ! override). By default this verb stages a preview first." } } },
 		run: async (env, a) => {
 			if (!hasCalDav(env)) return failWith("not_configured", CALDAV_NOT_CONFIGURED);
 			if (!a?.summary || !a?.start) return failWith("bad_input", "cal_create needs summary and start.");
@@ -810,7 +816,7 @@ const TOOLS: MailTool[] = [
 					if (!r.ok) throw new Error(`event create failed: HTTP ${r.status} ${r.text.slice(0, 200)}`);
 					return { created: true, uid, href, etag: r.etag };
 				};
-				const out = await staged(env, "cal_create", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, payload, { action: "create event", ...payload }, mutate);
+				const out = await staged(env, "cal_create", gateArgs(a), payload, { action: "create event", ...payload }, mutate);
 				return ok("stageResult" in out ? out.stageResult : out.result);
 			} catch (e) {
 				return fail(errMsg(e));
@@ -819,26 +825,26 @@ const TOOLS: MailTool[] = [
 	},
 	{
 		name: "cal_update",
-		description: "Update a calendar event by its href (from cal_events) — pass only the fields to change (summary/start/end/description/location). The existing VEVENT is fetched and rewritten in place, so its UID, alarms, and any timezone/all-day encoding survive. Pass etag to guard against a concurrent edit. Routes through stage-then-commit. Needs CalDAV credentials.",
-		inputSchema: { type: "object", additionalProperties: false, required: ["href"], properties: { href: { type: "string", description: "Event href from cal_events." }, summary: { type: "string" }, start: { type: "string", description: "ISO-8601 start; date-only (YYYY-MM-DD) = all-day." }, end: { type: "string" }, description: { type: "string" }, location: { type: "string" }, etag: { type: "string", description: "If set, update only if the object still matches (If-Match)." }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
+		description: "Update a calendar event by its href (from cal_events) — pass only the fields to change (summary/start/end/description/location). The existing VEVENT is fetched and rewritten in place, so its UID, alarms, and any timezone/all-day encoding survive. Pass etag to guard against a concurrent edit. Applies directly (reversible); pass stage:true to preview first. Needs CalDAV credentials.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["href"], properties: { href: { type: "string", description: "Event href from cal_events." }, summary: { type: "string" }, start: { type: "string", description: "ISO-8601 start; date-only (YYYY-MM-DD) = all-day." }, end: { type: "string" }, description: { type: "string" }, location: { type: "string" }, etag: { type: "string", description: "If set, update only if the object still matches (If-Match)." }, stage: { type: "boolean" }, commit_token: { type: "string" }, force: { type: "boolean", description: "Skip staging and apply in one shot (the ! override). By default this verb stages a preview first." } } },
 		run: async (env, a) => calPatch(env, a, "VEVENT"),
 	},
 	{
 		name: "task_update",
-		description: "Update a task (VTODO) by its href (from task_list) — pass only the fields to change (summary/due/description/status). The existing VTODO is fetched and rewritten in place (UID + other properties preserved). To mark a task done prefer task_complete. Routes through stage-then-commit. Needs CalDAV credentials.",
-		inputSchema: { type: "object", additionalProperties: false, required: ["href"], properties: { href: { type: "string", description: "Task href from task_list." }, summary: { type: "string" }, due: { type: "string", description: "ISO-8601 due; date-only = all-day." }, description: { type: "string" }, status: { type: "string", enum: ["NEEDS-ACTION", "IN-PROCESS", "COMPLETED", "CANCELLED"], description: "VTODO status." }, etag: { type: "string" }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
+		description: "Update a task (VTODO) by its href (from task_list) — pass only the fields to change (summary/due/description/status). The existing VTODO is fetched and rewritten in place (UID + other properties preserved). To mark a task done prefer task_complete. Applies directly (reversible); pass stage:true to preview first. Needs CalDAV credentials.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["href"], properties: { href: { type: "string", description: "Task href from task_list." }, summary: { type: "string" }, due: { type: "string", description: "ISO-8601 due; date-only = all-day." }, description: { type: "string" }, status: { type: "string", enum: ["NEEDS-ACTION", "IN-PROCESS", "COMPLETED", "CANCELLED"], description: "VTODO status." }, etag: { type: "string" }, stage: { type: "boolean" }, commit_token: { type: "string" }, force: { type: "boolean", description: "Skip staging and apply in one shot (the ! override). By default this verb stages a preview first." } } },
 		run: async (env, a) => calPatch(env, a, "VTODO"),
 	},
 	{
 		name: "task_complete",
-		description: "Mark a task (VTODO) complete by its href (from task_list) — sets STATUS:COMPLETED, a COMPLETED timestamp, and PERCENT-COMPLETE:100, preserving the rest of the task. Pass etag to guard a concurrent edit. Routes through stage-then-commit. Needs CalDAV credentials.",
-		inputSchema: { type: "object", additionalProperties: false, required: ["href"], properties: { href: { type: "string", description: "Task href from task_list." }, etag: { type: "string" }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
+		description: "Mark a task (VTODO) complete by its href (from task_list) — sets STATUS:COMPLETED, a COMPLETED timestamp, and PERCENT-COMPLETE:100, preserving the rest of the task. Pass etag to guard a concurrent edit. Applies directly (reversible); pass stage:true to preview first. Needs CalDAV credentials.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["href"], properties: { href: { type: "string", description: "Task href from task_list." }, etag: { type: "string" }, stage: { type: "boolean" }, commit_token: { type: "string" }, force: { type: "boolean", description: "Skip staging and apply in one shot (the ! override). By default this verb stages a preview first." } } },
 		run: async (env, a) => calPatch(env, { ...a, status: "COMPLETED", _complete: true }, "VTODO"),
 	},
 	{
 		name: "cal_delete",
-		description: "Delete a calendar event or task by its href (from cal_events/task_list). Pass etag to guard against a concurrent edit. Routes through stage-then-commit. Needs CalDAV credentials.",
-		inputSchema: { type: "object", additionalProperties: false, required: ["href"], properties: { href: { type: "string", description: "Object href from cal_events/task_list." }, etag: { type: "string", description: "If set, delete only if the object still matches (If-Match)." }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
+		description: "Delete a calendar event or task by its href (from cal_events/task_list). Pass etag to guard against a concurrent edit. Stages a preview by default — commit_token or force:true to apply. Needs CalDAV credentials.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["href"], properties: { href: { type: "string", description: "Object href from cal_events/task_list." }, etag: { type: "string", description: "If set, delete only if the object still matches (If-Match)." }, stage: { type: "boolean" }, commit_token: { type: "string" }, force: { type: "boolean", description: "Skip staging and apply in one shot (the ! override). By default this verb stages a preview first." } } },
 		run: async (env, a) => {
 			if (!hasCalDav(env)) return failWith("not_configured", CALDAV_NOT_CONFIGURED);
 			if (!a?.href) return failWith("bad_input", "cal_delete requires the object `href`.");
@@ -849,7 +855,7 @@ const TOOLS: MailTool[] = [
 					if (!r.ok && r.status !== 404) throw new Error(`delete failed: HTTP ${r.status}`);
 					return { deleted: href, ...(r.status === 404 ? { note: "already gone" } : {}) };
 				};
-				const out = await staged(env, "cal_delete", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, { href, etag: a?.etag ?? null }, { action: "delete calendar object", href }, mutate);
+				const out = await staged(env, "cal_delete", gateArgs(a), { href, etag: a?.etag ?? null }, { action: "delete calendar object", href }, mutate);
 				return ok("stageResult" in out ? out.stageResult : out.result);
 			} catch (e) {
 				return fail(errMsg(e));
@@ -873,8 +879,8 @@ const TOOLS: MailTool[] = [
 	},
 	{
 		name: "task_create",
-		description: "Create a task (VTODO). Provide summary, optional due (ISO-8601)/description and `calendar` (task-list href). Routes through stage-then-commit. Needs CalDAV credentials.",
-		inputSchema: { type: "object", additionalProperties: false, required: ["summary"], properties: { calendar: { type: "string" }, summary: { type: "string" }, due: { type: "string" }, description: { type: "string" }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
+		description: "Create a task (VTODO). Provide summary, optional due (ISO-8601)/description and `calendar` (task-list href). Applies directly (reversible); pass stage:true to preview first. Needs CalDAV credentials.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["summary"], properties: { calendar: { type: "string" }, summary: { type: "string" }, due: { type: "string" }, description: { type: "string" }, stage: { type: "boolean" }, commit_token: { type: "string" }, force: { type: "boolean", description: "Skip staging and apply in one shot (the ! override). By default this verb stages a preview first." } } },
 		run: async (env, a) => {
 			if (!hasCalDav(env)) return failWith("not_configured", CALDAV_NOT_CONFIGURED);
 			if (!a?.summary) return failWith("bad_input", "task_create needs a summary.");
@@ -889,7 +895,7 @@ const TOOLS: MailTool[] = [
 					if (!r.ok) throw new Error(`task create failed: HTTP ${r.status} ${r.text.slice(0, 200)}`);
 					return { created: true, uid, href, etag: r.etag };
 				};
-				const out = await staged(env, "task_create", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, payload, { action: "create task", ...payload }, mutate);
+				const out = await staged(env, "task_create", gateArgs(a), payload, { action: "create task", ...payload }, mutate);
 				return ok("stageResult" in out ? out.stageResult : out.result);
 			} catch (e) {
 				return fail(errMsg(e));
@@ -1065,7 +1071,7 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 		const attDesc = attachDescriptors(atts);
 		const payload = { from: identity.email, to, cc: a?.cc ?? null, bcc: a?.bcc ?? null, subject: String(subject), text: bodyText, send_at: a?.send_at ?? null, attachments: attDesc };
 		const preview = { action: holdFor > 0 ? "scheduled_send" : "send", from: identity.email, to, ...(a?.cc ? { cc: a.cc } : {}), ...(a?.bcc ? { bcc: a.bcc } : {}), subject: String(subject), body_chars: bodyText.length, ...(attDesc.length ? { attachments: attDesc } : {}), ...(holdFor > 0 ? { send_at: String(a.send_at) } : {}) };
-		const out = await staged(env, "mail_send", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, payload, preview, doSend);
+		const out = await staged(env, "mail_send", gateArgs(a), payload, preview, doSend);
 		return ok("stageResult" in out ? out.stageResult : out.result);
 	} catch (e) {
 		return fail(errMsg(e));
