@@ -132,7 +132,7 @@ jobs:
             run $CI_RUN_URL). Read the failing job's logs,
             find the ROOT cause, and fix it. This repo's gates (from CLAUDE.md) must all pass:
               npm run type-check · npm test · npm run check:node ·
-              npm run gen:index && npm run docs (commit the regenerated FUNCTIONS.md + index.ts) ·
+              npm run gen:index (commit the regenerated index.ts) ·
               npx wrangler deploy --dry-run --config sux/wrangler.jsonc
             Make the smallest correct change, re-run the gates locally, then commit and push
             to this PR branch. Do NOT touch secrets, do NOT weaken a test to make it pass, and
