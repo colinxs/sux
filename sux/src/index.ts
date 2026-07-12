@@ -368,12 +368,11 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 	return sseResponse({ jsonrpc: "2.0", id, error: { code: -32601, message: `unknown method: ${method}` } });
 }
 
-// Live tool counts per namespace for the discovery manifest — dynamic-imported so
-// the manifest is the only thing that pulls the namespace modules (they stay lazy for
-// the hot RPC path, exactly like the per-path dispatch below).
+// Live tool count for the discovery manifest — dynamic-imported so the manifest is
+// the only thing that pulls the fns module (it stays lazy for the hot RPC path).
 async function connectorCounts(): Promise<Record<string, number>> {
-	const [fns, vault, mail, files] = await Promise.all([import("./fns"), import("./vault-mcp"), import("./mail-mcp"), import("./files-mcp")]);
-	return { "/mcp": fns.FUNCTIONS.length, "/vault/mcp": vault.VAULT_TOOLS.length, "/mail/mcp": mail.MAIL_TOOLS.length, "/files/mcp": files.FILES_TOOLS.length };
+	const fns = await import("./fns");
+	return { "/mcp": fns.FUNCTIONS.length };
 }
 
 // Exported so the authorization/rate-limit gate can be driven directly in tests
@@ -394,38 +393,14 @@ export const rtServer = {
 		const isBodyless = request.method === "GET" || request.method === "HEAD";
 		const bodyText = isBodyless ? undefined : await request.text();
 		const rpc = parseJsonRpc(bodyText);
-		// The vault MCP server (fns/vault tools over the cloud git store) rides the
-		// same OAuth gate at its own path — a second connector, no second provider.
-		// Match a trailing slash too: the OAuth provider authorizes any path that
-		// startsWith('/vault/mcp'), so an exact-only check would let '/vault/mcp/'
-		// silently fall through to the research-tools server (wrong tools, authed).
 		const pathname = new URL(request.url).pathname;
-		// Runtime connector discovery: GET /mcp/connectors self-describes the advertised
-		// connector(s) + tool counts from the one CONNECTORS source (the personal
-		// namespaces are retired from this default view but stay routed below; `?all=1`
-		// surfaces them on purpose). Authenticated (post-gate) — exposes namespace names
-		// + counts, never secrets or tool args.
+		// Runtime connector discovery: GET /mcp/connectors self-describes the connector
+		// + tool count from the one CONNECTORS source. Authenticated (post-gate) — exposes
+		// the namespace name + count, never secrets or tool args.
 		if (isBodyless && (pathname === "/mcp/connectors" || pathname === "/connectors")) {
 			const url = new URL(request.url);
-			const all = url.searchParams.get("all") === "1";
 			const counts = await connectorCounts();
-			return new Response(JSON.stringify(buildManifest(url.origin, counts, { all }), null, 2), { headers: { "content-type": "application/json; charset=utf-8" } });
-		}
-		if (pathname === "/vault/mcp" || pathname.startsWith("/vault/mcp/")) {
-			const { handleVaultRpc } = await import("./vault-mcp");
-			return handleVaultRpc(env, ctx, rpc, bodyText?.length ?? 0);
-		}
-		// The mail MCP server (ergonomic Fastmail tools + the raw jmap escape hatch)
-		// rides the same OAuth gate at its own path — a third connector, no new provider.
-		if (pathname === "/mail/mcp" || pathname.startsWith("/mail/mcp/")) {
-			const { handleMailRpc } = await import("./mail-mcp");
-			return handleMailRpc(env, ctx, rpc, bodyText?.length ?? 0);
-		}
-		// The files MCP server (personal blob workspace over the app-folder dropbox)
-		// — a fourth connector at its own path on the same OAuth gate.
-		if (pathname === "/files/mcp" || pathname.startsWith("/files/mcp/")) {
-			const { handleFilesRpc } = await import("./files-mcp");
-			return handleFilesRpc(env, ctx, rpc, bodyText?.length ?? 0);
+			return new Response(JSON.stringify(buildManifest(url.origin, counts), null, 2), { headers: { "content-type": "application/json; charset=utf-8" } });
 		}
 		// Weighted rate limit: expensive tools (render/Kagi/SerpAPI/Workers AI)
 		// consume extra tokens beyond the base 1 charged above, so a burst of paid

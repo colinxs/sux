@@ -95,50 +95,6 @@ describe("handleRpc (index.ts dispatch)", () => {
 		expect(out.result.tools.length).toBeLessThan(20);
 	});
 
-	it("initialize advertises the prompts capability", async () => {
-		const { kv } = makeKv();
-		const { ctx } = makeCtx();
-		const out = await callRpc(makeEnv(kv), ctx, { jsonrpc: "2.0", id: 4, method: "initialize" });
-		expect(out.result.capabilities.prompts).toEqual({ listChanged: false });
-	});
-
-	it("prompts/list advertises exactly the sux routing prompt", async () => {
-		const { kv } = makeKv();
-		const { ctx } = makeCtx();
-		const out = await callRpc(makeEnv(kv), ctx, { jsonrpc: "2.0", id: 5, method: "prompts/list" });
-		expect(out.result.prompts).toHaveLength(1);
-		expect(out.result.prompts[0].name).toBe("sux");
-		expect(out.result.prompts[0].description).toMatch(/\S/);
-	});
-
-	it("prompts/get sux returns the SKILL body as a user message", async () => {
-		const { kv } = makeKv();
-		const { ctx } = makeCtx();
-		const out = await callRpc(makeEnv(kv), ctx, {
-			jsonrpc: "2.0",
-			id: 6,
-			method: "prompts/get",
-			params: { name: "sux" },
-		});
-		const msg = out.result.messages[0];
-		expect(msg.role).toBe("user");
-		// Grounds the embed in real SKILL content — the front-verb routing guidance.
-		expect(msg.content.text).toContain("front verbs");
-		expect(msg.content.text).toContain("fn({name, args})");
-	});
-
-	it("prompts/get with an unknown name → JSON-RPC -32602", async () => {
-		const { kv } = makeKv();
-		const { ctx } = makeCtx();
-		const out = await callRpc(makeEnv(kv), ctx, {
-			jsonrpc: "2.0",
-			id: 7,
-			method: "prompts/get",
-			params: { name: "nope" },
-		});
-		expect(out.error.code).toBe(-32602);
-	});
-
 	it("unknown tool name → JSON-RPC error -32601", async () => {
 		const { kv } = makeKv();
 		const { ctx } = makeCtx();
@@ -581,14 +537,15 @@ describe("summarize-before-return meta-arg", () => {
 	});
 });
 
-// The runtime discovery manifest + the dormant personal-namespace routes live in
-// rtServer.fetch (upstream of handleRpc), so drive them through the gate directly.
-describe("rtServer.fetch — connector manifest + dormant namespace routes", () => {
+// The runtime discovery manifest lives in rtServer.fetch (upstream of handleRpc), so
+// drive it through the gate directly. The per-domain /vault/mcp · /mail/mcp · /files/mcp
+// routes are fully retired — a single /mcp front door remains.
+describe("rtServer.fetch — connector manifest (one front door)", () => {
 	const gateCtx = () => ({ waitUntil: () => {}, props: { login: ALLOWED } }) as unknown as Parameters<typeof rtServer.fetch>[2];
 
 	type Manifest = { name: string; connectors: Array<{ name: string; url: string; tools: number | null }> };
 
-	it("GET /mcp/connectors default view surfaces only the advertised sux connector", async () => {
+	it("GET /mcp/connectors surfaces the one sux connector with its live count", async () => {
 		const { kv } = makeKv();
 		const res = await rtServer.fetch(new Request("https://sux.example.dev/mcp/connectors"), makeEnv(kv), gateCtx());
 		expect(res.status).toBe(200);
@@ -600,25 +557,18 @@ describe("rtServer.fetch — connector manifest + dormant namespace routes", () 
 		expect(body.connectors.find((c) => c.name === "vault")).toBeUndefined();
 	});
 
-	it("GET /mcp/connectors?all=1 surfaces all four connectors with live per-namespace counts", async () => {
+	it("GET /mcp/connectors?all=1 no longer surfaces any retired extras", async () => {
 		const { kv } = makeKv();
 		const res = await rtServer.fetch(new Request("https://sux.example.dev/mcp/connectors?all=1"), makeEnv(kv), gateCtx());
 		expect(res.status).toBe(200);
 		const body = (await res.json()) as Manifest;
-		const names = body.connectors.map((c) => c.name);
-		expect(names).toEqual(expect.arrayContaining(["sux", "vault", "mail", "files"]));
-		expect(body.connectors).toHaveLength(4);
-		for (const c of body.connectors) expect(typeof c.tools).toBe("number");
+		expect(body.connectors).toHaveLength(1);
+		expect(body.connectors.map((c) => c.name)).toEqual(["sux"]);
 	});
 
-	// Regression guard: retiring the connectors from the manifest must NOT change routing —
-	// each personal namespace still reaches its own handler (dormant/reachable, not broken).
-	it.each([
-		["/vault/mcp", "vault"],
-		["/vault/mcp/", "vault"],
-		["/mail/mcp", "mail"],
-		["/files/mcp", "files"],
-	])("POST initialize to %s still routes to the %s handler", async (path, name) => {
+	// Regression guard: the retired routes no longer dispatch to a personal-namespace
+	// handler — they fall through to the one research-tools front door like any other path.
+	it.each([["/vault/mcp"], ["/mail/mcp"], ["/files/mcp"]])("POST initialize to retired %s no longer routes to a namespace handler", async (path) => {
 		const { kv } = makeKv();
 		const req = new Request(`https://sux.example.dev${path}`, {
 			method: "POST",
@@ -628,6 +578,7 @@ describe("rtServer.fetch — connector manifest + dormant namespace routes", () 
 		const res = await rtServer.fetch(req, makeEnv(kv), gateCtx());
 		expect(res.status).toBe(200);
 		const rpc = extractRpcFromText(await res.text(), res.headers.get("content-type"));
-		expect(rpc?.result.serverInfo.name).toBe(name);
+		expect(["vault", "mail", "files"]).not.toContain(rpc?.result.serverInfo.name);
+		expect(rpc?.result.serverInfo.name).toBe("research-tools");
 	});
 });
