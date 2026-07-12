@@ -33,3 +33,21 @@ Algebra substrate, un-parked verb program, uw directory, unused per-store scrape
 ## Chunk-1 research verdicts (2026-07-11, workflow w31ugd57p)
 - **RETIRE the mac node (data-grounded):** it was 502 all session (offline SPOF, 0/6 sites). cf-residential cleanly serves Amazon(search URLs, not homepage)/Lowe's/Ace/Walmart(catalog reads). Costco = flaky soft-block (retry→structured fn). **Home Depot = Akamai hard "Access Denied" — the one cf can't crack.** Policy: cf-first everywhere; escalation rung for HD/Costco = **paid residential-unlocker API** (Bright Data/Zyte/Oxylabs) on cf-failure, NOT a home Mac. Walmart: cf for reads only (PerimeterX blocks cart/interactive). One confirmation test before physical decommission (bring mac up, render HD backend:mac+solve) — but swap the ladder's mac rung for a paid unlocker regardless.
 - **Design-review round 2 — the unifying gap (C1/C2 HIGH):** batch/pipe/operateFull have COUNT caps but NO time budget → on the 60s deadline `withDeadline` abandons the run with ZERO partials (and operateFull can silently commit an unknown subset of Mode-B mutations then report only a timeout). Cheap fix (~20 lines/site): a `Date.now()-started` check in each fan-out loop → stop dispatching ~50s, return collected partials `{truncated:true, reason:"time"}`. Defer the full env._budget ledger + Workflows until a real caller strains them. → folds into chunk 4 (fan-in/out) — the one primitive that also fixes the subrequest-ceiling gap.
+
+## ▶ RESUME HERE (session handoff, 2026-07-11)
+**State:** `main` @ `37de621`, deployed (`d5c76e20`), **1417 tests green**. Chunk-1 core LIVE (#45 files-vault, #46 infra, #47 mail/caldav merged+deployed). Working tree clean.
+
+**Open PRs (chunk-1 remnants):**
+- **#44 `fix/registry-surface-selfdescribe`** — the `surface` field + tool annotations + `sux` self-describe root verb. FOUNDATIONAL for chunk 2. Action: `git fetch` its branch, rebase onto `main`, resolve (conflicts are docs/index regen), merge+deploy. Keep.
+- **#43 `fix/render-unify-secfresh`** — RECONSIDER given the retire-mac verdict. Keep only the security bit (render_server.py HMAC ts-freshness). The "unify mac paths" is low-value now; the real render work = **cf-first ladder + paid-residential-unlocker rung** (Bright Data/Zyte) for Home Depot's Akamai wall, mac demoted to dormant option. Do that as its own render chunk, not this PR as-is. Likely close #43, salvage the ts-freshness commit.
+
+**Next actions (ultracode, maximally parallel, serial chunks per this doc):**
+1. Land #44 (rebase+merge+deploy) — unblocks the front door.
+2. **Chunk 2** front-door + one connector (needs #44's `surface` field): consolidate shop/search/fetch/research/media behind ~12 front verbs + `fn` escape + `sux` self-describe; retire mail/vault/files namespace connectors (keep routes dormant).
+3. **Chunk 3** smart-guards generalized (stage-by-default + `!`/force + sentiment/typo, all irreversible verbs).
+4. **Chunk 4** stateless-learning substrate (learned-prefs KV + vault write-hooks + embeddings/kNN via Workers AI) — FOLD IN the C1/C2 fan-out time-budget fix (batch/pipe/operateFull → `Date.now()` elapsed check → partial return `{truncated:true}`).
+5. **Chunk 5** `mail_triage` bot (cron, autonomy-on/reversible-only/confidence-gated/logged+undo, digest→daily note).
+6. **Chunk 6** self-improvement loop (recurring review → auto-deploy fixes/refactors/cleanup, PR features, PR the loop itself).
++ render chunk: cf-first ladder + paid-unlocker rung; retire mac node.
+
+Config locked: daily-note channel · all 6 chunks · smart model routing (rules→Workers-AI embeddings→frontier) · merge+deploy fixes, PR features+security · keep main green, no cred/secret touching unattended.
