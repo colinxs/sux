@@ -28,7 +28,7 @@ const CATEGORIES = [
 	["Notes / knowledge / vault", ["obsidian", "ingest", "citation"]],
 	["Knowledge / learning", ["recall", "oracle", "advise", "learn", "preferences"]],
 	["Mail (JMAP)", ["jmap", "mail_triage", "briefing"]],
-	["Personal namespaces (one /mcp)", ["vault", "mail", "files", "cal", "contact"]],
+	["Personal namespaces (one /mcp)", ["vault", "mail", "files", "calendar", "contact"]],
 	["Personal finance", ["monarch"]],
 	["Feedback / meta", ["issue", "suggest"]],
 	["Infra / meta", ["selftest", "autonomy_status", "controld", "tailscale", "sux", "fn", "todoist"]],

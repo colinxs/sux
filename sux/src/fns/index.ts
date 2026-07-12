@@ -53,7 +53,7 @@ import { arxiv } from "./arxiv";
 import { autonomy_status } from "./autonomy_status";
 import { bestbuy } from "./bestbuy";
 import { briefing } from "./briefing";
-import { cal } from "./cal";
+import { calendar } from "./calendar";
 import { citation } from "./citation";
 import { coingecko } from "./coingecko";
 import { contact } from "./contact";
@@ -164,7 +164,7 @@ export const FUNCTIONS: Fn[] = [
 	autonomy_status,
 	bestbuy,
 	briefing,
-	cal,
+	calendar,
 	citation,
 	coingecko,
 	contact,

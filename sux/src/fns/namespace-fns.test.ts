@@ -21,7 +21,7 @@ import { type Dispatch, namespaceFn, reachedTools } from "./_namespace";
 import { vault, VAULT_ACTIONS } from "./vault";
 import { files, FILES_ACTIONS } from "./files";
 import { mail, MAIL_ACTIONS } from "./mail";
-import { cal, CAL_ACTIONS } from "./cal";
+import { calendar, CALENDAR_ACTIONS } from "./calendar";
 import { contact, CONTACT_ACTIONS } from "./contact";
 
 afterEach(() => vi.restoreAllMocks());
@@ -68,7 +68,7 @@ describe("namespaceFn dispatcher", () => {
 	});
 
 	it("marks each verb as a raw front-surface tool that requires `action`", () => {
-		for (const v of [vault, mail, files, cal, contact]) {
+		for (const v of [vault, mail, files, calendar, contact]) {
 			expect(v.surface).toBe("front");
 			expect(v.raw).toBe(true);
 			expect((v.inputSchema as any).required).toContain("action");
@@ -86,13 +86,13 @@ describe("namespace verbs cover their tool arrays", () => {
 		expect(reachedTools(FILES_ACTIONS)).toEqual(new Set(FILES_TOOLS.map((t) => t.name).filter((n) => n !== "dropbox")));
 	});
 
-	it("mail+cal+contact together reach every MAIL_TOOLS tool except the raw `jmap` conduit", () => {
-		const union = new Set<string>([...reachedTools(MAIL_ACTIONS), ...reachedTools(CAL_ACTIONS), ...reachedTools(CONTACT_ACTIONS)]);
+	it("mail+calendar+contact together reach every MAIL_TOOLS tool except the raw `jmap` conduit", () => {
+		const union = new Set<string>([...reachedTools(MAIL_ACTIONS), ...reachedTools(CALENDAR_ACTIONS), ...reachedTools(CONTACT_ACTIONS)]);
 		expect(union).toEqual(new Set(MAIL_TOOLS.map((t) => t.name).filter((n) => n !== "jmap")));
 	});
 
-	it("no tool is reachable through two verbs (mail/cal/contact partition MAIL_TOOLS)", () => {
-		const lists = [reachedTools(MAIL_ACTIONS), reachedTools(CAL_ACTIONS), reachedTools(CONTACT_ACTIONS)].flatMap((s) => [...s]);
+	it("no tool is reachable through two verbs (mail/calendar/contact partition MAIL_TOOLS)", () => {
+		const lists = [reachedTools(MAIL_ACTIONS), reachedTools(CALENDAR_ACTIONS), reachedTools(CONTACT_ACTIONS)].flatMap((s) => [...s]);
 		expect(lists.length).toBe(new Set(lists).size);
 	});
 });
@@ -202,7 +202,7 @@ describe("mail verb preserves reversibility + inject", () => {
 describe("front-door integration (/mcp)", () => {
 	it("all five verbs are advertised as front verbs and registered", () => {
 		const front = new Set(frontToolList(FUNCTIONS).map((t) => t.name));
-		for (const v of ["vault", "mail", "files", "cal", "contact"]) {
+		for (const v of ["vault", "mail", "files", "calendar", "contact"]) {
 			expect(front.has(v), `${v} advertised`).toBe(true);
 			expect(FRONT_VERBS.has(v)).toBe(true);
 			expect(FUNCTIONS.some((f) => f.name === v)).toBe(true);
@@ -236,6 +236,6 @@ describe("front-door integration (/mcp)", () => {
 		const res = await handleRpc(rpcEnv(), ctx, { jsonrpc: "2.0", id: 2, method: "tools/list" });
 		const out = extractRpcFromText(await res.text(), res.headers.get("content-type"))!;
 		const names = out.result.tools.map((t: { name: string }) => t.name);
-		for (const v of ["vault", "mail", "files", "cal", "contact"]) expect(names).toContain(v);
+		for (const v of ["vault", "mail", "files", "calendar", "contact"]) expect(names).toContain(v);
 	});
 });

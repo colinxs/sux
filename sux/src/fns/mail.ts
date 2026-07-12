@@ -2,7 +2,7 @@ import { type Fn } from "../registry";
 import { MAIL_TOOLS } from "../mail-mcp";
 import { type Dispatch, namespaceFn } from "./_namespace";
 
-// The mail-flow slice of MAIL_TOOLS (cal/tasks live under `cal`, contacts under
+// The mail-flow slice of MAIL_TOOLS (calendar/tasks live under `calendar`, contacts under
 // `contact`, and the raw `jmap` conduit stays a universal leaf via `fn`).
 // mail_masked/mail_vacation carry their own action arg, so those flatten into
 // verb-level actions that re-inject the inner one.
@@ -33,7 +33,7 @@ export const MAIL_ACTIONS: Record<string, Dispatch> = {
 export const mail: Fn = namespaceFn({
 	name: "mail",
 	description:
-		"Fastmail email through the one /mcp connector. {action, ...args}: search·read·thread·mailboxes·identities·draft·send·schedule·scheduled·unschedule·upload·archive·move·quota·vacation_get·vacation_set·masked_list·masked_create·masked_disable·masked_enable·masked_delete. Each action's remaining args are that mail_* tool's own — e.g. mail({action:'send', to, subject, text}). send STAGES a preview by default (re-call with commit_token, or force:true to send in one shot). Calendars/tasks are the 'cal' verb; contacts the 'contact' verb.",
+		"Fastmail email through the one /mcp connector. {action, ...args}: search·read·thread·mailboxes·identities·draft·send·schedule·scheduled·unschedule·upload·archive·move·quota·vacation_get·vacation_set·masked_list·masked_create·masked_disable·masked_enable·masked_delete. Each action's remaining args are that mail_* tool's own — e.g. mail({action:'send', to, subject, text}). send STAGES a preview by default (re-call with commit_token, or force:true to send in one shot). Calendars/tasks are the 'calendar' verb; contacts the 'contact' verb.",
 	tools: () => MAIL_TOOLS,
 	actions: MAIL_ACTIONS,
 });

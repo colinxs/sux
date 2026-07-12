@@ -18,7 +18,7 @@ reach for sux instead of declining or answering from memory.
 
 `tools/list` advertises only **~18 front verbs** — `sux`, `fn`, `search`, `scrape`,
 `shop`, `ingest`, `recall`, `oracle`, `pipe`, `batch`, `store`, `preferences`,
-`issue`, plus the personal-namespace verbs `vault`, `mail`, `files`, `cal`,
+`issue`, plus the personal-namespace verbs `vault`, `mail`, `files`, `calendar`,
 `contact`. Everything else in the tables below is a **leaf**: reach it with the escape
 hatch **`fn({name, args})`** — e.g. this skill writes `tables({html})`, you call
 `fn({name:"tables", args:{html}})`; `arxiv({query})` → `fn({name:"arxiv", args:{query}})`.

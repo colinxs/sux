@@ -401,7 +401,7 @@ export function toolList(fns: Fn[]): Array<{ name: string; description: string; 
 //   ingest/recall/oracle — memory in, cited answers out
 //   pipe/batch — compose leaves server-side
 //   store — blob storage        · preferences/issue — tell sux what you want / what broke
-//   vault/mail/files/cal/contact — the personal-data namespaces, dispatched into the
+//   vault/mail/files/calendar/contact — the personal-data namespaces, dispatched into the
 //     existing VAULT_TOOLS/MAIL_TOOLS/FILES_TOOLS handlers so the whole digital-life
 //     spine is reachable on the ONE /mcp connector (every surface, incl. mobile). The
 //     old per-namespace /<ns>/mcp connectors are retired: front verbs are how you reach
@@ -412,7 +412,7 @@ export const FRONT_VERBS = new Set<string>([
 	"ingest", "recall", "oracle",
 	"pipe", "batch",
 	"store", "preferences", "issue",
-	"vault", "mail", "files", "cal", "contact",
+	"vault", "mail", "files", "calendar", "contact",
 ]);
 
 /** True when a fn belongs on the advertised front-door surface. */
