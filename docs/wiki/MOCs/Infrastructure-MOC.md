@@ -25,6 +25,7 @@ A `tools/call` flows: [[oauth-gate]] → [[fn-registry]] → [[content-addressed
 - [[fetch-ladder]] — residential egress rungs and the bot-detection war
 - [[two-hard-facts]] — the 60s deadline + 24h stale-grace that shape every verb's honesty contract
 - [[architecture]] — the whole shipped topology in diagrams
+- [[ARCHITECTURE|Architecture reference]] — the canonical, exhaustive how-sux-works reference (request lifecycle, subsystems, data model, design laws)
 
 ## Local gateway (shipped)
 

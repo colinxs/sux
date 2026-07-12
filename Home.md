@@ -26,6 +26,7 @@ vault — all behind one OAuth login. See the root [`README.md`](README.md) and
 - 🗺️ **[[Status-Dashboard]]** — every doc by lifecycle status (generated)
 - 🧩 **[[Functions-MOC]]** — the full `/mcp` function surface (generated)
 - 📐 **[[architecture]]** — the shipped topology in diagrams
+- 📚 **[[ARCHITECTURE|Architecture reference]]** — the canonical, exhaustive how-sux-works reference (lifecycle, subsystems, data model, design laws)
 - 🤖 [`llms.txt`](llms.txt) — the terse, Claude-optimized whole-vault index (generated; load this to orient a fresh session cheaply)
 
 ## The four Maps of Content
