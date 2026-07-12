@@ -24,7 +24,7 @@ USE_PROCD=1
 start_service() {
 	procd_open_instance
 	procd_set_param command /usr/bin/node /srv/suxproxy/server.mjs
-	procd_set_param env PROXY_SECRET=b0dbe30259d11c0aab86046b760aa0e00740bdfe894b21ec00a13d0374fa5ca6
+	procd_set_param env PROXY_SECRET="${PROXY_SECRET:?run this provisioner with PROXY_SECRET set in the environment}"
 	procd_set_param respawn
 	procd_close_instance
 }
@@ -35,9 +35,12 @@ chmod +x /etc/init.d/suxproxy
 sleep 1
 
 echo '[5/5] signed self-test (expect status:200 + ip= in body):'
+TS=1
+BODY='{"url":"https://cloudflare.com/cdn-cgi/trace"}'
+SIG=$(printf '%s\n%s' "$TS" "$BODY" | openssl dgst -sha256 -hmac "$PROXY_SECRET" -r | cut -d' ' -f1)
 curl -s -X POST http://127.0.0.1:8787/fetch \
-  -H 'x-timestamp: 1' \
-  -H 'x-signature: 3986bcdeed245b506ed8f29ed2077a735f77cad7ebbf4afa24557a1444bfc45d' \
+  -H "x-timestamp: $TS" \
+  -H "x-signature: $SIG" \
   -H 'content-type: application/json' \
-  --data '{"url":"https://cloudflare.com/cdn-cgi/trace"}'
+  --data "$BODY"
 echo
