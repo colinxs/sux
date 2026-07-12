@@ -1,4 +1,4 @@
-import type { CallEvent } from "./metrics";
+import { clipErr, type CallEvent } from "./metrics";
 import type { FetchRoute } from "./proxy";
 import type { RtEnv } from "./registry";
 
@@ -25,12 +25,16 @@ export function shipToLoki(env: RtEnv, ctx: { waitUntil(p: Promise<unknown>): vo
 	const token = env.GRAFANA_LOKI_TOKEN;
 	if (!url || !user || !token) return;
 
+	// Clip the raw upstream failure text to the same ~200-char cap metrics.ts and
+	// the /logs view apply — an unbounded error (e.g. an echoed HTML error page)
+	// must not ride verbatim to a third party or trip Loki's max-line-size drop.
+	const err = clipErr(e.err);
 	const line = JSON.stringify({
 		tool: e.tool,
 		ms: e.ms,
 		cache: Boolean(e.cache),
 		error: Boolean(e.error),
-		...(e.err ? { err: e.err } : {}),
+		...(err ? { err } : {}),
 		...(e.routes ? { routes: e.routes } : {}),
 	});
 	const tsNanos = `${e.at ?? Date.now()}000000`;
