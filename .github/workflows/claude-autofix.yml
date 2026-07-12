@@ -40,16 +40,25 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
           HAVE_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
         run: |
           set -euo pipefail
           if [ "$HAVE_KEY" != "true" ]; then
             echo "ANTHROPIC_API_KEY not set → autofix inert. Add the secret to arm it."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
 
-          # Find the open PR for this head branch.
-          pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$HEAD_BRANCH" --state open \
-                 --json number,labels,title,isDraft,authorAssociation,isCrossRepository --jq '.[0]' 2>/dev/null || echo '')
-          if [ -z "$pr" ] || [ "$pr" = "null" ]; then echo "no open PR for $HEAD_BRANCH → skip"; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          # Resolve the PR exactly. `--head <name>` can match multiple PRs on a branch-name
+          # collision (e.g. a fork with the same branch name), and blindly taking `.[0]`
+          # could pick the wrong one — with a write token + ANTHROPIC_API_KEY, that means
+          # running the wrong PR's code. Require an EXACT headRefName + base match, and bail
+          # if more than one PR qualifies rather than guessing.
+          prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$HEAD_BRANCH" --base "$BASE_BRANCH" --state open \
+                 --json number,labels,title,isDraft,authorAssociation,isCrossRepository,headRefName,baseRefName 2>/dev/null || echo '[]')
+          matches=$(echo "$prs" | jq -c --arg h "$HEAD_BRANCH" --arg b "$BASE_BRANCH" '[.[] | select(.headRefName==$h and .baseRefName==$b)]')
+          count=$(echo "$matches" | jq 'length')
+          if [ "$count" -eq 0 ]; then echo "no open PR for $HEAD_BRANCH → $BASE_BRANCH → skip"; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ "$count" -gt 1 ]; then echo "::warning::$count PRs match head=$HEAD_BRANCH base=$BASE_BRANCH → ambiguous, refusing to guess"; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          pr=$(echo "$matches" | jq -c '.[0]')
           num=$(echo "$pr" | jq -r .number)
           title=$(echo "$pr" | jq -r .title)
           draft=$(echo "$pr" | jq -r .isDraft)
@@ -108,11 +117,18 @@ jobs:
       - name: Claude — fix the CI failure
         if: steps.pre.outputs.go == 'true' && steps.cap.outputs.go == 'true'
         uses: anthropics/claude-code-action@v1
+        # head_branch / html_url are attacker-influenced (a PR author controls the branch
+        # name); interpolating them inline as ${{ }} would splice their raw text into the
+        # prompt (script-injection surface). Pass them through env: and reference $VARS so
+        # they stay data, never templated YAML.
+        env:
+          CI_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          CI_RUN_URL: ${{ github.event.workflow_run.html_url }}
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |
-            CI failed on this PR (branch ${{ github.event.workflow_run.head_branch }},
-            run ${{ github.event.workflow_run.html_url }}). Read the failing job's logs,
+            CI failed on this PR (branch $CI_HEAD_BRANCH,
+            run $CI_RUN_URL). Read the failing job's logs,
             find the ROOT cause, and fix it. This repo's gates (from CLAUDE.md) must all pass:
               npm run type-check · npm test · npm run check:node ·
               npm run gen:index && npm run docs (commit the regenerated FUNCTIONS.md + index.ts) ·
