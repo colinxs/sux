@@ -190,11 +190,13 @@ describe("store", () => {
 
 	it("get at exactly the 4MB threshold still inlines", async () => {
 		const env = mkEnv();
-		const text = vi.fn(async () => "body");
-		env.R2.get = async () => ({ size: 4 * 1024 * 1024, httpMetadata: { contentType: "text/plain" }, customMetadata: {}, text, arrayBuffer: async () => new Uint8Array([1]).buffer });
+		// Read as bytes (uniformly, so a gzip marker can be detected); a raw/unmarked
+		// object decodes straight back to its text.
+		const arrayBuffer = vi.fn(async () => new TextEncoder().encode("body").buffer);
+		env.R2.get = async () => ({ size: 4 * 1024 * 1024, httpMetadata: { contentType: "text/plain" }, customMetadata: {}, arrayBuffer });
 		const got = j(await store.run(env, { op: "get", key: "cas/x" }));
 		expect(got.text).toBe("body");
-		expect(text).toHaveBeenCalled();
+		expect(arrayBuffer).toHaveBeenCalled();
 	});
 
 	it("GET /s/<uuid> serves the stored bytes with its content type", async () => {
@@ -265,6 +267,23 @@ describe("store", () => {
 		const resp = await handleObservability(new URL(put.url), new Request(put.url), env);
 		expect(resp!.status).toBe(404);
 		expect(env.OAUTH_KV._m.has(key)).toBe(false);
+	});
+
+	it("transparently gzips a large text blob in R2 and inflates it on get + /s/", async () => {
+		const env = mkEnv();
+		const body = "sux transparent compression round-trip. ".repeat(300);
+		const put = j(await store.run(env, { data: body, content_type: "text/plain" }));
+		// R2 holds the compressed frame (marker + gzip magic), smaller than the input.
+		const stored = env.R2._m.get(put.key)!.bytes;
+		expect(stored.length).toBeLessThan(new TextEncoder().encode(body).length);
+		expect(stored[0]).toBe(0x00);
+		expect(stored[1]).toBe(0x1f);
+		expect(stored[2]).toBe(0x8b);
+		// get inflates back to the original text.
+		expect(j(await store.run(env, { op: "get", id: put.uuid })).text).toBe(body);
+		// The public /s/ route serves the ORIGINAL bytes to external consumers.
+		const resp = await handleObservability(new URL(put.url), new Request(put.url), env);
+		expect(await resp!.text()).toBe(body);
 	});
 
 	it("GET /s/<unknown> is 404", async () => {

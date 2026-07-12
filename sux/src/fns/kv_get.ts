@@ -1,3 +1,4 @@
+import { maybeDecompressString } from "./_gzip";
 import { type Fn, fail, ok } from "../registry";
 
 // All user-facing KV keys live under a fixed "kv:" namespace so tool writes can
@@ -35,6 +36,7 @@ export const kv_get: Fn = {
 		if ("error" in r) return fail(r.error);
 		const value = await env.OAUTH_KV.get(r.key);
 		if (value === null) return fail(`key '${String(args.key).trim()}' not found.`);
-		return ok(value);
+		// Inflate a transparently-compressed value; a plain/legacy value passes through.
+		return ok(await maybeDecompressString(value));
 	},
 };

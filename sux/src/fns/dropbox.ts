@@ -1,5 +1,6 @@
 import { DROPBOX_API as API, DROPBOX_CONTENT as CONTENT, type DropboxScope, dropboxFetch, dropboxRpc, headerSafeJson, MAX_INLINE_BYTES, scopeConfigured, TEXT_EXT } from "./_dropbox-core";
 import { type Fn, fail, ok, type RtEnv } from "../registry";
+import { maybeCompress, maybeDecompress } from "./_gzip";
 import { fromB64, toB64 } from "./_util";
 
 // Dropbox as the human-facing blob store (R2 `store` is the machine-facing
@@ -60,6 +61,11 @@ async function sharedLink(env: RtEnv, path: string): Promise<string | undefined>
  * (e.g. "report (1).pdf") and the returned `path` reflects the actual name. */
 export async function dropboxPut(env: RtEnv, path: string, bytes: Uint8Array, opts?: { overwrite?: boolean }): Promise<{ path: string; size: number; url?: string } | { error: string }> {
 	const clobber = opts?.overwrite !== false;
+	// Transparently gzip recognized text files (marker-framed; dropbox get inflates
+	// on read). Gated on the text extension — binary/already-compressed uploads and
+	// unknown types are stored verbatim, so the app-folder stays a faithful mirror
+	// for everything a human would open directly except text notes.
+	const body = TEXT_EXT.test(path) ? await maybeCompress(bytes) : bytes;
 	const resp = await dbxFetch(env, `${CONTENT}/files/upload`, (token) => ({
 		method: "POST",
 		headers: {
@@ -67,7 +73,7 @@ export async function dropboxPut(env: RtEnv, path: string, bytes: Uint8Array, op
 			"Content-Type": "application/octet-stream",
 			"Dropbox-API-Arg": headerSafeJson({ path, mode: clobber ? "overwrite" : "add", autorename: !clobber, mute: true }),
 		},
-		body: bytes as BodyInit,
+		body: body as BodyInit,
 		signal: AbortSignal.timeout(60_000),
 	}));
 	const json: any = await resp.json().catch(() => null);
@@ -134,7 +140,8 @@ export const dropbox: Fn = {
 					signal: AbortSignal.timeout(60_000),
 				}));
 				if (resp.status >= 400) return fail(`Dropbox download error: ${(await resp.text().catch(() => "")).slice(0, 200) || `HTTP ${resp.status}`}`);
-				const bytes = new Uint8Array(await resp.arrayBuffer());
+				// Inflate a transparent-gzip frame back to the original (raw files pass through).
+				const bytes = await maybeDecompress(new Uint8Array(await resp.arrayBuffer()));
 				if (TEXT_EXT.test(path)) return ok(new TextDecoder().decode(bytes));
 				return ok(JSON.stringify({ path, size: bytes.length, base64: toB64(bytes) }, null, 2));
 			}

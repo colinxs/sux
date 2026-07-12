@@ -1,3 +1,4 @@
+import { maybeCompressString } from "./_gzip";
 import { type Fn, fail, ok } from "../registry";
 
 // User-facing KV keys live under a fixed "kv:" namespace so tool writes can never
@@ -44,7 +45,10 @@ export const kv_put: Fn = {
 			opts.expirationTtl = Math.floor(ttl);
 		}
 
-		await env.OAUTH_KV.put(r.key, args.value, opts);
+		// Transparently gzip large text values (control-prefixed base64 frame;
+		// kv_get inflates on read). Small/incompressible values are stored plain,
+		// so legacy readers and existing values are unaffected.
+		await env.OAUTH_KV.put(r.key, await maybeCompressString(args.value), opts);
 		const bytes = new TextEncoder().encode(args.value).length;
 		const suffix = opts.expirationTtl ? ` (expires in ${opts.expirationTtl}s)` : "";
 		return ok(`Wrote ${bytes} bytes to '${String(args.key).trim()}'${suffix}.`);

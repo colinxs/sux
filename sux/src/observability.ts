@@ -8,6 +8,7 @@
 // ours so index.ts can fall through to OAuth.
 
 import { type FeedbackKind, readFeedback } from "./fns/_feedback";
+import { maybeDecompress } from "./fns/_gzip";
 import { isExpired } from "./fns/_util";
 import { readMetrics, sloReport, toPrometheus } from "./metrics";
 import type { RtEnv } from "./registry";
@@ -39,7 +40,11 @@ export async function handleObservability(url: URL, request: Request, env: RtEnv
 		}
 		const obj = await env.R2.get(ref.key);
 		if (!obj) return new Response("object missing", { status: 404 });
-		return new Response(await obj.arrayBuffer(), {
+		// Serve the ORIGINAL bytes: stored text blobs are transparently gzip-framed,
+		// but this public URL feeds arbitrary HTTP consumers (browsers, JMAP
+		// attachment streaming) that know nothing of our marker — inflate first.
+		const body = await maybeDecompress(new Uint8Array(await obj.arrayBuffer()));
+		return new Response(body, {
 			status: 200,
 			headers: {
 				"content-type": ref.content_type ?? obj.httpMetadata?.contentType ?? "application/octet-stream",

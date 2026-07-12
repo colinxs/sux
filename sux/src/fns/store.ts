@@ -1,4 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
+import { maybeDecompress } from "./_gzip";
 import { extractStoreId, fromB64, isExpired, putBlob, STORE_KV_PREFIX, storeBase, toB64 } from "./_util";
 
 // Object storage in sux's R2. Bytes are content-addressed (key = sha256, so
@@ -106,8 +107,13 @@ export const store: Fn = {
 						),
 					);
 				}
-				if (isTexty(type)) return ok(JSON.stringify({ key: r2key, size: obj.size, content_type: type, text: await obj.text() }, null, 2));
-				return ok(JSON.stringify({ key: r2key, size: obj.size, content_type: type, base64: toB64(new Uint8Array(await obj.arrayBuffer())) }, null, 2));
+				// Inflate a transparent-gzip frame back to the original bytes before
+				// decoding/encoding (raw/legacy objects pass through untouched). Read as
+				// bytes uniformly so the marker can be detected — obj.text() would decode
+				// the compressed frame as garbage.
+				const bytes = await maybeDecompress(new Uint8Array(await obj.arrayBuffer()));
+				if (isTexty(type)) return ok(JSON.stringify({ key: r2key, size: bytes.length, content_type: type, text: new TextDecoder().decode(bytes) }, null, 2));
+				return ok(JSON.stringify({ key: r2key, size: bytes.length, content_type: type, base64: toB64(bytes) }, null, 2));
 			}
 
 			if (op === "delete") {
