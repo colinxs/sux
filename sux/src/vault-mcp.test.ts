@@ -170,6 +170,32 @@ describe("vault MCP server (/vault/mcp)", () => {
 		expect(capped.truncated).toBe(true);
 	});
 
+	it("flags truncated when a per-note read fails during index build — even folder-scoped", async () => {
+		// A note listed in the tree but failing to read (GitHub secondary-rate-limit 403
+		// / 5xx on the read burst) is silently dropped from the index. That incompleteness
+		// must surface as truncated:true — and must NOT be hidden once a `folder` is passed
+		// (the bug the audit caught: the old `!prefix &&` guard swallowed idx.truncated).
+		const store = new Map<string, string>();
+		const kv = { get: async (k: string) => store.get(k) ?? null, put: async (k: string, v: string) => void store.set(k, v), delete: async (k: string) => void store.delete(k) };
+		const env = { OBSIDIAN_VAULT_REPO: "me/vault", OAUTH_KV: kv } as any;
+		const tree = ["Projects/a.md", "Projects/b.md", "Notes/c.md"];
+		const body: Record<string, string> = { "Projects/a.md": "#work", "Notes/c.md": "#idea" }; // Projects/b.md absent → its read 404s
+		routes.handler = (url) => {
+			if (url.includes("/git/ref/heads/")) return new Response(JSON.stringify({ object: { sha: "h" } }), { status: 200 });
+			if (url.includes("/git/trees/")) return new Response(JSON.stringify({ tree: tree.map((p) => ({ type: "blob", path: p })) }), { status: 200 });
+			const m = /\/contents\/(.+?)(\?|$)/.exec(url);
+			const path = m ? decodeURIComponent(m[1]) : "";
+			if (body[path] === undefined) return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+			return new Response(JSON.stringify({ content: b64(body[path]), sha: "h" }), { status: 200 });
+		};
+		const call = async (name: string, args: any) => JSON.parse((await parse(await handleVaultRpc(env, CTX, rpc("tools/call", { name, arguments: args })))).result.content[0].text);
+		const all = await call("vault_tags", {});
+		expect(all.scanned).toBe(2); // b.md dropped from the index
+		expect(all.truncated).toBe(true); // incompleteness flagged, not a confident undercount
+		const folder = await call("vault_tags", { folder: "Projects" });
+		expect(folder.truncated).toBe(true); // propagates under folder scoping too
+	});
+
 	it("vault_query JsonLogic filter + vault_patch on the git backend (§obsidian)", async () => {
 		const call = async (name: string, args: any) => JSON.parse((await parse(await handleVaultRpc(ENV, CTX, rpc("tools/call", { name, arguments: args })))).result.content[0].text);
 		const notes: Record<string, string> = {
