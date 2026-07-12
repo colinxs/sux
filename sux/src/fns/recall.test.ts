@@ -6,12 +6,18 @@ vi.mock("./obsidian", () => ({ obsidian: { run: vi.fn() } }));
 vi.mock("./search", () => ({ search: { run: vi.fn() } }));
 vi.mock("./jmap", () => ({ jmap: { run: vi.fn() } }));
 vi.mock("./_dropbox-full", () => ({ hasDropboxFull: vi.fn(() => false), searchFull: vi.fn(), readFull: vi.fn() }));
+// Keep parseICal real (recall parses the ical reportObjects returns) — mock only the CalDAV I/O + the gate.
+vi.mock("./_caldav", async () => {
+	const actual = await vi.importActual<any>("./_caldav");
+	return { ...actual, hasCalDav: vi.fn(() => false), listCalendars: vi.fn(), reportObjects: vi.fn() };
+});
 
 import { recall } from "./recall";
 import { obsidian } from "./obsidian";
 import { search } from "./search";
 import { jmap } from "./jmap";
 import { hasDropboxFull, readFull, searchFull } from "./_dropbox-full";
+import { hasCalDav, listCalendars, reportObjects } from "./_caldav";
 
 const okR = (text: string) => ({ content: [{ type: "text", text }] });
 const errR = (text: string) => ({ content: [{ type: "text", text }], isError: true });
@@ -23,6 +29,9 @@ const mail = jmap.run as unknown as ReturnType<typeof vi.fn>;
 const dbxHas = hasDropboxFull as unknown as ReturnType<typeof vi.fn>;
 const dbxSearch = searchFull as unknown as ReturnType<typeof vi.fn>;
 const dbxRead = readFull as unknown as ReturnType<typeof vi.fn>;
+const calHas = hasCalDav as unknown as ReturnType<typeof vi.fn>;
+const calList = listCalendars as unknown as ReturnType<typeof vi.fn>;
+const calReport = reportObjects as unknown as ReturnType<typeof vi.fn>;
 
 let aiRun: ReturnType<typeof vi.fn>;
 const env = () => ({ AI: { run: aiRun } }) as any;
@@ -193,6 +202,65 @@ describe("recall", () => {
 		const out = parse(await recall.run(remoteEnv, { question: "oncologist?", sources: ["vault"] }));
 		expect(backends).toContain("remote");
 		expect(backends.every((b) => b === "remote")).toBe(true); // search AND read hit the live vault, not dead git code-search
+		expect(out.sources.vault).toBe("1 hit(s)");
+	});
+
+	const VEVENT = [
+		"BEGIN:VCALENDAR",
+		"BEGIN:VEVENT",
+		"UID:evt1",
+		"SUMMARY:Oncology follow-up",
+		"DTSTART:20260715T090000Z",
+		"LOCATION:Chen Clinic",
+		"END:VEVENT",
+		"END:VCALENDAR",
+	].join("\r\n");
+
+	it("adds `calendar` — keyword-filters CalDAV events in the window and cites [calendar:…]", async () => {
+		calHas.mockReturnValue(true);
+		calList.mockResolvedValue([{ href: "/cal/personal/", name: "Personal", isTasks: false }, { href: "/cal/todo/", name: "Tasks", isTasks: true }]);
+		calReport.mockResolvedValue([{ href: "/cal/personal/evt1.ics", etag: '"1"', ical: VEVENT }]);
+		const out = parse(await recall.run(env(), { question: "when's my oncologist follow-up?", sources: ["calendar"] }));
+		expect(calReport).toHaveBeenCalledTimes(1); // only the event calendar is queried, not the task list
+		expect(out.sources.calendar).toBe("1 hit(s)");
+		expect(out.citations).toEqual(expect.arrayContaining(["calendar:Oncology follow-up"]));
+		const user = aiRun.mock.calls[0][1].messages[1].content;
+		expect(user).toContain("[calendar:Oncology follow-up] on 2026-07-15T09:00:00Z @ Chen Clinic");
+	});
+
+	it("`calendar` drops events whose title/notes share no keyword with the question", async () => {
+		calHas.mockReturnValue(true);
+		calList.mockResolvedValue([{ href: "/cal/personal/", name: "Personal", isTasks: false }]);
+		calReport.mockResolvedValue([{ href: "/cal/personal/evt1.ics", etag: '"1"', ical: VEVENT }]);
+		const out = parse(await recall.run(env(), { question: "plumber appointment?", sources: ["calendar", "vault"] }));
+		expect(out.sources.calendar).toBe("no matches"); // the oncology event doesn't match "plumber"
+		expect(out.sources.vault).toBe("1 hit(s)");
+	});
+
+	it("`calendar` degrades to nothing when CalDAV is unconfigured (no PROPFIND/REPORT issued)", async () => {
+		calHas.mockReturnValue(false);
+		const out = parse(await recall.run(env(), { question: "oncologist follow-up?", sources: ["calendar", "vault"] }));
+		expect(calList).not.toHaveBeenCalled();
+		expect(calReport).not.toHaveBeenCalled();
+		expect(out.sources.calendar).toBe("no matches");
+		expect(out.sources.vault).toBe("1 hit(s)");
+	});
+
+	it("adds `contacts` — JMAP ContactCard query→get, cites [contact:…] with emails/phones (never the full card)", async () => {
+		mail.mockResolvedValue(
+			okR(JSON.stringify({ methodResponses: [["ContactCard/get", { list: [{ id: "c1", name: { full: "Dr. Chen" }, emails: { e: { address: "chen@clinic.com" } }, phones: { p: { number: "+15551234" } }, organizations: { o: { name: "Chen Clinic" } } }] }, "g"]] })),
+		);
+		const out = parse(await recall.run(env(), { question: "who is Dr. Chen?", sources: ["contacts"] }));
+		expect(out.sources.contacts).toBe("1 hit(s)");
+		expect(out.citations).toEqual(expect.arrayContaining(["contact:Dr. Chen"]));
+		const user = aiRun.mock.calls[0][1].messages[1].content;
+		expect(user).toContain("[contact:Dr. Chen] · Chen Clinic · chen@clinic.com · +15551234");
+	});
+
+	it("`contacts` degrades to 'unavailable' when the token isn't scoped for contacts", async () => {
+		mail.mockResolvedValue(errR("[not_configured] Fastmail JMAP not configured."));
+		const out = parse(await recall.run(env(), { question: "who?", sources: ["contacts", "vault"] }));
+		expect(out.sources.contacts).toContain("unavailable");
 		expect(out.sources.vault).toBe("1 hit(s)");
 	});
 });
