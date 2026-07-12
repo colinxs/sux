@@ -52,6 +52,7 @@ import { amazon } from "./amazon";
 import { arxiv } from "./arxiv";
 import { autonomy_status } from "./autonomy_status";
 import { bestbuy } from "./bestbuy";
+import { briefing } from "./briefing";
 import { cal } from "./cal";
 import { citation } from "./citation";
 import { coingecko } from "./coingecko";
@@ -162,6 +163,7 @@ export const FUNCTIONS: Fn[] = [
 	arxiv,
 	autonomy_status,
 	bestbuy,
+	briefing,
 	cal,
 	citation,
 	coingecko,
