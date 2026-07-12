@@ -40,7 +40,7 @@ provider follows).
 | Secret | Used by | Status |
 |---|---|---|
 | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `COOKIE_ENCRYPTION_KEY`, `ALLOWED_GITHUB_LOGIN` | the [[oauth-gate]] (login) | ✅ set |
-| `GITHUB_TOKEN` | vault git writes (Contents API) | ✅ set |
+| `GITHUB_TOKEN` | **three consumers, one token**: vault git writes (Contents API, `obsidian`/`citation`, the highest-privilege use); self-improve PR creation (gated by `SELF_IMPROVE_PR`); `smartFetch`'s GitHub-host rate lift (`github-auth.ts`, anonymous 60/hr → authenticated 5000/hr, read-only need). Least-privilege intent: a fine-grained PAT scoped to just the vault repo(s), not classic all-repo — see [[secrets\|docs/secrets.md]]. Rotate on suspicion. | ✅ set |
 | `KAGI_API_KEY`, `BRAVE_API_KEY`, `BING_API_KEY`, `TAVILY_API_KEY`, `EXA_API_KEY`, `GOOGLE_MAPS_KEY`, `YOUTUBE_API_KEY` | universal `sux` search/web | ✅ set (as used) |
 | `NCBI_API_KEY`, `S2_API_KEY`, `STACKEXCHANGE_KEY` | research fns | ✅ optional |
 | `KROGER_CLIENT_ID/SECRET`, `BESTBUY_API_KEY`, `EBAY_CLIENT_ID/SECRET` | retail fns | ✅ optional |
