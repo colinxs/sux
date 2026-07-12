@@ -117,23 +117,42 @@ export function byteBudget(cap: number): ByteBudget {
  * whole pool.
  *
  * When `deadline` (an absolute epoch-ms timestamp) is given, workers stop CLAIMING
- * new items once `Date.now() >= deadline` — items already in flight finish, un-run
- * slots stay `undefined`. The result array is DENSE (pre-filled), so the caller can
- * detect skipped items with `=== undefined` (a sparse-array `.map`/`.filter` would
- * silently skip holes) and report a partial/truncated result instead of the whole
- * run being abandoned at the hard deadline.
+ * new items once `Date.now() >= deadline`, AND each in-flight leaf is raced against
+ * the deadline — a single leaf that overruns must not push the whole fan-out past
+ * index.ts's FN_DEADLINE_MS, where `withDeadline` drops the run promise and loses
+ * ALL collected partials. On timeout the still-running leaf is abandoned (its value
+ * dropped) and its slot stays `undefined`. The result array is DENSE (pre-filled),
+ * so the caller can detect skipped items with `=== undefined` (a sparse-array
+ * `.map`/`.filter` would silently skip holes) and report a partial/truncated result
+ * instead of the whole run being abandoned at the hard deadline.
  */
 export async function pool<T, R>(items: T[], concurrency: number, fn: (item: T, index: number) => Promise<R>, deadline?: number): Promise<R[]> {
 	const results = new Array<R>(items.length).fill(undefined as R);
 	let next = 0;
 	const workers = Math.min(Math.max(1, concurrency), Math.max(1, items.length));
+	// Distinguishes "the deadline fired" from any real value `fn` may resolve.
+	const TIMED_OUT = Symbol("pool-deadline");
 	await Promise.all(
 		Array.from({ length: workers }, async () => {
 			for (;;) {
 				if (deadline !== undefined && Date.now() >= deadline) return;
 				const i = next++;
 				if (i >= items.length) return;
-				results[i] = await fn(items[i], i);
+				if (deadline === undefined) {
+					results[i] = await fn(items[i], i);
+					continue;
+				}
+				// Race the leaf against the deadline: abandon an overrunning leaf (slot
+				// stays `undefined`, the same partial/truncated path as an unclaimed
+				// item) rather than let it sink the whole run. `.finally(clearTimeout)`
+				// so the timer never leaks or holds the isolate open.
+				let timer: ReturnType<typeof setTimeout>;
+				const timeout = new Promise<typeof TIMED_OUT>((resolve) => {
+					timer = setTimeout(() => resolve(TIMED_OUT), Math.max(0, deadline - Date.now()));
+				});
+				const r = await Promise.race([fn(items[i], i), timeout]).finally(() => clearTimeout(timer));
+				if (r === TIMED_OUT) return;
+				results[i] = r as R;
 			}
 		}),
 	);

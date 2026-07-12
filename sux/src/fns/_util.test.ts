@@ -406,6 +406,26 @@ describe("pool (bounded concurrency)", () => {
 		const out = await pool([1, 2, 3], 2, async (n) => n * 10, Date.now() + 60_000);
 		expect(out).toEqual([10, 20, 30]);
 	});
+	it("abandons an in-flight leaf that overruns the deadline, keeping the other partials", async () => {
+		// One leaf hangs long past the deadline; without racing each leaf it would push
+		// the whole run past the hard FN_DEADLINE_MS and lose ALL partials. With the race,
+		// its slot stays undefined (surfaced as a truncated/partial by callers) while the
+		// fast leaves' results are preserved.
+		const out = await pool(
+			[1, 2, 3],
+			3,
+			async (n) => {
+				if (n === 2) await new Promise((r) => setTimeout(r, 10_000));
+				return n * 10;
+			},
+			Date.now() + 30,
+		);
+		expect(out).toHaveLength(3);
+		expect(out[0]).toBe(10);
+		expect(out[2]).toBe(30);
+		expect(out[1]).toBeUndefined(); // the overrunning leaf was abandoned, not awaited
+		expect(Object.keys(out)).toHaveLength(3); // still dense
+	});
 });
 
 describe("byteBudget (aggregate fan-out memory gate)", () => {
