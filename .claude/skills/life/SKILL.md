@@ -18,9 +18,9 @@ plus **remember** for the things that must never be lost.
 ## The stores (what you're writing to)
 
 Everything rides the one sux connector (`/mcp`, the `sux` plugin) — vault/mail/files are
-front-door verb families on it, not separate connectors.
+front verbs on it (`vault`/`mail`/`files`, each `{action}`-dispatched), not separate connectors.
 
-| Store | Verbs (all on the one `/mcp` connector) | Tools |
+| Store | Tool family (reached via the front verb) | Tools |
 |---|---|---|
 | **Notes / knowledge** | `vault_*` | `vault_capture`, `vault_daily_append`, `vault_daily_read`, `vault_write`, `vault_append`, `vault_edit`, `vault_read`, `vault_list`, `vault_delete` |
 | **Mail / calendar / contacts** | `mail_*` / `cal_*` / `contact_*` | `mail_search`, `mail_read`, `mail_thread`, `mail_send`, `mail_draft`, `mail_archive`, `mail_masked`, and raw `jmap` (calendars/contacts) |
