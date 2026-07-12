@@ -105,7 +105,9 @@ function parseCards(html: string): PersonRecord[] {
 		const phone = pick(/^Phone:\s*/i);
 		const fax = pick(/^Fax:\s*/i);
 		const boxRaw = items.find((t) => /^Box\b/i.test(t)) ?? null;
-		const boxNumber = boxRaw ? boxRaw.replace(/^Box\s*/i, "").trim() : null;
+		// Tolerate an optional colon (`Box: 352350`), matching the colon-suffixed form
+		// email/phone/fax already use — otherwise a colon would survive as a stray prefix.
+		const boxNumber = boxRaw ? boxRaw.replace(/^Box:?\s*/i, "").trim() : null;
 
 		const regid = regidFromHref(card.match(/name="person_href"\s+value="([^"]+)"/i)?.[1] ?? "");
 
