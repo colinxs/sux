@@ -253,6 +253,15 @@ export type RtEnv = Env &
 		RECOVERY_CMD_SECRET?: string;
 		RECOVERY_ADMIN_SECRET?: string;
 
+		// Life-learning living wiki (fns/_life_wiki.ts + the daily cron). A single fail-closed
+		// toggle var (NOT a credential — the vault/AI creds gate what can be gathered; this arms
+		// the autonomous synthesis). Declared in wrangler.jsonc vars, default "0" = OFF: unset or
+		// falsy ("0"/"false"/"off"/empty) ⇒ the fn and the cron tick are a total no-op, reading
+		// nothing and writing nothing. When truthy it regenerates a two-audience wiki ONLY inside
+		// the sandboxed vault subdir (sux/wiki/), non-destructive by construction — never touches
+		// the user's own notes. Flip to "1" to arm; the sandbox subdir is deletable with zero impact.
+		LIFE_WIKI_ENABLED?: string;
+
 
 		TAVILY_API_KEY?: string;
 
