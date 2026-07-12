@@ -1,3 +1,9 @@
+# Architecture
+
+The shipped topology of the sux Worker — every namespace, binding, and external
+dependency, colour-coded by deployment status (🟢 live · 🟡 dormant · 🔴 blocked ·
+⚪ planned). The legend that decodes the status glyphs is at the bottom of the diagram.
+
 ```mermaid
 flowchart TB
   classDef live fill:#0b3d0b,stroke:#3fbf3f,color:#eaffea;

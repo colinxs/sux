@@ -16,7 +16,7 @@ updated: 2026-07-09
 > [[wiki-conventions]] and [[wiki-protocol]].
 
 **sux** is a personal, self-owned web-access and personal-data layer: one
-Cloudflare Worker exposing ~91 composable functions over MCP, that fetches from
+Cloudflare Worker exposing a full library of composable functions over MCP, that fetches from
 *your own residential IP*, caches at the edge, and hosts a git-backed knowledge
 vault — all behind one OAuth login. See the root [`README.md`](README.md) and
 [`PLAN.md`](PLAN.md) for the pitch; [[architecture]] for the picture.
@@ -24,7 +24,7 @@ vault — all behind one OAuth login. See the root [`README.md`](README.md) and
 ## Start here
 
 - 🗺️ **[[Status-Dashboard]]** — every doc by lifecycle status (generated)
-- 🧩 **[[Functions-MOC]]** — the ~91-function `/mcp` surface (generated)
+- 🧩 **[[Functions-MOC]]** — the full `/mcp` function surface (generated)
 - 📐 **[[architecture]]** — the shipped topology in diagrams
 - 🤖 [`llms.txt`](llms.txt) — the terse, Claude-optimized whole-vault index (generated; load this to orient a fresh session cheaply)
 

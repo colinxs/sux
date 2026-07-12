@@ -207,13 +207,7 @@ export const oracle: Fn = {
 
 			// Learn-only: report what was learned.
 			const learned = await learn(env, topic, knowledge);
-			return ok(
-				JSON.stringify(
-					{ topic, learned: true, source: learned.source, chunk_count: learned.chunk_count, distilled_preview: learned.distilled.slice(0, 400) },
-					null,
-					2,
-				),
-			);
+			return ok(oj({ topic, learned: true, source: learned.source, chunk_count: learned.chunk_count, distilled_preview: learned.distilled.slice(0, 400) }));
 		} catch (e) {
 			return failWith("upstream_error", `oracle failed: ${errMsg(e)}`);
 		}

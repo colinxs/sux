@@ -43,13 +43,7 @@ export const wayback: Fn = {
 		if (!resp.ok) return fail(`Availability query failed: HTTP ${resp.status}`);
 		const j = (await resp.json()) as any;
 		const snap = j?.archived_snapshots?.closest;
-		if (!snap?.available) return ok(JSON.stringify({ available: false, url }));
-		return ok(
-			JSON.stringify(
-				{ available: true, url: snap.url, raw_url: snap.url.replace(/\/web\/(\d+)\//, "/web/$1id_/"), timestamp: snap.timestamp, status: snap.status },
-				null,
-				2,
-			),
-		);
+		if (!snap?.available) return ok(oj({ available: false, url }));
+		return ok(oj({ available: true, url: snap.url, raw_url: snap.url.replace(/\/web\/(\d+)\//, "/web/$1id_/"), timestamp: snap.timestamp, status: snap.status }));
 	},
 };

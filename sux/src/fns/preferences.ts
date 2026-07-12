@@ -114,13 +114,7 @@ export const preferences: Fn = {
 				const record: StoredProfile = { distilled_spec: spec.trim(), examples, updated_at: Date.now() };
 				await env.OAUTH_KV.put(`${KV_PREFIX}${profile}`, await maybeCompressString(JSON.stringify(record)));
 				console.log(`preferences: learned profile=${profile} examples=${examples.length}`);
-				return ok(
-					JSON.stringify(
-						{ action, profile, distilled_spec: record.distilled_spec, example_count: examples.length, updated_at: record.updated_at, ...(args?.note ? { note: String(args.note) } : {}) },
-						null,
-						2,
-					),
-				);
+				return ok(oj({ action, profile, distilled_spec: record.distilled_spec, example_count: examples.length, updated_at: record.updated_at, ...(args?.note ? { note: String(args.note) } : {}) }));
 			}
 
 			return failWith("bad_input", `Unknown action '${action}'.`);

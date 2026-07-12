@@ -99,13 +99,7 @@ export const store: Fn = {
 						sha = obj.customMetadata?.sha256;
 						await env.OAUTH_KV.put(`${STORE_KV_PREFIX}${uuid}`, JSON.stringify({ key: r2key, content_type: type, size: obj.size, sha256: sha }));
 					}
-					return ok(
-						JSON.stringify(
-							{ url: `${storeBase(env)}/s/${uuid}`, key: r2key, sha256: sha, size: obj.size, content_type: type, note: `object is ${obj.size} bytes (> ${MAX_INLINE_BYTES} inline limit); stream it from the url instead.` },
-							null,
-							2,
-						),
-					);
+					return ok(oj({ url: `${storeBase(env)}/s/${uuid}`, key: r2key, sha256: sha, size: obj.size, content_type: type, note: `object is ${obj.size} bytes (> ${MAX_INLINE_BYTES} inline limit); stream it from the url instead.` }));
 				}
 				// Inflate a transparent-gzip frame back to the original bytes before
 				// decoding/encoding (raw/legacy objects pass through untouched). Read as

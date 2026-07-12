@@ -93,14 +93,6 @@ export function isDirectHost(url: string): boolean {
 }
 
 /**
- * SSRF guard: reject loopback / private / link-local / CGNAT / ULA / metadata
- * address literals — the destinations the residential node must never be tricked
- * into fetching, since it sits *inside* the home LAN (router admin UI, uhttpd,
- * every other device). Mirrors node/server.mjs isPrivateIp. `host` is an IP
- * literal (v4 dotted-decimal or v6); anything that isn't a recognizable private
- * literal returns false so ordinary hostnames pass through.
- */
-/**
  * Decode the 32-bit IPv4 tail of an IPv4-mapped IPv6 literal (the part after
  * `::ffff:`) to dotted-decimal. Accepts the dotted form (`127.0.0.1`) and the
  * compressed two-group hex form the WHATWG URL parser emits (`7f00:1` = the high
@@ -115,6 +107,14 @@ function mappedV4ToDotted(tail: string): string | null {
 	return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
 }
 
+/**
+ * SSRF guard: reject loopback / private / link-local / CGNAT / ULA / metadata
+ * address literals — the destinations the residential node must never be tricked
+ * into fetching, since it sits *inside* the home LAN (router admin UI, uhttpd,
+ * every other device). Mirrors node/server.mjs isPrivateIp. `host` is an IP
+ * literal (v4 dotted-decimal or v6); anything that isn't a recognizable private
+ * literal returns false so ordinary hostnames pass through.
+ */
 export function isPrivateIp(host: string): boolean {
 	if (host.includes(":")) {
 		// IPv6: unspecified (::), loopback (::1), unique-local (fc00::/7), link-local (fe80::/10), v4-mapped.

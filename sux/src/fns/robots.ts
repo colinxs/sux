@@ -86,7 +86,7 @@ export const robots: Fn = {
 		const origin = new URL(raw).origin;
 		const resp = await smartFetch(env, `${origin}/robots.txt`, {});
 		if (!resp.ok) {
-			const r = ok(JSON.stringify({ origin, status: resp.status, note: "no robots.txt (nothing disallowed)" }));
+			const r = ok(oj({ origin, status: resp.status, note: "no robots.txt (nothing disallowed)" }));
 			// A 4xx (404/403) is a real "no robots" answer worth caching; a 5xx/429 is
 			// a transient upstream failure — don't cache it as "no robots" for an hour.
 			if (resp.status >= 500 || resp.status === 429) r.noCache = true;

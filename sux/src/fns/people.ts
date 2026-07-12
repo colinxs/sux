@@ -26,7 +26,7 @@ export const people: Fn = {
 	name: "people",
 	cost: 3,
 	description:
-		"Search public people & organization directories. source: web (default) — a Kagi people/directory search (great for finding a person's affiliation, title, profile, or an org's page); usagov — the USA.gov federal agency directory (name → agency contact info). `query` is the person/org name. With source=web, extract_contacts:true also fetches the top result and pulls emails/phones from it (via the residential proxy). Note: auth-walled institutional directories (e.g. directory.uw.edu) need their own credentials and aren't queried directly.",
+		"Search public people & organization directories. source: web (default) — a Kagi people/directory search (great for finding a person's affiliation, title, profile, or an org's page); usagov — the USA.gov federal agency directory (name → agency contact info). `query` is the person/org name. With source=web, extract_contacts:true also fetches the top result and pulls emails/phones from it (via the residential proxy). For the University of Washington directory specifically, use the dedicated `uw` fn (scrapes directory.uw.edu directly, no credentials needed for faculty/staff).",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,

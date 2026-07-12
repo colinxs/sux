@@ -88,13 +88,7 @@ export const learn: Fn = {
 				const vec = await embedOne(env, input);
 				const k = Math.min(25, Math.max(1, Number(args?.k) || 3));
 				const v = classifyKnn(vec, all, k);
-				return ok(
-					JSON.stringify(
-						{ action, input, label: v.label, confidence: v.confidence, neighbors: v.neighbors.map((n) => ({ label: n.label, input: n.input, score: n.score })), examples: all.length },
-						null,
-						2,
-					),
-				);
+				return ok(oj({ action, input, label: v.label, confidence: v.confidence, neighbors: v.neighbors.map((n) => ({ label: n.label, input: n.input, score: n.score })), examples: all.length }));
 			}
 
 			if (action === "learn") {

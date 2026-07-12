@@ -350,7 +350,7 @@ token, `logs:write`).
 ## Gotchas that cost hours
 
 - **uhttpd drops custom request headers on POST** → HMAC `ts`+`sig` ride the
-  query string, not headers.
+  query string, not headers (full rationale under [The bot-detection war](#the-bot-detection-war-hard-won-knowledge)).
 - **OpenWRT is musl** → the curl-impersonate `-gnu` build won't run ("required
   file not found" = missing glibc interpreter); use the `-musl` build.
 - **`base64` isn't installed on the OpenWRT box** → the CGI encodes with
@@ -361,7 +361,7 @@ token, `logs:write`).
   API to serve in parallel.
 - **CapSolver is headed-only** → the solver tier runs a headed patchright with a
   persistent profile; it can't run in a pure-headless pass.
-- **The MCP client caches tool schemas** → reconnect after changing fns/params.
+- **The MCP client caches tool schemas** → reconnect after changing fns/params (see [After a schema-changing deploy](#after-a-schema-changing-deploy)).
 
 ---
 

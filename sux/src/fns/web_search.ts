@@ -198,7 +198,6 @@ export const webSearch: Fn = {
 		const wantSummary = args?.summarize === true;
 		const route: Route = args?.proxy === true ? "proxy" : "auto";
 
-		// Resolve the engine list.
 		let engines: string[];
 		if (engine === "all") {
 			engines = available(env);

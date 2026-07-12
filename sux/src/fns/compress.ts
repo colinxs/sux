@@ -1,6 +1,6 @@
 import zlib from "node:zlib";
 import { type Fn, fail, ok } from "../registry";
-import { fromB64, putBlob, toB64 } from "./_util";
+import { errMsg, fromB64, oj, putBlob, toB64 } from "./_util";
 
 // Lossless compression at MAXIMUM ratio by default (Bosman: "highest compression,
 // zstd"). Uses node:zlib (available under nodejs_compat) for real level control —
@@ -79,9 +79,9 @@ export const compress: Fn = {
 				// binary payloads should ask for base64 or a CAS url instead.
 				if (as === "url") {
 					const ref = await putBlob(env, out, "application/octet-stream");
-					return ok(JSON.stringify({ bytes: out.length, url: ref.url, sha256: ref.sha256, content_type: ref.content_type }));
+					return ok(oj({ bytes: out.length, url: ref.url, sha256: ref.sha256, content_type: ref.content_type }));
 				}
-				if (as === "base64") return ok(JSON.stringify({ bytes: out.length, base64: toB64(out) }));
+				if (as === "base64") return ok(oj({ bytes: out.length, base64: toB64(out) }));
 				return ok(new TextDecoder().decode(out));
 			}
 			const input = new TextEncoder().encode(String(args?.data ?? ""));
@@ -90,14 +90,14 @@ export const compress: Fn = {
 			const stats = { codec, in_bytes: input.length, out_bytes: out.length, saved_pct: saved };
 			if (as === "url") {
 				const ref = await putBlob(env, out, "application/octet-stream");
-				return ok(JSON.stringify({ ...stats, url: ref.url, sha256: ref.sha256 }));
+				return ok(oj({ ...stats, url: ref.url, sha256: ref.sha256 }));
 			}
-			return ok(JSON.stringify({ ...stats, base64: toB64(out) }));
+			return ok(oj({ ...stats, base64: toB64(out) }));
 		} catch (e) {
 			if ((e as { code?: string })?.code === "ERR_BUFFER_TOO_LARGE") {
 				return fail(`decompress failed: output exceeds the ${MAX_DECOMPRESS_BYTES} byte cap (possible decompression bomb).`);
 			}
-			return fail(`${decompress ? "decompress" : "compress"} failed: ${String((e as Error).message ?? e)}`);
+			return fail(`${decompress ? "decompress" : "compress"} failed: ${errMsg(e)}`);
 		}
 	},
 };

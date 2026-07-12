@@ -4,7 +4,7 @@ import { appendFeedback } from "./_feedback";
 export const suggest: Fn = {
 	name: "suggest",
 	description:
-		"Log a feature/capability request for the sux server to its server-side feedback log (KV). Use when a tool is missing, an option would help, or a workflow would be nicer. Persisted and readable at GET /feedback?type=suggest. Pair of `issue`.",
+		"Log a feature/capability request for the sux server to its server-side feedback log (KV). Use when a tool is missing, an option would help, or a workflow would be nicer. Persisted and readable at GET /feedback?type=suggest, which is public and unauthenticated; text is PII-redacted (emails/phones/SSNs/etc.) before storage, so don't rely on it for anything you need verbatim, and don't rely on redaction as your only safeguard. Pair of `issue`.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,

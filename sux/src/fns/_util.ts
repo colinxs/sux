@@ -336,7 +336,7 @@ export async function fetchTextOk(
 	try {
 		fetched = await fetchText(env, url, init);
 	} catch (e) {
-		return { error: `Fetch failed: ${String((e as Error).message ?? e)}` };
+		return { error: `Fetch failed: ${errMsg(e)}` };
 	}
 	if (fetched.status >= 400) return { error: `Fetch failed: HTTP ${fetched.status} for ${url}` };
 	return { text: fetched.text, headers: fetched.headers, status: fetched.status };
@@ -536,7 +536,7 @@ export async function deliverBytes(
 			const ref = await putBlob(env, bytes, contentType);
 			return { content: [{ type: "text", text: oj({ url: ref.url, sha256: ref.sha256, size: ref.size, content_type: contentType }) }] };
 		} catch (e) {
-			return { content: [{ type: "text", text: `as:"url" needs the R2 store: ${String((e as Error).message ?? e)}` }], isError: true };
+			return { content: [{ type: "text", text: `as:"url" needs the R2 store: ${errMsg(e)}` }], isError: true };
 		}
 	}
 	return inline();
