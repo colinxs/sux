@@ -1,6 +1,6 @@
 import { type Fn, fail, ok } from "../registry";
 import { htmlToMd } from "./_markup";
-import { clamp, loadBytes, putBlob, vaultToday } from "./_util";
+import { clamp, loadBytes, putBlob, vaultToday, oj } from "./_util";
 import { dropboxPut, hasDropbox } from "./dropbox";
 import { type VaultCfg, vaultCfg, vaultPut } from "./obsidian";
 
@@ -218,7 +218,7 @@ export const ingest: Fn = {
 				w = nc;
 			}
 			if (!w.ok) return fail(w.error);
-			return ok(JSON.stringify({ ok: true, note: notePath, created: w.created, commit: w.commit, source, ...(pass ? { pass } : {}), ...(blob ? { blob } : {}) }, null, 2));
+			return ok(oj({ ok: true, note: notePath, created: w.created, commit: w.commit, source, ...(pass ? { pass } : {}), ...(blob ? { blob } : {}) }));
 		} catch (e) {
 			return fail(`ingest failed: ${String((e as Error).message ?? e)}`);
 		}

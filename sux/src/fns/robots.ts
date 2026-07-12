@@ -1,4 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
+import { oj } from "./_util";
 import { smartFetch } from "../proxy";
 
 // Translate a robots.txt path rule to a regex: `*` → `.*`, a trailing `$`
@@ -100,6 +101,6 @@ export const robots: Fn = {
 
 		let allowed: boolean | undefined;
 		if (args?.path) allowed = isPathAllowed(groups, String(args.path));
-		return ok(JSON.stringify({ origin, groups, sitemaps, ...(allowed !== undefined ? { path: args.path, allowed } : {}) }, null, 2));
+		return ok(oj({ origin, groups, sitemaps, ...(allowed !== undefined ? { path: args.path, allowed } : {}) }));
 	},
 };

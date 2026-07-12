@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { fetchText, isHttpUrl } from "./_util";
+import { fetchText, isHttpUrl, oj } from "./_util";
 import { type RobotsGroup, isPathAllowed, parseRobots } from "./robots";
 
 // Pages within a frontier level are fetched by a small index-claiming worker
@@ -69,7 +69,7 @@ export const crawl: Fn = {
 		// The seed is a candidate URL too: honour robots before fetching it.
 		if (respectRobots && !(await robotsAllows(seed))) {
 			skippedByRobots.push(seed);
-			return ok(JSON.stringify({ seed, pages: 0, results, skipped_by_robots: skippedByRobots }, null, 2));
+			return ok(oj({ seed, pages: 0, results, skipped_by_robots: skippedByRobots }));
 		}
 
 		while (frontier.length && results.length < maxPages) {
@@ -135,6 +135,6 @@ export const crawl: Fn = {
 			}
 			frontier = next;
 		}
-		return ok(JSON.stringify({ seed, pages: results.length, results, ...(respectRobots ? { skipped_by_robots: skippedByRobots } : {}) }, null, 2));
+		return ok(oj({ seed, pages: results.length, results, ...(respectRobots ? { skipped_by_robots: skippedByRobots } : {}) }));
 	},
 };

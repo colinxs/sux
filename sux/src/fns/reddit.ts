@@ -1,6 +1,6 @@
 import { smartFetch } from "../proxy";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
-import { errMsg } from "./_util";
+import { errMsg, oj } from "./_util";
 
 // Reddit read-only, KEYLESS-FIRST. Reddit now blocks self-serve OAuth app creation,
 // so the default path needs no credentials at all: Reddit serves every public
@@ -198,7 +198,7 @@ export const reddit: Fn = {
 				if (!subreddit) return failWith("bad_input", "action=subreddit requires a `subreddit`.");
 				const j = await fetchJson(env, `/r/${encodeURIComponent(subreddit)}/${encodeURIComponent(sort)}?limit=${limit}`, useOAuth);
 				const items = normListing(j);
-				return ok(JSON.stringify({ service: "reddit", action, count: items.length, items }, null, 2));
+				return ok(oj({ service: "reddit", action, count: items.length, items }));
 			}
 
 			if (action === "comments") {
@@ -208,7 +208,7 @@ export const reddit: Fn = {
 				// /comments returns [postListing, commentsListing]; normalize the post listing.
 				const postListing = Array.isArray(j) ? j[0] : j;
 				const items = normListing(postListing);
-				return ok(JSON.stringify({ service: "reddit", action, count: items.length, items }, null, 2));
+				return ok(oj({ service: "reddit", action, count: items.length, items }));
 			}
 
 			if (action === "user") {
@@ -226,7 +226,7 @@ export const reddit: Fn = {
 					is_mod: Boolean(d?.is_mod),
 					url: `https://reddit.com/user/${d?.name ?? username}`,
 				};
-				return ok(JSON.stringify({ service: "reddit", action, count: 1, items: [item] }, null, 2));
+				return ok(oj({ service: "reddit", action, count: 1, items: [item] }));
 			}
 
 			// action === "search"
@@ -242,7 +242,7 @@ export const reddit: Fn = {
 			}
 			const j = await fetchJson(env, path, useOAuth);
 			const items = normListing(j);
-			return ok(JSON.stringify({ service: "reddit", action, count: items.length, items }, null, 2));
+			return ok(oj({ service: "reddit", action, count: items.length, items }));
 		} catch (e) {
 			// A keyless proxy block is retryable and hints the OAuth upgrade; everything
 			// else (OAuth HTTP errors, parse failures) is a generic upstream error.

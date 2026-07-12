@@ -1,7 +1,7 @@
 import { hasAI, llm } from "../ai";
 import { normalizeArgs, normalizeText } from "../normalize";
 import { type Fn, fail, ok } from "../registry";
-import { FANOUT_BUDGET_MS, pool } from "./_util";
+import { FANOUT_BUDGET_MS, pool, oj } from "./_util";
 
 // Map-reduce: MAP one sux tool over many argument sets, then optionally REDUCE
 // the successful results into one value. FUNCTIONS is imported dynamically
@@ -224,7 +224,7 @@ export const batch: Fn = {
 				if (rr.isError) return fail(`reduce_with '${rTool}' failed: ${text}`);
 				const reduced = rFound.raw ? text : normalizeText(text);
 				const payload = includeResults ? { tool: toolName, results, reduced, reduced_with: rTool, ...trunc } : { tool: toolName, reduced, reduced_with: rTool, ...trunc };
-				return ok(JSON.stringify(payload, null, 2));
+				return ok(oj(payload));
 			} catch (e) {
 				return fail(`reduce_with '${rTool}' failed: ${String((e as Error)?.message ?? e)}`);
 			}
@@ -232,7 +232,7 @@ export const batch: Fn = {
 
 		// Reduce operates only over ok results; failed items stay in `results`
 		// but are skipped here.
-		if (reduce === "none") return ok(JSON.stringify({ tool: toolName, results, ...trunc }, null, 2));
+		if (reduce === "none") return ok(oj({ tool: toolName, results, ...trunc }));
 
 		const okText = results.filter((r) => r?.ok && r.text).map((r) => r.text as string);
 		const joined = okText.join(SEP);
@@ -258,6 +258,6 @@ export const batch: Fn = {
 		}
 
 		const payload = includeResults ? { tool: toolName, results, reduced, ...trunc } : { tool: toolName, reduced, ...trunc };
-		return ok(JSON.stringify(payload, null, 2));
+		return ok(oj(payload));
 	},
 };

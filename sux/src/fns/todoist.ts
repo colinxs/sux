@@ -1,5 +1,5 @@
 import { type Fn, type FailCode, failWith, ok, type RtEnv } from "../registry";
-import { errMsg } from "./_util";
+import { errMsg, oj } from "./_util";
 
 // Todoist tasks over the REST v2 API — a thin, honest adapter (NOT the ~50-tool
 // interactive connector). Auth is a personal API token used as a Bearer directly
@@ -77,7 +77,7 @@ export const todoist: Fn = {
 			if (action === "projects") {
 				const r = await tapi(env, "GET", "/projects");
 				if (r.status >= 400) return failWith(codeFor(r.status), `Todoist projects: ${r.json?.error ?? (r.text.slice(0, 200) || `HTTP ${r.status}`)}`);
-				return ok(JSON.stringify({ projects: (r.json ?? []).map((p: any) => ({ id: p?.id, name: p?.name, is_inbox: p?.is_inbox_project })) }, null, 2));
+				return ok(oj({ projects: (r.json ?? []).map((p: any) => ({ id: p?.id, name: p?.name, is_inbox: p?.is_inbox_project })) }));
 			}
 			if (action === "list") {
 				const qs = new URLSearchParams();
@@ -86,14 +86,14 @@ export const todoist: Fn = {
 				const r = await tapi(env, "GET", `/tasks${qs.toString() ? `?${qs}` : ""}`);
 				if (r.status >= 400) return failWith(codeFor(r.status), `Todoist list: ${r.json?.error ?? (r.text.slice(0, 200) || `HTTP ${r.status}`)}`);
 				const tasks = (r.json ?? []).map(task);
-				return ok(JSON.stringify({ count: tasks.length, tasks }, null, 2));
+				return ok(oj({ count: tasks.length, tasks }));
 			}
 			if (action === "add") {
 				if (!a?.content) return failWith("bad_input", "todoist add requires `content`.");
 				const body = defined({ content: String(a.content), description: a?.description, project_id: a?.project_id, due_string: a?.due_string, priority: a?.priority, labels: a?.labels });
 				const r = await tapi(env, "POST", "/tasks", body);
 				if (r.status >= 400) return failWith(codeFor(r.status), `Todoist add: ${r.json?.error ?? (r.text.slice(0, 200) || `HTTP ${r.status}`)}`);
-				return ok(JSON.stringify({ ok: true, added: task(r.json) }, null, 2));
+				return ok(oj({ ok: true, added: task(r.json) }));
 			}
 			if (action === "add_many") {
 				const items = Array.isArray(a?.items) ? a.items : [];
@@ -109,7 +109,7 @@ export const todoist: Fn = {
 				);
 				const added = results.filter((x: any) => x.ok);
 				const failed = results.filter((x: any) => !x.ok);
-				return ok(JSON.stringify({ requested: items.length, added: added.length, failed: failed.length, tasks: added, ...(failed.length ? { errors: failed } : {}) }, null, 2));
+				return ok(oj({ requested: items.length, added: added.length, failed: failed.length, tasks: added, ...(failed.length ? { errors: failed } : {}) }));
 			}
 			if (action === "complete_many") {
 				const ids = Array.isArray(a?.ids) ? a.ids.map(String) : [];
@@ -123,7 +123,7 @@ export const todoist: Fn = {
 				);
 				const completed = results.filter((x) => x.ok).map((x) => x.id);
 				const failed = results.filter((x) => !x.ok);
-				return ok(JSON.stringify({ requested: ids.length, completed: completed.length, completedIds: completed, failed: failed.length, ...(failed.length ? { errors: failed } : {}) }, null, 2));
+				return ok(oj({ requested: ids.length, completed: completed.length, completedIds: completed, failed: failed.length, ...(failed.length ? { errors: failed } : {}) }));
 			}
 			if (action === "update") {
 				if (!id) return failWith("bad_input", "todoist update requires an `id`.");
@@ -131,20 +131,20 @@ export const todoist: Fn = {
 				if (!Object.keys(body).length) return failWith("bad_input", "todoist update needs at least one field to change.");
 				const r = await tapi(env, "POST", `/tasks/${encodeURIComponent(id)}`, body);
 				if (r.status >= 400) return failWith(codeFor(r.status), `Todoist update: ${r.json?.error ?? (r.text.slice(0, 200) || `HTTP ${r.status}`)}`);
-				return ok(JSON.stringify({ ok: true, updated: task(r.json) }, null, 2));
+				return ok(oj({ ok: true, updated: task(r.json) }));
 			}
 			if (action === "complete" || action === "reopen") {
 				if (!id) return failWith("bad_input", `todoist ${action} requires an \`id\`.`);
 				const r = await tapi(env, "POST", `/tasks/${encodeURIComponent(id)}/${action === "complete" ? "close" : "reopen"}`);
 				if (r.status >= 400) return failWith(codeFor(r.status), `Todoist ${action}: ${r.json?.error ?? (r.text.slice(0, 200) || `HTTP ${r.status}`)}`);
-				return ok(JSON.stringify({ ok: true, action, id }, null, 2));
+				return ok(oj({ ok: true, action, id }));
 			}
 			if (action === "delete") {
 				if (!id) return failWith("bad_input", "todoist delete requires an `id`.");
 				if (a?.confirm !== true) return failWith("bad_input", "todoist delete requires confirm:true (Todoist delete is permanent, not a recoverable trash).");
 				const r = await tapi(env, "DELETE", `/tasks/${encodeURIComponent(id)}`);
 				if (r.status >= 400) return failWith(codeFor(r.status), `Todoist delete: ${r.json?.error ?? (r.text.slice(0, 200) || `HTTP ${r.status}`)}`);
-				return ok(JSON.stringify({ ok: true, deleted: id }, null, 2));
+				return ok(oj({ ok: true, deleted: id }));
 			}
 			return failWith("bad_input", `todoist: unknown action '${action}'.`);
 		} catch (e) {

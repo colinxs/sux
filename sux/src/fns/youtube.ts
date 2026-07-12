@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { errMsg } from "./_util";
+import { errMsg, oj } from "./_util";
 
 // YouTube Data API v3 (googleapis.com) — official, free-quota key rides the
 // query string. `search` returns matching videos; an optional `videos` call
@@ -77,7 +77,7 @@ export const youtube: Fn = {
 			}
 
 			const videos = items.map((it) => normItem(it, statsById[it?.id?.videoId]));
-			return ok(JSON.stringify({ source: "youtube", term, count: videos.length, videos }, null, 2));
+			return ok(oj({ source: "youtube", term, count: videos.length, videos }));
 		} catch (e) {
 			return fail(`youtube failed: ${errMsg(e)}`);
 		}

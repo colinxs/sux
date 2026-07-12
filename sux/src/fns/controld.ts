@@ -1,5 +1,5 @@
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
-import { errMsg } from "./_util";
+import { errMsg, oj } from "./_util";
 
 // ControlD API (api.controld.com) — official, clean REST behind a single Bearer
 // token. Read-only surface: list DNS profiles, the devices bound to them, and a
@@ -103,7 +103,7 @@ export const controld: Fn = {
 			if (action === "devices") {
 				const j = await api(env, "/devices");
 				const items = normAll(extractItems(j, "devices"), normDevice);
-				return ok(JSON.stringify({ service: "controld", action, count: items.length, items }, null, 2));
+				return ok(oj({ service: "controld", action, count: items.length, items }));
 			}
 
 			if (action === "rules") {
@@ -111,13 +111,13 @@ export const controld: Fn = {
 				if (!pid) return failWith("bad_input", "action=rules requires a `profile_id`.");
 				const j = await api(env, `/profiles/${encodeURIComponent(pid)}/rules`);
 				const items = normAll(extractItems(j, "rules"), normRule);
-				return ok(JSON.stringify({ service: "controld", action, profile_id: pid, count: items.length, items }, null, 2));
+				return ok(oj({ service: "controld", action, profile_id: pid, count: items.length, items }));
 			}
 
 			// action === "profiles"
 			const j = await api(env, "/profiles");
 			const items = normAll(extractItems(j, "profiles"), normProfile);
-			return ok(JSON.stringify({ service: "controld", action, count: items.length, items }, null, 2));
+			return ok(oj({ service: "controld", action, count: items.length, items }));
 		} catch (e) {
 			return failWith("upstream_error", `controld (${action}) failed: ${errMsg(e)}`);
 		}

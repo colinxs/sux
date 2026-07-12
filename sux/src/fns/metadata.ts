@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { isHttpUrl, loadHtml, stripHtml } from "./_util";
+import { isHttpUrl, loadHtml, stripHtml, oj } from "./_util";
 
 // Resolve `href` against `base`, but never let a malformed href/base crash the
 // whole extraction — fall back to `href` verbatim (a caller passing a bad
@@ -63,6 +63,6 @@ export const metadata: Fn = {
 		if (favicon) out.favicon = favicon;
 
 		if (!Object.keys(out).length) return ok("(no metadata found)");
-		return ok(JSON.stringify(out, null, 2));
+		return ok(oj(out));
 	},
 };

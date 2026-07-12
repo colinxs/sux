@@ -27,6 +27,7 @@ import {
 	loadBytes,
 	loadHtml,
 	noCacheOn4xx,
+	oj,
 	pool,
 	putBlob,
 	setFetchDedup,
@@ -274,6 +275,14 @@ describe("_util", () => {
 
 	it("stripHtml removes tags and decodes entities", () => {
 		expect(stripHtml("<p>a &amp; <b>b</b></p><script>x()</script>")).toBe("a & b");
+	});
+
+	it("oj serializes compactly (no pretty whitespace) and round-trips", () => {
+		const x = { a: 1, b: [2, 3], c: { d: "e" } };
+		const s = oj(x);
+		expect(s).toBe('{"a":1,"b":[2,3],"c":{"d":"e"}}');
+		expect(s).not.toMatch(/\n/);
+		expect(JSON.parse(s)).toEqual(x);
 	});
 });
 

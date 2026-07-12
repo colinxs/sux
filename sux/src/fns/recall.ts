@@ -6,7 +6,7 @@ import { search } from "./search";
 import { jmap } from "./jmap";
 import { embedOne } from "./_embed";
 import { classifyKnn, listExamples } from "./_examples";
-import { errMsg } from "./_util";
+import { errMsg, oj } from "./_util";
 
 // recall — "what do I know about X?" answered from YOUR life. It fans out server-side
 // across four stores — the vault (your Obsidian notes), files (whole-Dropbox content
@@ -200,12 +200,12 @@ export const recall: Fn = {
 		});
 
 		if (!materials.length) {
-			return ok(JSON.stringify({ question, answer: "I couldn't find anything about that in your notes, mail, or the web I could reach.", sources: status, citations: [] }, null, 2));
+			return ok(oj({ question, answer: "I couldn't find anything about that in your notes, mail, or the web I could reach.", sources: status, citations: [] }));
 		}
 
 		try {
 			const answer = (await llm(env, recallSystem(question), materials.join("\n\n---\n\n").slice(0, 14_000), 900, "recall from personal sources")).trim();
-			return ok(JSON.stringify({ question, answer: answer || "(the synthesizer returned nothing — try rephrasing)", sources: status, citations }, null, 2));
+			return ok(oj({ question, answer: answer || "(the synthesizer returned nothing — try rephrasing)", sources: status, citations }));
 		} catch (e) {
 			return failWith("upstream_error", `recall synthesis failed: ${errMsg(e)}`);
 		}

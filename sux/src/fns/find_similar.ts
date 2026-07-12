@@ -1,4 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
+import { oj } from "./_util";
 
 type ExaResult = { title?: string; url?: string; publishedDate?: string; author?: string; score?: number; id?: string };
 
@@ -43,6 +44,6 @@ export const find_similar: Fn = {
 		const results = normalize(j?.results ?? []);
 		if (!results.length) return fail(url ? `No pages similar to ${url}.` : `No results for "${query}".`);
 
-		return ok(JSON.stringify(results, null, 2));
+		return ok(oj(results));
 	},
 };

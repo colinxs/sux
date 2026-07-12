@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { loadHtml } from "./_util";
+import { loadHtml, oj } from "./_util";
 
 /** Escape regex metacharacters so a user-supplied attribute name can't inject
  * regex syntax (or throw) when interpolated into an attribute-matching pattern. */
@@ -202,6 +202,6 @@ export const select: Fn = {
 			}
 			if (out.length >= limit) break;
 		}
-		return ok(JSON.stringify(out, null, 2));
+		return ok(oj(out));
 	},
 };

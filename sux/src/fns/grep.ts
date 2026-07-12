@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { fetchTextOk } from "./_util";
+import { fetchTextOk, oj } from "./_util";
 
 export const grep: Fn = {
 	name: "grep",
@@ -66,6 +66,6 @@ export const grep: Fn = {
 			matches.push(hit);
 		}
 
-		return ok(JSON.stringify({ count: total, matches }, null, 2));
+		return ok(oj({ count: total, matches }));
 	},
 };

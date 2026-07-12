@@ -1,6 +1,6 @@
 import { hasAI, llm } from "../ai";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
-import { errMsg, fetchText, isHttpUrl, stripHtml } from "./_util";
+import { errMsg, fetchText, isHttpUrl, stripHtml, oj } from "./_util";
 import { readability } from "./readability";
 
 // oracle — a learn-then-answer knowledge oracle backed by KV + Workers AI. Give it
@@ -166,19 +166,19 @@ export const oracle: Fn = {
 					cursor = page.list_complete ? undefined : page.cursor;
 				} while (cursor);
 				topics.sort();
-				return ok(JSON.stringify({ action, count: topics.length, topics }, null, 2));
+				return ok(oj({ action, count: topics.length, topics }));
 			}
 
 			if (action === "get") {
 				const kb = await loadKb(env, topic);
-				if (!kb) return ok(JSON.stringify({ action, topic, found: false, note: `No knowledge base '${topic}'. Teach it by passing \`knowledge\`.` }, null, 2));
-				return ok(JSON.stringify({ action, topic, found: true, chunk_count: kb.chunks.length, sources: kb.sources, distilled: kb.distilled, updated_at: kb.updated_at }, null, 2));
+				if (!kb) return ok(oj({ action, topic, found: false, note: `No knowledge base '${topic}'. Teach it by passing \`knowledge\`.` }));
+				return ok(oj({ action, topic, found: true, chunk_count: kb.chunks.length, sources: kb.sources, distilled: kb.distilled, updated_at: kb.updated_at }));
 			}
 
 			if (action === "forget") {
 				const existed = (await env.OAUTH_KV.get(`${KV_PREFIX}${topic}`)) != null;
 				await env.OAUTH_KV.delete(`${KV_PREFIX}${topic}`);
-				return ok(JSON.stringify({ action, topic, forgotten: existed, note: existed ? "knowledge base removed" : "no such topic (nothing to delete)" }, null, 2));
+				return ok(oj({ action, topic, forgotten: existed, note: existed ? "knowledge base removed" : "no such topic (nothing to delete)" }));
 			}
 
 			if (action) return failWith("bad_input", `Unknown action '${action}'. Use get | list | forget, or pass \`problem\`/\`knowledge\`.`);

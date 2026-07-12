@@ -3,7 +3,7 @@ import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { embedOne } from "./_embed";
 import { appendOnLearn } from "./_kb";
 import { classifyKnn, clearExamples, deleteBatch, type Example, listExamples, newId, putExample } from "./_examples";
-import { errMsg } from "./_util";
+import { errMsg, oj } from "./_util";
 
 // learn — the stateless-learning substrate. Teach sux a labeled example
 // (action=learn: embed `input`, store it under `label`, mirror a line into the vault
@@ -60,14 +60,14 @@ export const learn: Fn = {
 				const all = await listExamples(env);
 				const labels: Record<string, number> = {};
 				for (const e of all) labels[e.label] = (labels[e.label] ?? 0) + 1;
-				return ok(JSON.stringify({ action, count: all.length, labels, examples: all.map(record) }, null, 2));
+				return ok(oj({ action, count: all.length, labels, examples: all.map(record) }));
 			}
 
 			if (action === "undo") {
 				const batch = String(args?.batch ?? "").trim();
 				if (!batch) return failWith("bad_input", "action=undo requires a `batch` — the handle returned by a prior learn.");
 				const deleted = await deleteBatch(env, batch);
-				return ok(JSON.stringify({ action, batch, deleted, note: deleted ? `removed ${deleted} record(s) from batch ${batch}` : `no records tagged batch ${batch}` }, null, 2));
+				return ok(oj({ action, batch, deleted, note: deleted ? `removed ${deleted} record(s) from batch ${batch}` : `no records tagged batch ${batch}` }));
 			}
 
 			if (action === "reset") {
@@ -76,7 +76,7 @@ export const learn: Fn = {
 				// learn/classify path, so the annotation-driven smart guard doesn't cover this).
 				if (args?.confirm !== true) return failWith("bad_input", "action=reset clears the ENTIRE learned set and can't be batch-undone — pass confirm:true to proceed.");
 				const deleted = await clearExamples(env);
-				return ok(JSON.stringify({ action, deleted, note: `cleared the learned set (${deleted} record(s))` }, null, 2));
+				return ok(oj({ action, deleted, note: `cleared the learned set (${deleted} record(s))` }));
 			}
 
 			if (action === "classify") {
@@ -84,7 +84,7 @@ export const learn: Fn = {
 				if (!input) return failWith("bad_input", "action=classify requires an `input` to classify.");
 				if (!hasAI(env)) return failWith("not_configured", "Workers AI binding not configured — needed to embed the query for kNN classify.");
 				const all = await listExamples(env);
-				if (!all.length) return ok(JSON.stringify({ action, input, label: null, confidence: 0, neighbors: [], note: "the learned set is empty — teach it with action=learn." }, null, 2));
+				if (!all.length) return ok(oj({ action, input, label: null, confidence: 0, neighbors: [], note: "the learned set is empty — teach it with action=learn." }));
 				const vec = await embedOne(env, input);
 				const k = Math.min(25, Math.max(1, Number(args?.k) || 3));
 				const v = classifyKnn(vec, all, k);
@@ -113,7 +113,7 @@ export const learn: Fn = {
 				// Best-effort, idempotent vault mirror — no-ops (fail-closed) if the vault is unconfigured.
 				const mirrored = await appendOnLearn(env, label, input, batch);
 				console.log(`learn: stored id=${id} label=${label} batch=${batch} mirrored=${mirrored}`);
-				return ok(JSON.stringify({ action, id, batch, label, mirrored_to_vault: mirrored, undo_hint: `learn(action:"undo", batch:"${batch}")` }, null, 2));
+				return ok(oj({ action, id, batch, label, mirrored_to_vault: mirrored, undo_hint: `learn(action:"undo", batch:"${batch}")` }));
 			}
 
 			return failWith("bad_input", `Unknown action '${action}'. Use learn | classify | list | undo | reset.`);

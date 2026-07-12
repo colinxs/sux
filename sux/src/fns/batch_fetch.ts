@@ -1,5 +1,5 @@
 import { type Fn, type RtEnv, fail, ok } from "../registry";
-import { type BlobRef, FANOUT_BUDGET_MS, fetchText, getBlob, isHttpUrl, noCacheOn4xx, noCacheOnMutation, pool, putBlob, readBodyBytes, storeRefUuid } from "./_util";
+import { type BlobRef, FANOUT_BUDGET_MS, fetchText, getBlob, isHttpUrl, noCacheOn4xx, noCacheOnMutation, pool, putBlob, readBodyBytes, storeRefUuid, oj } from "./_util";
 import { smartFetch } from "../proxy";
 
 // Fetch many URLs concurrently through the residential proxy (direct fallback).
@@ -129,6 +129,6 @@ export const batch_fetch: Fn = {
 		// (network blip) counts as a 5xx so one bad URL never poisons the cache. A
 		// truncated run is likewise non-cacheable (its partials shouldn't be frozen).
 		const worst = results.reduce((m, r) => Math.max(m, r.error !== undefined ? 599 : r.status ?? 0), 0);
-		return noCacheOnMutation(noCacheOn4xx(ok(JSON.stringify(results, null, 2)), worst), method);
+		return noCacheOnMutation(noCacheOn4xx(ok(oj(results)), worst), method);
 	},
 };

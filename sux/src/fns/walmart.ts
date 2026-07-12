@@ -1,4 +1,5 @@
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
+import { oj } from "./_util";
 import { retailRender } from "../retail-render";
 import { normalizeMoney, type RetailProduct } from "./_retail";
 
@@ -100,7 +101,7 @@ export const walmart: Fn = {
 				url: `https://www.walmart.com/ip/${id}`,
 				in_stock: product?.availabilityStatus === "IN_STOCK",
 			};
-			return ok(JSON.stringify({ retailer: "walmart", action, count: 1, products: [norm] }, null, 2));
+			return ok(oj({ retailer: "walmart", action, count: 1, products: [norm] }));
 		}
 
 		// action === "search"
@@ -124,6 +125,6 @@ export const walmart: Fn = {
 			.filter((it: any) => it && (it.usItemId || it.id) && it.name)
 			.slice(0, limit)
 			.map(normSearchItem);
-		return ok(JSON.stringify({ retailer: "walmart", action, count: products.length, products }, null, 2));
+		return ok(oj({ retailer: "walmart", action, count: products.length, products }));
 	},
 };

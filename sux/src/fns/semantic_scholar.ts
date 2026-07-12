@@ -1,4 +1,5 @@
 import { type Fn, fail, ok, type RtEnv } from "../registry";
+import { oj } from "./_util";
 
 // Semantic Scholar Academic Graph (api.semanticscholar.org) — keyless paper search
 // across ~200M papers. No residential proxy: a public academic API with no bot
@@ -54,6 +55,6 @@ export const semantic_scholar: Fn = {
 		if (!resp.ok) return fail(`Semantic Scholar API HTTP ${resp.status}.`);
 		const j: any = await resp.json();
 		const results = (j?.data ?? []).map(normPaper);
-		return ok(JSON.stringify({ count: results.length, results }, null, 2));
+		return ok(oj({ count: results.length, results }));
 	},
 };

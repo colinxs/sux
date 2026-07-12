@@ -1,4 +1,5 @@
 import { retailRender } from "../retail-render";
+import { oj } from "./_util";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { unlockerRender } from "../unlocker-render";
 import { normalizeMoney, type RetailProduct } from "./_retail";
@@ -168,6 +169,6 @@ export const homedepot: Fn = {
 		if (products.length === 0) products = fromPods(html);
 		products = products.filter((p) => p.id && p.title).slice(0, limit);
 		if (products.length === 0) return failWith("layout_change", NO_PRODUCTS_MSG);
-		return ok(JSON.stringify({ retailer: "homedepot", action: "search", count: products.length, products }, null, 2));
+		return ok(oj({ retailer: "homedepot", action: "search", count: products.length, products }));
 	},
 };

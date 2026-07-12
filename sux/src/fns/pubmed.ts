@@ -1,4 +1,5 @@
 import { type Fn, fail, ok, type RtEnv } from "../registry";
+import { oj } from "./_util";
 
 // NCBI E-utilities (eutils.ncbi.nlm.nih.gov) — keyless, free biomedical literature
 // search. Two hops: esearch (term → PMID list) then esummary (PMIDs → article
@@ -57,13 +58,13 @@ export const pubmed: Fn = {
 			const searchUrl = `${EUTILS}/esearch.fcgi?db=pubmed&term=${encodeURIComponent(term)}&retmax=${retmax}&retmode=json${key}`;
 			const search = await getJson(searchUrl);
 			const ids: string[] = search?.esearchresult?.idlist ?? [];
-			if (!ids.length) return ok(JSON.stringify({ count: 0, results: [] }, null, 2));
+			if (!ids.length) return ok(oj({ count: 0, results: [] }));
 
 			const summaryUrl = `${EUTILS}/esummary.fcgi?db=pubmed&id=${ids.join(",")}&retmode=json${key}`;
 			const summary = await getJson(summaryUrl);
 			const result = summary?.result ?? {};
 			const results = ids.map((id) => result[id]).filter(Boolean).map(normArticle);
-			return ok(JSON.stringify({ count: results.length, results }, null, 2));
+			return ok(oj({ count: results.length, results }));
 		} catch (e) {
 			return fail(`pubmed failed: ${String((e as Error)?.message ?? e)}`);
 		}

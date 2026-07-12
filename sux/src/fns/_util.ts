@@ -8,6 +8,12 @@ import { smartFetch } from "../proxy";
 /** An Error/thrown value → its message string (the `catch (e)` idiom every fn shares). */
 export const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);
 
+/** Compact JSON for LLM-facing fn output — no pretty indentation (a model reads
+ * the structure fine and pays for every whitespace token). The one serializer
+ * every fn's text envelope goes through; browser-rendered surfaces (observability
+ * /metrics,/logs,/feedback) stay pretty-printed and don't use this. */
+export const oj = (x: unknown): string => JSON.stringify(x);
+
 /** True for an absolute http(s) URL. */
 export function isHttpUrl(u: unknown): u is string {
 	return typeof u === "string" && /^https?:\/\//i.test(u);
@@ -466,7 +472,7 @@ export async function deliverBytes(
 	if (as === "url") {
 		try {
 			const ref = await putBlob(env, bytes, contentType);
-			return { content: [{ type: "text", text: JSON.stringify({ url: ref.url, sha256: ref.sha256, size: ref.size, content_type: contentType }, null, 2) }] };
+			return { content: [{ type: "text", text: oj({ url: ref.url, sha256: ref.sha256, size: ref.size, content_type: contentType }) }] };
 		} catch (e) {
 			return { content: [{ type: "text", text: `as:"url" needs the R2 store: ${String((e as Error).message ?? e)}` }], isError: true };
 		}

@@ -1,6 +1,6 @@
 import { normalizeArgs, normalizeText } from "../normalize";
 import { type Fn, fail, ok } from "../registry";
-import { clamp, FANOUT_BUDGET_MS } from "./_util";
+import { clamp, FANOUT_BUDGET_MS, oj } from "./_util";
 
 // Compose: chain sux tools so each step's text output feeds the next step's args
 // — the server-side derivation graph that pairs with the content-addressed store.
@@ -127,7 +127,7 @@ export const pipe: Fn = {
 		const deadline = Date.now() + FANOUT_BUDGET_MS;
 		for (let i = 0; i < steps.length; i++) {
 			if (Date.now() >= deadline) {
-				return ok(JSON.stringify({ steps: results, output: prev === "" ? null : prev, truncated: true, reason: "time", stopped_at: i }, null, 2));
+				return ok(oj({ steps: results, output: prev === "" ? null : prev, truncated: true, reason: "time", stopped_at: i }));
 			}
 			const step = steps[i];
 			const toolName = typeof step?.tool === "string" ? step.tool.trim() : "";
@@ -145,7 +145,7 @@ export const pipe: Fn = {
 				let text = r.content?.[0]?.text ?? "";
 				if (r.isError) {
 					results.push({ step: i, tool: toolName, ok: false, error: text });
-					return ok(JSON.stringify({ steps: results, output: null, stopped_at: i }, null, 2));
+					return ok(oj({ steps: results, output: null, stopped_at: i }));
 				}
 				// Close-side normalization for non-raw targets (same as index.ts).
 				if (!target.raw) text = normalizeText(text);
@@ -155,9 +155,9 @@ export const pipe: Fn = {
 				prev = text;
 			} catch (e) {
 				results.push({ step: i, tool: toolName, ok: false, error: String((e as Error)?.message ?? e) });
-				return ok(JSON.stringify({ steps: results, output: null, stopped_at: i }, null, 2));
+				return ok(oj({ steps: results, output: null, stopped_at: i }));
 			}
 		}
-		return ok(JSON.stringify({ steps: results, output: prev }, null, 2));
+		return ok(oj({ steps: results, output: prev }));
 	},
 };

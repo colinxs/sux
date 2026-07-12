@@ -1,4 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
+import { oj } from "./_util";
 import { normalizeMoney, type RetailProduct } from "./_retail";
 
 // Flipp (backflipp.wishabi.com) — keyless, free backend powering the Flipp
@@ -78,6 +79,6 @@ export const weekly_ad: Fn = {
 		if (merchant) items = items.filter((it: WeeklyAdItem) => (it.merchant ?? "").toLowerCase().includes(merchant));
 		items = items.slice(0, limit);
 
-		return ok(JSON.stringify({ source: "flipp", term, zip, count: items.length, items }, null, 2));
+		return ok(oj({ source: "flipp", term, zip, count: items.length, items }));
 	},
 };

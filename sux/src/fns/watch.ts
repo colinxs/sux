@@ -1,5 +1,5 @@
 import { type Fn, fail, failWith, ok } from "../registry";
-import { fetchTextOk, isHttpUrl, sha256Hex } from "./_util";
+import { fetchTextOk, isHttpUrl, sha256Hex, oj } from "./_util";
 import { select } from "./select";
 
 /** SHA-256 hex of a UTF-8 string. */
@@ -73,7 +73,7 @@ export const watch: Fn = {
 				...(firstSeen ? {} : { previous_hash: previous }),
 				checked_at: new Date().toISOString(),
 			};
-			const result = ok(JSON.stringify(out, null, 2));
+			const result = ok(oj(out));
 			result.noCache = true; // stateful: the stored hash mutates each check
 			return result;
 		} catch (e) {

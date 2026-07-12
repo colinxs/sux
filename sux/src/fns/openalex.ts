@@ -1,4 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
+import { oj } from "./_util";
 
 // OpenAlex (api.openalex.org) — keyless, free, open scholarly graph (250M+ works).
 // Single JSON endpoint: /works?search=<term>. No residential proxy: a public,
@@ -54,6 +55,6 @@ export const openalex: Fn = {
 		if (!resp.ok) return fail(`OpenAlex API HTTP ${resp.status}.`);
 		const j: any = await resp.json();
 		const results = (Array.isArray(j?.results) ? j.results : []).map(normWork);
-		return ok(JSON.stringify({ count: results.length, results }, null, 2));
+		return ok(oj({ count: results.length, results }));
 	},
 };

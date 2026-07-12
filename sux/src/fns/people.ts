@@ -1,4 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
+import { oj } from "./_util";
 import { kagiTool } from "../kagi";
 import { smartFetch } from "../proxy";
 
@@ -58,7 +59,7 @@ export const people: Fn = {
 					email: c?.Email?.[0],
 				}));
 				if (!contacts.length) return ok(`(no USA.gov agencies found for "${query}")`);
-				return ok(JSON.stringify({ source: "usagov", query, count: contacts.length, contacts }, null, 2));
+				return ok(oj({ source: "usagov", query, count: contacts.length, contacts }));
 			}
 
 			// source=web — Kagi people/directory search.
@@ -83,7 +84,7 @@ export const people: Fn = {
 					/* contact extraction is best-effort */
 				}
 			}
-			return ok(JSON.stringify({ source: "web", query, count: hits.length, hits, ...(contacts ? { contacts } : {}) }, null, 2));
+			return ok(oj({ source: "web", query, count: hits.length, hits, ...(contacts ? { contacts } : {}) }));
 		} catch (e) {
 			return fail(`people (${source}) failed: ${String((e as Error).message ?? e)}`);
 		}

@@ -1,4 +1,5 @@
 import { type Fn, fail, ok, type RtEnv } from "../registry";
+import { oj } from "./_util";
 import type { RetailProduct } from "./_retail";
 
 // Fan one `term` across the retailer fns concurrently and merge their products
@@ -107,6 +108,6 @@ export const product_search: Fn = {
 		}
 
 		const capped = products.slice(0, limit);
-		return ok(JSON.stringify({ term, count: capped.length, by_retailer, products: capped, errors }, null, 2));
+		return ok(oj({ term, count: capped.length, by_retailer, products: capped, errors }));
 	},
 };

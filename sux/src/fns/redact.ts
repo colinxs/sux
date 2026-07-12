@@ -1,4 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
+import { oj } from "./_util";
 
 // PII redaction. Every match becomes [REDACTED:type]. Credit-card candidates
 // are Luhn-checked so long digit runs (IDs, order numbers) aren't clobbered.
@@ -96,6 +97,6 @@ export const redact: Fn = {
 			});
 		}
 
-		return ok(JSON.stringify({ redacted: text, counts }, null, 2));
+		return ok(oj({ redacted: text, counts }));
 	},
 };

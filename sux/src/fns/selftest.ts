@@ -1,4 +1,5 @@
 import { type Fn, ok } from "../registry";
+import { oj } from "./_util";
 import { isTailscaleConfigured, smartFetch } from "../proxy";
 import { macRender } from "../mac-render";
 
@@ -126,6 +127,6 @@ export const selftest: Fn = {
 			browser: Boolean(env.BROWSER),
 		};
 
-		return ok(JSON.stringify({ rungs: { direct, scrape, render_mac, render_cf }, configured }, null, 2));
+		return ok(oj({ rungs: { direct, scrape, render_mac, render_cf }, configured }));
 	},
 };

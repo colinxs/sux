@@ -2,7 +2,7 @@ import { withRetry } from "../proxy";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { getClientToken, mintClientToken, type OAuthClientCreds } from "./_oauth";
 import { normalizeMoney, type RetailProduct } from "./_retail";
-import { errMsg } from "./_util";
+import { errMsg, oj } from "./_util";
 
 // Kroger Public API (api.kroger.com) — official, free, clean REST, no bot wall.
 // One fn covers Kroger and every banner it owns (QFC, Fred Meyer, Ralphs, …) via
@@ -134,7 +134,7 @@ export const kroger: Fn = {
 				if (!zip) return failWith("bad_input", "action=locations requires a `zip`.");
 				const j = await api(env, locationsPath(zip, limit, chain));
 				const locations = (j?.data ?? []).map(normLocation);
-				return ok(JSON.stringify({ retailer: "kroger", action, count: locations.length, locations }, null, 2));
+				return ok(oj({ retailer: "kroger", action, count: locations.length, locations }));
 			}
 
 			if (action === "product") {
@@ -146,7 +146,7 @@ export const kroger: Fn = {
 				const j = await api(env, `/products/${encodeURIComponent(id)}${q}`);
 				const d = Array.isArray(j?.data) ? j.data[0] : j?.data;
 				if (!d) return failWith("not_found", `No Kroger product found for '${id}'.`);
-				return ok(JSON.stringify({ retailer: "kroger", action, count: 1, products: [normProduct(d)] }, null, 2));
+				return ok(oj({ retailer: "kroger", action, count: 1, products: [normProduct(d)] }));
 			}
 
 			// action === "search"
@@ -158,7 +158,7 @@ export const kroger: Fn = {
 			if (locationId) p.set("filter.locationId", locationId);
 			const j = await api(env, `/products?${p}`);
 			const products = normProducts(j?.data);
-			return ok(JSON.stringify({ retailer: "kroger", action, location_id: locationId || undefined, count: products.length, products }, null, 2));
+			return ok(oj({ retailer: "kroger", action, location_id: locationId || undefined, count: products.length, products }));
 		} catch (e) {
 			return failWith("upstream_error", `kroger (${action}) failed: ${errMsg(e)}`);
 		}

@@ -1,4 +1,5 @@
 import { retailRender } from "../retail-render";
+import { oj } from "./_util";
 import { type Fn, fail, ok, type RtEnv } from "../registry";
 import { normalizeMoney, type RetailProduct } from "./_retail";
 
@@ -210,7 +211,7 @@ export const lowes: Fn = {
 			// A product must at least carry a title or a price to be worth returning.
 			const products = fromProductPage(r.body, itemId).filter((p) => p.id && (p.title || p.price)).slice(0, limit);
 			if (products.length === 0) return fail(looksBlocked(r.body) ? BLOCKED_MSG : NO_PRODUCTS_MSG);
-			return ok(JSON.stringify({ retailer: "lowes", action, count: products.length, products }, null, 2));
+			return ok(oj({ retailer: "lowes", action, count: products.length, products }));
 		}
 
 		// Default: search.
@@ -231,6 +232,6 @@ export const lowes: Fn = {
 		if (products.length === 0) products = fromAnchors(r.body);
 		products = products.filter((p) => p.id && p.title).slice(0, limit);
 		if (products.length === 0) return fail(looksBlocked(r.body) ? BLOCKED_MSG : NO_PRODUCTS_MSG);
-		return ok(JSON.stringify({ retailer: "lowes", action: "search", count: products.length, products }, null, 2));
+		return ok(oj({ retailer: "lowes", action: "search", count: products.length, products }));
 	},
 };

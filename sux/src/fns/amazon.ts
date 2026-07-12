@@ -1,4 +1,5 @@
 import { type Fn, fail, ok, type RtEnv } from "../registry";
+import { oj } from "./_util";
 import { retailRender } from "../retail-render";
 import { normalizeMoney, type RetailProduct } from "./_retail";
 
@@ -190,6 +191,6 @@ export const amazon: Fn = {
 			}
 			return fail(NO_PRODUCTS_MSG);
 		}
-		return ok(JSON.stringify({ retailer: "amazon", action, count: products.length, products }, null, 2));
+		return ok(oj({ retailer: "amazon", action, count: products.length, products }));
 	},
 };

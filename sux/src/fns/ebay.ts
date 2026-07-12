@@ -1,7 +1,7 @@
 import { getClientToken, mintClientToken, type OAuthClientCreds } from "./_oauth";
 import { type Fn, fail, ok, type RtEnv } from "../registry";
 import { normalizeMoney, type RetailProduct } from "./_retail";
-import { errMsg } from "./_util";
+import { errMsg, oj } from "./_util";
 
 // eBay Browse API (api.ebay.com) — official, clean REST, no bot wall. Auth is
 // OAuth2 client-credentials (same shape as kroger): the app token is minted once
@@ -77,7 +77,7 @@ export const ebay: Fn = {
 			const p = new URLSearchParams({ q: term, limit: String(limit) });
 			const j = await api(env, `${API}/item_summary/search?${p}`);
 			const products = (j?.itemSummaries ?? []).map(normProduct);
-			return ok(JSON.stringify({ retailer: "ebay", action, count: products.length, products }, null, 2));
+			return ok(oj({ retailer: "ebay", action, count: products.length, products }));
 		} catch (e) {
 			return fail(`ebay (${action}) failed: ${errMsg(e)}`);
 		}

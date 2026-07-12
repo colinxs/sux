@@ -2,7 +2,7 @@ import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { smartFetch } from "../proxy";
 import { unlockerRender } from "../unlocker-render";
 import { normalizeMoney, type RetailProduct, type RetailResult } from "./_retail";
-import { errMsg } from "./_util";
+import { errMsg, oj } from "./_util";
 
 // Costco sits behind Akamai, but the wall here is JA3/fingerprint-centric rather
 // than IP-centric: the residential curl-impersonate path (smartFetch → proxy,
@@ -227,6 +227,6 @@ export const costco: Fn = {
 		}
 
 		const result: RetailResult = { retailer: "costco", action: "search", count: products.length, products };
-		return ok(JSON.stringify(result, null, 2));
+		return ok(oj(result));
 	},
 };

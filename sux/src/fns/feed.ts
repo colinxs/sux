@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { fetchTextOk } from "./_util";
+import { fetchTextOk, oj } from "./_util";
 
 /** Turn a numeric code point into text; out-of-range values become U+FFFD instead of throwing. */
 function codePoint(cp: number): string {
@@ -74,7 +74,7 @@ export const feed: Fn = {
 		// Feed-level title = first <title> before any item/entry block.
 		const head = xml.replace(/<(item|entry)\b[\s\S]*/i, "");
 		return ok(
-			JSON.stringify({ kind: isAtom ? "atom" : "rss", title: tag(head, "title"), count: items.length, items }, null, 2),
+			oj({ kind: isAtom ? "atom" : "rss", title: tag(head, "title"), count: items.length, items }),
 		);
 	},
 };
