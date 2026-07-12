@@ -21,7 +21,8 @@
     "build:node": "node sux/node/build-deploy.mjs",
     "check:node": "node sux/node/build-deploy.mjs --check",
     "bench:costs": "node sux/scripts/benchmark-costs.mjs",
-    "check:pricing": "node sux/scripts/check-pricing.mjs"
+    "check:pricing": "node sux/scripts/check-pricing.mjs",
+    "branches": "bash scripts/branch-sweep.sh"
   },
   "dependencies": {
     "@cloudflare/puppeteer": "^1.1.0",
