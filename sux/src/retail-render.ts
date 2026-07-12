@@ -1,16 +1,18 @@
-// Resilient render for the retailer fns: try the Mac backend first, fall back to
-// Cloudflare Browser Rendering (residential + stealth) when it's down.
+// Resilient render for the retailer fns: try Cloudflare Browser Rendering
+// (residential + stealth) FIRST, fall back to the Mac patched-browser backend only
+// when cf can't clear a given wall.
 //
-// The Mac node is primary because it has the best track record against active bot
-// walls and owns the solver tiers the cf path CANNOT replicate — the PerimeterX
-// press-and-hold gesture and the CapSolver captcha tier. But when the node is
-// off/502/circuit-open, a mac-only retailer fn fails outright. cf-residential is a
-// PROVEN fallback for at least Amazon's AWS WAF (verified live), and worst-case it
-// matches today's behavior since it only fires AFTER mac has already failed.
+// cf-residential is the DEFAULT backend: a stealthed headless Chromium egressing
+// from a home IP, a proven pass for the WAF/soft-bot walls the retailers hit on the
+// common path (Amazon's AWS WAF, verified live) with no dependency on the single
+// flaky Mac node. The Mac node is now a DORMANT fallback — it still owns the solver
+// tiers cf CANNOT replicate (the PerimeterX press-and-hold gesture, the CapSolver
+// captcha pass), so a call facing a gesture/captcha wall opts back into mac-first
+// per call (opts.preferMac) or reaches the node explicitly via backend:mac.
 //
 // Whichever backend answers, the caller runs the SAME extractor on the returned
 // HTML (the extractors are backend-agnostic). Never throws — if BOTH fail we
-// surface the mac error, the more informative signal and the message callers match.
+// surface the first (primary) backend's error, the signal callers match on.
 
 import { cfRender } from "./cf-render";
 import { type MacRenderResult, macRender } from "./mac-render";
@@ -28,27 +30,29 @@ export type RetailRenderSpec = {
 };
 
 export type RetailRenderOpts = {
-	// Try cf-residential FIRST (mac as fallback). Right for AWS-WAF sites (Amazon) where
-	// cf+residential+stealth is a proven pass — avoids the flaky mac node on the common
-	// path. Leave false for PerimeterX/Akamai sites (Walmart/HomeDepot) where only the
-	// mac node's gesture + solver tiers get through.
-	preferCf?: boolean;
+	// Opt back into mac-FIRST (cf as the fallback) for a specific retailer/call. cf is
+	// the universal default; set this ONLY when cf regresses on a wall that needs the
+	// mac node's gesture/captcha tiers up front (a PerimeterX press-and-hold or a real
+	// captcha wall) so the flaky-but-capable node leads instead of trailing.
+	preferMac?: boolean;
 };
 
-// Both legs run sequentially inside the 60s FN_DEADLINE_MS, and the mac leg's HTTP
-// timeout is its render budget + a ~15s margin — so the FIRST leg must be capped well
-// under the deadline or the fallback never runs (the bug this fixes). Budgets chosen so
-// worst case (first + second + mac margin) lands ~52s, leaving an 8s buffer.
+// Both legs run sequentially inside the 60s FN_DEADLINE_MS, and the mac (fallback)
+// leg's HTTP timeout is its render budget + a ~15s margin — so the FIRST (cf) leg
+// must be capped well under the deadline or the fallback never runs. Budgets chosen
+// so worst case (first + second + mac margin) lands ~52s, leaving an 8s buffer. A
+// caller adding a THIRD escalation rung (e.g. the paid unlocker on homedepot/costco)
+// must keep its own budget inside that buffer — FN_DEADLINE_MS is the hard backstop.
 const FIRST_LEG_MS = 25_000;
 const SECOND_LEG_MS = 12_000;
 
 /**
- * Render a retail page across the mac + cf backends with a deadline-safe fallback.
- * Order is mac→cf by default, cf→mac when opts.preferCf. Returns the never-throw mac
+ * Render a retail page across the cf + mac backends with a deadline-safe fallback.
+ * Order is cf→mac by default, mac→cf when opts.preferMac. Returns the never-throw mac
  * envelope; on total failure it surfaces the first (primary) backend's error.
  */
 export async function retailRender(env: RtEnv, spec: RetailRenderSpec, opts: RetailRenderOpts = {}): Promise<MacRenderResult> {
-	const order: Array<"mac" | "cf"> = opts.preferCf ? ["cf", "mac"] : ["mac", "cf"];
+	const order: Array<"mac" | "cf"> = opts.preferMac ? ["mac", "cf"] : ["cf", "mac"];
 	const firstBudget = Math.min(spec.timeout_ms ?? FIRST_LEG_MS, FIRST_LEG_MS);
 
 	const runLeg = async (backend: "mac" | "cf", budget: number): Promise<MacRenderResult> => {
