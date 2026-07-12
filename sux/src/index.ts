@@ -2,7 +2,7 @@ import type OAuthProvider from "@cloudflare/workers-oauth-provider";
 import { isAllowedLogin } from "./utils";
 import { type CacheMeta, cacheKey, deferCacheWrite, type JsonRpc, parseJsonRpc, sseResponse } from "./mcp-util";
 import { unpackFromCache } from "./cache-codec";
-import { findFn, frontToolList, type RtEnv, type ToolResult } from "./registry";
+import { findFn, frontToolList, type RtEnv, type ToolResult, unwrapFnCall } from "./registry";
 import { buildManifest, CONNECTOR_PATHS } from "./connectors";
 import { singleFlight } from "./single-flight";
 import { weightedRateLimit } from "./rate-limit";
@@ -154,22 +154,14 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 		// `fn` escape unwrap: fn({name, args}) is rewritten IN PLACE to a call on the
 		// named leaf, before findFn/cache/normalize — so a leaf reached through the
 		// front-door behaves byte-identically to a direct call (same cache key, same
-		// deadline). Only a valid, non-self inner name is unwrapped; anything else
-		// (missing/blank/self/non-string) falls through to the `fn` fn's own run, which
-		// returns a typed error. Cache flags (`fresh`/`summarize`) ride the inner args.
-		const params = rpc?.params;
-		if (name === "fn" && params?.arguments && typeof params.arguments === "object" && !Array.isArray(params.arguments)) {
-			const inner = (params.arguments as Record<string, unknown>).name;
-			const innerName = typeof inner === "string" ? inner.trim() : "";
-			// Unwrap ONLY when the inner name resolves to a real leaf (and isn't `fn`
-			// itself). A missing/blank/unknown/self name is left as `fn` so the escape
-			// fn's own run answers with a typed, hint-carrying error instead of a bare
-			// JSON-RPC -32601.
-			if (innerName && innerName !== "fn" && findFn(FUNCTIONS, innerName)) {
-				const innerArgs = (params.arguments as Record<string, unknown>).args;
-				name = innerName;
-				(rpc as JsonRpc).params = { name, arguments: innerArgs && typeof innerArgs === "object" && !Array.isArray(innerArgs) ? innerArgs : {} };
-			}
+		// deadline, same weighted cost — the limiter unwraps via the same helper). Only
+		// a valid, non-self inner name that resolves to a real leaf is unwrapped;
+		// anything else (missing/blank/self/unknown) falls through to the `fn` fn's own
+		// run, which returns a typed error. Cache flags ride the inner args.
+		const unwrapped = unwrapFnCall(rpc?.params, FUNCTIONS);
+		if (unwrapped) {
+			name = unwrapped.name;
+			(rpc as JsonRpc).params = { name, arguments: unwrapped.args };
 		}
 		const fn = findFn(FUNCTIONS, name);
 		if (!fn) return sseResponse({ jsonrpc: "2.0", id, error: { code: -32601, message: `unknown tool: ${name}` } });

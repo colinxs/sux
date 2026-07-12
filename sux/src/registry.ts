@@ -303,3 +303,25 @@ export function frontToolList(fns: Fn[]): Array<{ name: string; description: str
 export function findFn(fns: Fn[], name: string): Fn | undefined {
 	return fns.find((f) => f.name === name);
 }
+
+/**
+ * Resolve an `fn` escape call to the real leaf it targets. Returns `{name, args}`
+ * of the underlying leaf when `params` is `fn({name, args})` and the inner name
+ * resolves to a registered leaf (not `fn` itself); returns null otherwise (a direct
+ * call, or an `fn` call with a missing/unknown/self inner name — which the `fn` fn's
+ * own run then answers with a typed error).
+ *
+ * The SINGLE source of the unwrap rule, shared by the dispatcher (so a leaf reached
+ * via `fn` runs byte-identically to a direct call) and the weighted rate limiter (so
+ * an expensive leaf can't dodge its `cost` by hiding behind `fn`).
+ */
+export function unwrapFnCall(params: { name?: string; arguments?: unknown } | undefined, fns: Fn[]): { name: string; args: Record<string, unknown> } | null {
+	if (params?.name !== "fn") return null;
+	const a = params.arguments;
+	if (!a || typeof a !== "object" || Array.isArray(a)) return null;
+	const inner = (a as Record<string, unknown>).name;
+	const innerName = typeof inner === "string" ? inner.trim() : "";
+	if (!innerName || innerName === "fn" || !findFn(fns, innerName)) return null;
+	const innerArgs = (a as Record<string, unknown>).args;
+	return { name: innerName, args: innerArgs && typeof innerArgs === "object" && !Array.isArray(innerArgs) ? (innerArgs as Record<string, unknown>) : {} };
+}

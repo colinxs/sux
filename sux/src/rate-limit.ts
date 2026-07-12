@@ -7,7 +7,7 @@
 
 import { FUNCTIONS } from "./fns";
 import type { JsonRpc } from "./mcp-util";
-import { findFn, type RtEnv } from "./registry";
+import { findFn, type RtEnv, unwrapFnCall } from "./registry";
 
 const rateLimited = (): Response =>
 	new Response(JSON.stringify({ error: "rate_limited" }), { status: 429, headers: { "content-type": "application/json", "retry-after": "10" } });
@@ -26,7 +26,11 @@ export function extraCost(name: string): number {
  */
 export async function weightedRateLimit(env: RtEnv, login: string, rpc: JsonRpc | undefined): Promise<Response | null> {
 	if (!env.MCP_RATE_LIMITER || rpc?.method !== "tools/call") return null;
-	const extra = extraCost(String(rpc.params?.name ?? ""));
+	// Charge the REAL leaf's weight even when it's reached via the `fn` escape —
+	// otherwise an expensive tool (render/Kagi/AI) dodges its cost behind fn({name}).
+	// Same unwrap rule the dispatcher uses, so the two never diverge.
+	const effectiveName = unwrapFnCall(rpc.params, FUNCTIONS)?.name ?? String(rpc.params?.name ?? "");
+	const extra = extraCost(effectiveName);
 	for (let i = 0; i < extra; i++) {
 		const { success } = await env.MCP_RATE_LIMITER.limit({ key: login });
 		if (!success) return rateLimited();

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { FUNCTIONS } from "./fns/index";
-import { FAIL_CODES, type FailCode, failWith, FRONT_VERBS, frontToolList, type RtEnv, TOOL_ANNOTATIONS, toolList, type ToolResult } from "./registry";
+import { FAIL_CODES, type FailCode, failWith, FRONT_VERBS, frontToolList, type RtEnv, TOOL_ANNOTATIONS, toolList, type ToolResult, unwrapFnCall } from "./registry";
 
 // Inert binding stubs: {} args should fail validation inside each fn before any
 // binding is touched, so these never need to do real work.
@@ -152,6 +152,21 @@ describe("registry conformance", () => {
 	it("every FRONT_VERBS name is a registered fn (no dangling front verb)", () => {
 		const names = new Set(FUNCTIONS.map((f) => f.name));
 		for (const v of FRONT_VERBS) expect(names, `FRONT_VERBS references \`${v}\``).toContain(v);
+	});
+
+	it("unwrapFnCall resolves fn({name,args}) to the real leaf, and only for a valid inner name", () => {
+		// Valid inner leaf → unwrapped, args passed through.
+		expect(unwrapFnCall({ name: "fn", arguments: { name: "hash", args: { text: "x" } } }, FUNCTIONS)).toEqual({ name: "hash", args: { text: "x" } });
+		// Missing inner args object → empty args.
+		expect(unwrapFnCall({ name: "fn", arguments: { name: "hash" } }, FUNCTIONS)).toEqual({ name: "hash", args: {} });
+		// Not an fn call at all → null (a direct call is untouched).
+		expect(unwrapFnCall({ name: "hash", arguments: { text: "x" } }, FUNCTIONS)).toBeNull();
+		// Unknown / self / blank inner name → null (falls through to fn's own run).
+		expect(unwrapFnCall({ name: "fn", arguments: { name: "does_not_exist" } }, FUNCTIONS)).toBeNull();
+		expect(unwrapFnCall({ name: "fn", arguments: { name: "fn" } }, FUNCTIONS)).toBeNull();
+		expect(unwrapFnCall({ name: "fn", arguments: {} }, FUNCTIONS)).toBeNull();
+		// Non-object arguments → null.
+		expect(unwrapFnCall({ name: "fn", arguments: "nope" }, FUNCTIONS)).toBeNull();
 	});
 
 	it("flags: kv_* are not cacheable; hash/encode/compress are raw", () => {
