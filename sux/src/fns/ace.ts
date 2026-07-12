@@ -3,15 +3,15 @@ import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { normalizeMoney, type RetailProduct } from "./_retail";
 
 // Ace Hardware runs on the Kibo/Mozu commerce platform and exposes no public
-// product API, so this fn renders Ace's search page through the mac render backend
-// (a residential patched browser) and lifts products out of the rendered HTML. Ace
-// runs an INVISIBLE reCAPTCHA v3 in the background that scores the session but does
-// NOT wall the page, so we never force a solve — the render backend auto-escalates
-// only if a real captcha wall ever appears. Rendering goes through `retailRender`:
-// the mac backend is primary, with a Cloudflare Browser Rendering (residential +
-// stealth) fallback when the mac node is down. Extraction is best-effort from the
-// rendered DOM: each result is a `mz-productlisting` tile with a `/p/<slug>/<sku>`
-// anchor. Every step guards/try-catches — never throws.
+// product API, so this fn renders Ace's search page through `retailRender` and lifts
+// products out of the rendered HTML. Ace runs an INVISIBLE reCAPTCHA v3 in the
+// background that scores the session but does NOT wall the page, so we never force a
+// solve — the render backend auto-escalates only if a real captcha wall ever appears.
+// Rendering defaults to Cloudflare Browser Rendering (residential + stealth); the mac
+// render backend (a residential patched browser) is the dormant fallback for when cf
+// can't clear a wall. Extraction is best-effort from the rendered DOM: each result is
+// a `mz-productlisting` tile with a `/p/<slug>/<sku>` anchor. Every step
+// guards/try-catches — never throws.
 
 const NO_PRODUCTS_MSG = "ace: no products extracted (layout change).";
 
@@ -104,9 +104,9 @@ export const ace: Fn = {
 	name: "ace",
 	cost: 5,
 	description:
-		"Ace Hardware product search via the mac render backend (a residential patched browser that renders Ace's Kibo/Mozu client-side product grid — Ace has no public product API and runs an invisible reCAPTCHA v3, so a plain fetch can't). " +
+		"Ace Hardware product search via a rendered browser (Ace has no public product API, runs on Kibo/Mozu with an invisible reCAPTCHA v3, and a plain fetch returns no grid). Renders through Cloudflare Browser Rendering (residential + stealth) by default, falling back to the mac render backend (a residential patched browser) when cf can't clear a wall. " +
 		"`action`: search (products for a `term`). Extraction is best-effort from the rendered `mz-productlisting` tiles, normalized to the shared retail shape (id/title/price/image/url). " +
-		"`limit` caps results (default 15, max 40). Slower than an API and falls back to Cloudflare Browser Rendering (residential + stealth) if the mac render backend is down.",
+		"`limit` caps results (default 15, max 40). Slower than an API.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,

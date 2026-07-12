@@ -1,20 +1,24 @@
-import { macRender } from "../mac-render";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
+import { retailRender } from "../retail-render";
 import { normalizeMoney, type RetailProduct } from "./_retail";
 
-// Walmart sits behind an ACTIVE PerimeterX JS challenge a plain fetch can't pass.
-// The mac render backend (a residential patched browser) does, so this fn renders
-// Walmart's own search/product pages and lifts products out of the __NEXT_DATA__
-// JSON blob Next.js embeds (props.pageProps.initialData…). No Orchestra GraphQL —
-// its persisted-query hashes rotate; __NEXT_DATA__ is stable.
+// Walmart sits behind an ACTIVE PerimeterX JS challenge a plain fetch can't pass, so
+// this fn renders Walmart's own search/product pages and lifts products out of the
+// __NEXT_DATA__ JSON blob Next.js embeds (props.pageProps.initialData…). No Orchestra
+// GraphQL — its persisted-query hashes rotate; __NEXT_DATA__ is stable.
 //
-// Unlike the other render-based retailers, walmart deliberately does NOT use the
-// mac→cf `retailRender` fallback and calls `macRender` directly. Walmart's wall is
-// a PerimeterX press-and-hold challenge the mac node passes with a real mouse-hold
-// gesture (see docs/retail.md "Why the press-and-hold win matters") — logic that
-// lives only in the Mac Python service. The cf/puppeteer path has no equivalent
-// gesture, so a cf attempt is a near-certain failure that would only add latency
-// to an already-degraded call. If the mac node is down, failing fast is better.
+// READS ONLY: both actions here (search, product) are reads, so they go through
+// `retailRender` — cf-residential+stealth FIRST (it often clears PerimeterX for a
+// plain page load from a home IP), with the mac render backend as the fallback. The
+// mac leg carries `solve: true`: Walmart's real wall is a press-and-hold gesture that
+// ONLY the Mac Python service passes (a real mouse-hold — no cf/puppeteer equivalent;
+// see docs/retail.md "Why the press-and-hold win matters"), so when cf misses, mac is
+// the one backend that can force it.
+//
+// GUARDRAIL: any FUTURE interactive/cart/checkout action must NOT ride the cf leg —
+// those need the gesture-capable mac path, so route them via retailRender's preferMac
+// (or macRender directly with solve). There is no such action today; keep it that way
+// unless you add the mac-only routing alongside it.
 
 const BLOCKED_MSG = "walmart: blocked or no data — the mac render backend may be down or Walmart challenged the request.";
 
@@ -52,9 +56,9 @@ export const walmart: Fn = {
 	name: "walmart",
 	cost: 5,
 	description:
-		"Walmart product search and detail via the mac render backend (a residential patched browser that solves Walmart's active PerimeterX JS challenge — a plain fetch can't). " +
+		"Walmart product search and detail via a rendered browser (Walmart runs an active PerimeterX JS challenge a plain fetch can't pass). Renders through Cloudflare Browser Rendering (residential + stealth) first, falling back to the mac render backend (a residential patched browser that solves Walmart's press-and-hold gesture) when cf can't clear the wall. " +
 		"`action`: search (products for a `term`) or product (detail by `item_id`). Products come from Walmart's embedded __NEXT_DATA__ JSON, normalized to the shared retail shape (id/title/price/brand/image/url/in_stock). " +
-		"`limit` caps search results (default 15, max 40). Slower than an API — it renders the real page — and depends on the mac render backend being configured and up.",
+		"`limit` caps search results (default 15, max 40). Slower than an API — it renders the real page.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -74,9 +78,8 @@ export const walmart: Fn = {
 		if (action === "product") {
 			const itemId = String(args?.item_id ?? "").trim();
 			if (!itemId) return failWith("bad_input", "action=product requires an `item_id`.");
-			const r = await macRender(env, {
+			const r = await retailRender(env, {
 				url: `https://www.walmart.com/ip/${encodeURIComponent(itemId)}`,
-				as: "html",
 				block_resources: true,
 				wait_until: "domcontentloaded",
 				wait_ms: 4000,
@@ -103,9 +106,8 @@ export const walmart: Fn = {
 		// action === "search"
 		const term = String(args?.term ?? "").trim();
 		if (!term) return failWith("bad_input", "action=search requires a `term`.");
-		const r = await macRender(env, {
+		const r = await retailRender(env, {
 			url: `https://www.walmart.com/search?q=${encodeURIComponent(term)}`,
-			as: "html",
 			block_resources: true,
 			wait_until: "domcontentloaded",
 			wait_ms: 4000,

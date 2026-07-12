@@ -1,11 +1,25 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { cfRender } from "../cf-render";
 import { macRender } from "../mac-render";
 import { walmart } from "./walmart";
 
+// Reads go through retailRender's cf→mac ladder now, so both backends are mocked. cf
+// defaults to unavailable (no BROWSER binding) so the existing mac-path tests still
+// exercise the mac leg; the cf-first test overrides it.
 vi.mock("../mac-render", () => ({ macRender: vi.fn() }));
+vi.mock("../cf-render", () => ({ cfRender: vi.fn() }));
 
 const macRenderMock = vi.mocked(macRender);
+const cfRenderMock = vi.mocked(cfRender);
+
+beforeEach(() => {
+	// Factory vi.fn() mocks survive restoreAllMocks, so clear both backends' call
+	// history each test (call-count assertions rely on a clean slate).
+	macRenderMock.mockReset();
+	cfRenderMock.mockReset();
+	cfRenderMock.mockResolvedValue({ ok: false, error: "Browser Rendering is not configured (BROWSER binding)." });
+});
 
 // Wrap a __NEXT_DATA__ JSON object in a minimal page, as the mac render backend
 // would return the rendered Walmart HTML.
@@ -109,5 +123,21 @@ describe("walmart", () => {
 		const r = await walmart.run({ MAC_RENDER_URL: "x", MAC_RENDER_SECRET: "y" } as any, { action: "search", term: "drill" });
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toMatch(/blocked or no data/);
+	});
+
+	it("reads go cf-FIRST: cf serves the page and the mac gesture leg is never touched", async () => {
+		cfRenderMock.mockReset();
+		cfRenderMock.mockResolvedValueOnce({ ok: true, contentType: "text/html", body: pageWithNextData(SEARCH_NEXT_DATA) });
+		const r = await walmart.run({ MAC_RENDER_URL: "x", MAC_RENDER_SECRET: "y", BROWSER: {} } as any, { action: "search", term: "drill" });
+		expect(r.isError).toBeFalsy();
+		expect(JSON.parse(r.content[0].text).count).toBe(1);
+		expect(cfRenderMock).toHaveBeenCalledTimes(1);
+		expect(macRenderMock).not.toHaveBeenCalled();
+	});
+
+	it("carries solve:true onto the mac fallback leg (the press-and-hold gesture)", async () => {
+		macRenderMock.mockResolvedValueOnce({ ok: true, contentType: "text/html", body: pageWithNextData(SEARCH_NEXT_DATA) });
+		await walmart.run({ MAC_RENDER_URL: "x", MAC_RENDER_SECRET: "y" } as any, { action: "search", term: "drill" });
+		expect(macRenderMock.mock.calls[0][1]).toMatchObject({ solve: true });
 	});
 });

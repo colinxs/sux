@@ -7,13 +7,13 @@ import { normalizeMoney, type RetailProduct } from "./_retail";
 // Amazon's search or product page — passing the active AWS WAF / Robot Check bot
 // wall a plain fetch can't — and lifts products out of the rendered HTML.
 //
-// Rendering goes through `retailRender`, a mac→cf fallback. The mac backend (a
-// residential patched browser) is PRIMARY — best track record against Amazon's
-// wall, and it auto-escalates to the headed CapSolver solver on a captcha, so we
-// never force `solve`. When the mac node is down, it falls back to Cloudflare
-// Browser Rendering with residential routing + stealth — a PROVEN pass for
-// Amazon's wall (verified live), unlike Walmart's press-and-hold which only the
-// mac gesture solves. Both backends funnel through the SAME extractor below.
+// Rendering goes through `retailRender`, a cf→mac ladder. Cloudflare Browser
+// Rendering with residential routing + stealth is the DEFAULT backend — a PROVEN
+// pass for Amazon's AWS WAF (verified live) with no dependency on the flaky mac
+// node. The mac backend (a residential patched browser that auto-escalates to the
+// headed CapSolver solver, so we never force `solve`) is only the dormant fallback
+// for when cf can't clear the wall. Both backends funnel through the SAME extractor
+// below.
 //
 // Extraction is best-effort and every tile is parsed in its own try/catch — one
 // bad tile never aborts the whole parse.
@@ -141,7 +141,7 @@ export const amazon: Fn = {
 	name: "amazon",
 	cost: 5,
 	description:
-		"Amazon product search / product-detail via a rendered browser (Amazon has no usable free API and walls plain fetches). Renders through the mac backend (a residential patched browser that auto-escalates to a captcha solver when challenged), falling back to Cloudflare Browser Rendering with residential routing + stealth when the mac node is down. " +
+		"Amazon product search / product-detail via a rendered browser (Amazon has no usable free API and walls plain fetches). Renders through Cloudflare Browser Rendering with residential routing + stealth (a proven pass for Amazon's AWS WAF), falling back to the mac backend (a residential patched browser that auto-escalates to a captcha solver) only when cf can't clear the wall. " +
 			"`action`: search (products for a `term`) or product (one product by `asin`). Extraction is best-effort from the rendered page, normalized to the shared retail shape (id=ASIN/title/price/image/url; brand for product). " +
 			"`limit` caps search results (default 15, max 40). Slower than an API.",
 	inputSchema: {
@@ -173,13 +173,9 @@ export const amazon: Fn = {
 		}
 		const limit = Math.min(40, Math.max(1, Number(args?.limit) || 15));
 
-		// Amazon is behind AWS WAF, which cf+residential+stealth is a PROVEN pass for
-		// (verified live) — so try cf FIRST and keep the flaky mac node as the fallback.
-		const r = await retailRender(
-			env,
-			{ url, block_resources: true, wait_until: "networkidle2", wait_ms: 6000 },
-			{ preferCf: true },
-		);
+		// cf-residential+stealth is the default retailRender backend and a PROVEN pass
+		// for Amazon's AWS WAF (verified live); the flaky mac node stays as the fallback.
+		const r = await retailRender(env, { url, block_resources: true, wait_until: "networkidle2", wait_ms: 6000 });
 		if (!r.ok) return fail(`amazon: blocked or render failed — ${r.error}`);
 
 		let products = action === "product" ? fromProduct(r.body, asin) : fromSearch(r.body);
