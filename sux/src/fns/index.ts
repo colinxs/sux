@@ -73,6 +73,7 @@ import { kroger } from "./kroger";
 import { learn } from "./learn";
 import { linkedin } from "./linkedin";
 import { lowes } from "./lowes";
+import { mail_triage } from "./mail_triage";
 import { markdown } from "./markdown";
 import { openalex } from "./openalex";
 import { oracle } from "./oracle";
@@ -174,6 +175,7 @@ export const FUNCTIONS: Fn[] = [
 	learn,
 	linkedin,
 	lowes,
+	mail_triage,
 	markdown,
 	openalex,
 	oracle,

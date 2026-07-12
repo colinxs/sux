@@ -132,6 +132,17 @@ export type RtEnv = Env &
 		FASTMAIL_CALDAV_USER?: string;
 		FASTMAIL_APP_PASSWORD?: string;
 
+		// Autonomous mail-triage bot (fns/_mail_triage.ts + the daily cron). Two-stage,
+		// fail-closed toggle gate — NOT credentials (FASTMAIL_TOKEN is mail-access-in-
+		// general, already required, so gating on it would arm the bot the moment mail
+		// works). MAIL_TRIAGE_ENABLED must be truthy for the classify→suggest→digest loop
+		// to run at all (unset → the fn and the cron tick are a total no-op). MAIL_TRIAGE_ACT
+		// must ALSO be truthy before it may perform any REVERSIBLE mailbox move (archive/junk);
+		// otherwise it is suggest-only. Both default OFF, so a first deploy is dormant and the
+		// first cycle is suggest-only by construction. It never deletes.
+		MAIL_TRIAGE_ENABLED?: string;
+		MAIL_TRIAGE_ACT?: string;
+
 
 		TAVILY_API_KEY?: string;
 

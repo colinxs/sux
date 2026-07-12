@@ -1079,7 +1079,7 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 }
 
 /** Move messages into a target mailbox — REPLACES the mailbox set (a real move, not an add). */
-async function moveMessages(env: RtEnv, ids: unknown, target: string): Promise<ToolResult> {
+export async function moveMessages(env: RtEnv, ids: unknown, target: string): Promise<ToolResult> {
 	const list = Array.isArray(ids) ? ids.map(String) : [];
 	if (!list.length || !target) return failWith("bad_input", "provide ids[] and a target mailbox.");
 	try {

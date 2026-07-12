@@ -458,11 +458,29 @@ async function refreshKrogerToken(env: RtEnv): Promise<void> {
 	await env.OAUTH_KV.put(KROGER_TOKEN_KEY, token, { expirationTtl: ttl });
 }
 
+// One daily mail-triage cycle, driven by the same Cron Trigger. FAIL-CLOSED: early-returns
+// doing nothing unless MAIL_TRIAGE_ENABLED is set (the cron fires every day regardless, but
+// is a total no-op until Colin flips the flag) — and even then it only MOVES mail when
+// MAIL_TRIAGE_ACT is also set; otherwise it classifies + writes a suggest-only digest.
+// Everything is dynamically imported so the cron path pulls in the mail surface only when
+// armed, and self-bounds its own wall-clock budget (scheduled() bypasses FN_DEADLINE_MS).
+async function mailTriageTick(env: RtEnv): Promise<void> {
+	const mod = await import("./fns/_mail_triage");
+	if (!mod.hasMailTriage(env)) return;
+	const deps = await mod.defaultDeps();
+	await mod.runTriage(env, { max: 25 }, deps);
+}
+
 async function maintenanceTick(env: RtEnv): Promise<void> {
 	try {
 		await refreshKrogerToken(env);
 	} catch (e) {
 		console.warn(`sux scheduled maintenance: kroger token refresh skipped: ${String((e as Error)?.message ?? e)}`);
+	}
+	try {
+		await mailTriageTick(env);
+	} catch (e) {
+		console.warn(`sux scheduled maintenance: mail triage skipped: ${String((e as Error)?.message ?? e)}`);
 	}
 }
 
