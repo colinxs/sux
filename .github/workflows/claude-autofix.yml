@@ -1,0 +1,115 @@
+name: Claude autofix CI
+
+# When CI fails on a PR, Claude reads the failure and pushes a fix to the PR branch.
+# CI then re-runs; if it goes green, the already-enabled native auto-merge (see
+# automerge.yml) merges it — fully async, no human. Bounded so it can't loop forever:
+#   - only bug/security/chore-safe/fix-type PRs (features are a human's job)
+#   - a hard cap of MAX_ATTEMPTS bot commits per branch, then it tags `needs-human`
+#   - --max-turns per run + concurrency cancel-in-progress + a cheaper model
+# Inert until ANTHROPIC_API_KEY is set (the preflight skips cleanly if absent).
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: read
+
+concurrency:
+  group: autofix-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: true
+
+env:
+  MAX_ATTEMPTS: "4"
+
+jobs:
+  autofix:
+    # Only on a FAILED CI run that came from a pull request.
+    if: >
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Preflight — resolve the PR, check the gate, count attempts
+        id: pre
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HAVE_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+        run: |
+          set -euo pipefail
+          if [ "$HAVE_KEY" != "true" ]; then
+            echo "ANTHROPIC_API_KEY not set → autofix inert. Add the secret to arm it."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+
+          # Find the open PR for this head branch.
+          pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$HEAD_BRANCH" --state open \
+                 --json number,labels,title,isDraft --jq '.[0]' 2>/dev/null || echo '')
+          if [ -z "$pr" ] || [ "$pr" = "null" ]; then echo "no open PR for $HEAD_BRANCH → skip"; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          num=$(echo "$pr" | jq -r .number)
+          title=$(echo "$pr" | jq -r .title)
+          draft=$(echo "$pr" | jq -r .isDraft)
+          labels=$(echo "$pr" | jq -r '[.labels[].name] | join(",")')
+          echo "PR #$num  title=$title  labels=$labels  draft=$draft"
+
+          has(){ echo ",$labels," | grep -qi ",$1,"; }
+          if has hold || has needs-human; then echo "hold/needs-human → skip"; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+
+          # Gate: only auto-fix the safe classes (mirror automerge.yml eligibility).
+          elig=false
+          for l in bug security chore-safe automerge; do has "$l" && elig=true; done
+          if printf '%s' "$title" | grep -qiE '^(fix|security|perf|refactor|chore|docs|test|build|ci|revert)(\([^)]*\))?:'; then elig=true; fi
+          if [ "$elig" != "true" ]; then echo "not an auto-fix-eligible PR → skip (a human drives features)"; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+
+          echo "go=true" >> "$GITHUB_OUTPUT"
+          echo "pr=$num" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout PR branch
+        if: steps.pre.outputs.go == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_branch }}
+          fetch-depth: 0
+
+      - name: Attempt cap — stop looping after MAX_ATTEMPTS bot commits
+        if: steps.pre.outputs.go == 'true'
+        id: cap
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git fetch origin main --quiet
+          base=$(git merge-base origin/main HEAD)
+          # Count commits on this branch authored by the bot (its fix attempts).
+          attempts=$(git log --format='%an' "$base"..HEAD | grep -c -E 'claude|github-actions' || true)
+          echo "bot fix attempts so far: $attempts (cap $MAX_ATTEMPTS)"
+          if [ "$attempts" -ge "$MAX_ATTEMPTS" ]; then
+            echo "cap reached → tagging needs-human and stopping"
+            gh pr edit "${{ steps.pre.outputs.pr }}" --repo "$GITHUB_REPOSITORY" --add-label needs-human 2>/dev/null || true
+            gh pr comment "${{ steps.pre.outputs.pr }}" --repo "$GITHUB_REPOSITORY" \
+              --body "🤖 Auto-fix gave up after $attempts attempts — CI is still red. Tagging \`needs-human\`. (Remove the label to let the bot try again.)" 2>/dev/null || true
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Claude — fix the CI failure
+        if: steps.pre.outputs.go == 'true' && steps.cap.outputs.go == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            CI failed on this PR (branch ${{ github.event.workflow_run.head_branch }},
+            run ${{ github.event.workflow_run.html_url }}). Read the failing job's logs,
+            find the ROOT cause, and fix it. This repo's gates (from CLAUDE.md) must all pass:
+              npm run type-check · npm test · npm run check:node ·
+              npm run gen:index && npm run docs (commit the regenerated FUNCTIONS.md + index.ts) ·
+              npx wrangler deploy --dry-run --config sux/wrangler.jsonc
+            Make the smallest correct change, re-run the gates locally, then commit and push
+            to this PR branch. Do NOT touch secrets, do NOT weaken a test to make it pass, and
+            do NOT change unrelated code. If the failure is a genuine design problem you can't
+            safely fix, leave a comment explaining it instead of forcing a change.
+          claude_args: "--max-turns 10 --model sonnet"

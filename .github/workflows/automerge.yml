@@ -1,0 +1,73 @@
+name: Auto-merge
+
+# Enable GitHub NATIVE auto-merge on eligible PRs. GitHub then merges the PR by
+# itself the moment branch protection is satisfied (the required "Type-check & build"
+# check is green) — so nothing red ever reaches the auto-deploying main. This job
+# only *enables* auto-merge; it never force-merges. Merge method: squash.
+#
+# Eligibility (the safe, hands-off subset):
+#   - a conventional-commit "safe type" title: fix|security|perf|refactor|chore|docs|test|build|ci|revert
+#     OR an explicit eligible label: automerge | bug | security | chore-safe
+#   - AND not a draft, not labelled `hold`, not labelled `feature`, not a breaking `!` title.
+# Net-new features (`feat:`) and anything labelled `feature`/`hold` are left for a human.
+#
+# Uses pull_request_target (base-repo context, write token) but never checks out PR
+# code — it only reads the event payload and calls the API, so there is no
+# untrusted-code-execution surface.
+
+on:
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled, edited]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: automerge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  enable-automerge:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.state == 'open'
+    steps:
+      - name: Decide eligibility and enable auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          TITLE: ${{ github.event.pull_request.title }}
+          DRAFT: ${{ github.event.pull_request.draft }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          set -euo pipefail
+          echo "PR #$PR_NUM  title=$TITLE  draft=$DRAFT  labels=$LABELS"
+
+          has_label() { echo ",$LABELS," | grep -qi ",$1,"; }
+
+          # Hard blocks first.
+          if [ "$DRAFT" = "true" ]; then echo "draft → skip"; exit 0; fi
+          if has_label hold;    then echo "hold label → skip"; exit 0; fi
+          if has_label feature; then echo "feature label → skip (needs a human)"; exit 0; fi
+          # Breaking change marker in a conventional title (e.g. 'fix!:') → needs a human.
+          if printf '%s' "$TITLE" | grep -qiE '^[a-z]+(\([^)]*\))?!:'; then
+            echo "breaking-change (!) title → skip"; exit 0; fi
+
+          eligible=false
+          # Label-based eligibility.
+          for l in automerge bug security chore-safe; do
+            if has_label "$l"; then eligible=true; fi
+          done
+          # Conventional-commit safe-type title (excludes feat:).
+          if printf '%s' "$TITLE" | grep -qiE '^(fix|security|perf|refactor|chore|docs|test|build|ci|revert)(\([^)]*\))?:'; then
+            eligible=true; fi
+
+          if [ "$eligible" != "true" ]; then
+            echo "not an auto-merge-eligible PR (feature or unlabeled) → leaving for a human"; exit 0; fi
+
+          echo "eligible → enabling native auto-merge (squash)"
+          gh pr merge --auto --squash "$PR_URL" || {
+            echo "::warning::could not enable auto-merge (branch protection unmet or already merging)"; exit 0; }
+          # Visibility: reflect the decision with the automerge label (best-effort).
+          gh pr edit "$PR_URL" --add-label automerge 2>/dev/null || true
