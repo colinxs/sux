@@ -12,7 +12,7 @@ import { hasAI, llm } from "./ai";
 // would cost more than the tokens it saves, and may even grow the text).
 const SUMMARIZE_MIN_CHARS = 400;
 import { FUNCTIONS } from "./fns";
-import { SUX_SKILL_DESCRIPTION, SUX_SKILL_PROMPT } from "./skill-prompt";
+import { LIFE_SKILL_DESCRIPTION, LIFE_SKILL_PROMPT, SUX_SKILL_DESCRIPTION, SUX_SKILL_PROMPT } from "./skill-prompt";
 import { selfImproveTick } from "./fns/_self_improve";
 import { runSubJob } from "./cron-heartbeat";
 import { recordCall } from "./metrics";
@@ -42,11 +42,14 @@ const inflight = new Map<string, Promise<CleanResult>>();
 //     payload and must not gain a marker).
 //   • MAX_ARG_BYTES / MAX_ARG_DEPTH — reject a pathological args blob before it
 //     reaches normalizeArgs/run (memory/CPU DoS, or stack blowup on deep nesting).
-// The single MCP prompt this server advertises: the sux routing SKILL, embedded
-// from .claude/skills/sux/SKILL.md at build time. Reachable via prompts/get on any
-// client — mobile/Cowork/Desktop remote connectors carry prompts but not the local
-// plugin skill, so this is how they get routing guidance. Takes no arguments.
+// The MCP prompts this server advertises: the sux routing SKILL and the life memory
+// SKILL, embedded from .claude/skills/{sux,life}/SKILL.md at build time. Reachable via
+// prompts/get on any client — mobile/Cowork/Desktop remote connectors carry prompts but
+// not the local plugin skills, so this is how they get both guidances. No arguments.
 const SUX_PROMPT = { name: "sux", title: "sux routing", description: SUX_SKILL_DESCRIPTION, arguments: [] as const };
+const LIFE_PROMPT = { name: "life", title: "life memory", description: LIFE_SKILL_DESCRIPTION, arguments: [] as const };
+const PROMPTS = [SUX_PROMPT, LIFE_PROMPT];
+const PROMPT_TEXT: Record<string, string> = { sux: SUX_SKILL_PROMPT, life: LIFE_SKILL_PROMPT };
 
 export const FN_DEADLINE_MS = 60_000;
 const MAX_OUTPUT_CHARS = 1_000_000;
@@ -159,20 +162,21 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 		return sseResponse({ jsonrpc: "2.0", id, result: { tools: frontToolList(FUNCTIONS) } });
 	}
 	if (method === "prompts/list") {
-		// One prompt: the sux routing SKILL. No pagination (single entry, no cursor).
-		return sseResponse({ jsonrpc: "2.0", id, result: { prompts: [SUX_PROMPT] } });
+		// Two prompts: the sux routing SKILL + the life memory SKILL. No pagination.
+		return sseResponse({ jsonrpc: "2.0", id, result: { prompts: PROMPTS } });
 	}
 	if (method === "prompts/get") {
 		const name = rpc?.params?.name ?? "";
-		if (name !== SUX_PROMPT.name) {
+		const prompt = PROMPTS.find((p) => p.name === name);
+		if (!prompt) {
 			return sseResponse({ jsonrpc: "2.0", id, error: { code: -32602, message: `unknown prompt: ${name}` } });
 		}
 		return sseResponse({
 			jsonrpc: "2.0",
 			id,
 			result: {
-				description: SUX_PROMPT.description,
-				messages: [{ role: "user", content: { type: "text", text: SUX_SKILL_PROMPT } }],
+				description: prompt.description,
+				messages: [{ role: "user", content: { type: "text", text: PROMPT_TEXT[name] } }],
 			},
 		});
 	}
