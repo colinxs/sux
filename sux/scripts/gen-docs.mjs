@@ -29,6 +29,7 @@ const CATEGORIES = [
 	["Knowledge / learning", ["recall", "oracle", "advise", "learn", "preferences"]],
 	["Mail (JMAP)", ["jmap", "mail_triage"]],
 	["Personal namespaces (one /mcp)", ["vault", "mail", "files", "cal", "contact"]],
+	["Personal finance", ["monarch"]],
 	["Feedback / meta", ["issue", "suggest"]],
 	["Infra / meta", ["selftest", "autonomy_status", "controld", "tailscale", "sux", "fn", "todoist"]],
 ];

@@ -126,6 +126,15 @@ export type RtEnv = Env &
 		// fn returns not_configured; nothing about it runs until the token is set.
 		TODOIST_TOKEN?: string;
 
+		// Monarch Money GraphQL API (monarch fn) — a personal API token used directly
+		// as `Authorization: Token <token>`. NOT OAuth and NOT the email+password+MFA
+		// login flow (prohibited to handle): Colin mints it out-of-band — the monarchmoney
+		// Python lib's interactive login, or the `Authorization: Token …` request header
+		// from app.monarchmoney.com devtools — and sets it as a write-only Worker secret.
+		// Absent → the fn returns not_configured; nothing about it runs. READ-ONLY:
+		// monarch never moves money (no mutation op; the graphql escape hatch refuses them).
+		MONARCH_TOKEN?: string;
+
 		// Fastmail JMAP conduit (jmap fn + /mail/mcp namespace). A JMAP-scoped API
 		// token (Fastmail → Settings → Privacy & Security → API tokens), NOT an MCP
 		// token. Scope it read-only for read/compose workflows so send/destroy are
