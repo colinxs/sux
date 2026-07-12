@@ -161,6 +161,17 @@ export type RtEnv = Env &
 		MAIL_TRIAGE_ENABLED?: string;
 		MAIL_TRIAGE_ACT?: string;
 
+		// Morning-briefing digest (fns/_briefing.ts + the daily cron). Same two-stage,
+		// fail-closed toggle gate as MAIL_TRIAGE_* (set via `wrangler secret`, NOT declared in
+		// wrangler.jsonc — like MAIL_TRIAGE_*/DROPBOX_FULL_*). BRIEFING_ENABLED must be truthy
+		// for the gather→compose→append loop to run at all (unset → the fn and the cron tick are
+		// a total no-op). BRIEFING_STAGE_DRAFTS must ALSO be truthy before it STAGES any reply
+		// draft to the Drafts folder (mail_draft, send=false — never sent); otherwise it is
+		// summarize-and-nudge only. Both default OFF, so a first deploy is dormant and the first
+		// cycle stages zero drafts by construction. It never sends, never deletes.
+		BRIEFING_ENABLED?: string;
+		BRIEFING_STAGE_DRAFTS?: string;
+
 		// Manual ops trigger for the daily cron ticks (POST /admin/tick?job=…), bearer-gated
 		// by this token. Unset ⇒ the endpoint 404s (feature off). Lets an operator run a
 		// mail-triage / self-improve / maintenance cycle on demand instead of waiting for cron.

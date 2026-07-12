@@ -27,7 +27,7 @@ const CATEGORIES = [
 	["People / places / social", ["people", "people_finder", "places", "linkedin", "facebook", "uw"]],
 	["Notes / knowledge / vault", ["obsidian", "ingest", "citation"]],
 	["Knowledge / learning", ["recall", "oracle", "advise", "learn", "preferences"]],
-	["Mail (JMAP)", ["jmap", "mail_triage"]],
+	["Mail (JMAP)", ["jmap", "mail_triage", "briefing"]],
 	["Personal namespaces (one /mcp)", ["vault", "mail", "files", "cal", "contact"]],
 	["Personal finance", ["monarch"]],
 	["Feedback / meta", ["issue", "suggest"]],
