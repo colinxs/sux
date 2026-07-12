@@ -19,6 +19,7 @@ const LEARN_NOTE = "sux/Learned.md";
 const SEARCH_NOTE = "sux/Searches.md";
 const ORACLE_NOTE = "sux/Knowledge.md";
 const PREFS_NOTE = "sux/Voice.md";
+const WHITELIST_NOTE = "sux/Whitelisted.md";
 
 /** Append via obsidian, deduped by `dedupKey` (the SEMANTIC content — not the rendered line,
  *  whose batch marker is unique per call). Returns true iff it actually wrote. */
@@ -69,6 +70,19 @@ export function appendOnOracle(env: RtEnv, topic: string, distilled: string): Pr
 	if (!body) return Promise.resolve(false);
 	const section = `\n## ${t} — ${new Date().toISOString()}\n\n${body}\n`;
 	return appendOnce(env, ORACLE_NOTE, section, "kb:oracle", `${t}\n${body.replace(/\s+/g, " ")}`);
+}
+
+/** Record a WHITELISTED source in the vault as a git-versioned provenance ledger — the auditable
+ *  copyright story for the `study` verb: exactly what user-supplied material was distilled, of what
+ *  kind, into which topic, and when. This logs PROVENANCE only (never the source's text — the
+ *  distilled KB itself is mirrored by appendOnOracle). Dedup is on topic+source so re-studying the
+ *  same material into the same topic converges instead of duplicating the ledger line. */
+export function appendOnWhitelist(env: RtEnv, topic: string, source: string, kind: string, title?: string): Promise<boolean> {
+	const t = topic.replace(/\s+/g, " ").trim() || "default";
+	const src = source.replace(/\s+/g, " ").trim().slice(0, 300) || "(inline)";
+	const label = (title ?? "").replace(/\s+/g, " ").trim();
+	const line = `- **${t}** ← ${kind}: ${src}${label ? ` — ${label}` : ""} <!-- whitelisted:${new Date().toISOString()} -->`;
+	return appendOnce(env, WHITELIST_NOTE, line, "kb:whitelist", `${t}\n${src}`);
 }
 
 /** Mirror a preferences profile's freshly re-distilled voice spec into the vault as a
