@@ -1,4 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
+import { toCsv } from "./_convert";
 
 // Re-encode a JSON array of records into a header-plus-rows tabular form so the
 // keys aren't repeated on every object. Cuts token count for LLM consumption.
@@ -18,12 +19,10 @@ function packTsv(headers: string[], rows: Row[], sep: string): string {
 	return lines.join("\n");
 }
 
-function packCsv(headers: string[], rows: Row[]): string {
-	const esc = (s: string) => (/[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
-	const lines = [headers.map(esc).join(",")];
-	for (const r of rows) lines.push(headers.map((h) => esc(cellString(r[h]))).join(","));
-	return lines.join("\n");
-}
+// csv delegates to _convert's toCsv rather than reimplementing quoting — it
+// carries the spreadsheet-formula-injection guard (a leading =/+/-/@ cell opened
+// in Excel/Sheets/LibreOffice can execute as a formula) that a bespoke escaper
+// here would otherwise have to duplicate and could omit.
 
 // kv: one "k=v" pair per field, records separated by a blank line. Skips empties.
 function packKv(headers: string[], rows: Row[]): string {
@@ -61,7 +60,7 @@ export const pack: Fn = {
 		const headers = [...new Set(rows.flatMap((o) => Object.keys(o)))];
 		if (headers.length === 0) return fail("`data` objects have no keys to pack.");
 
-		const packed = format === "csv" ? packCsv(headers, rows) : format === "kv" ? packKv(headers, rows) : packTsv(headers, rows, "\t");
+		const packed = format === "csv" ? toCsv(rows, ",") : format === "kv" ? packKv(headers, rows) : packTsv(headers, rows, "\t");
 
 		if (args?.note === false) return ok(packed);
 

@@ -44,4 +44,13 @@ describe("pack", () => {
 		expect(r.isError).toBeFalsy();
 		expect(r.content[0].text).toBe("(empty array)");
 	});
+
+	it("csv delegates to _convert's toCsv, so a formula-injection cell comes back escaped", async () => {
+		// packCsv used to reimplement CSV quoting and omitted the guard toCsv carries:
+		// a cell starting with =/+/-/@ opens as a live formula in Excel/Sheets/
+		// LibreOffice. Delegating means pack inherits the guard for free.
+		const r = await run({ data: [{ cmd: "=cmd()", safe: "ok" }], format: "csv", note: false });
+		expect(r.isError).toBeFalsy();
+		expect(r.content[0].text).toBe("cmd,safe\n'=cmd(),ok");
+	});
 });
