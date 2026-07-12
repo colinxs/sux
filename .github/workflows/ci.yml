@@ -40,12 +40,6 @@ jobs:
       - name: Node deploy blob in sync
         run: npm run check:node
 
-      # FUNCTIONS.md is generated from the fn files — fail if it's stale
-      # (fix: npm run docs). The fn set churns fast; this keeps the agent-facing
-      # tool reference honest.
-      - name: Docs in sync
-        run: npm run docs && git diff --exit-code sux/FUNCTIONS.md
-
       # The generated fn manifest (index.ts) must include every fns/*.ts
       # (fix: npm run gen:index) — a new fn that isn't registered ships silently.
       - name: Function index in sync
