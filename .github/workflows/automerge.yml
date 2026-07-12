@@ -14,6 +14,17 @@ name: Auto-merge
 # Uses pull_request_target (base-repo context, write token) but never checks out PR
 # code — it only reads the event payload and calls the API, so there is no
 # untrusted-code-execution surface.
+#
+# Auto-merge is ENABLED with a GitHub App token (not GITHUB_TOKEN): GitHub suppresses
+# workflow runs for pushes attributed to GITHUB_TOKEN, so a GITHUB_TOKEN-enabled
+# auto-merge produced a merge commit on main that fired NEITHER Deploy nor CI. The App
+# token makes the merge push look like a normal user push, so deploy.yml's on:push fires
+# unchanged. See https://docs.github.com/actions/using-workflows/triggering-a-workflow
+#
+# SAFETY NOTE: the safe-to-auto-merge property depends on two things this workflow
+# cannot verify at runtime — branch protection requiring the "Type-check & build" check,
+# and "Allow auto-merge" being enabled on the repo. If either is off, this degrades to
+# a no-op (auto-merge can't be enabled), never to an unguarded merge.
 
 on:
   pull_request_target:
@@ -37,9 +48,16 @@ jobs:
       github.event.pull_request.state == 'open' &&
       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
     steps:
+      - name: Mint app token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.SUX_BOT_APP_ID }}
+          private-key: ${{ secrets.SUX_BOT_PRIVATE_KEY }}
+
       - name: Decide eligibility and enable auto-merge
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           PR_NUM: ${{ github.event.pull_request.number }}
           TITLE: ${{ github.event.pull_request.title }}
@@ -51,13 +69,23 @@ jobs:
 
           has_label() { echo ",$LABELS," | grep -qi ",$1,"; }
 
+          # A PR can flip from eligible → ineligible after auto-merge was already enabled
+          # (relabeled `hold`/`feature`, or a `fix:` title edited to `feat:`). Guard that
+          # TOCTOU: on any ineligible path, DISABLE any auto-merge left standing, don't
+          # just skip. --disable-auto is a no-op when auto-merge isn't set.
+          ineligible() {
+            echo "$1 → not auto-merge-eligible; disabling any pending auto-merge"
+            gh pr merge --disable-auto "$PR_URL" 2>/dev/null || true
+            exit 0
+          }
+
           # Hard blocks first.
-          if [ "$DRAFT" = "true" ]; then echo "draft → skip"; exit 0; fi
-          if has_label hold;    then echo "hold label → skip"; exit 0; fi
-          if has_label feature; then echo "feature label → skip (needs a human)"; exit 0; fi
+          if [ "$DRAFT" = "true" ]; then ineligible "draft"; fi
+          if has_label hold;    then ineligible "hold label"; fi
+          if has_label feature; then ineligible "feature label (needs a human)"; fi
           # Breaking change marker in a conventional title (e.g. 'fix!:') → needs a human.
           if printf '%s' "$TITLE" | grep -qiE '^[a-z]+(\([^)]*\))?!:'; then
-            echo "breaking-change (!) title → skip"; exit 0; fi
+            ineligible "breaking-change (!) title"; fi
 
           eligible=false
           # Label-based eligibility.
@@ -69,7 +97,7 @@ jobs:
             eligible=true; fi
 
           if [ "$eligible" != "true" ]; then
-            echo "not an auto-merge-eligible PR (feature or unlabeled) → leaving for a human"; exit 0; fi
+            ineligible "feature or unlabeled PR"; fi
 
           echo "eligible → enabling native auto-merge (squash)"
           gh pr merge --auto --squash "$PR_URL" || {
