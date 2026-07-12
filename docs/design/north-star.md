@@ -49,6 +49,39 @@ Client-side **suggest/issue** verbs already capture feedback. Close the loop:
    ones** for Colin. Genuine bounded self-editing: the app files its own improvements, ships the
    safe subset, and asks about the rest — exactly the "living application" ask.
 
+## Flagship experience — "day 1" (the target everything composes toward)
+
+> "Sux, learn about me — what I know, courses I've taken and the material covered, everything in
+> my life. Fill gaps, ask me questions to expand. Initialize my vault with this knowledge. Start
+> safe mutations like labeling email. Suggest personal-growth steps aligned with my therapy
+> because you read the textbook and synthesized it."
+
+Decomposes into capabilities the plan already builds toward:
+1. **Self-model (`onboard`/`profile`)** — fan-out READ across mail/files/vault/calendar/contacts →
+   a structured profile (interests, expertise, relationships, projects, goals). recall, but aimed
+   inward.
+2. **Courses + material** — detect courses (email receipts, files, calendar), fetch syllabi/texts
+   (`fetch`/`research`), synthesize what was covered. mail + files + fetch + summarize.
+3. **Gap-fill loop** — identify what's missing/unclear, ask HIGH-SIGNAL questions, fold answers in.
+   Interactive, not one-shot.
+4. **Vault init** — write the synthesis as a structured personal knowledge base (MOCs per domain,
+   note per course/topic, a "who I am" root). vault_write/capture/batch + the living-wiki pattern.
+5. **Safe mutations** — begin learned email labeling/filing, conservative + smart-guarded, widening
+   as the learned-preferences store proves reliable.
+6. **Therapy-aligned growth** — read the user's OWN therapy material, synthesize the framework
+   (CBT/ACT/IFS/…), suggest steps grounded in it + the profile.
+
+**The part that needs real care (therapy + deepest personal data):** this is the most sensitive
+data sux will ever touch, so the zero-trust principle is absolute — READ-ONLY synthesis into the
+user's own vault, no egress, untrusted-content fenced, nothing leaves the personal boundary. And
+the growth suggestions must be **aligned-with, never a replacement-for**, real therapy: sux
+synthesizes + reflects the user's own framework and material; the user and their therapist decide.
+Framed as a mirror, not an authority. This is where "do the right thing" is load-bearing.
+
+**Why it's the flagship:** it composes the whole spine — one surface, recall, vault, learned
+prefs, smart-guards, the self-improvement loop — into something no single tool does: an AI that
+*knows you* and helps you grow, safely. Everything in the plan is scaffolding for this.
+
 ## The tension to hold
 Every feature must pass: *does this do the right thing, stay zero-trust, and earn its interrupt?*
 Proactivity that becomes noise, or a nudge that overrides judgment, fails the north star even if
