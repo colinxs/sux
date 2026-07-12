@@ -31,9 +31,12 @@ concurrency:
 
 jobs:
   mention:
-    # Fire only when a human (@claude) asks — never on the bot's own comments.
+    # Fire only when a TRUSTED human (@claude) asks — never on the bot's own comments,
+    # and never from an external user on this PUBLIC repo (else anyone could drive the
+    # write-scoped bot). author_association gates comment + review authors to the repo.
     if: >
-      github.event.sender.type != 'Bot' && (
+      github.event.sender.type != 'Bot' &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association || github.event.review.author_association) && (
         (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
         (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
         (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude'))
@@ -58,10 +61,12 @@ jobs:
           claude_args: "--max-turns 12 --model sonnet"
 
   review:
+    # Trusted-author PRs only — an external/fork PR must not spin up the review bot.
     if: >
       github.event_name == 'pull_request' &&
       github.event.pull_request.draft == false &&
-      github.event.sender.type != 'Bot'
+      github.event.sender.type != 'Bot' &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
     runs-on: ubuntu-latest
     steps:
       - name: Preflight — need the key
