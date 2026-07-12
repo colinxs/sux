@@ -104,6 +104,27 @@ describe("observability", () => {
 		}
 	});
 
+	it("429s the KV/R2-backed routes when OBS_RATE_LIMITER denies, but exempts /llms.txt", async () => {
+		const env = fakeEnv();
+		env.OBS_RATE_LIMITER = { limit: async () => ({ success: false }) };
+		for (const path of ["/metrics", "/logs", "/feedback", "/s/u1"]) {
+			const res = await get(env, path);
+			expect(res!.status).toBe(429);
+			expect(res!.headers.get("retry-after")).toBe("10");
+		}
+		// The pure in-memory render is not metered, so the limiter never sees it.
+		expect((await get(env, "/llms.txt"))!.status).toBe(200);
+	});
+
+	it("passes the caller IP as the OBS_RATE_LIMITER key", async () => {
+		const env = fakeEnv();
+		const keys: string[] = [];
+		env.OBS_RATE_LIMITER = { limit: async ({ key }: { key: string }) => (keys.push(key), { success: true }) };
+		const req = new Request("https://sux.test/metrics", { headers: { "cf-connecting-ip": "203.0.113.7" } });
+		await handleObservability(new URL("https://sux.test/metrics"), req, env);
+		expect(keys).toEqual(["203.0.113.7"]);
+	});
+
 	it("filters /feedback by ?tool= alongside ?type=", async () => {
 		const env = fakeEnv();
 		await appendFeedback(env, "issue", "dns broke", "dns");

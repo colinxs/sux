@@ -19,8 +19,27 @@ import type { RtEnv } from "./registry";
 const json = (obj: unknown, status = 200): Response =>
 	new Response(JSON.stringify(obj, null, 2), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 
+// Coarse per-IP backpressure for the anonymous routes that hit KV/R2 on every
+// request (/metrics, /logs, /feedback, /s/*). The authenticated MCP path is
+// gated by MCP_RATE_LIMITER; these are not, so without this an anonymous flood
+// would drive real KV read + R2 egress spend with no ceiling. /llms.txt is
+// exempt — a pure in-memory render with no per-hit storage cost.
+function isMeteredObsPath(pathname: string): boolean {
+	return pathname.startsWith("/s/") || pathname === "/metrics" || pathname === "/logs" || pathname === "/feedback";
+}
+
+async function obsRateLimited(request: Request, env: RtEnv): Promise<boolean> {
+	if (!env.OBS_RATE_LIMITER) return false;
+	const { success } = await env.OBS_RATE_LIMITER.limit({ key: request.headers.get("cf-connecting-ip") || "anon" });
+	return !success;
+}
+
 export async function handleObservability(url: URL, request: Request, env: RtEnv): Promise<Response | null> {
 	if (request.method !== "GET") return null;
+
+	if (isMeteredObsPath(url.pathname) && (await obsRateLimited(request, env))) {
+		return new Response(JSON.stringify({ error: "rate_limited" }), { status: 429, headers: { "content-type": "application/json", "cache-control": "no-store", "retry-after": "10" } });
+	}
 
 	// Public content handle: GET /s/<uuid> resolves the KV mapping to its R2
 	// object and streams it back (the URL `store` returns on put).

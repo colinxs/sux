@@ -184,6 +184,9 @@ export type RtEnv = Env &
 		GRAFANA_LOKI_TOKEN?: string;
 
 		MCP_RATE_LIMITER?: { limit: (opts: { key: string }) => Promise<{ success: boolean }> };
+		// Coarse per-IP limiter for the anonymous observability/content routes
+		// (/metrics, /logs, /feedback, /s/*), which the MCP gate never touches.
+		OBS_RATE_LIMITER?: { limit: (opts: { key: string }) => Promise<{ success: boolean }> };
 	};
 
 /**
