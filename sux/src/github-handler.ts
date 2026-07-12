@@ -104,6 +104,40 @@ async function nodeStatus(env: HandlerEnv): Promise<Record<string, unknown>> {
 	}
 }
 
+/** Cheap read-only roundtrips against the Worker's own bindings the ~95 fns lean on.
+ * KV + R2 get a real reachability probe (free, read-only — catches "R2 is down but
+ * /health says ok"); the pay-per-call bindings (AI/IMAGES/BROWSER) get a presence
+ * check only — a real roundtrip there costs money + latency on this public endpoint,
+ * so we confirm they're wired the same way the fns themselves gate them. */
+export async function probeBindings(env: RtEnv): Promise<Record<string, unknown>> {
+	const roundtrip = async (fn: () => Promise<unknown>) => {
+		const t = Date.now();
+		try {
+			await fn();
+			return { ok: true, ms: Date.now() - t };
+		} catch (e) {
+			return { ok: false, ms: Date.now() - t, reason: String((e as Error).message ?? e) };
+		}
+	};
+	const probeKey = "sux:health:probe"; // never written; a miss is a successful roundtrip
+	const [kv, r2] = await Promise.all([
+		roundtrip(() => env.OAUTH_KV.get(probeKey)),
+		roundtrip(() => (env.R2 ? env.R2.head(probeKey) : Promise.reject(new Error("R2 binding absent")))),
+	]);
+	return {
+		kv,
+		r2,
+		ai: { bound: typeof env.AI?.run === "function" },
+		images: { bound: Boolean(env.IMAGES) },
+		browser: { bound: Boolean(env.BROWSER) },
+	};
+}
+
+/** All bindings healthy: KV + R2 reachable and the pay-per-call trio wired. */
+export function bindingsOk(b: any): boolean {
+	return Boolean(b?.kv?.ok && b?.r2?.ok && b?.ai?.bound && b?.images?.bound && b?.browser?.bound);
+}
+
 /** Caching-proxy effectiveness derived from the KV-backed metrics (presentation only).
  * Mirrors observability.ts: r4() 4-dp rounding, rate = hits/calls. Route counts are the
  * lifetime tally {proxied, direct, proxy_fallback, binary_refetch}; residential_ratio is
@@ -139,13 +173,21 @@ async function gatherHealth(env: HandlerEnv): Promise<Record<string, unknown>> {
 
 	// Residential (through the proxy) vs datacenter (direct) egress + tunnel latency.
 	const t0 = Date.now();
-	const [proxied, direct, status, rawMetrics] = await Promise.all([
+	const [proxied, direct, status, rawMetrics, bindings] = await Promise.all([
 		withTimeout(ipInfo((u) => smartFetch(env, u, {})), 9000, null),
 		withTimeout(ipInfo((u) => fetch(u)), 9000, null),
 		withTimeout(nodeStatus(env), 9000, { available: false, reason: "timeout" } as Record<string, unknown>),
 		// Caching-proxy effectiveness (KV-backed). Degrade to null on a cold/failed
 		// isolate — this is presentation-only and must never fail the health page.
 		withTimeout(readMetrics(env as unknown as RtEnv).catch(() => null), 9000, null),
+		// The storage/compute bindings the fn surface depends on (KV/R2 roundtrip, AI/IMAGES/BROWSER presence).
+		withTimeout(probeBindings(env as unknown as RtEnv), 9000, {
+			kv: { ok: false, reason: "timeout" },
+			r2: { ok: false, reason: "timeout" },
+			ai: { bound: false },
+			images: { bound: false },
+			browser: { bound: false },
+		} as Record<string, unknown>),
 	]);
 	const tunnelMs = Date.now() - t0;
 	const metrics = rawMetrics ? deriveMetrics(rawMetrics) : null;
@@ -190,8 +232,13 @@ async function gatherHealth(env: HandlerEnv): Promise<Record<string, unknown>> {
 		upstream = { reachable: false, status: 0 };
 	}
 
+<<<<<<< HEAD
 	const ok = config.kagiKey && config.githubClient && upstream.reachable;
 	return { status: ok ? "ok" : "degraded", config, tailscale, upstream, metrics, cron };
+=======
+	const ok = config.kagiKey && config.githubClient && upstream.reachable && bindingsOk(bindings);
+	return { status: ok ? "ok" : "degraded", config, tailscale, upstream, metrics, bindings };
+>>>>>>> 0a2dcf8 (feat(health): probe the Worker's own bindings in /health)
 }
 
 function renderHealthHtml(h: any): string {
@@ -202,6 +249,7 @@ function renderHealthHtml(h: any): string {
 	const node = ts.node ?? {};
 	// metrics null on a cold/failed KV read — render "—" and zeroes, never NaN.
 	const mx = h.metrics ?? { calls: 0, cache_hit_rate: null, residential_ratio: null, error_rate: null, proxied: 0, route_total: 0 };
+	const bx = h.bindings ?? { kv: { ok: false }, r2: { ok: false }, ai: { bound: false }, images: { bound: false }, browser: { bound: false } };
 	const esc = (s: any) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 	// Rate (0..1) → readable %; null/undefined → em dash. Whole numbers drop the decimal (73%, not 73.0%).
 	const pct = (r: number | null | undefined) => (r == null ? "—" : `${Number.isInteger(r * 100) ? r * 100 : (r * 100).toFixed(1)}%`);
@@ -273,6 +321,14 @@ function renderHealthHtml(h: any): string {
  <div class="row"><span class="k">GitHub OAuth</span><span class="v">${dot(h.config.githubClient)}</span></div>
  <div class="row"><span class="k">Login allowlist</span><span class="v">${dot(h.config.allowlist)}</span></div>
  <div class="row"><span class="k">Kagi upstream</span><span class="v">${dot(h.upstream.reachable)} ${h.upstream.status}</span></div>
+</div>
+
+<div class="card"><h2>bindings</h2>
+ <div class="row"><span class="k">KV (OAUTH_KV)</span><span class="v">${dot(Boolean(bx.kv?.ok))} ${bx.kv?.ok ? bx.kv.ms + " ms" : esc(bx.kv?.reason ?? "down")}</span></div>
+ <div class="row"><span class="k">R2 (sux-mcp)</span><span class="v">${dot(Boolean(bx.r2?.ok))} ${bx.r2?.ok ? bx.r2.ms + " ms" : esc(bx.r2?.reason ?? "down")}</span></div>
+ <div class="row"><span class="k">Workers AI</span><span class="v">${dot(Boolean(bx.ai?.bound))}</span></div>
+ <div class="row"><span class="k">Images</span><span class="v">${dot(Boolean(bx.images?.bound))}</span></div>
+ <div class="row"><span class="k">Browser Rendering</span><span class="v">${dot(Boolean(bx.browser?.bound))}</span></div>
 </div>
 
 <div class="card"><h2>tailscale · routing pipeline</h2>

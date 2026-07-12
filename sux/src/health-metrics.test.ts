@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deriveMetrics, redactPublicHealth } from "./github-handler";
+import { bindingsOk, deriveMetrics, probeBindings, redactPublicHealth } from "./github-handler";
 import { applyEvent, emptyMetrics } from "./metrics";
 
 // The /health "cache & routing" card and its ?format=json "metrics" key are both
@@ -102,5 +102,46 @@ describe("redactPublicHealth (anonymous /health must not leak the node)", () => 
 		redactPublicHealth(h);
 		expect(h.tailscale.residential.ip).toBe("73.15.20.99");
 		expect(h.tailscale.node.hostname).toBe("home-node");
+	});
+});
+
+// probeBindings gives /health a real up/down signal for the storage/compute bindings
+// the ~95 fns depend on — a free read-only roundtrip for KV + R2, a presence check for
+// the pay-per-call trio (AI/IMAGES/BROWSER). bindingsOk folds them into ok/degraded.
+describe("probeBindings + bindingsOk (binding reachability on /health)", () => {
+	const stubEnv = (over: any = {}) => ({
+		OAUTH_KV: { get: async () => null },
+		R2: { head: async () => null },
+		AI: { run: async () => ({}) },
+		IMAGES: {},
+		BROWSER: {},
+		...over,
+	});
+
+	it("reports ok roundtrips for KV + R2 and bound for the pay-per-call trio", async () => {
+		const b = await probeBindings(stubEnv() as any);
+		expect((b.kv as any).ok).toBe(true);
+		expect((b.r2 as any).ok).toBe(true);
+		expect((b.ai as any).bound).toBe(true);
+		expect((b.images as any).bound).toBe(true);
+		expect((b.browser as any).bound).toBe(true);
+		expect(bindingsOk(b)).toBe(true);
+	});
+
+	it("captures the reason and degrades when the R2 roundtrip throws", async () => {
+		const b = await probeBindings(stubEnv({ R2: { head: async () => { throw new Error("R2 down"); } } }) as any);
+		expect((b.r2 as any).ok).toBe(false);
+		expect((b.r2 as any).reason).toContain("R2 down");
+		expect(bindingsOk(b)).toBe(false);
+	});
+
+	it("treats a missing/unwired AI binding (no .run) as unbound → degraded", async () => {
+		const b = await probeBindings(stubEnv({ AI: undefined }) as any);
+		expect((b.ai as any).bound).toBe(false);
+		expect(bindingsOk(b)).toBe(false);
+	});
+
+	it("bindingsOk is false on the timeout fallback shape", () => {
+		expect(bindingsOk({ kv: { ok: false, reason: "timeout" }, r2: { ok: false, reason: "timeout" }, ai: { bound: false }, images: { bound: false }, browser: { bound: false } })).toBe(false);
 	});
 });
