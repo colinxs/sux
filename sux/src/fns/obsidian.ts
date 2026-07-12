@@ -1,7 +1,7 @@
 import { type Fn, fail, ok } from "../registry";
 import { smartFetch } from "../proxy";
 import { extractRpcFromText } from "../mcp-util";
-import { fromB64, toB64 } from "./_util";
+import { fromB64, toB64, oj } from "./_util";
 
 // Work with Obsidian markdown notes across three backends:
 //   git    (default) — a git-backed vault via the GitHub API (async, versioned).
@@ -50,6 +50,7 @@ const normPath = (p: string) => p.replace(/^\/+/, "");
 const headKey = (cfg: VaultCfg) => `cache:vault:git:${cfg.repo}@${cfg.branch}:head`;
 const gitNoteKey = (cfg: VaultCfg, p: string) => `cache:vault:git:${cfg.repo}@${cfg.branch}:note:${cfg.inVault(normPath(p))}`;
 const gitListKey = (cfg: VaultCfg, filter: string) => `cache:vault:git:${cfg.repo}@${cfg.branch}:list:${filter || "/"}`;
+const gitIndexKey = (cfg: VaultCfg) => `cache:vault:git:${cfg.repo}@${cfg.branch}:index`;
 const remoteNoteKey = (p: string) => `cache:vault:remote:note:${normPath(p)}`;
 
 async function cacheGet(env: any, key: string): Promise<any | null> {
@@ -71,7 +72,17 @@ async function cacheDel(env: any, key: string): Promise<void> {
 	} catch {}
 }
 
-async function vaultHead(env: any, cfg: VaultCfg): Promise<string | null> {
+// The derived-scan index (fns/obsidian owns it because HEAD resolution + the KV
+// keyspace live here). The blob shape is opaque to this module — vault-mcp owns
+// it and stamps the HEAD sha it was built at, so a HEAD change invalidates it.
+export async function readVaultIndexBlob(env: any, cfg: VaultCfg): Promise<any | null> {
+	return cacheGet(env, gitIndexKey(cfg));
+}
+export async function writeVaultIndexBlob(env: any, cfg: VaultCfg, blob: unknown): Promise<void> {
+	return cachePut(env, gitIndexKey(cfg), blob);
+}
+
+export async function vaultHead(env: any, cfg: VaultCfg): Promise<string | null> {
 	const cached = await cacheGet(env, headKey(cfg));
 	const now = Date.now();
 	if (cached?.sha && now - cached.at < HEAD_RECHECK_MS) return cached.sha;
@@ -213,7 +224,7 @@ async function runRemote(env: any, action: string, args: any) {
 			const { result, error } = await obsidianMcp(env, "tools/list", {});
 			if (error) return fail(`Obsidian MCP tools/list error: ${error.message ?? JSON.stringify(error)}`);
 			const tools = (result?.tools ?? []).map((t: any) => ({ name: t?.name, description: t?.description }));
-			return ok(JSON.stringify({ via: "mcp", count: tools.length, tools }, null, 2));
+			return ok(oj({ via: "mcp", count: tools.length, tools }));
 		}
 		if (action === "call") {
 			const tool = String(args?.tool ?? "").trim();
@@ -222,7 +233,7 @@ async function runRemote(env: any, action: string, args: any) {
 			if (error) return fail(`Obsidian MCP '${tool}' error: ${error.message ?? JSON.stringify(error)}`);
 			const text = (result?.content ?? []).filter((c: any) => c?.type === "text").map((c: any) => c.text).join("\n");
 			if (result?.isError) return fail(text || `Obsidian MCP '${tool}' returned an error.`);
-			return ok(text || JSON.stringify(result, null, 2));
+			return ok(text || oj(result));
 		}
 		if (action === "list") {
 			const dir = String(args?.path ?? "").replace(/^\/+|\/+$/g, "");
@@ -230,7 +241,7 @@ async function runRemote(env: any, action: string, args: any) {
 			if (resp.status >= 400) return fail(`Obsidian remote error listing: HTTP ${resp.status}`);
 			const j = (await resp.json().catch(() => null)) as any;
 			const files = j?.files ?? [];
-			return ok(JSON.stringify({ dir: dir || "/", count: files.length, files }, null, 2));
+			return ok(oj({ dir: dir || "/", count: files.length, files }));
 		}
 		if (action === "read") {
 			const p = String(args?.path ?? "").trim();
@@ -262,7 +273,7 @@ async function runRemote(env: any, action: string, args: any) {
 			if (resp.status >= 400) return fail(`Obsidian remote search error: HTTP ${resp.status}`);
 			const j = (await resp.json().catch(() => null)) as any;
 			const hits = (Array.isArray(j) ? j : []).slice(0, 20).map((h: any) => ({ path: h?.filename, score: h?.score }));
-			return ok(JSON.stringify({ query: q, count: hits.length, hits }, null, 2));
+			return ok(oj({ query: q, count: hits.length, hits }));
 		}
 		if (action === "append") {
 			const p = String(args?.path ?? "").trim();
@@ -272,7 +283,7 @@ async function runRemote(env: any, action: string, args: any) {
 			const resp = await remoteFetch(env, `/vault/${encPath(p)}`, { method: "POST", headers: { "Content-Type": "text/markdown" }, body: content });
 			if (resp.status >= 400) return fail(`Obsidian remote write error: HTTP ${resp.status}`);
 			await cacheDel(env, remoteNoteKey(p)); // merged body lives server-side; next read refills
-			return ok(JSON.stringify({ ok: true, path: p, bytes: content.length }, null, 2));
+			return ok(oj({ ok: true, path: p, bytes: content.length }));
 		}
 		if (action === "write") {
 			const p = String(args?.path ?? "").trim();
@@ -282,7 +293,7 @@ async function runRemote(env: any, action: string, args: any) {
 			const resp = await remoteFetch(env, `/vault/${encPath(p)}`, { method: "PUT", headers: { "Content-Type": "text/markdown" }, body: content });
 			if (resp.status >= 400) return fail(`Obsidian remote write error: HTTP ${resp.status}`);
 			await cachePut(env, remoteNoteKey(p), { body: content, sha: null, at: Date.now(), src: "remote" });
-			return ok(JSON.stringify({ ok: true, path: p, bytes: content.length }, null, 2));
+			return ok(oj({ ok: true, path: p, bytes: content.length }));
 		}
 		if (action === "edit") {
 			const p = String(args?.path ?? "").trim();
@@ -297,7 +308,7 @@ async function runRemote(env: any, action: string, args: any) {
 			const resp = await remoteFetch(env, `/vault/${encPath(p)}`, { method: "PUT", headers: { "Content-Type": "text/markdown" }, body: edited.text });
 			if (resp.status >= 400) return fail(`Obsidian remote write error: HTTP ${resp.status}`);
 			await cachePut(env, remoteNoteKey(p), { body: edited.text, sha: null, at: Date.now(), src: "remote" });
-			return ok(JSON.stringify({ ok: true, path: p, replaced: edited.count }, null, 2));
+			return ok(oj({ ok: true, path: p, replaced: edited.count }));
 		}
 		if (action === "delete") {
 			const p = String(args?.path ?? "").trim();
@@ -306,7 +317,7 @@ async function runRemote(env: any, action: string, args: any) {
 			if (resp.status === 404) return fail(`Note not found: ${p}`);
 			if (resp.status >= 400) return fail(`Obsidian remote delete error: HTTP ${resp.status}`);
 			await cacheDel(env, remoteNoteKey(p));
-			return ok(JSON.stringify({ ok: true, deleted: p }, null, 2));
+			return ok(oj({ ok: true, deleted: p }));
 		}
 		return fail(`Unknown action '${action}'. Use list | read | search | append | write | edit | delete | tools | call.`);
 	} catch (e) {
@@ -373,7 +384,7 @@ export const obsidian: Fn = {
 				const notes = (json?.tree ?? [])
 					.filter((n: any) => n?.type === "blob" && typeof n.path === "string" && n.path.endsWith(".md") && (!filter || n.path.startsWith(filter)))
 					.map((n: any) => n.path);
-				const payload = JSON.stringify({ repo, branch, count: notes.length, notes }, null, 2);
+				const payload = oj({ repo, branch, count: notes.length, notes });
 				if (head) await cachePut(env, gitListKey(cfg, filter), { payload, sha: head, at: Date.now() });
 				return ok(payload);
 			}
@@ -397,7 +408,7 @@ export const obsidian: Fn = {
 				const { status, json } = await ghJson(env, `${GH}/search/code?q=${encodeURIComponent(`${q} repo:${repo} extension:md`)}&per_page=20`);
 				if (status >= 400) return fail(`GitHub search error: ${json?.message ?? `HTTP ${status}`} (code search needs an authenticated GITHUB_TOKEN).`);
 				const hits = (json?.items ?? []).map((it: any) => ({ path: it?.path, url: it?.html_url }));
-				return ok(JSON.stringify({ query: q, count: hits.length, hits }, null, 2));
+				return ok(oj({ query: q, count: hits.length, hits }));
 			}
 			if (action === "append") {
 				const p = String(args?.path ?? "").trim();
@@ -417,7 +428,7 @@ export const obsidian: Fn = {
 				const put = await ghJson(env, `${GH}/repos/${repo}/contents/${encodeURIComponent(full)}`, { method: "PUT", body });
 				if (put.status >= 400) return fail(`GitHub write error: ${put.json?.message ?? `HTTP ${put.status}`} (append needs a GITHUB_TOKEN with write access).`);
 				await noteWritten(env, cfg, p, merged, put.json?.commit?.sha);
-				return ok(JSON.stringify({ ok: true, path: p, bytes: merged.length, commit: put.json?.commit?.sha }, null, 2));
+				return ok(oj({ ok: true, path: p, bytes: merged.length, commit: put.json?.commit?.sha }));
 			}
 			if (action === "write") {
 				const p = String(args?.path ?? "").trim();
@@ -426,7 +437,7 @@ export const obsidian: Fn = {
 				if (!content) return fail("action=write requires `content`.");
 				const r = await vaultPut(env, cfg, p, content, `sux: write ${p}`);
 				if (!r.ok) return fail(r.error);
-				return ok(JSON.stringify({ ok: true, path: p, bytes: content.length, created: r.created, commit: r.commit }, null, 2));
+				return ok(oj({ ok: true, path: p, bytes: content.length, created: r.created, commit: r.commit }));
 			}
 			if (action === "edit") {
 				const p = String(args?.path ?? "").trim();
@@ -443,7 +454,7 @@ export const obsidian: Fn = {
 				// since this read yields a 409 "note changed" instead of a silent clobber.
 				const w = await vaultPut(env, cfg, p, edited.text, `sux: edit ${p}`, { sha: cur.sha });
 				if (!w.ok) return fail(w.error);
-				return ok(JSON.stringify({ ok: true, path: p, replaced: edited.count, commit: w.commit }, null, 2));
+				return ok(oj({ ok: true, path: p, replaced: edited.count, commit: w.commit }));
 			}
 			if (action === "delete") {
 				const p = String(args?.path ?? "").trim();
@@ -456,7 +467,7 @@ export const obsidian: Fn = {
 				const del = await ghJson(env, `${GH}/repos/${repo}/contents/${encodeURIComponent(full)}`, { method: "DELETE", body });
 				if (del.status >= 400) return fail(`GitHub delete error: ${del.json?.message ?? `HTTP ${del.status}`} (delete needs a GITHUB_TOKEN with write access).`);
 				await noteWritten(env, cfg, p, null, del.json?.commit?.sha);
-				return ok(JSON.stringify({ ok: true, deleted: p, commit: del.json?.commit?.sha }, null, 2));
+				return ok(oj({ ok: true, deleted: p, commit: del.json?.commit?.sha }));
 			}
 			return fail(`Unknown action '${action}'. Use list | read | search | append | write | edit | delete.`);
 		} catch (e) {

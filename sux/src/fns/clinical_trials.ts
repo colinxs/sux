@@ -1,4 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
+import { oj } from "./_util";
 
 // ClinicalTrials.gov API v2 (clinicaltrials.gov/api/v2) — keyless, free registry of
 // clinical studies. No residential proxy: a public government API with no bot wall.
@@ -48,6 +49,6 @@ export const clinical_trials: Fn = {
 		if (!resp.ok) return fail(`ClinicalTrials.gov API HTTP ${resp.status}.`);
 		const j: any = await resp.json();
 		const results = (j?.studies ?? []).map(normStudy);
-		return ok(JSON.stringify({ count: results.length, results }, null, 2));
+		return ok(oj({ count: results.length, results }));
 	},
 };

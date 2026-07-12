@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { renderHtml } from "./_util";
+import { renderHtml, oj } from "./_util";
 
 // LinkedIn public data by SCRAPING (Proxycurl — the old provider path — shut down
 // in July 2025 after LinkedIn sued Nubela). We render the public profile/company
@@ -87,7 +87,7 @@ export const linkedin: Fn = {
 			}
 			const data = action === "company" ? extractCompany(html) : extractPerson(html);
 			if (!data.name) return fail("Could not extract public profile data from the LinkedIn page (structure may have changed or the page is gated).");
-			return ok(JSON.stringify(data, null, 2));
+			return ok(oj(data));
 		} catch (e) {
 			return fail(`linkedin render/scrape failed: ${String((e as Error).message ?? e)}`);
 		}

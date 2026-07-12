@@ -1,6 +1,6 @@
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { obsidian } from "./obsidian";
-import { errMsg } from "./_util";
+import { errMsg, oj } from "./_util";
 
 // citation — turn a scholarly result into a durable, exportable reference. Three
 // actions over one normalized entry shape (vault-backends.md Part 3):
@@ -223,7 +223,7 @@ export const citation: Fn = {
 					seen.set(base, n + 1);
 					return { ...e, key: n === 0 ? base : `${base}${String.fromCharCode(96 + n)}` };
 				});
-				return ok(JSON.stringify({ bibtex: keyed.map(toBibtex).join("\n\n"), csl: keyed.map(toCsl) }, null, 2));
+				return ok(oj({ bibtex: keyed.map(toBibtex).join("\n\n"), csl: keyed.map(toCsl) }));
 			}
 			if (action === "capture") {
 				if (!hasVault(env)) return failWith("not_configured", "citation capture needs a vault — set OBSIDIAN_VAULT_REPO (+ GITHUB_TOKEN for writes) or the remote backend.");
@@ -233,7 +233,7 @@ export const citation: Fn = {
 				const key = await freeCiteKey(env, entry.key || citeKey(entry), entry);
 				const path = `${REF_DIR}/${key}.md`;
 				await obs(env, { action: "write", path, content: citationNote(entry, key) });
-				return ok(JSON.stringify({ ok: true, citekey: key, path, bibtex: toBibtex({ ...entry, key }) }, null, 2));
+				return ok(oj({ ok: true, citekey: key, path, bibtex: toBibtex({ ...entry, key }) }));
 			}
 			if (action === "export") {
 				if (!hasVault(env)) return failWith("not_configured", "citation export needs a vault — set OBSIDIAN_VAULT_REPO or the remote backend.");
@@ -255,7 +255,7 @@ export const citation: Fn = {
 				}
 				const bibtex = entries.map(toBibtex).join("\n\n");
 				if (a?.write === true && bibtex) await obs(env, { action: "write", path: `${REF_DIR}/library.bib`, content: `${bibtex}\n` });
-				return ok(JSON.stringify({ count: entries.length, bibtex, ...(a?.write === true ? { written: `${REF_DIR}/library.bib` } : {}) }, null, 2));
+				return ok(oj({ count: entries.length, bibtex, ...(a?.write === true ? { written: `${REF_DIR}/library.bib` } : {}) }));
 			}
 			return failWith("bad_input", `citation: unknown action '${action}'.`);
 		} catch (e) {

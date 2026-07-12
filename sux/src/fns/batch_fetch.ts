@@ -1,5 +1,5 @@
 import { type Fn, type RtEnv, fail, ok } from "../registry";
-import { type BlobRef, FANOUT_BUDGET_MS, fetchText, getBlob, isHttpUrl, noCacheOn4xx, noCacheOnMutation, pool, putBlob, readBodyBytes, storeRefUuid } from "./_util";
+import { type BlobRef, byteBudget, FANOUT_BUDGET_MS, FANOUT_BYTE_BUDGET, FANOUT_STORE_TTL_S, fetchText, getBlob, isHttpUrl, noCacheOn4xx, noCacheOnMutation, pool, putBlob, readBodyBytes, storeRefUuid, oj } from "./_util";
 import { smartFetch } from "../proxy";
 
 // Fetch many URLs concurrently through the residential proxy (direct fallback).
@@ -35,11 +35,16 @@ type UrlResult = {
 	error?: string;
 };
 
+// Raw-byte cap for as:"url" downloads, exported so `put` (which composes
+// fetchBytes) shares the same store-size guard.
+export { MAX_STORE_BYTES };
+
 /** Fetch raw bytes for as:"url", preserving the HTTP status (a 4xx error page is
  * still transport content here) and short-circuiting the worker's own /s/<uuid>
  * CAS refs to a direct KV→R2 read. Binary-safe: smartFetch decodes base64 proxy
- * bodies to raw bytes so images/pdfs/zips survive byte-for-byte. */
-async function fetchBytes(
+ * bodies to raw bytes so images/pdfs/zips survive byte-for-byte. Exported so `put`
+ * reuses the exact download path instead of re-hand-rolling it. */
+export async function fetchBytes(
 	env: RtEnv,
 	url: string,
 	method: string,
@@ -67,7 +72,7 @@ export const batch_fetch: Fn = {
 	description:
 		"Fetch many URLs concurrently via the residential proxy (direct fallback). urls: array of absolute http(s) URLs; method: GET (default). Runs ~8 at a time, isolating per-URL failures. " +
 		'as: "text" (default) reads each body as text capped by max_bytes (default 20000) and returns { url, status, bytes, text }. ' +
-		'as: "url" is server-side bulk DOWNLOAD: it stores each successful response\'s raw bytes to the content-addressed R2 store (binary-safe — images, PDFs, zips) and returns a compact /s/<uuid> ref { url, status, bytes, ref } instead of inlining the body, so you can bulk-download files without pulling megabytes through context. ' +
+		'as: "url" is server-side bulk DOWNLOAD: it stores each successful response\'s raw bytes to the content-addressed R2 store (binary-safe — images, PDFs, zips) and returns a compact /s/<uuid> ref { url, status, bytes, ref } instead of inlining the body, so you can bulk-download files without pulling megabytes through context (each ref self-expires after 7 days — use `store` for a permanent handle). ' +
 		"Returns a JSON array of per-URL results, or { url, error } for a failed one.",
 	inputSchema: {
 		type: "object",
@@ -102,17 +107,28 @@ export const batch_fetch: Fn = {
 		// Time budget: stop firing new fetches near the hard deadline so a wide batch
 		// returns the URLs it managed instead of the whole run being killed with none.
 		const deadline = Date.now() + FANOUT_BUDGET_MS;
+		// Aggregate memory budget shared across the pool for as:"url" downloads: a
+		// worker reserves the per-item cap before buffering and releases it after
+		// storing, so CONCURRENCY concurrent downloads can't sum past the isolate
+		// ceiling (8 × 25MB would OOM). as:"text" is bounded by max_bytes and needs none.
+		const budget = byteBudget(FANOUT_BYTE_BUDGET);
 		const raw = await pool(urls, CONCURRENCY, async (rawUrl): Promise<UrlResult> => {
 			const url = typeof rawUrl === "string" ? rawUrl : "";
 			if (!isHttpUrl(url)) return { url, error: "not an absolute http(s) URL." };
 			try {
 				if (as === "url") {
-					const r = await fetchBytes(env, url, method);
-					// Oversize isolated to this URL — report it, don't store, don't fail the batch.
-					// r.oversize means the read aborted before buffering (no OOM); the length check is a belt.
-					if (r.oversize || r.bytes.length > MAX_STORE_BYTES) return { url, status: r.status, bytes: r.bytes.length, oversize: true };
-					const ref: BlobRef = await putBlob(env, r.bytes, r.contentType);
-					return { url, status: r.status, bytes: r.bytes.length, ref: ref.url };
+					await budget.acquire(MAX_STORE_BYTES);
+					try {
+						const r = await fetchBytes(env, url, method);
+						// Oversize isolated to this URL — report it, don't store, don't fail the batch.
+						// r.oversize means the read aborted before buffering (no OOM); the length check is a belt.
+						if (r.oversize || r.bytes.length > MAX_STORE_BYTES) return { url, status: r.status, bytes: r.bytes.length, oversize: true };
+						// Staging artifact — self-expiring handle so bulk downloads don't accrete storage.
+						const ref: BlobRef = await putBlob(env, r.bytes, r.contentType, { ttlSeconds: FANOUT_STORE_TTL_S });
+						return { url, status: r.status, bytes: r.bytes.length, ref: ref.url };
+					} finally {
+						budget.release(MAX_STORE_BYTES);
+					}
 				}
 				const r = await fetchText(env, url, { method, maxBytes });
 				return { url, status: r.status, bytes: r.text.length, text: r.text };
@@ -129,6 +145,6 @@ export const batch_fetch: Fn = {
 		// (network blip) counts as a 5xx so one bad URL never poisons the cache. A
 		// truncated run is likewise non-cacheable (its partials shouldn't be frozen).
 		const worst = results.reduce((m, r) => Math.max(m, r.error !== undefined ? 599 : r.status ?? 0), 0);
-		return noCacheOnMutation(noCacheOn4xx(ok(JSON.stringify(results, null, 2)), worst), method);
+		return noCacheOnMutation(noCacheOn4xx(ok(oj(results)), worst), method);
 	},
 };

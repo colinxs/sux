@@ -1,4 +1,5 @@
 import { type Fn, ok } from "../registry";
+import { oj } from "./_util";
 
 // User-facing KV keys live under a fixed "kv:" namespace. Listing scopes to that
 // namespace and strips the prefix from the returned names so callers only ever
@@ -31,6 +32,6 @@ export const kv_list: Fn = {
 		} while (cursor);
 
 		keys.sort();
-		return ok(JSON.stringify({ keys }, null, 2));
+		return ok(oj({ keys }));
 	},
 };

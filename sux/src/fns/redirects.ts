@@ -1,4 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
+import { oj } from "./_util";
 import { smartFetch } from "../proxy";
 
 export const redirects: Fn = {
@@ -38,6 +39,6 @@ export const redirects: Fn = {
 			}
 			break;
 		}
-		return ok(JSON.stringify({ hops: chain.length, chain, final: chain[chain.length - 1]?.url }, null, 2));
+		return ok(oj({ hops: chain.length, chain, final: chain[chain.length - 1]?.url }));
 	},
 };

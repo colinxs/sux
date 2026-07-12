@@ -76,6 +76,7 @@ import { linkedin } from "./linkedin";
 import { lowes } from "./lowes";
 import { mail_triage } from "./mail_triage";
 import { markdown } from "./markdown";
+import { uw } from "./uw";
 import { openalex } from "./openalex";
 import { oracle } from "./oracle";
 import { pdf } from "./pdf";
@@ -85,6 +86,7 @@ import { pipe } from "./pipe";
 import { places } from "./places";
 import { preferences } from "./preferences";
 import { product_search } from "./product_search";
+import { put } from "./put";
 import { reddit } from "./reddit";
 import { render } from "./render";
 import { selftest } from "./selftest";
@@ -179,6 +181,7 @@ export const FUNCTIONS: Fn[] = [
 	lowes,
 	mail_triage,
 	markdown,
+	uw,
 	openalex,
 	oracle,
 	pdf,
@@ -188,6 +191,7 @@ export const FUNCTIONS: Fn[] = [
 	places,
 	preferences,
 	product_search,
+	put,
 	reddit,
 	render,
 	selftest,

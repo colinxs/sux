@@ -1,6 +1,6 @@
 import { getClientToken, mintClientToken, type OAuthClientCreds } from "./_oauth";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
-import { errMsg } from "./_util";
+import { errMsg, oj } from "./_util";
 
 // Tailscale API (api.tailscale.com/api/v2) — official REST control-plane read.
 // Auth is OAuth2 client-credentials (TAILSCALE_OAUTH_CLIENT_ID/SECRET); the
@@ -107,26 +107,26 @@ export const tailscale: Fn = {
 				const d = await api(env, `/device/${encodeURIComponent(id)}`);
 				if (!d || d?.id === undefined) return failWith("not_found", `No Tailscale device found for '${id}'.`);
 				const items = [normDevice(d)];
-				return ok(JSON.stringify({ service: "tailscale", tailnet, action, count: items.length, items }, null, 2));
+				return ok(oj({ service: "tailscale", tailnet, action, count: items.length, items }));
 			}
 
 			if (action === "dns") {
 				const [ns, prefs] = await Promise.all([api(env, `/tailnet/${tn}/dns/nameservers`), api(env, `/tailnet/${tn}/dns/preferences`)]);
 				const merged = { ...(ns ?? {}), ...(prefs ?? {}) };
 				const items = [merged];
-				return ok(JSON.stringify({ service: "tailscale", tailnet, action, count: items.length, items }, null, 2));
+				return ok(oj({ service: "tailscale", tailnet, action, count: items.length, items }));
 			}
 
 			if (action === "keys") {
 				const j = await api(env, `/tailnet/${tn}/keys`);
 				const items = (Array.isArray(j?.keys) ? j.keys : []).map(normKey);
-				return ok(JSON.stringify({ service: "tailscale", tailnet, action, count: items.length, items }, null, 2));
+				return ok(oj({ service: "tailscale", tailnet, action, count: items.length, items }));
 			}
 
 			// action === "devices"
 			const j = await api(env, `/tailnet/${tn}/devices`);
 			const items = (Array.isArray(j?.devices) ? j.devices : []).map(normDevice);
-			return ok(JSON.stringify({ service: "tailscale", tailnet, action, count: items.length, items }, null, 2));
+			return ok(oj({ service: "tailscale", tailnet, action, count: items.length, items }));
 		} catch (e) {
 			return failWith("upstream_error", `tailscale (${action}) failed: ${errMsg(e)}`);
 		}

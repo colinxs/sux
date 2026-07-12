@@ -60,6 +60,14 @@ describe("declutter", () => {
 		expect(typeof out).toBe("string");
 	});
 
+	it("still cleans normally with adblock:true (cosmetic strip is an additive pre-pass)", async () => {
+		// In node HTMLRewriter is absent so the cosmetic pass is a no-op; the regex
+		// clean must still run, so the opt-in flag never regresses the base behavior.
+		const out = await run({ html: PAGE, url: "https://news.example.com/a", adblock: true });
+		expect(out).toContain("Real Title");
+		expect(out).not.toMatch(/adsbygoogle/);
+	});
+
 	it("fails on an upstream error page instead of cleaning it", async () => {
 		const r = await declutter.run({} as any, { url: "https://example.com" });
 		expect(r.isError).toBe(true); // errors never enter the KV cache

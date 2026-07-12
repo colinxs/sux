@@ -40,4 +40,13 @@ describe("kv_get", () => {
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toMatch(/not found/);
 	});
+
+	it("fails cleanly (not an uncaught throw) on a corrupt compressed value", async () => {
+		// A value carrying the `\0gz:` frame prefix but whose base64 is not a valid gzip
+		// stream must surface as a fail(), mirroring dropbox/store — never an uncaught reject.
+		const env = fakeEnv({ "kv:broken": "\u0000gz:bm90LWd6aXA=" }); // base64 of "not-gzip"
+		const r = await kv_get.run(env, { key: "broken" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/could not be decompressed/);
+	});
 });

@@ -1,5 +1,5 @@
 import { type Fn, failWith, ok } from "../registry";
-import { type Fetched, fetchText, isHttpUrl, noCacheOn4xx } from "./_util";
+import { type Fetched, fetchText, isHttpUrl, noCacheOn4xx, oj } from "./_util";
 
 export const geo_fetch: Fn = {
 	name: "geo_fetch",
@@ -34,6 +34,6 @@ export const geo_fetch: Fn = {
 			return failWith("upstream_error", `Fetch failed: ${String((e as Error).message ?? e)}`);
 		}
 		const text = fetched.text;
-		return noCacheOn4xx(ok(JSON.stringify({ url, geo: geo || null, status: fetched.status, bytes: text.length, text }, null, 2)), fetched.status);
+		return noCacheOn4xx(ok(oj({ url, geo: geo || null, status: fetched.status, bytes: text.length, text })), fetched.status);
 	},
 };

@@ -1,4 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
+import { oj } from "./_util";
 
 export const wayback: Fn = {
 	name: "wayback",
@@ -33,7 +34,7 @@ export const wayback: Fn = {
 				statuscode,
 				url: `https://web.archive.org/web/${timestamp}/${original}`,
 			}));
-			return ok(JSON.stringify({ count: captures.length, captures }, null, 2));
+			return ok(oj({ count: captures.length, captures }));
 		}
 
 		const at = String(args?.at ?? "");

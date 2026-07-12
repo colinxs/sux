@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { kv_get } from "./kv_get";
 import { kv_put } from "./kv_put";
 
 function fakeEnv() {
@@ -41,6 +42,24 @@ describe("kv_put", () => {
 		expect(r.isError).toBeFalsy();
 		expect(puts[0].opts).toEqual({ expirationTtl: 120 });
 		expect(r.content[0].text).toMatch(/expires in 120s/);
+	});
+
+	it("transparently gzips a large value and reports the ORIGINAL byte count; kv_get inflates it", async () => {
+		const { env, store } = fakeEnv();
+		const value = "sux kv compression round-trip. ".repeat(100);
+		const r = await kv_put.run(env, { key: "big", value });
+		expect(r.isError).toBeFalsy();
+		// Stored form is the compressed frame — a control-prefixed base64 string,
+		// shorter than the raw value.
+		const stored = store.get("kv:big")!;
+		expect(stored).not.toBe(value);
+		expect(stored.length).toBeLessThan(value.length);
+		expect(stored.startsWith("\u0000gz:")).toBe(true);
+		// The confirmation counts original bytes, not the compressed size.
+		expect(r.content[0].text).toMatch(new RegExp(`Wrote ${new TextEncoder().encode(value).length} bytes`));
+		// kv_get transparently inflates back to the original value.
+		const got = await kv_get.run(env, { key: "big" });
+		expect(got.content[0].text).toBe(value);
 	});
 
 	it("rejects a ttl below the KV minimum", async () => {

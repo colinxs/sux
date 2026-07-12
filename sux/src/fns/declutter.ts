@@ -38,7 +38,7 @@ function clean(html: string): string {
 export const declutter: Fn = {
 	name: "declutter",
 	description:
-		"Clean HTML uBlock-style before further processing: removes scripts, styles, iframes, ad/consent/newsletter/social/comment blocks, tracking pixels, and inline event handlers. Pass `url` or `html`; `to`: html (default) | text. Best-effort regex cleaning (no DOM). Compose before summarize/readability/markdown for cleaner output.",
+		"Clean HTML uBlock-style before further processing: removes scripts, styles, iframes, ad/consent/newsletter/social/comment blocks, tracking pixels, and inline event handlers. Pass `url` or `html`; `to`: html (default) | text. Set `adblock:true` (requires `url`) to additionally delete ad/tracker/annoyance DOM via the EasyList+EasyPrivacy cosmetic engine (never touches Claude/Anthropic/sux domains). Best-effort regex cleaning (no DOM). Compose before summarize/readability/markdown for cleaner output.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -46,6 +46,7 @@ export const declutter: Fn = {
 			url: { type: "string", description: "URL to fetch (via proxy) and clean." },
 			html: { type: "string", description: "Raw HTML to clean." },
 			to: { type: "string", enum: ["html", "text"], default: "html", description: "Return cleaned HTML or stripped plain text." },
+			adblock: { type: "boolean", default: false, description: "Opt-in: also strip ad/tracker/annoyance DOM using the cosmetic filter engine (needs `url` for the hostname; whitelists first-party domains)." },
 		},
 	},
 	cacheable: true,
@@ -53,7 +54,14 @@ export const declutter: Fn = {
 		const loaded = await loadHtml(env, args);
 		if ("error" in loaded) return fail(loaded.error);
 		try {
-			const cleaned = clean(loaded.html);
+			let html = loaded.html;
+			// Adblock is opt-in and URL-scoped: the cosmetic engine keys on the page's
+			// hostname, so an inline-`html` call (no url) has nothing to key on and skips.
+			if (args?.adblock && typeof args?.url === "string" && args.url) {
+				const { stripCosmetic } = await import("./_adblock");
+				html = await stripCosmetic(env, html, args.url);
+			}
+			const cleaned = clean(html);
 			return ok(args?.to === "text" ? stripHtml(cleaned) : cleaned);
 		} catch (e) {
 			return fail(`declutter failed: ${String((e as Error).message ?? e)}`);

@@ -1,3 +1,4 @@
+import zlib from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { dropbox } from "./dropbox";
 
@@ -252,6 +253,49 @@ describe("dropbox (app-folder blob store)", () => {
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toContain("path_lookup/not_found");
 		expect(r.content[0].text).toContain("missing.pdf");
+	});
+
+	it("stores text notes VERBATIM (no gzip) — Dropbox is the human-facing mirror", async () => {
+		// A large, highly compressible .md must land as its raw bytes, not a gzip frame:
+		// a human syncs this folder to their laptop/phone and Dropbox previews/searches it.
+		const big = "the quick brown fox. ".repeat(500); // well over the gzip min-size
+		let uploaded: Uint8Array | null = null;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (u: string | URL, init?: any) => {
+				const url = String(u);
+				if (url.endsWith("/files/upload")) {
+					uploaded = new Uint8Array(init.body);
+					return new Response(JSON.stringify({ path_display: "/notes/big.md", size: uploaded.length }), { status: 200 });
+				}
+				return new Response(JSON.stringify({ url: "https://www.dropbox.com/s/x/big.md" }), { status: 200 });
+			}),
+		);
+		const r = await dropbox.run(ENV, { op: "put", path: "notes/big.md", data: big });
+		expect(JSON.parse(r.content[0].text).ok).toBe(true);
+		// Bytes on the wire equal the raw UTF-8 note — NOT a marker+gzip frame (byte[0] would be 0x00).
+		expect(uploaded).not.toBeNull();
+		expect(new TextDecoder().decode(uploaded!)).toBe(big);
+		expect(uploaded![0]).not.toBe(0x00);
+	});
+
+	it("get still inflates a LEGACY compressed text frame (backward compatible)", async () => {
+		// A .md written before compression was removed is stored as marker(0x00)+gzip;
+		// get on a TEXT_EXT path must still transparently inflate it.
+		const original = "# legacy note\n" + "compressed content. ".repeat(50);
+		const gz = zlib.gzipSync(Buffer.from(original, "utf8"));
+		const frame = new Uint8Array(gz.length + 1);
+		frame[0] = 0x00; // GZIP_MARKER
+		frame.set(gz, 1);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (u: string | URL) => {
+				if (String(u).endsWith("/files/get_metadata")) return new Response(JSON.stringify({ ".tag": "file", size: frame.length }), { status: 200 });
+				return new Response(frame, { status: 200 });
+			}),
+		);
+		const r = await dropbox.run(ENV, { op: "get", path: "notes/legacy.md" });
+		expect(r.content[0].text).toBe(original);
 	});
 
 	it("get refuses to download when metadata carries no size (unbounded-body guard)", async () => {

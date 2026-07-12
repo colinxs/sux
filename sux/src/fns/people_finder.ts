@@ -1,5 +1,5 @@
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
-import { stripHtml } from "./_util";
+import { stripHtml, oj } from "./_util";
 
 // people_finder — a PUBLIC-SOURCE person aggregator. It surfaces only
 // publicly-listed information (a public institutional directory + public social
@@ -330,6 +330,6 @@ export const people_finder: Fn = {
 			sources: [...new Set(sources)],
 			errors,
 		};
-		return ok(JSON.stringify(profile, null, 2));
+		return ok(oj(profile));
 	},
 };

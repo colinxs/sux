@@ -1,4 +1,5 @@
 import { retailRender } from "../retail-render";
+import { oj } from "./_util";
 import { type Fn, fail, ok, type RtEnv } from "../registry";
 
 // WinCo Foods has no online product catalog — this fn is a STORE LOCATOR only.
@@ -148,6 +149,6 @@ export const winco: Fn = {
 			}
 			return fail(NO_STORES_MSG);
 		}
-		return ok(JSON.stringify({ retailer: "winco", action: "locations", count: stores.length, stores }, null, 2));
+		return ok(oj({ retailer: "winco", action: "locations", count: stores.length, stores }));
 	},
 };

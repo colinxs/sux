@@ -136,6 +136,18 @@ describe("batch_fetch", () => {
 		expect(env.R2._m.size).toBe(1);
 	});
 
+	it('as:"url" mints a self-expiring handle by default (staging artifacts, not permanent)', async () => {
+		const env = mkStoreEnv();
+		const r = await batch_fetch.run(env, { urls: ["https://a.com"], as: "url" });
+		const out = JSON.parse(r.content[0].text);
+		const uuid = out[0].ref.split("/s/")[1];
+		const handle = JSON.parse(env.OAUTH_KV._m.get(`store:${uuid}`));
+		expect(typeof handle.expiry).toBe("number");
+		const now = Math.floor(Date.now() / 1000);
+		expect(handle.expiry).toBeGreaterThan(now);
+		expect(handle.expiry).toBeLessThanOrEqual(now + 7 * 24 * 60 * 60 + 5);
+	});
+
 	it('as:"url" without the R2 binding fails clearly', async () => {
 		const r = await batch_fetch.run({ OAUTH_KV: mockKV() } as any, { urls: ["https://a.com"], as: "url" });
 		expect(r.isError).toBe(true);

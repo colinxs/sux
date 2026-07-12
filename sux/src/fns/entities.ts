@@ -1,4 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
+import { oj } from "./_util";
 
 // Lightweight regex NER. No model, no network — pure pattern extraction over
 // plain text. Each matcher is intentionally conservative to keep false
@@ -76,6 +77,6 @@ export const entities: Fn = {
 			hashtags: collect(text, RE.hashtag),
 		};
 
-		return ok(JSON.stringify(result, null, 2));
+		return ok(oj(result));
 	},
 };

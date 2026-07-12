@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { errMsg } from "./_util";
+import { errMsg, oj } from "./_util";
 
 // Tavily (api.tavily.com) — LLM-oriented search that returns a synthesized answer
 // alongside ranked results. The api_key rides the JSON body of a single POST.
@@ -50,7 +50,7 @@ export const tavily: Fn = {
 			if (!resp.ok) throw new Error(`Tavily HTTP ${resp.status}: ${(await resp.text().catch(() => "")).slice(0, 300)}`);
 			const j: any = await resp.json();
 			const results = (j?.results ?? []).map(normResult);
-			return ok(JSON.stringify({ provider: "tavily", query, answer: j?.answer ?? undefined, count: results.length, results }, null, 2));
+			return ok(oj({ provider: "tavily", query, answer: j?.answer ?? undefined, count: results.length, results }));
 		} catch (e) {
 			return fail(`tavily failed: ${errMsg(e)}`);
 		}

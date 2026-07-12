@@ -1,4 +1,5 @@
 import { type Fn, fail, ok, type RtEnv } from "../registry";
+import { oj } from "./_util";
 
 // Stack Exchange search (api.stackexchange.com) — keyless advanced search over any
 // site in the network (Stack Overflow, Super User, Server Fault, …). No residential
@@ -68,6 +69,6 @@ export const stackexchange: Fn = {
 		if (!resp.ok) return fail(`Stack Exchange API HTTP ${resp.status}.`);
 		const j: any = await resp.json();
 		const results = (j?.items ?? []).map(normItem);
-		return ok(JSON.stringify({ site, count: results.length, results }, null, 2));
+		return ok(oj({ site, count: results.length, results }));
 	},
 };

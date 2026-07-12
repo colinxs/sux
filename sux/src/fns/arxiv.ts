@@ -1,4 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
+import { oj } from "./_util";
 
 // arXiv API (export.arxiv.org) — keyless, free, returns Atom XML. No residential
 // proxy: this is a public academic endpoint with no bot wall, so a plain fetch is
@@ -86,6 +87,6 @@ export const arxiv: Fn = {
 		if (!resp.ok) return fail(`arXiv API HTTP ${resp.status}.`);
 		const xml = await resp.text();
 		const results = [...xml.matchAll(/<entry\b[\s\S]*?<\/entry>/gi)].map((m) => normEntry(m[0]));
-		return ok(JSON.stringify({ count: results.length, results }, null, 2));
+		return ok(oj({ count: results.length, results }));
 	},
 };

@@ -1,6 +1,6 @@
 import { type Fn, fail, ok } from "../registry";
 import { normalizeMoney, type RetailProduct } from "./_retail";
-import { errMsg } from "./_util";
+import { errMsg, oj } from "./_util";
 
 // Best Buy Products API (api.bestbuy.com) — official, free, clean REST, no bot
 // wall. A single apiKey rides the query string; no OAuth handshake. `search`
@@ -66,7 +66,7 @@ export const bestbuy: Fn = {
 				const j = await api(`${API}/products/${encodeURIComponent(sku)}.json?${p}`);
 				const d = Array.isArray(j?.products) ? j.products[0] : j;
 				if (!d || d?.sku === undefined) return fail(`No Best Buy product found for SKU '${sku}'.`);
-				return ok(JSON.stringify({ retailer: "bestbuy", action, count: 1, products: [normProduct(d)] }, null, 2));
+				return ok(oj({ retailer: "bestbuy", action, count: 1, products: [normProduct(d)] }));
 			}
 
 			// action === "search"
@@ -75,7 +75,7 @@ export const bestbuy: Fn = {
 			const p = new URLSearchParams({ apiKey: key, format: "json", show: SHOW, pageSize: String(limit) });
 			const j = await api(`${API}/products((search=${encodeURIComponent(term)}))?${p}`);
 			const products = (j?.products ?? []).map(normProduct);
-			return ok(JSON.stringify({ retailer: "bestbuy", action, count: products.length, products }, null, 2));
+			return ok(oj({ retailer: "bestbuy", action, count: products.length, products }));
 		} catch (e) {
 			return fail(`bestbuy (${action}) failed: ${errMsg(e)}`);
 		}

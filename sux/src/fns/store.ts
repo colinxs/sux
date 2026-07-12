@@ -1,5 +1,6 @@
 import { type Fn, fail, ok } from "../registry";
-import { extractStoreId, fromB64, isExpired, putBlob, STORE_KV_PREFIX, storeBase, toB64 } from "./_util";
+import { maybeDecompress } from "./_gzip";
+import { extractStoreId, fromB64, isExpired, putBlob, STORE_KV_PREFIX, storeBase, toB64, oj } from "./_util";
 
 // Object storage in sux's R2. Bytes are content-addressed (key = sha256, so
 // identical content dedupes to one immutable object — Nix-store style). Each put
@@ -59,7 +60,7 @@ export const store: Fn = {
 					if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0) return fail("ttl_seconds must be a positive integer.");
 				}
 				const ref = await putBlob(env, bytes, ct, ttlSeconds !== undefined ? { ttlSeconds } : undefined);
-				return ok(JSON.stringify(ref, null, 2));
+				return ok(oj(ref));
 			}
 
 			if (op === "get") {
@@ -106,20 +107,25 @@ export const store: Fn = {
 						),
 					);
 				}
-				if (isTexty(type)) return ok(JSON.stringify({ key: r2key, size: obj.size, content_type: type, text: await obj.text() }, null, 2));
-				return ok(JSON.stringify({ key: r2key, size: obj.size, content_type: type, base64: toB64(new Uint8Array(await obj.arrayBuffer())) }, null, 2));
+				// Inflate a transparent-gzip frame back to the original bytes before
+				// decoding/encoding (raw/legacy objects pass through untouched). Read as
+				// bytes uniformly so the marker can be detected — obj.text() would decode
+				// the compressed frame as garbage. Output stays compact via oj().
+				const bytes = await maybeDecompress(new Uint8Array(await obj.arrayBuffer()));
+				if (isTexty(type)) return ok(oj({ key: r2key, size: bytes.length, content_type: type, text: new TextDecoder().decode(bytes) }));
+				return ok(oj({ key: r2key, size: bytes.length, content_type: type, base64: toB64(bytes) }));
 			}
 
 			if (op === "delete") {
 				if (!args?.id) return fail("delete needs the uuid `id`.");
 				const uuid = extractStoreId(String(args.id));
 				await env.OAUTH_KV.delete(`${STORE_KV_PREFIX}${uuid}`);
-				return ok(JSON.stringify({ deleted: true, id: uuid, note: "handle removed; the content-addressed blob is retained (may be shared)." }, null, 2));
+				return ok(oj({ deleted: true, id: uuid, note: "handle removed; the content-addressed blob is retained (may be shared)." }));
 			}
 
 			if (op === "list") {
 				const res = await env.R2.list({ prefix: args?.prefix ? String(args.prefix) : undefined, limit: Math.min(1000, Math.max(1, Number(args?.limit) || 100)) });
-				return ok(JSON.stringify({ objects: res.objects.map((o) => ({ key: o.key, size: o.size, uploaded: o.uploaded })), truncated: Boolean(res.truncated), cursor: res.cursor }, null, 2));
+				return ok(oj({ objects: res.objects.map((o) => ({ key: o.key, size: o.size, uploaded: o.uploaded })), truncated: Boolean(res.truncated), cursor: res.cursor }));
 			}
 
 			return fail(`Unknown op '${op}'.`);

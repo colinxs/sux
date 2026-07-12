@@ -164,6 +164,14 @@ export type RtEnv = Env &
 		MAC_RENDER_URL?: string;
 		MAC_RENDER_SECRET?: string;
 
+		// UW Person Web Service (PWS) mutual-TLS tier for the `uw` fn. An
+		// `mtls_certificates` binding (a Fetcher that presents the client cert) to
+		// ws.admin.washington.edu — grants the richer, student-inclusive record that
+		// the public directory.uw.edu scrape can't reach. Fail-closed like the render
+		// pairs: absent → `uw` serves the faculty/staff scrape only, never erroring.
+		// "Cert set" = this binding exists (declared in wrangler mtls_certificates).
+		UW_PWS_CERT?: Fetcher;
+
 		// Paid residential "web unlocker" (Bright Data / Zyte / Oxylabs) — the last rung
 		// of the retail escalation ladder (homedepot/costco) after cf + mac fail. Optional
 		// pair, same fail-closed convention as MAC_RENDER_*: unset → the rung no-ops. See

@@ -1,4 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
+import { oj } from "./_util";
 
 // CrossRef Works API (api.crossref.org) — keyless, free scholarly metadata keyed
 // on DOIs. No residential proxy: a public bibliographic endpoint with no bot wall,
@@ -53,6 +54,6 @@ export const crossref: Fn = {
 		if (!resp.ok) return fail(`CrossRef API HTTP ${resp.status}.`);
 		const j: any = await resp.json();
 		const results = (j?.message?.items ?? []).map(normItem);
-		return ok(JSON.stringify({ count: results.length, results }, null, 2));
+		return ok(oj({ count: results.length, results }));
 	},
 };

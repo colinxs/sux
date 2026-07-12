@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { fetchTextOk, isHttpUrl } from "./_util";
+import { fetchTextOk, isHttpUrl, oj } from "./_util";
 
 /** Extract and decode every <loc>…</loc> URL from a sitemap document. */
 function extractLocs(xml: string): string[] {
@@ -41,6 +41,6 @@ export const sitemap: Fn = {
 
 		const isIndex = /<sitemapindex[\s>]/i.test(xml);
 		const urls = extractLocs(xml).slice(0, limit);
-		return ok(JSON.stringify({ kind: isIndex ? "sitemapindex" : "urlset", count: urls.length, urls }, null, 2));
+		return ok(oj({ kind: isIndex ? "sitemapindex" : "urlset", count: urls.length, urls }));
 	},
 };

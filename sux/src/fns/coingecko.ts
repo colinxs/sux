@@ -1,4 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
+import { oj } from "./_util";
 
 // CoinGecko (api.coingecko.com) — keyless free tier for crypto prices and coin
 // search. No residential proxy: a public market-data API with no bot wall. Two
@@ -49,7 +50,7 @@ export const coingecko: Fn = {
 				price: v?.[currency] ?? null,
 				change_24h: v?.[`${currency}_24h_change`] ?? null,
 			}));
-			return ok(JSON.stringify({ action, currency, count: prices.length, prices }, null, 2));
+			return ok(oj({ action, currency, count: prices.length, prices }));
 		}
 
 		// action === "search"
@@ -68,6 +69,6 @@ export const coingecko: Fn = {
 			symbol: c?.symbol ?? null,
 			market_cap_rank: c?.market_cap_rank ?? null,
 		}));
-		return ok(JSON.stringify({ action, count: coins.length, coins }, null, 2));
+		return ok(oj({ action, count: coins.length, coins }));
 	},
 };

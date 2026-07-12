@@ -3,7 +3,7 @@ import { fingerprint, ledger } from "./ledger";
 import { type JsonRpc, sseResponse } from "./mcp-util";
 import { fail, failWith, ok, type RtEnv, type ToolResult } from "./registry";
 import { ingest } from "./fns/ingest";
-import { obsidian, readGitContents, vaultCfg, vaultPut } from "./fns/obsidian";
+import { obsidian, readGitContents, readVaultIndexBlob, type VaultCfg, vaultCfg, vaultHead, vaultPut, writeVaultIndexBlob } from "./fns/obsidian";
 import { vaultToday } from "./fns/_util";
 import { evalFilter, extractTags, extractWikilinks, type Filter, frontmatterMatches, linkResolvesTo, parseFrontmatter, patchBlockRef, patchFrontmatter, patchHeadingSection, type PatchMode } from "./vault-graph";
 
@@ -35,12 +35,68 @@ type VaultTool = {
 
 const git = (args: Record<string, unknown>) => ({ ...args, backend: "git" });
 
-type VaultRecord = { path: string; content: string; fm: Record<string, unknown>; links: string[]; tags: string[] };
+type VaultRecord = { path: string; fm: Record<string, unknown>; links: string[]; tags: string[] };
 
-/** Scan the git vault (optionally under `folder`): list notes, read each (parallel, capped), and
- *  parse links/frontmatter/tags. The shared substrate for backlinks / frontmatter-query / tag-index.
- *  Reads are KV-cached against HEAD, so repeated scans are cheap; `truncated` flags a capped listing. */
-async function scanVault(env: RtEnv, folder: string | undefined, cap: number): Promise<{ records: VaultRecord[]; total: number; truncated: boolean }> {
+// The whole-vault derived index: one KV blob of {path, fm, tags, links} for every
+// note, stamped with the HEAD sha it was built at. backlinks/query/tags all read
+// THIS instead of re-listing + re-reading ~500 notes (~500 KV round-trips → 1).
+// Bounded-stale (NOT instantly consistent): keyed on the live HEAD (fns/obsidian's
+// vaultHead), so a write THROUGH this Worker invalidates it in-line and the next
+// scan rebuilds BEFORE returning. An OUT-OF-BAND change (GitHub UI edit, external
+// git push, PR merge) only surfaces once vaultHead re-checks GitHub — within
+// HEAD_RECHECK_MS (60s) in normal operation, up to HEAD_STALE_MAX_MS (10min) while
+// GitHub's ref endpoint is erroring (see obsidian.ts). INDEX_MAX bounds a pathological
+// vault; well above both the real ~500-note size and the 2000 per-call cap.
+const INDEX_MAX = 5000;
+type VaultIndex = { sha: string; at: number; total: number; truncated: boolean; records: VaultRecord[] };
+
+async function buildVaultIndex(env: RtEnv, sha: string): Promise<VaultIndex> {
+	const listRes = await obsidian.run(env, git({ action: "list" }));
+	if (listRes.isError) throw new Error(listRes.content?.[0]?.text ?? "vault list failed");
+	const listing = JSON.parse(listRes.content[0].text) as { notes?: string[] };
+	const all = Array.isArray(listing.notes) ? listing.notes : [];
+	const notes = all.slice(0, INDEX_MAX);
+	let failed = 0;
+	const records = (
+		await Promise.all(
+			notes.map(async (path) => {
+				const r = await obsidian.run(env, git({ action: "read", path }));
+				if (r.isError) {
+					failed++;
+					return null;
+				}
+				const content = r.content[0].text;
+				const fm = parseFrontmatter(content);
+				return { path, fm, links: extractWikilinks(content), tags: extractTags(content, fm) } as VaultRecord;
+			}),
+		)
+	).filter((x): x is VaultRecord => x !== null);
+	// `truncated` also flags an INCOMPLETE index: a per-note read that failed (a
+	// GitHub secondary-rate-limit 403 on the read burst, a 5xx, a transient blip)
+	// silently drops that note from `records`, so callers must know the answer may
+	// have holes — not just when the whole vault exceeded INDEX_MAX. The blob is
+	// cached until the next HEAD change, so one blip would otherwise poison every
+	// backlinks/query/tags answer for that HEAD with no signal.
+	return { sha, at: Date.now(), total: all.length, truncated: all.length > INDEX_MAX || failed > 0, records };
+}
+
+/** The whole-vault index for the current HEAD, rebuilt on HEAD mismatch (bounded-stale
+ *  — see the index note above: a write through this Worker is reflected at once, an
+ *  out-of-band edit within the vaultHead recheck window). Returns null when there's no
+ *  KV or HEAD can't be resolved (offline) — the caller falls back to a direct per-note
+ *  scan so the tools still work. */
+async function vaultIndex(env: RtEnv, cfg: VaultCfg): Promise<VaultIndex | null> {
+	const head = env.OAUTH_KV ? await vaultHead(env, cfg) : null;
+	if (!head) return null;
+	const cached = (await readVaultIndexBlob(env, cfg)) as VaultIndex | null;
+	if (cached?.sha === head && Array.isArray(cached.records)) return cached;
+	const fresh = await buildVaultIndex(env, head);
+	await writeVaultIndexBlob(env, cfg, fresh);
+	return fresh;
+}
+
+/** Direct per-note scan — the fallback when the index is unavailable (no KV / offline HEAD). */
+async function scanVaultDirect(env: RtEnv, folder: string | undefined, cap: number): Promise<{ records: VaultRecord[]; total: number; truncated: boolean }> {
 	const listRes = await obsidian.run(env, git({ action: "list", ...(folder ? { path: folder } : {}) }));
 	if (listRes.isError) throw new Error(listRes.content?.[0]?.text ?? "vault list failed");
 	const listing = JSON.parse(listRes.content[0].text) as { notes?: string[] };
@@ -53,11 +109,36 @@ async function scanVault(env: RtEnv, folder: string | undefined, cap: number): P
 				if (r.isError) return null;
 				const content = r.content[0].text;
 				const fm = parseFrontmatter(content);
-				return { path, content, fm, links: extractWikilinks(content), tags: extractTags(content, fm) } as VaultRecord;
+				return { path, fm, links: extractWikilinks(content), tags: extractTags(content, fm) } as VaultRecord;
 			}),
 		)
 	).filter((x): x is VaultRecord => x !== null);
 	return { records, total: all.length, truncated: all.length > cap };
+}
+
+/** Scan the git vault (optionally under `folder`): the shared substrate for
+ *  backlinks / frontmatter-query / tag-index. Serves the derived {path,fm,tags,links}
+ *  from the HEAD-keyed KV index (one read) and slices to `folder`/`cap`; on a HEAD
+ *  change the index rebuilds BEFORE returning, so a write through this Worker is
+ *  reflected at once (an out-of-band edit within the vaultHead recheck window). Falls
+ *  back to a direct per-note scan when the index is unavailable. `truncated` flags a
+ *  result the caller's `cap` clipped, a vault beyond INDEX_MAX, OR an index with
+ *  per-note read holes — the latter two propagate regardless of folder scoping. */
+async function scanVault(env: RtEnv, folder: string | undefined, cap: number): Promise<{ records: VaultRecord[]; total: number; truncated: boolean }> {
+	const cfg = vaultCfg(env);
+	const idx = "error" in cfg ? null : await vaultIndex(env, cfg);
+	if (idx && !("error" in cfg)) {
+		const raw = String(folder ?? "").replace(/^\/+|\/+$/g, "");
+		const prefix = raw ? cfg.inVault(raw) : "";
+		const base = prefix ? idx.records.filter((r) => r.path.startsWith(prefix)) : idx.records;
+		const total = prefix ? base.length : idx.total;
+		// idx.truncated (index capped at INDEX_MAX, or holes from failed reads) must
+		// surface even under a `folder` scope: a folder can hold notes that never made
+		// it into idx.records, so hiding the flag would return a confidently-wrong
+		// undercount instead of a flagged partial one.
+		return { records: base.slice(0, cap), total, truncated: base.length > cap || idx.truncated };
+	}
+	return scanVaultDirect(env, folder, cap);
 }
 
 const TOOLS: VaultTool[] = [

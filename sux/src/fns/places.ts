@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { errMsg } from "./_util";
+import { errMsg, oj } from "./_util";
 
 // Google Places API (places.googleapis.com) — local business / point-of-interest
 // text search. The key rides the `X-Goog-Api-Key` header; a field mask names the
@@ -61,7 +61,7 @@ export const places: Fn = {
 			if (!resp.ok) throw new Error(`Google Places HTTP ${resp.status}: ${(await resp.text().catch(() => "")).slice(0, 300)}`);
 			const j: any = await resp.json();
 			const results = (j?.places ?? []).map(normPlace);
-			return ok(JSON.stringify({ provider: "places", query, count: results.length, results }, null, 2));
+			return ok(oj({ provider: "places", query, count: results.length, results }));
 		} catch (e) {
 			return fail(`places failed: ${errMsg(e)}`);
 		}

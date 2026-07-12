@@ -1,6 +1,6 @@
 import { hasAI, llm } from "../ai";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
-import { errMsg } from "./_util";
+import { errMsg, oj } from "./_util";
 
 // A KV-backed style-preference profile that LEARNS over time and continually
 // self-distills. Each `learn` appends an exemplar of the user's preferred writing
@@ -76,19 +76,19 @@ export const preferences: Fn = {
 					cursor = page.list_complete ? undefined : page.cursor;
 				} while (cursor);
 				names.sort();
-				return ok(JSON.stringify({ action, count: names.length, profiles: names }, null, 2));
+				return ok(oj({ action, count: names.length, profiles: names }));
 			}
 
 			if (action === "reset") {
 				const existed = (await env.OAUTH_KV.get(`${KV_PREFIX}${profile}`)) != null;
 				await env.OAUTH_KV.delete(`${KV_PREFIX}${profile}`);
-				return ok(JSON.stringify({ action, profile, deleted: existed, note: existed ? "profile removed" : "no such profile (nothing to delete)" }, null, 2));
+				return ok(oj({ action, profile, deleted: existed, note: existed ? "profile removed" : "no such profile (nothing to delete)" }));
 			}
 
 			if (action === "get") {
 				const p = await loadProfile(env, profile);
-				if (!p) return ok(JSON.stringify({ action, profile, found: false, note: `No profile '${profile}'. Teach it with action=learn.` }, null, 2));
-				return ok(JSON.stringify({ action, profile, found: true, distilled_spec: p.distilled_spec, example_count: p.examples.length, updated_at: p.updated_at }, null, 2));
+				if (!p) return ok(oj({ action, profile, found: false, note: `No profile '${profile}'. Teach it with action=learn.` }));
+				return ok(oj({ action, profile, found: true, distilled_spec: p.distilled_spec, example_count: p.examples.length, updated_at: p.updated_at }));
 			}
 
 			if (action === "learn") {

@@ -1,6 +1,7 @@
 import { DROPBOX_API as API, DROPBOX_CONTENT as CONTENT, type DropboxScope, dropboxFetch, dropboxRpc, headerSafeJson, MAX_INLINE_BYTES, scopeConfigured, TEXT_EXT } from "./_dropbox-core";
 import { type Fn, fail, ok, type RtEnv } from "../registry";
-import { fromB64, toB64 } from "./_util";
+import { maybeDecompress } from "./_gzip";
+import { fromB64, toB64, oj } from "./_util";
 
 // Dropbox as the human-facing blob store (R2 `store` is the machine-facing
 // twin). The token belongs to an App-folder-scoped app: it structurally cannot
@@ -60,6 +61,13 @@ async function sharedLink(env: RtEnv, path: string): Promise<string | undefined>
  * (e.g. "report (1).pdf") and the returned `path` reflects the actual name. */
 export async function dropboxPut(env: RtEnv, path: string, bytes: Uint8Array, opts?: { overwrite?: boolean }): Promise<{ path: string; size: number; url?: string } | { error: string }> {
 	const clobber = opts?.overwrite !== false;
+	// Store EVERYTHING verbatim: Dropbox is the human-facing mirror (R2 `store` is the
+	// machine-facing twin that compresses). A gzipped note would sync to the user's
+	// laptop/phone as an opaque binary blob and break Dropbox preview / full-text
+	// search / any third-party tool on the app-folder — the exact legibility this
+	// connector exists for. (`get` still inflates any legacy compressed text frame for
+	// backward compatibility — see the TEXT_EXT-gated maybeDecompress on read.)
+	const body = bytes;
 	const resp = await dbxFetch(env, `${CONTENT}/files/upload`, (token) => ({
 		method: "POST",
 		headers: {
@@ -67,7 +75,7 @@ export async function dropboxPut(env: RtEnv, path: string, bytes: Uint8Array, op
 			"Content-Type": "application/octet-stream",
 			"Dropbox-API-Arg": headerSafeJson({ path, mode: clobber ? "overwrite" : "add", autorename: !clobber, mute: true }),
 		},
-		body: bytes as BodyInit,
+		body: body as BodyInit,
 		signal: AbortSignal.timeout(60_000),
 	}));
 	const json: any = await resp.json().catch(() => null);
@@ -112,7 +120,7 @@ export const dropbox: Fn = {
 				else return fail("op=put requires `data` (utf-8) or `base64` (binary).");
 				const r = await dropboxPut(env, path, bytes);
 				if ("error" in r) return fail(r.error);
-				return ok(JSON.stringify({ ok: true, ...r, ...(r.url ? {} : { warning: "uploaded, but no shared link minted — check the token's sharing scope" }) }, null, 2));
+				return ok(oj({ ok: true, ...r, ...(r.url ? {} : { warning: "uploaded, but no shared link minted — check the token's sharing scope" }) }));
 			}
 			if (op === "get") {
 				if (!path) return fail("op=get requires a `path`.");
@@ -126,7 +134,7 @@ export const dropbox: Fn = {
 				const size = Number(meta.json?.size);
 				if (!Number.isFinite(size)) return fail(`Dropbox returned no size for '${path}'; refusing to download an unbounded body.`);
 				if (size > MAX_INLINE_BYTES) {
-					return ok(JSON.stringify({ path, size, too_large_to_inline: true, url: await sharedLink(env, path) }, null, 2));
+					return ok(oj({ path, size, too_large_to_inline: true, url: await sharedLink(env, path) }));
 				}
 				const resp = await dbxFetch(env, `${CONTENT}/files/download`, (token) => ({
 					method: "POST",
@@ -134,9 +142,15 @@ export const dropbox: Fn = {
 					signal: AbortSignal.timeout(60_000),
 				}));
 				if (resp.status >= 400) return fail(`Dropbox download error: ${(await resp.text().catch(() => "")).slice(0, 200) || `HTTP ${resp.status}`}`);
-				const bytes = new Uint8Array(await resp.arrayBuffer());
+				// New uploads are stored verbatim; a legacy compressed frame (only ever
+				// written for a TEXT_EXT path) still inflates. Gate the decompress on the
+				// same TEXT_EXT check used at write time so a binary blob whose first bytes
+				// happen to match the gzip marker is never misdecoded — the write invariant
+				// (only text was ever compressed) mirrored on read.
+				const raw = new Uint8Array(await resp.arrayBuffer());
+				const bytes = TEXT_EXT.test(path) ? await maybeDecompress(raw) : raw;
 				if (TEXT_EXT.test(path)) return ok(new TextDecoder().decode(bytes));
-				return ok(JSON.stringify({ path, size: bytes.length, base64: toB64(bytes) }, null, 2));
+				return ok(oj({ path, size: bytes.length, base64: toB64(bytes) }));
 			}
 			if (op === "list") {
 				const { status, json } = args?.cursor
@@ -145,14 +159,14 @@ export const dropbox: Fn = {
 				if (status >= 400) return fail(`Dropbox list error: ${json?.error_summary ?? `HTTP ${status}`}`);
 				const entries = (json?.entries ?? []).map((e: any) => ({ kind: e?.[".tag"], name: e?.name, path: e?.path_display, size: e?.size }));
 				const hasMore = json?.has_more === true;
-				return ok(JSON.stringify({ dir: path || "/", count: entries.length, has_more: hasMore, ...(hasMore ? { cursor: json?.cursor } : {}), entries }, null, 2));
+				return ok(oj({ dir: path || "/", count: entries.length, has_more: hasMore, ...(hasMore ? { cursor: json?.cursor } : {}), entries }));
 			}
 			if (op === "delete") {
 				if (!path) return fail("op=delete requires a `path`.");
 				if (args?.confirm !== true) return fail("op=delete requires confirm:true (the file goes to recoverable Dropbox 'Deleted files', but delete is a deliberate two-step — never fire-at-will).");
 				const { status, json } = await rpc(env, "/files/delete_v2", { path });
 				if (status >= 400) return fail(`Dropbox delete error: ${json?.error_summary ?? `HTTP ${status}`} (${path})`);
-				return ok(JSON.stringify({ ok: true, deleted: json?.metadata?.path_display ?? path }, null, 2));
+				return ok(oj({ ok: true, deleted: json?.metadata?.path_display ?? path }));
 			}
 			if (op === "move") {
 				if (!path) return fail("op=move requires a `path` (source).");
@@ -161,13 +175,13 @@ export const dropbox: Fn = {
 				if (to === path) return fail("op=move: `to` equals `path` — nothing to move.");
 				const { status, json } = await rpc(env, "/files/move_v2", { from_path: path, to_path: to, autorename: false });
 				if (status >= 400) return fail(`Dropbox move error: ${json?.error_summary ?? `HTTP ${status}`} (${path} → ${to})`);
-				return ok(JSON.stringify({ ok: true, from: path, to: json?.metadata?.path_display ?? to }, null, 2));
+				return ok(oj({ ok: true, from: path, to: json?.metadata?.path_display ?? to }));
 			}
 			if (op === "share") {
 				if (!path) return fail("op=share requires a `path`.");
 				const url = await sharedLink(env, path);
 				if (!url) return fail(`Could not create a shared link for ${path}.`);
-				return ok(JSON.stringify({ path, url }, null, 2));
+				return ok(oj({ path, url }));
 			}
 			return fail(`Unknown op '${op}'. Use put | get | list | delete | share.`);
 		} catch (e) {

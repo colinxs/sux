@@ -12,6 +12,7 @@ vi.mock("../proxy", () => ({
 }));
 
 import {
+	byteBudget,
 	clamp,
 	clearFetchCache,
 	deliverBytes,
@@ -27,6 +28,7 @@ import {
 	loadBytes,
 	loadHtml,
 	noCacheOn4xx,
+	oj,
 	pool,
 	putBlob,
 	setFetchDedup,
@@ -275,6 +277,14 @@ describe("_util", () => {
 	it("stripHtml removes tags and decodes entities", () => {
 		expect(stripHtml("<p>a &amp; <b>b</b></p><script>x()</script>")).toBe("a & b");
 	});
+
+	it("oj serializes compactly (no pretty whitespace) and round-trips", () => {
+		const x = { a: 1, b: [2, 3], c: { d: "e" } };
+		const s = oj(x);
+		expect(s).toBe('{"a":1,"b":[2,3],"c":{"d":"e"}}');
+		expect(s).not.toMatch(/\n/);
+		expect(JSON.parse(s)).toEqual(x);
+	});
 });
 
 describe("in-isolate fetch dedup cache", () => {
@@ -395,5 +405,55 @@ describe("pool (bounded concurrency)", () => {
 	it("runs everything when the deadline is in the future", async () => {
 		const out = await pool([1, 2, 3], 2, async (n) => n * 10, Date.now() + 60_000);
 		expect(out).toEqual([10, 20, 30]);
+	});
+});
+
+describe("byteBudget (aggregate fan-out memory gate)", () => {
+	it("never lets concurrent reservations exceed the cap", async () => {
+		// 10 items each reserving 25MB against a 96MB budget, run 8-wide. Without the
+		// gate, 8 × 25MB = 200MB would be live at once; with it, live bytes stay ≤ 96MB.
+		const CAP = 96 * 1024 * 1024;
+		const ITEM = 25 * 1024 * 1024;
+		const budget = byteBudget(CAP);
+		let live = 0;
+		let peak = 0;
+		await pool(Array.from({ length: 10 }, (_, i) => i), 8, async () => {
+			await budget.acquire(ITEM);
+			try {
+				live += ITEM;
+				peak = Math.max(peak, live);
+				await new Promise((r) => setTimeout(r, 5));
+			} finally {
+				live -= ITEM;
+				budget.release(ITEM);
+			}
+			return 0;
+		});
+		expect(peak).toBeLessThanOrEqual(CAP);
+		expect(peak).toBeGreaterThan(0);
+	});
+
+	it("clamps an over-cap reservation so a single large item runs alone, not deadlocks", async () => {
+		const budget = byteBudget(10);
+		// A request larger than the whole budget is clamped to the cap and still resolves.
+		await budget.acquire(1000);
+		budget.release(1000);
+		// And the budget is fully restored (a follow-up small acquire resolves at once).
+		let resolved = false;
+		await budget.acquire(5).then(() => {
+			resolved = true;
+		});
+		expect(resolved).toBe(true);
+	});
+
+	it("serves waiters FIFO — a queued large reservation isn't starved by later small ones", async () => {
+		const budget = byteBudget(100);
+		await budget.acquire(80); // 20 left
+		const order: string[] = [];
+		const big = budget.acquire(60).then(() => order.push("big")); // queues (needs 60 > 20)
+		const small = budget.acquire(10).then(() => order.push("small")); // queues behind big (FIFO)
+		budget.release(80); // 100 free → big (head) takes 60, then small takes 10
+		await Promise.all([big, small]);
+		expect(order).toEqual(["big", "small"]);
 	});
 });

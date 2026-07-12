@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { loadHtml, stripHtml } from "./_util";
+import { loadHtml, stripHtml, oj } from "./_util";
 
 /** Split a <tr> fragment into cleaned cell strings. */
 function cells(rowHtml: string): string[] {
@@ -68,6 +68,6 @@ export const tables: Fn = {
 		const asObjects = parsed.map((p) =>
 			p.rows.map((r) => Object.fromEntries(p.headers.map((h, i) => [h || `col${i}`, r[i] ?? ""]))),
 		);
-		return ok(JSON.stringify(single ? asObjects[0] : asObjects, null, 2));
+		return ok(oj(single ? asObjects[0] : asObjects));
 	},
 };

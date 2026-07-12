@@ -1,4 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
+import { oj } from "./_util";
 
 // Facebook Graph API (official) wrapper. Key-gated on FACEBOOK_TOKEN — a Graph
 // API access token with the scopes for whatever you're reading (pages, posts,
@@ -37,7 +38,7 @@ export const facebook: Fn = {
 			const resp = await fetch(`${GRAPH}/${path}?${qs}`, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(20_000) });
 			const j = (await resp.json().catch(() => null)) as any;
 			if (!resp.ok) return fail(`Facebook Graph error: ${j?.error?.message ?? `HTTP ${resp.status}`}`);
-			return ok(JSON.stringify(j, null, 2));
+			return ok(oj(j));
 		} catch (e) {
 			return fail(`facebook failed: ${String((e as Error).message ?? e)}`);
 		}

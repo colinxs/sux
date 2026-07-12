@@ -1,7 +1,7 @@
 import { type Fn, failWith, ok } from "../registry";
 import { defaultDeps, hasMailTriage, runTriage } from "./_mail_triage";
 import { bulkUndo, readTriageEntries } from "./_mail_triage_log";
-import { errMsg } from "./_util";
+import { errMsg, oj } from "./_util";
 
 // mail_triage — the manual + cron entrypoint for the mail-triage bot. It orchestrates the
 // existing mail verbs (mail_search + moveMessages/labelMessages) through a classify →
@@ -32,22 +32,22 @@ export const mail_triage: Fn = {
 	run: async (env, a) => {
 		// Fail-closed master gate: with MAIL_TRIAGE_ENABLED unset the entire feature is a no-op.
 		if (!hasMailTriage(env)) {
-			return ok(JSON.stringify({ dormant: true, note: "mail_triage is disabled. Set MAIL_TRIAGE_ENABLED to run classify+suggest+digest; additionally set MAIL_TRIAGE_ACT to allow reversible moves. Nothing happens until the flag is set." }, null, 2));
+			return ok(oj({ dormant: true, note: "mail_triage is disabled. Set MAIL_TRIAGE_ENABLED to run classify+suggest+digest; additionally set MAIL_TRIAGE_ACT to allow reversible moves. Nothing happens until the flag is set." }));
 		}
 		const action = String(a?.action ?? "run");
 		try {
 			if (action === "log") {
 				const entries = await readTriageEntries(env, { cycle: a?.cycle_id ? String(a.cycle_id) : undefined, limit: a?.limit });
-				return ok(JSON.stringify({ count: entries.length, entries }, null, 2));
+				return ok(oj({ count: entries.length, entries }));
 			}
 			if (action === "undo") {
 				if (!a?.cycle_id) return failWith("bad_input", "mail_triage undo needs a `cycle_id` (the undo handle from a digest or a run report).");
 				const res = await bulkUndo(env, String(a.cycle_id));
-				return ok(JSON.stringify(res, null, 2));
+				return ok(oj(res));
 			}
 			const deps = await defaultDeps();
 			const report = await runTriage(env, { mailbox: a?.mailbox ? String(a.mailbox) : undefined, max: a?.max, dry_run: a?.dry_run === true, cycle_id: a?.cycle_id ? String(a.cycle_id) : undefined, budget_ms: a?.budget_ms, unread: typeof a?.unread === "boolean" ? a.unread : undefined }, deps);
-			return ok(JSON.stringify(report, null, 2));
+			return ok(oj(report));
 		} catch (e) {
 			return failWith("upstream_error", errMsg(e));
 		}

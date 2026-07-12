@@ -1,6 +1,6 @@
 import { type Fn, fail, ok } from "../registry";
 import { Gunzip, gzipSync, strFromU8, strToU8, unzipSync, zipSync } from "fflate";
-import { deliverBytes, fromB64, putBlob, toB64 } from "./_util";
+import { deliverBytes, fromB64, putBlob, toB64, oj } from "./_util";
 
 const MAX_TEXT = 100_000; // don't inline megabytes of decoded text per entry
 const MAX_UNPACK_BYTES = 20_000_000; // cap total decompressed output so a zip/gzip bomb can't OOM the isolate
@@ -112,7 +112,7 @@ export const archive: Fn = {
 					if (files.length !== 1) return fail(`gzip packs exactly one file — got ${files.length}. Use format='zip' for multiple.`);
 					out = gzipSync(toBytes(files[0]), { level: 6 });
 				}
-				return deliverBytes(env, out, mime, args?.as, () => ok(JSON.stringify({ format, bytes: out.length, base64: toB64(out) }, null, 2)));
+				return deliverBytes(env, out, mime, args?.as, () => ok(oj({ format, bytes: out.length, base64: toB64(out) })));
 			}
 			if (op === "unpack") {
 				if (typeof args?.base64 !== "string" || !args.base64) return fail("unpack needs `base64` (the archive bytes).");
@@ -149,7 +149,7 @@ export const archive: Fn = {
 					}
 					entries.push(e);
 				}
-				return ok(JSON.stringify({ format, entries }, null, 2));
+				return ok(oj({ format, entries }));
 			}
 			return fail("op must be 'pack' or 'unpack'.");
 		} catch (e) {
