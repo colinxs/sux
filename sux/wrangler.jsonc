@@ -20,7 +20,12 @@
 	// Daily Cron Trigger (13:00 UTC) → the scheduled() handler in src/index.ts runs
 	// a safe, best-effort maintenance tick (keeps the Kroger OAuth token warm in KV).
 	"triggers": { "crons": ["0 13 * * *"] },
-	"vars": { "DEBUG_MCP": "0" },
+	// MAIL_TRIAGE_ENABLED arms the classify+suggest+digest loop (suggest-only: it classifies and
+	// writes the daily digest but MUTATES NOTHING). MAIL_TRIAGE_ACT is deliberately NOT set here —
+	// Colin flips it (dashboard/secret) to move from suggest-only to acting on the reversible-only
+	// allow-list (label/archive/unarchive/undelete). Escape hatch: unset MAIL_TRIAGE_ENABLED (whole
+	// feature dormant) or run mail_triage {action:"undo", cycle_id} to reverse a cycle.
+	"vars": { "DEBUG_MCP": "0", "MAIL_TRIAGE_ENABLED": "1" },
 	// Per-user rate limit (same as core).
 	"unsafe": {
 		"bindings": [{ "name": "MCP_RATE_LIMITER", "type": "ratelimit", "namespace_id": "2001", "simple": { "limit": 120, "period": 60 } }]

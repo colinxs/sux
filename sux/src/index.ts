@@ -460,15 +460,24 @@ async function refreshKrogerToken(env: RtEnv): Promise<void> {
 
 // One daily mail-triage cycle, driven by the same Cron Trigger. FAIL-CLOSED: early-returns
 // doing nothing unless MAIL_TRIAGE_ENABLED is set (the cron fires every day regardless, but
-// is a total no-op until Colin flips the flag) — and even then it only MOVES mail when
-// MAIL_TRIAGE_ACT is also set; otherwise it classifies + writes a suggest-only digest.
+// is a total no-op until Colin flips the flag) — and even then it only ACTS on the reversible
+// allow-list (label/archive/unarchive/undelete) when MAIL_TRIAGE_ACT is also set; otherwise it
+// classifies + writes a suggest-only digest.
 // Everything is dynamically imported so the cron path pulls in the mail surface only when
 // armed, and self-bounds its own wall-clock budget (scheduled() bypasses FN_DEADLINE_MS).
-async function mailTriageTick(env: RtEnv): Promise<void> {
+async function mailTriageTick(env: RtEnv): Promise<unknown> {
 	const mod = await import("./fns/_mail_triage");
-	if (!mod.hasMailTriage(env)) return;
+	if (!mod.hasMailTriage(env)) return { dormant: true };
 	const deps = await mod.defaultDeps();
-	await mod.runTriage(env, { max: 25 }, deps);
+	return mod.runTriage(env, { max: 25 }, deps);
+}
+
+// Constant-time string compare (avoids leaking the token via early-exit timing).
+function tokenEq(a: string, b: string): boolean {
+	if (a.length !== b.length) return false;
+	let diff = 0;
+	for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+	return diff === 0;
 }
 
 async function maintenanceTick(env: RtEnv): Promise<void> {
@@ -519,6 +528,32 @@ export default {
 		// are served before the OAuth provider claims every path.
 		const obs = await handleObservability(new URL(request.url), request, env);
 		if (obs) return obs;
+
+		// Manual ops trigger for the daily cron ticks — POST /admin/tick?job=mail-triage|
+		// self-improve|maintenance, bearer-gated by SUX_CRON_TOKEN (unset ⇒ 404, feature off).
+		// Runs the tick inline and returns its report, so an operator can fire a cycle on
+		// demand (each tick self-bounds its own budget and is idempotent).
+		{
+			const u = new URL(request.url);
+			if (request.method === "POST" && u.pathname === "/admin/tick") {
+				const token = env.SUX_CRON_TOKEN;
+				if (!token) return new Response("not found", { status: 404 });
+				const auth = request.headers.get("authorization") ?? "";
+				const presented = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+				if (!presented || !tokenEq(token, presented)) return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: { "content-type": "application/json" } });
+				const job = u.searchParams.get("job") ?? "";
+				try {
+					let out: unknown;
+					if (job === "mail-triage") out = await mailTriageTick(env);
+					else if (job === "self-improve") out = await selfImproveTick(env);
+					else if (job === "maintenance") { await maintenanceTick(env); out = { ok: true }; }
+					else return new Response(JSON.stringify({ error: "unknown job", jobs: ["mail-triage", "self-improve", "maintenance"] }), { status: 400, headers: { "content-type": "application/json" } });
+					return new Response(JSON.stringify({ ok: true, job, result: out }, null, 2), { headers: { "content-type": "application/json" } });
+				} catch (e) {
+					return new Response(JSON.stringify({ error: String((e as Error)?.message ?? e) }), { status: 500, headers: { "content-type": "application/json" } });
+				}
+			}
+		}
 		try {
 			return await (await getOAuthProvider()).fetch(request, env as any, ctx);
 		} catch (e) {

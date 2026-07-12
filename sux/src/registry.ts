@@ -143,6 +143,11 @@ export type RtEnv = Env &
 		MAIL_TRIAGE_ENABLED?: string;
 		MAIL_TRIAGE_ACT?: string;
 
+		// Manual ops trigger for the daily cron ticks (POST /admin/tick?job=…), bearer-gated
+		// by this token. Unset ⇒ the endpoint 404s (feature off). Lets an operator run a
+		// mail-triage / self-improve / maintenance cycle on demand instead of waiting for cron.
+		SUX_CRON_TOKEN?: string;
+
 
 		TAVILY_API_KEY?: string;
 

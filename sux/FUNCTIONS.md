@@ -144,7 +144,7 @@ Status: ✅ working · 🟡 planned (needs a binding/WASM not yet wired).
 | `learn` | ✅ | ✓ | Stateless-learning substrate — teach sux by example, then classify by nearest labeled example (kNN o… |
 | `linkedin` | ✅ | ✓ | LinkedIn public profile/company data by scraping (the old Proxycurl API shut down July 2025) |
 | `lowes` | ✅ | ✓ | Lowe's product lookup via a rendered browser (Lowe's has no public product API and serves a client-s… |
-| `mail_triage` | ✅ | — | Autonomous mail triage: classify inbox messages and (when armed) file them with REVERSIBLE moves onl… |
+| `mail_triage` | ✅ | — | Autonomous mail triage: classify inbox messages and (when armed) act with REVERSIBLE ops ONLY — add … |
 | `obsidian` | ✅ | ✓ | Work with Obsidian markdown notes |
 | `openalex` | ✅ | ✓ | Search OpenAlex (keyless, free) — a 250M+ work open scholarly graph spanning every discipline, with … |
 | `oracle` | ✅ | ✓ | A learn-then-answer knowledge oracle backed by KV + Workers AI |

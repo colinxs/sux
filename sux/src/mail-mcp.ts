@@ -1103,6 +1103,35 @@ export async function moveMessages(env: RtEnv, ids: unknown, target: string): Pr
 	}
 }
 
+/** JMAP keyword grammar (RFC 5788 / JMAP §4.1.1): a keyword excludes control chars, space,
+ *  and `( ) { ] % * " \`. Sanitize a human label to a safe custom-keyword atom (lowercased). */
+function keywordFor(label: string): string {
+	return String(label).toLowerCase().replace(/[\s()%*"\\{}\]]+/g, "_").replace(/^_+|_+$/g, "") || "triage";
+}
+
+/** Add or remove a keyword ("label") on messages via an ADDITIVE/subtractive keyword patch —
+ *  NOT a move. The message stays exactly where it is; only the flag toggles. Fully reversible
+ *  (label-remove is the inverse), non-hiding, and never destructive — the reversible-only
+ *  triage bot uses this instead of a junk-MOVE. */
+export async function labelMessages(env: RtEnv, ids: unknown, label: string, add: boolean): Promise<ToolResult> {
+	const list = Array.isArray(ids) ? ids.map(String) : [];
+	const keyword = keywordFor(label);
+	if (!list.length || !label) return failWith("bad_input", "provide ids[] and a label.");
+	try {
+		const update: Record<string, unknown> = {};
+		for (const id of list) update[id] = { [`keywords/${keyword}`]: add ? true : null };
+		const resp = await jmapCall(env, { calls: [["Email/set", { update }, "u"]] });
+		const setResult = resultFor(resp, "Email/set");
+		const changed = Object.keys(setResult?.updated ?? {});
+		const notUpdated = setResult?.notUpdated ?? {};
+		const failed = Object.keys(notUpdated);
+		if (!changed.length && failed.length) return fail(`${add ? "add" : "remove"} label '${keyword}' failed: ${JSON.stringify(notUpdated).slice(0, 300)}`);
+		return ok({ labeled: changed.length, keyword, add, ...(failed.length ? { failed: failed.length, errors: notUpdated } : {}) });
+	} catch (e) {
+		return fail(errMsg(e));
+	}
+}
+
 export const MAIL_TOOLS = TOOLS;
 
 // Mirrors handleVaultRpc: the per-request MCP protocol shell with the mail registry.
