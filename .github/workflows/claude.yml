@@ -54,7 +54,7 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           trigger_phrase: "@claude"
-          claude_args: "--max-turns 12 --model claude-sonnet-4-6"
+          claude_args: "--max-turns 12 --model sonnet"
 
   review:
     if: >
@@ -82,4 +82,4 @@ jobs:
             Review this PR for correctness bugs and reuse/simplification/efficiency
             issues (the repo has a /code-review skill — use it). Post concise, concrete
             inline findings; don't rewrite the PR. If it looks clean, say so in one line.
-          claude_args: "--max-turns 12 --model claude-opus-4-1"
+          claude_args: "--max-turns 12 --model opus"

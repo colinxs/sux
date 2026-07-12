@@ -112,4 +112,4 @@ jobs:
             to this PR branch. Do NOT touch secrets, do NOT weaken a test to make it pass, and
             do NOT change unrelated code. If the failure is a genuine design problem you can't
             safely fix, leave a comment explaining it instead of forcing a change.
-          claude_args: "--max-turns 10 --model claude-sonnet-4-6"
+          claude_args: "--max-turns 10 --model sonnet"
