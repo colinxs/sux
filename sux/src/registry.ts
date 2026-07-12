@@ -25,7 +25,6 @@ export type RtEnv = Env &
 	TailscaleEnv & {
 		KAGI_API_KEY: string;
 		ALLOWED_GITHUB_LOGIN: string;
-		DEBUG_MCP?: string;
 
 		NCBI_API_KEY?: string;
 
@@ -35,7 +34,6 @@ export type RtEnv = Env &
 		R2?: R2Bucket;
 
 		BRAVE_API_KEY?: string;
-		BING_API_KEY?: string;
 
 		// Facebook Graph API access token (facebook fn). (linkedin fn now scrapes via
 		// the render mac backend — Proxycurl shut down July 2025 — so it needs no key.)
