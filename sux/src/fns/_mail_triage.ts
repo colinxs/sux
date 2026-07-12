@@ -197,9 +197,13 @@ export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps):
 		}
 		scanned++;
 		if (!m?.id) continue;
-		// Idempotent pull: the message id is a natural last-seen key — markIfNew records it
-		// and returns false forever after, so re-runs (and the daily cron) never re-process.
-		if (!(await led.markIfNew(m.id))) {
+		// Idempotency: the message id is a natural last-seen key. We CHECK it up front (skip
+		// already-processed ids so daily cron re-runs are no-ops), but only MARK it seen AFTER
+		// a definitive decision below — never before. This fixes two bugs: a transient act
+		// failure must be retried (so we don't mark on failure), and a suggest-ONLY pass must
+		// not block a later ACT pass (so we don't mark when acting is disabled). Enabling ACT
+		// therefore still processes the full backlog.
+		if (await led.seen(m.id)) {
 			skipped++;
 			continue;
 		}
@@ -208,22 +212,30 @@ export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps):
 		// Allow-list guard sits BEFORE the confidence gate: an op not on AUTO_ACT_OPS can never act.
 		const wouldAct = !!op && isAutoActAllowed(op) && c.confidence >= CONFIDENCE_THRESHOLD;
 		const rec = op ? opRecord(op, mailbox) : null;
+		let markSeen = false;
 		if (wouldAct && actAllowed) {
 			try {
 				await deps.act(env, [m.id], op!);
 				acted.push({ id: m.id, label: c.label, confidence: c.confidence, op: rec!.log.op ?? op!.kind, to: rec!.to });
 				logEntries.push({ cycle, id: m.id, action: "acted", label: c.label, confidence: c.confidence, reason: c.reason, subject: m.subject, at: Date.now(), ...rec!.log });
+				markSeen = true; // acted successfully → don't reprocess
 			} catch (e) {
 				const reason = `act ${rec!.to} failed: ${errMsg(e)}`;
 				suggested.push({ id: m.id, label: c.label, confidence: c.confidence, reason });
 				logEntries.push({ cycle, id: m.id, action: "suggested", label: c.label, confidence: c.confidence, reason, subject: m.subject, at: Date.now() });
+				// act FAILED → leave unseen so the next cycle retries.
 			}
 		} else {
 			const why = !op ? `${c.label}: no auto-action` : c.confidence < CONFIDENCE_THRESHOLD ? `low confidence ${c.confidence.toFixed(2)} < ${CONFIDENCE_THRESHOLD}` : "act path disabled (suggest-only)";
 			const reason = `${c.reason} — ${why}${rec ? `; suggest ${rec.to}` : ""}`;
 			suggested.push({ id: m.id, label: c.label, confidence: c.confidence, reason });
 			logEntries.push({ cycle, id: m.id, action: "suggested", label: c.label, confidence: c.confidence, reason, subject: m.subject, ...(rec ? rec.log : {}), at: Date.now() });
+			// Mark seen only on a definitive no-act decision while ACT is enabled (so daily
+			// re-runs don't re-suggest). In pure suggest-only mode, leave it unseen so that
+			// turning ACT on later still actions the existing inbox.
+			if (actAllowed) markSeen = true;
 		}
+		if (markSeen) await led.mark(m.id);
 	}
 
 	if (logEntries.length) await appendTriageEntries(env, logEntries);
