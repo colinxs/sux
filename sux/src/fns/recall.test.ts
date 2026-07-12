@@ -152,6 +152,37 @@ describe("recall", () => {
 		expect(out.sources.vault).toBe("1 hit(s)"); // the other source still answers
 	});
 
+	// A Map-backed OAUTH_KV seeded with oracle KBs (sux:oracle:<topic> → StoredKb JSON), plus an
+	// AI.run that echoes a citation, so the `oracle` source (fromOracle → list + get + distilled) runs.
+	function oracleEnv(kbs: Array<{ topic: string; distilled: string }>) {
+		const store = new Map<string, string>();
+		for (const kb of kbs) store.set(`sux:oracle:${kb.topic}`, JSON.stringify({ distilled: kb.distilled, chunks: [], sources: [], updated_at: 1 }));
+		const kv = {
+			get: vi.fn(async (k: string) => (store.has(k) ? store.get(k)! : null)),
+			put: vi.fn(async (k: string, v: string) => void store.set(k, v)),
+			delete: vi.fn(async (k: string) => void store.delete(k)),
+			list: vi.fn(async ({ prefix }: { prefix?: string } = {}) => ({ keys: [...store.keys()].filter((k) => !prefix || k.startsWith(prefix)).map((name) => ({ name })), list_complete: true as const })),
+		};
+		const run = vi.fn(async () => ({ response: "Rebasing keeps history linear [oracle:git-workflow]." }));
+		return { AI: { run }, OAUTH_KV: kv } as any;
+	}
+
+	it("adds `oracle` as a 6th source — inlines each topic's distilled KB, cited [oracle:topic]", async () => {
+		const env = oracleEnv([{ topic: "git-workflow", distilled: "Rebase onto main; never merge main back in." }]);
+		const out = parse(await recall.run(env, { question: "how do we update a branch?", sources: ["oracle"] }));
+		expect(out.sources.oracle).toBe("1 hit(s)");
+		expect(out.citations).toEqual(expect.arrayContaining(["oracle:git-workflow"]));
+		const user = (env.AI.run as any).mock.calls[0][1].messages[1].content;
+		expect(user).toContain("[oracle:git-workflow]");
+		expect(user).toContain("Rebase onto main"); // the distilled KB rode the fenced data
+	});
+
+	it("`oracle` degrades to 'no matches' when no KBs exist / no KV binding", async () => {
+		const out = parse(await recall.run(env(), { question: "anything?", sources: ["oracle", "vault"] }));
+		expect(out.sources.oracle).toBe("no matches"); // env() has no OAUTH_KV → quiet degrade, not "unavailable"
+		expect(out.sources.vault).toBe("1 hit(s)");
+	});
+
 	it("uses the REMOTE backend for vault search when OBSIDIAN_REMOTE_URL/KEY are set (git can't search a private repo)", async () => {
 		const backends: string[] = [];
 		obs.mockImplementation(async (_e: any, a: any) => {
