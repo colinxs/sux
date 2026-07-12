@@ -9,8 +9,9 @@ export type Connector = {
 	path: string;
 	/** The MCP serverInfo name for this namespace. */
 	name: string;
-	/** The marketplace plugin that ships this connector. */
-	plugin: string;
+	/** The marketplace plugin that ships this connector. Unset for retired dormant
+	 * routes — routed for back-compat but shipped by no plugin (tools live on the one /mcp). */
+	plugin?: string;
 	/** One line for the discovery manifest. */
 	summary: string;
 	/**
@@ -25,9 +26,9 @@ export type Connector = {
 
 export const CONNECTORS: Connector[] = [
 	{ path: "/mcp", name: "sux", plugin: "sux-router", summary: "Universal research + data tools (web, papers, shopping, transforms, pipe/batch)." },
-	{ path: "/vault/mcp", name: "vault", plugin: "sux-vault", summary: "Obsidian knowledge base — read/write/edit/capture + daily notes over the git store.", advertised: false },
-	{ path: "/mail/mcp", name: "mail", plugin: "sux-mail", summary: "Fastmail/JMAP — search/read/thread/send/draft/archive + masked-email + raw jmap.", advertised: false },
-	{ path: "/files/mcp", name: "files", plugin: "sux-files", summary: "Dropbox blobs — app-folder workspace (Mode A) + gated whole-account ops (Mode B).", advertised: false },
+	{ path: "/vault/mcp", name: "vault", summary: "Obsidian knowledge base — read/write/edit/capture + daily notes over the git store.", advertised: false },
+	{ path: "/mail/mcp", name: "mail", summary: "Fastmail/JMAP — search/read/thread/send/draft/archive + masked-email + raw jmap.", advertised: false },
+	{ path: "/files/mcp", name: "files", summary: "Dropbox blobs — app-folder workspace (Mode A) + gated whole-account ops (Mode B).", advertised: false },
 ];
 
 /** The connector paths — the single source the OAuth apiRoute + the per-path dispatch use. */
@@ -40,7 +41,7 @@ export const CONNECTOR_PATHS: string[] = CONNECTORS.map((c) => c.path);
  */
 export function buildManifest(origin: string, counts: Record<string, number>, opts: { all?: boolean } = {}): {
 	name: string;
-	connectors: Array<{ name: string; plugin: string; summary: string; url: string; tools: number | null }>;
+	connectors: Array<{ name: string; plugin?: string; summary: string; url: string; tools: number | null }>;
 } {
 	const shown = opts.all ? CONNECTORS : CONNECTORS.filter((c) => c.advertised !== false);
 	return {

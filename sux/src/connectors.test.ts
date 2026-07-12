@@ -27,9 +27,15 @@ describe("connectors — the one connector-surface source", () => {
 		expect(m.connectors.find((c) => c.name === "files")).toMatchObject({ url: "https://sux.example.dev/files/mcp", tools: 8 });
 	});
 
-	it("every connector's plugin exists in the marketplace (drift guard)", () => {
+	it("advertised connector ⟺ marketplace plugin; retired routes are plugin-less (drift guard)", () => {
 		const marketplace = JSON.parse(readFileSync(join(process.cwd(), ".claude-plugin/marketplace.json"), "utf8"));
 		const pluginNames = new Set((marketplace.plugins ?? []).map((p: { name: string }) => p.name));
-		for (const c of CONNECTORS) expect(pluginNames.has(c.plugin), `marketplace is missing plugin '${c.plugin}' for connector ${c.path}`).toBe(true);
+		for (const c of CONNECTORS) {
+			if (c.advertised === false) expect(c.plugin, `retired ${c.path} should not claim a plugin`).toBeUndefined();
+			else {
+				expect(c.plugin, `advertised ${c.path} needs a plugin`).toBeTruthy();
+				expect(pluginNames.has(c.plugin!), `marketplace missing '${c.plugin}' for ${c.path}`).toBe(true);
+			}
+		}
 	});
 });
