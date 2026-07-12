@@ -1,5 +1,5 @@
 import { FiltersEngine } from "@ghostery/adblocker";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { __setAdblockEngine, cosmeticSelectors, extractSelectors, getAdblockEngine, htmlRewriterSafe, isWhitelisted, stripCosmetic } from "./_adblock";
 
 // A tiny engine built from raw filter text — no network, no R2. Covers a generic
@@ -38,11 +38,13 @@ describe("htmlRewriterSafe", () => {
 });
 
 describe("cosmeticSelectors", () => {
-	it("returns hostname + safe generic selectors, filtering procedural ones", () => {
+	it("returns curated per-hostname selectors, dropping generic base rules and procedural ones", () => {
 		const sels = cosmeticSelectors(engine, "https://www.example.com/article");
 		expect(sels).toContain(".sponsored");
 		expect(sels).toContain("#promo");
-		expect(sels).toContain('div[id^="google_ads_"]');
+		// generic base rules are excluded (getBaseRules:false) — only per-host curated
+		// rules apply, so the site-agnostic `##div[id^="google_ads_"]` must NOT appear.
+		expect(sels).not.toContain('div[id^="google_ads_"]');
 		// the `:has(...)` rule must be filtered — HTMLRewriter would throw on it
 		expect(sels.some((s) => s.includes(":has("))).toBe(false);
 	});
@@ -71,10 +73,30 @@ describe("getAdblockEngine", () => {
 		__setAdblockEngine(engine);
 		expect(await getAdblockEngine({} as any)).toBe(engine);
 	});
-	it("returns null when no R2 is bound and building isn't possible", async () => {
-		// No injected engine, no R2 → cold path build (network) may fail → null, never throws.
-		const out = await getAdblockEngine({} as any).catch(() => "threw");
-		expect(out === null || out === "threw" || out instanceof Object).toBe(true);
+	it("returns null when no R2 is bound — never builds on the request path", async () => {
+		// No injected engine, no R2 → null immediately, no network build.
+		expect(await getAdblockEngine({} as any)).toBeNull();
+	});
+	it("returns null on a cold/never-primed R2 WITHOUT building the engine (no request-path fetch)", async () => {
+		// R2 present but the blob is missing: getAdblockEngine must NOT fall back to a
+		// multi-second raw-list build on the caller's path — it returns null and lets the
+		// cron populate R2 out of band. A stubbed fetch proves no build fetch happens.
+		let fetched = 0;
+		vi.stubGlobal("fetch", vi.fn(async () => {
+			fetched++;
+			return new Response("", { status: 200 });
+		}));
+		try {
+			const env = { R2: { get: async () => null } } as any;
+			expect(await getAdblockEngine(env)).toBeNull();
+			expect(fetched).toBe(0);
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+	it("returns null (not a throw) when the R2 blob is corrupt/unversioned", async () => {
+		const env = { R2: { get: async () => ({ arrayBuffer: async () => new Uint8Array([1, 2, 3, 4]).buffer }) } } as any;
+		expect(await getAdblockEngine(env)).toBeNull();
 	});
 });
 

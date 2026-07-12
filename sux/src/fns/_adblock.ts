@@ -71,7 +71,7 @@ export function cosmeticSelectors(engine: FiltersEngine, url: string): string[] 
 		url,
 		hostname: hostname ?? new URL(url).hostname,
 		domain: domain ?? undefined,
-		getBaseRules: true,
+		getBaseRules: false, // curated per-hostname rules only — the giant generic base list is the false-positive-prone set, and dropping it avoids ever needing the multi-MB raw list on the request path
 		getInjectionRules: false, // no scriptlets — Phase 1 is DOM-only
 		getExtendedRules: false, // no procedural/extended selectors
 		getRulesFromDOM: false, // streaming rewrite — we don't have the class/id set upfront
@@ -92,7 +92,9 @@ export function __setAdblockEngine(engine: FiltersEngine | null): void {
 // A fresh engine from the ghostery prebuilt full list (EasyList ads + EasyPrivacy
 // tracking + Fanboy annoyances). Fetches the prebuilt serialized engine from the
 // CDN and falls back to parsing the raw lists — public list downloads, so plain
-// global fetch (not the residential proxy).
+// global fetch (not the residential proxy). ONLY called off the request path (the
+// daily refreshAdblockEngine cron): it resolves to ~14 raw-list HTTP fetches + a
+// multi-second parse, which must never run on a caller's response path.
 async function buildEngine(): Promise<FiltersEngine> {
 	return FiltersEngine.fromPrebuiltFull(fetch);
 }
@@ -100,29 +102,24 @@ async function buildEngine(): Promise<FiltersEngine> {
 /**
  * The deserialized engine for this isolate, or null if unavailable. Reads the
  * serialized blob from R2 (deserialize is version-checked — a stale-version blob
- * throws, so we rebuild), and cold-starts by building + persisting when the blob
- * is missing. All failures degrade to null so declutter simply skips adblock.
+ * throws). It NEVER builds the engine here: a cold/missing/corrupt blob returns
+ * null (declutter simply skips adblock this request) and the daily
+ * refreshAdblockEngine cron populates R2 out of band, so the expensive raw-list
+ * build can never land on the caller's response path (or blow the CPU limit). All
+ * failures degrade to null, logged so a permanently-broken binding isn't silent.
  */
 export async function getAdblockEngine(env: RtEnv): Promise<FiltersEngine | null> {
 	if (cached && Date.now() - cached.at < ADBLOCK_MAX_AGE_MS) return cached.engine;
+	if (!env.R2) return null;
 	try {
-		if (env.R2) {
-			const obj = await env.R2.get(ADBLOCK_R2_KEY);
-			if (obj) {
-				try {
-					const engine = FiltersEngine.deserialize(new Uint8Array(await obj.arrayBuffer()));
-					cached = { engine, at: Date.now() };
-					return engine;
-				} catch {
-					// version mismatch / corrupt blob → fall through to rebuild
-				}
-			}
-		}
-		const engine = await buildEngine();
+		const obj = await env.R2.get(ADBLOCK_R2_KEY);
+		// Cold / never-primed R2 → skip stripping this request; the cron builds it.
+		if (!obj) return null;
+		const engine = FiltersEngine.deserialize(new Uint8Array(await obj.arrayBuffer()));
 		cached = { engine, at: Date.now() };
-		if (env.R2) await env.R2.put(ADBLOCK_R2_KEY, engine.serialize()).catch(() => {});
 		return engine;
-	} catch {
+	} catch (e) {
+		console.warn(`adblock: engine unavailable (R2 error or stale/corrupt blob), skipping cosmetic strip: ${String((e as Error)?.message ?? e)}`);
 		return null;
 	}
 }
@@ -172,7 +169,10 @@ export async function stripCosmetic(env: RtEnv, html: string, url: string): Prom
 		};
 		for (const sel of selectors) rewriter.on(sel, handler);
 		return await rewriter.transform(new Response(html)).text();
-	} catch {
+	} catch (e) {
+		// A selector HTMLRewriter rejected despite htmlRewriterSafe would otherwise
+		// silently no-op the whole page — log so it's diagnosable, not invisible.
+		console.warn(`adblock: HTMLRewriter transform failed for ${url}, returning html unchanged: ${String((e as Error)?.message ?? e)}`);
 		return html;
 	}
 }
