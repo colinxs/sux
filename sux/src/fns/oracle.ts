@@ -123,7 +123,11 @@ async function learn(env: RtEnv, topic: string, knowledge: string): Promise<{ so
 	const combined = chunks.map((c, i) => `Note ${i + 1}:\n${c}`).join("\n\n");
 	// An empty consolidation is a transient model hiccup, not an empty KB — fall back to
 	// the raw notes rather than throwing away knowledge we just distilled.
-	const distilled = (await llm(env, REDISTILL_SYSTEM, combined, 1_800, "consolidate knowledge")).trim() || combined;
+	// With a single note there's nothing to consolidate — the chunk is already the distilled
+	// output of the pass above, so re-distilling would re-word one note for a full extra
+	// generation call. Skip it; the whole set is redistilled as designed once a 2nd note lands.
+	// (Use `chunk`, not `combined`, to store the clean note without the "Note 1:" label.)
+	const distilled = chunks.length === 1 ? chunk : (await llm(env, REDISTILL_SYSTEM, combined, 1_800, "consolidate knowledge")).trim() || combined;
 
 	const record: StoredKb = { distilled: distilled.slice(0, KB_CAP), chunks, sources, updated_at: Date.now() };
 	await env.OAUTH_KV.put(`${KV_PREFIX}${topic}`, await maybeCompressString(JSON.stringify(record)));

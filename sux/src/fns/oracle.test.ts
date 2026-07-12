@@ -60,17 +60,18 @@ const ARTICLE_HTML = `<html><head><title>Ada Lovelace</title></head>
 afterEach(() => vi.clearAllMocks());
 
 describe("oracle — learn", () => {
-	it("learn-from-text distills the material, re-distills a KB, and stores both", async () => {
+	it("learn-from-text distills the material and stores it — no redundant re-distill on the first note", async () => {
 		const { env, kv, run } = makeEnv();
 		const r = await oracle.run(env, { knowledge: "Photosynthesis converts light energy into chemical energy.", topic: "bio" });
 		expect(r.isError).toBeFalsy();
 
 		const j = JSON.parse(r.content[0].text);
 		expect(j).toMatchObject({ topic: "bio", learned: true, source: "inline text", chunk_count: 1 });
-		expect(j.distilled_preview).toBe("CONSOLIDATED-KB");
+		// A single note IS the KB — re-distilling one note only re-words it, so it's skipped.
+		expect(j.distilled_preview).toBe("DISTILLED-CHUNK");
 
-		// Two model passes: distill the raw material, then re-distill the combined KB.
-		expect(run).toHaveBeenCalledTimes(2);
+		// ONE model pass: distill the raw material. No re-distill until a 2nd note lands.
+		expect(run).toHaveBeenCalledTimes(1);
 
 		// The distill rode the guarded llm(): raw material fenced, instruction in system.
 		const distill = messages(run, 0);
@@ -79,15 +80,10 @@ describe("oracle — learn", () => {
 		expect(distill.user).toContain(DATA_CLOSE);
 		expect(distill.user).toContain("Photosynthesis converts light energy");
 
-		// The re-distill consolidates the accumulated chunks — also fenced as data.
-		const redistill = messages(run, 1);
-		expect(redistill.system).toMatch(/Consolidate/);
-		expect(redistill.user).toContain(DATA_OPEN);
-		expect(redistill.user).toContain("DISTILLED-CHUNK");
-
-		// Persisted under sux:oracle:<topic> in the documented shape.
+		// Persisted under sux:oracle:<topic> in the documented shape — the clean distilled note,
+		// without the "Note 1:" label the re-distill would otherwise have stripped.
 		const stored = JSON.parse(await maybeDecompressString(kv.store.get("sux:oracle:bio")!));
-		expect(stored.distilled).toBe("CONSOLIDATED-KB");
+		expect(stored.distilled).toBe("DISTILLED-CHUNK");
 		expect(stored.chunks).toEqual(["DISTILLED-CHUNK"]);
 		expect(stored.sources).toEqual(["inline text"]);
 		expect(typeof stored.updated_at).toBe("number");
@@ -100,8 +96,10 @@ describe("oracle — learn", () => {
 		const r = await oracle.run(env, { knowledge: "second material", topic: "bio" });
 		expect(JSON.parse(r.content[0].text).chunk_count).toBe(2);
 
-		// The re-distill (4th call overall) carried BOTH chunks — the continual update.
-		const redistill = messages(run, 3);
+		// Calls: [0] distill note 1, [1] distill note 2, [2] re-distill BOTH chunks — the first learn
+		// skipped its re-distill (single note), so the consolidation now runs at index 2.
+		const redistill = messages(run, 2);
+		expect(redistill.system).toMatch(/Consolidate/);
 		expect(redistill.user).toContain("DISTILLED-CHUNK");
 		expect(redistill.user).toContain("CHUNK-TWO");
 
@@ -188,17 +186,17 @@ describe("oracle — answer", () => {
 	});
 
 	it("learn + answer in one call learns FIRST, then answers against the fresh KB", async () => {
-		const { env, kv, run } = makeEnv({ redistill: "FRESH-KB: ownership moves values.", answer: "Borrowing lends a reference." });
+		const { env, kv, run } = makeEnv({ answer: "Borrowing lends a reference." });
 		const r = await oracle.run(env, { knowledge: "Rust has ownership and borrowing.", problem: "What is borrowing?", topic: "rust" });
 		expect(r.isError).toBeFalsy();
 		expect(r.content[0].text).toBe("Borrowing lends a reference.");
 
-		// distill → re-distill → answer.
-		expect(run).toHaveBeenCalledTimes(3);
+		// distill → answer (the first note skips its re-distill — one note is already the KB).
+		expect(run).toHaveBeenCalledTimes(2);
 		// The knowledge was persisted before the answer ran…
-		expect(JSON.parse(await maybeDecompressString(kv.store.get("sux:oracle:rust")!)).distilled).toBe("FRESH-KB: ownership moves values.");
-		// …and the answer's system prompt carried that freshly-updated KB.
-		expect(messages(run, 2).system).toContain("FRESH-KB: ownership moves values.");
+		expect(JSON.parse(await maybeDecompressString(kv.store.get("sux:oracle:rust")!)).distilled).toBe("DISTILLED-CHUNK");
+		// …and the answer's system prompt carried that freshly-stored KB.
+		expect(messages(run, 1).system).toContain("DISTILLED-CHUNK");
 	});
 
 	it("an empty model answer is an upstream_error, not an empty success", async () => {
@@ -226,7 +224,7 @@ describe("oracle — get / list / forget", () => {
 
 		const r = await oracle.run(env, { action: "get", topic: "bio" });
 		const j = JSON.parse(r.content[0].text);
-		expect(j).toMatchObject({ topic: "bio", found: true, chunk_count: 1, distilled: "CONSOLIDATED-KB" });
+		expect(j).toMatchObject({ topic: "bio", found: true, chunk_count: 1, distilled: "DISTILLED-CHUNK" });
 		expect(j.sources).toEqual(["https://example.com/a"]);
 	});
 
