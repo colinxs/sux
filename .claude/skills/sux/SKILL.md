@@ -5,7 +5,7 @@ description: Route a task to the right sux edge function and chain them when nee
 
 # sux — the edge function engine
 
-sux is one personal Cloudflare Worker exposing **~95 composable functions** as MCP
+sux is one personal Cloudflare Worker exposing **a large suite of composable functions** as MCP
 tools (Julia-style generic verbs + multiple dispatch). **Kagi is just one function
 (`search`).** The full inventory, status, and per-function summaries live in
 **`sux/FUNCTIONS.md`** — that file is the source of truth (run `npm run docs` to

@@ -2,10 +2,10 @@ import { normalizeText } from "../normalize";
 import { failWith, type Fn, findFn } from "../registry";
 import { FUNCTIONS } from "./index";
 
-// The ESCAPE HATCH. The front-door lists only ~13 root verbs (see registry
+// The ESCAPE HATCH. The front-door lists only the front verbs (see registry
 // FRONT_VERBS); every other capability is a leaf reached either by its own name or
 // through this one tool. `fn({name, args})` invokes any registered leaf — so the
-// full ~95-tool surface stays one tool-call away without flooding tools/list.
+// full leaf surface stays one tool-call away without flooding tools/list.
 //
 // In production the dispatcher (index.ts handleRpc) UNWRAPS an `fn` call before it
 // reaches findFn/cache, so `fn({name:"scrape", args:{url}})` runs byte-identically
@@ -20,7 +20,7 @@ export const fnEscape: Fn = {
 	name: "fn",
 	surface: "front",
 	description:
-		"Escape hatch — call ANY sux leaf tool by name. tools/list shows only ~13 front verbs; every other capability (the ~95-tool surface) is reached here: fn({name, args}). Call `sux()` first for the capability map, then invoke a leaf, e.g. fn({name:\"amazon\", args:{query:\"laptop stand\"}}) or fn({name:\"arxiv\", args:{query:\"…\"}}). Put any cache flags on the inner args (fn({name:\"search\", args:{query:\"…\", fresh:true}})). Behaves exactly as a direct call to that leaf.",
+		"Escape hatch — call ANY sux leaf tool by name. tools/list shows only the front verbs; every other capability is reached here: fn({name, args}). Call `sux()` first for the capability map, then invoke a leaf, e.g. fn({name:\"amazon\", args:{query:\"laptop stand\"}}) or fn({name:\"arxiv\", args:{query:\"…\"}}). Put any cache flags on the inner args (fn({name:\"search\", args:{query:\"…\", fresh:true}})). Behaves exactly as a direct call to that leaf.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,

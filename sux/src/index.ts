@@ -157,9 +157,9 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 	}
 	if (method.startsWith("notifications/")) return new Response(null, { status: 202 });
 	if (method === "tools/list") {
-		// Front-door: advertise only the ~13 root verbs. Leaves stay dispatchable (by
-		// name or via the `fn` escape) and discoverable (`sux` map) — the list is just
-		// legible instead of ~95 tools deep.
+		// Front-door: advertise only the front verbs (registry FRONT_VERBS). Leaves stay
+		// dispatchable (by name or via the `fn` escape) and discoverable (`sux` map) — the
+		// list is just legible instead of the full leaf surface.
 		return sseResponse({ jsonrpc: "2.0", id, result: { tools: frontToolList(FUNCTIONS) } });
 	}
 	if (method === "prompts/list") {

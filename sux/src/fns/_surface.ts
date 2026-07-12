@@ -104,7 +104,7 @@ export function renderOverview(fns: Fn[]): string {
 	out.push("# sux — capability map");
 	out.push("");
 	out.push(
-		`${fns.length} tools + 3 namespace connectors. tools/list shows only ~13 front verbs; every other tool is a leaf — reach it with \`fn({name, args})\`, e.g. \`fn({name:"arxiv", args:{query}})\`. Front verbs you can call directly: \`search\`, \`scrape\`, \`shop\`, \`ingest\`, \`recall\`, \`oracle\`, \`pipe\`, \`batch\`, \`store\`. Pass \`sux({domain})\` to expand any group below.`,
+		`${fns.length} tools + 3 namespace connectors. tools/list shows only the front verbs; every other tool is a leaf — reach it with \`fn({name, args})\`, e.g. \`fn({name:"arxiv", args:{query}})\`. Front verbs you can call directly: \`search\`, \`scrape\`, \`shop\`, \`ingest\`, \`recall\`, \`oracle\`, \`pipe\`, \`batch\`, \`store\`. Pass \`sux({domain})\` to expand any group below.`,
 	);
 	out.push("");
 	out.push("## Domains");
