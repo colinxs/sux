@@ -1,39 +1,19 @@
 {
   "name": "sux",
-  "description": "Marketplace for the sux MCP connectors: one universal connector (web/data/compute) plus per-domain personal connectors (vault knowledge store; email/JMAP to follow) — each a focused endpoint on the same OAuth-gated Worker, so the universal `sux` surface stays non-personal.",
-  "owner": {
-    "name": "colinxs"
-  },
+  "description": "Marketplace for sux: ONE universal OAuth-gated connector (https://sux.colinxs.workers.dev/mcp) whose front-door verbs cover web/data/compute AND your personal namespaces (vault_/mail_/files_/cal_/contact_ + recall + the `fn` escape) — plus the sux-life memory skill. The per-domain connectors are retired into the single front door; their routes stay dormant on the Worker.",
+  "owner": { "name": "colinxs" },
   "plugins": [
     {
       "name": "sux-router",
       "source": "./plugins/sux-router",
-      "description": "The UNIVERSAL sux connector (https://sux.colinxs.workers.dev/mcp) + the `sux` routing skill: web search, scraping/rendering, papers, shopping, documents, transforms, pipe/batch composition. Domain-agnostic. OAuth in-browser via /mcp on first connect.",
-      "version": "0.2.0"
-    },
-    {
-      "name": "sux-vault",
-      "source": "./plugins/sux-vault",
-      "description": "The PERSONAL Obsidian-vault connector (https://sux.colinxs.workers.dev/vault/mcp): read/write/edit/capture + daily notes over the git-backed knowledge store. A separate endpoint on the same Worker/OAuth so vault tools stay a clean namespace and sux-router stays universal.",
-      "version": "0.1.0"
-    },
-    {
-      "name": "sux-mail",
-      "source": "./plugins/sux-mail",
-      "description": "The PERSONAL Fastmail connector (https://sux.colinxs.workers.dev/mail/mcp): search/read/thread/send/draft/archive mail, masked-email, plus the raw `jmap` conduit for the full protocol (calendars, contacts). A separate endpoint on the same Worker/OAuth so mail tools stay a clean namespace and sux-router stays universal.",
-      "version": "0.1.0"
+      "description": "The one sux connector (https://sux.colinxs.workers.dev/mcp) + the `sux` routing skill. A single OAuth-gated front door: web search, scraping/rendering, papers, shopping, documents, transforms, pipe/batch composition — AND your personal vault/mail/files reached through `vault_`/`mail_`/`files_` verbs (+ `recall`, + the `fn` escape hatch). One install, one connector, everything behind it. OAuth in-browser on first connect.",
+      "version": "0.3.0"
     },
     {
       "name": "sux-life",
       "source": "./plugins/sux-life",
-      "description": "The digital-life MEMORY layer — a skill (no new connector) that turns the vault + mail connectors into a second brain: capture in seconds, remember durable facts/people/decisions, recall across notes + mail + files + web with citations, triage the inbox, and consolidate into a linked graph. Git is the undo, so writes are unblocked. Pairs with sux-vault + sux-mail.",
-      "version": "0.1.0"
-    },
-    {
-      "name": "sux-files",
-      "source": "./plugins/sux-files",
-      "description": "The PERSONAL file-workspace connector (https://sux.colinxs.workers.dev/files/mcp): list/read/write/upload/share/delete over your Dropbox app folder (scope-is-the-wall), plus the raw `dropbox` escape hatch. Blobs live here; the vault holds the note about them. A separate endpoint on the same Worker/OAuth.",
-      "version": "0.1.0"
+      "description": "The digital-life MEMORY layer — a skill (no separate connector) that turns the one sux connector into a second brain: capture, remember durable facts/people/decisions, recall across notes + mail + files + web with citations, triage the inbox, consolidate into a linked graph. Git is the undo. Rides on sux-router's front door.",
+      "version": "0.2.0"
     }
   ]
 }
