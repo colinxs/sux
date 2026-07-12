@@ -88,7 +88,7 @@ store, not here — two corpora with different authorities (public code-docs vs
 Colin's private KB). The stance is now **decided, not parked**: unify the *view*,
 never copy the *content*. A gitignored symlink mounts this public `docs/` *into*
 the private vault (public→private is safe), and the repo reaches the vault the
-other way through the already-built `/vault/mcp` tools — so both are accessible
+other way through the already-built `vault_*` tools — so both are accessible
 and editable from either surface with **no cross-repo copy, hence no divergence**.
 See [[vault-docs-reconciliation]] for the full design (mount direction, edit-flow,
 phased plan), plus [[vault-stack]] and [[namespace-architecture]].

@@ -19,7 +19,7 @@ and hosting substrate. Most of this is `shipped`; the hosting evolution is
 A `tools/call` flows: [[oauth-gate]] → [[fn-registry]] → [[content-addressed-cache]]
 → [[fetch-ladder]] → the open web.
 
-- [[oauth-gate]] — one GitHub OAuth provider, single-user, N connector paths
+- [[oauth-gate]] — one GitHub OAuth provider, single-user, one advertised `/mcp` connector (+ dormant back-compat routes)
 - [[fn-registry]] — the `Fn` contract, failure taxonomy, and hot-path dispatch rails
 - [[content-addressed-cache]] — KV cache, single-flight, stale-while-revalidate
 - [[fetch-ladder]] — residential egress rungs and the bot-detection war

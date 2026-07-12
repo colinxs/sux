@@ -37,7 +37,7 @@ mail/files secrets, **reconnect the connector** so the client re-reads `tools/li
   Fastmail → Settings → Privacy & Security → API tokens → `sux` → Remove access.)*
 - **Dropbox (`DROPBOX_APP_KEY` + `DROPBOX_REFRESH_TOKEN`) — ✅ DONE (2026-07-10):** App-folder app
   `sux-files-mcp-colinxs`, set via **PKCE** so the Worker holds **no app secret** — only the public
-  key + refresh token. `/files/mcp` is live, scoped to `/Apps/sux-files-mcp-colinxs/`.
+  key + refresh token. The `files_*` tools are live, scoped to `/Apps/sux-files-mcp-colinxs/`.
 - **Everything else — needs generating**, each behind its own login/2FA (the sections
   below), then set in one sweep.
 
@@ -88,7 +88,7 @@ Optional overrides (rarely needed): `FASTMAIL_ACCOUNT_ID`, `FASTMAIL_SESSION_URL
 **Create app**.
 
 **Steps:**
-1. **Scoped access** → **App folder** (the built `/files/mcp` is App-folder scoped —
+1. **Scoped access** → **App folder** (the built `files_*` surface is App-folder scoped —
    it can only see `/Apps/<name>/`; scope is the safety wall) → name it → **Create**.
 2. **Permissions** tab — check the scopes, then **Submit**:
    - **Read-only:** `files.metadata.read`, `files.content.read`, `sharing.read`.
@@ -137,7 +137,7 @@ npm run secret:sux TODOIST_TOKEN
 
 **Read vs write:** the key is **full read/write** over the vault (there's no read-only
 mode). This is for the *live* vault path (the future headless container); the git-backed
-`/vault/mcp` you use today needs no key.
+`vault_*` tools you use today need no key.
 
 ```
 npm run secret:sux OBSIDIAN_REST_TOKEN

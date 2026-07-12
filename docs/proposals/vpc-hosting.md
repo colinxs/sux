@@ -10,6 +10,8 @@ updated: 2026-07-09
 
 # Self-hosting the vault: home + cloud, over Cloudflare Workers VPC
 
+> **Note — connector framing is dated (point-in-time record).** This doc adds the vault as a separate `/vault/mcp` connector (and shows `apiRoute: ["/mcp", "/vault/mcp"]`). That per-domain connector was later **retired into the single `/mcp` front door**: the `vault_*` tools ship as front-door verbs on the one `sux-router` connector. The `apiRoute` array still lists `/vault/mcp` (routed + OAuth-authorized for back-compat), but no plugin ships it and it is unadvertised. The VPC/hosting design here is unaffected — read `/vault/mcp` as "the vault reverse-proxy handler." Current shape: [[namespace-architecture]] / [[connector-surface-policy]].
+
 Companion to [domains.md](domains.md) and [architecture.md](architecture.md). Answers the three "figure out" questions: (1) self-host the vault at home on a spare Linux box, (2) an always-on cloud host with an Electron web app, (3) how Cloudflare Zero Trust (`cloudflared`) maps onto Tailscale (`tailscaled`). Research-verified 2026-07-08; Colin's decisions locked inline.
 
 ## The problem this actually solves

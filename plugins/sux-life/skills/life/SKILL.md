@@ -17,12 +17,15 @@ plus **remember** for the things that must never be lost.
 
 ## The stores (what you're writing to)
 
-| Store | Connector | Tools |
+Everything rides the one sux connector (`/mcp`, the `sux-router` plugin) — vault/mail/files are
+front-door verb families on it, not separate connectors.
+
+| Store | Verbs (all on the one `/mcp` connector) | Tools |
 |---|---|---|
-| **Notes / knowledge** | `/vault/mcp` (sux-vault) | `vault_capture`, `vault_daily_append`, `vault_daily_read`, `vault_write`, `vault_append`, `vault_edit`, `vault_read`, `vault_list`, `vault_delete` |
-| **Mail / calendar / contacts** | `/mail/mcp` (sux-mail) | `mail_search`, `mail_read`, `mail_thread`, `mail_send`, `mail_draft`, `mail_archive`, `mail_masked`, and raw `jmap` (calendars/contacts) |
-| **Web + capture + recall** | `/mcp` (sux-router) | `search`, `ingest` (url/text/query → vault note), `oracle` (learn-then-answer KB), `scrape`/`readability` |
-| **Files** | Dropbox / R2 | `dropbox`, `store` (blobs; the vault holds the *note*, files hold the *bytes*) |
+| **Notes / knowledge** | `vault_*` | `vault_capture`, `vault_daily_append`, `vault_daily_read`, `vault_write`, `vault_append`, `vault_edit`, `vault_read`, `vault_list`, `vault_delete` |
+| **Mail / calendar / contacts** | `mail_*` / `cal_*` / `contact_*` | `mail_search`, `mail_read`, `mail_thread`, `mail_send`, `mail_draft`, `mail_archive`, `mail_masked`, and raw `jmap` (calendars/contacts) |
+| **Web + capture + recall** | universal | `search`, `ingest` (url/text/query → vault note), `oracle` (learn-then-answer KB), `recall`, `scrape`/`readability` |
+| **Files** | `files_*` (+ raw `dropbox`, `store`) | `files_list/read/write/upload/share`, `dropbox`, `store` (blobs; the vault holds the *note*, files hold the *bytes*) |
 
 If a store isn't connected, say so plainly and use what is — never fail silently.
 

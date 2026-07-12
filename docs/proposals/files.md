@@ -10,6 +10,8 @@ updated: 2026-07-09
 
 # files — the blob namespace: a synced workspace + operations over the whole corpus
 
+> **⚠️ Superseded framing — point-in-time design record.** This doc designs files as its own connector (`/files/mcp`) and plugin (`sux-files`), the "fourth endpoint" alongside `/vault/mcp` and `/mail/mcp`. That per-domain-connector split was later **retired into the single `/mcp` front door**: the `files_*` verbs (Mode A + gated Mode B) and the raw `dropbox`/`store` fns now ship on the one `sux-router` connector, no separate `/files/mcp` connector or `sux-files` plugin. The Mode A/B design below is live and accurate; read the endpoint/plugin packaging as history. Current shape: [[namespace-architecture]] / [[connector-surface-policy]].
+
 **The problem, stated once:** Colin wants "personalized cloud file storage and search" — but two structurally different things wear that one name, and conflating them is the trap every file connector falls into. There is the **workspace** Colin and Claude actively share (deliverables, exchange, a drop-a-file inbox — small, bidirectional, safe to leave unblocked), and there is the **corpus** — the whole Dropbox account and the local disk — which must be *operated on in place*, never mirrored wholesale into the workspace. Colin's refinement is the whole design in one sentence:
 
 > "We do NOT sync all files. Bidirectional blobs in the Apps folder. OPERATIONS over the rest of the files. Example: find all the pdfs about foobar and merge them, replacing the original."

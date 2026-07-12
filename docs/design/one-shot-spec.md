@@ -3,7 +3,7 @@ title: The one-shot spec prompt
 status: reference
 cluster: meta
 type: reference
-summary: "A single self-contained prompt that reconstructs sux from zero — the architecture, the four namespaces, the safety model, and the house rules, compressed to the minimum an agent needs to one-shot it."
+summary: "A single self-contained prompt that reconstructs sux from zero — the architecture, the one /mcp connector with its universal + vault/mail/files verb families, the safety model, and the house rules, compressed to the minimum an agent needs to one-shot it."
 tags: [sux, meta, reference]
 updated: 2026-07-10
 related: ["[[SUX]]", "[[three-mcps]]", "[[files]]", "[[keys]]", "[[architecture]]"]
@@ -35,15 +35,19 @@ ARCHITECTURE
   an Fn { name, description, inputSchema, cost?, cacheable?, ttl?, raw?, run(env,args) }. A
   generator writes src/fns/index.ts (the FUNCTIONS array) and FUNCTIONS.md from those files —
   both are committed and CI fails if stale. Never hand-edit them.
-- Personal domains are SEPARATE connector namespaces at their own paths, each a thin tool layer
-  over the fns, each its own marketplace plugin, all on the same Worker + OAuth:
-    /mcp        sux    — universal tools (web/papers/shopping/transforms/pipe+batch). Domain-agnostic.
-    /vault/mcp  vault  — Obsidian knowledge base over a git-backed store (every write a revertible commit).
-    /mail/mcp   mail   — Fastmail via JMAP: search/read/thread/send/draft/archive/masked + a raw `jmap` conduit.
-    /files/mcp  files  — Dropbox blobs: Mode A (app-folder, unblocked) + Mode B (whole-account, gated).
-  Enumerate them from ONE source of truth (a CONNECTORS array) that also drives the OAuth apiRoute
-  and a GET /mcp/connectors discovery manifest. Keep the raw protocol conduit (jmap, dropbox) exposed
-  in every namespace as the debugging escape hatch — ergonomic verbs on top, raw underneath.
+- Personal domains are exposed as FRONT-DOOR VERB FAMILIES on the single `/mcp` connector — a thin
+  tool layer over the fns, all shipped by the one `sux-router` plugin on the same Worker + OAuth:
+    /mcp  sux  — the ONE connector: universal tools (web/papers/shopping/transforms/pipe+batch),
+                 domain-agnostic, PLUS the personal namespaces reached by verb prefix:
+        vault_*                     — Obsidian knowledge base over a git-backed store (every write a revertible commit).
+        mail_* / cal_* / contact_*  — Fastmail via JMAP: search/read/thread/send/draft/archive/masked + a raw `jmap` conduit.
+        files_*                     — Dropbox blobs: Mode A (app-folder, unblocked) + Mode B (whole-account, gated).
+  Enumerate the connector PATHS from ONE source of truth (a CONNECTORS array) that also drives the OAuth
+  apiRoute and a GET /mcp/connectors discovery manifest. The design once split these onto per-domain
+  connectors (/vault/mcp, /mail/mcp, /files/mcp, each its own plugin); those paths stay in the CONNECTORS
+  array — routed + OAuth-authorized for back-compat — but are retired from the advertised surface into the
+  one /mcp front door (advertised:false, no plugin). Keep the raw protocol conduit (jmap, dropbox) exposed
+  as the debugging escape hatch — ergonomic verbs on top, raw underneath.
 
 THE TWO HARD FACTS
 - FN_DEADLINE_MS wraps every run and abandons on timeout with zero partials; fan-out verbs run an
@@ -77,9 +81,10 @@ HOW WE WORK (the gates that let us move fast)
 - Fan out with subagents/workflows for research, design tournaments, and adversarial review; keep the
   actual file-mutating commits serial to stay conflict-free and mergeable.
 
-DELIVER: the Worker, the four namespaces, the fn registry + generators, the OAuth gate, the safety gates
-above, tests for each, the discovery manifest, and the marketplace plugins. Deploy additively; the
-personal namespaces stay dormant (not_configured) until their secrets are set.
+DELIVER: the Worker, the one /mcp connector with its front-door verb families (universal + vault/mail/files),
+the fn registry + generators, the OAuth gate, the safety gates above, tests for each, the discovery manifest,
+and the marketplace plugins. Deploy additively; the personal namespaces stay dormant (not_configured) until
+their secrets are set.
 ```
 
 ## Recreate-and-compare (the meta-loop)

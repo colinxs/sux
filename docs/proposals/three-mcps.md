@@ -3,12 +3,14 @@ title: Three MCP namespaces
 status: shipped
 cluster: namespaces
 type: proposal
-summary: "One Worker, N per-domain /mcp connectors — vault, mail, and files all shipped + live; the lifecycle + oracle (recall) are Claude-side skills / a server verb."
+summary: "Point-in-time proposal: one Worker, N per-domain /mcp connectors (vault/mail/files). SUPERSEDED — those connectors were later retired into the single /mcp front door; the namespaces now ship as vault_/mail_/files_ verbs on the one sux-router connector. Read as history."
 tags: [sux, namespaces, shipped]
 updated: 2026-07-09
 ---
 
 # Three MCP namespaces — vault · mail · sux
+
+> **⚠️ Superseded — point-in-time design record.** This doc proposes vault/mail/files as *separate per-domain connectors* (`/vault/mcp`, `/mail/mcp`, `/files/mcp`), each its own plugin. That split was later **retired into the single `/mcp` front door**: vault/mail/files now ship as `vault_`/`mail_`/`files_` (+ `cal_`/`contact_`) front-door verbs on the one `sux-router` connector. The per-domain paths still route + stay OAuth-authorized for back-compat, but they are dormant (no plugin, `advertised:false`). Read the endpoint/plugin tables below as history; for the current shape see [[namespace-architecture]] and [[connector-surface-policy]].
 
 **Corrected 2026-07-09 after reading the branch.** The earlier draft proposed 3 separate workers and a parallel verb vocabulary; both were wrong. The real architecture is Colin's (commit 220ed15) and the vault namespace is already built (`sux/src/vault-mcp.ts`). This doc now reflects reality.
 

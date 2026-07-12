@@ -3,7 +3,7 @@ title: Docs ⇄ vault reconciliation
 status: designed
 cluster: knowledge
 type: design
-summary: "Two SoT repos, one Obsidian view: gitignored symlink mounts public docs/ into the private vault; repo reaches the vault via the /vault/mcp tools; no cross-repo copy, so no divergence."
+summary: "Two SoT repos, one Obsidian view: gitignored symlink mounts public docs/ into the private vault; repo reaches the vault via the vault_* tools on the one /mcp connector; no cross-repo copy, so no divergence."
 tags: [sux, knowledge, vault]
 updated: 2026-07-11
 related: ["[[wiki-protocol]]", "[[vault-stack]]", "[[namespace-architecture]]", "[[vault-backends-matrix]]"]
@@ -60,15 +60,15 @@ gets it through the *already-built* sux vault MCP — not a filesystem symlink.
    the mount just gives *one unified graph* instead of vault-switching.)
 
 2. **Vault content → visible/editable from the repo.** Already shipped — the sux
-   `/vault/mcp` tools (`vault_read/list/write/edit/patch/…`, git-backed,
-   KV-cached, 409 on races) plus the local `mcp__obsidian__*` connector. A Claude
+   `vault_*` tools (`vault_read/list/write/edit/patch/…`, git-backed,
+   KV-cached, 409 on races) on the one `/mcp` connector, plus the local `mcp__obsidian__*` connector. A Claude
    Code session in the sux repo already has full read/write to the personal
    vault. No new machinery, and deliberately **no** private-vault symlink inside
    the public tree.
 
 3. **Cloud leg (park by default).** Making the sux *design docs* searchable from
-   claude.ai mobile's `/vault/mcp` connector would require them inside the
-   private `obsidian-vault` repo (the connector reads that repo, not the public
+   claude.ai mobile's sux connector (the `vault_*` verbs) would require them inside the
+   private `obsidian-vault` repo (the vault backend reads that repo, not the public
    one). Only do this if the want is real, and only as a **one-way generated
    projection** (docs → a `sux-docs/` folder in the vault repo, driven by CI on
    the public repo, marked generated/read-only) — an *output* like `llms.txt`, so
@@ -107,8 +107,8 @@ gets it through the *already-built* sux vault MCP — not a filesystem symlink.
   `colinxs/obsidian-vault` naming drift in `docs/proposals/architecture.md` +
   `vault-backends.md`.
 - **Phase 3 — (park) one-way cloud projection** of the public wiki into
-  `obsidian-vault/sux-docs/` via CI, only if Colin wants sux docs in the mobile
-  `/vault/mcp` connector. Generated/read-only; never hand-edited.
+  `obsidian-vault/sux-docs/` via CI, only if Colin wants sux docs reachable through the mobile
+  sux connector's `vault_*` verbs. Generated/read-only; never hand-edited.
 
 ## Guardrail (this PR)
 

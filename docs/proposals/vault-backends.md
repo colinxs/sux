@@ -10,6 +10,8 @@ updated: 2026-07-09
 
 # Vault backends, task-management, and citation-management
 
+> **Note — connector framing is dated (point-in-time record).** This doc refers to the vault as a separate `/vault/mcp` connector. That per-domain connector was later **retired into the single `/mcp` front door**: the `vault_*` tools now ship as front-door verbs on the one `sux-router` connector (the `/vault/mcp` path still routes for back-compat, but is dormant). Read `/vault/mcp` below as "the vault surface" — the backend, sync-bus, task-sync and citation design are unaffected. Current shape: [[namespace-architecture]] / [[connector-surface-policy]].
+
 Status: proposal / design lock
 Scope: the STATEFUL notes namespace served at `/vault/mcp`, its four backend
 implementations and sync bus, plus two new vault domains (task-management,

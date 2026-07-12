@@ -10,13 +10,13 @@
 - [[files]] (shipped) — The files blob namespace — unblocked App-folder workspace (Mode A) + gated in-place corpus ops (Mode B); files_operate moves zero bytes through the model.
 - [[jmap]] (shipped) — The full JMAP protocol as one typed conduit verb forwarding raw batches to Fastmail; _jmap.ts session/limit engine; MaskedEmail/Contacts/Calendars.
 - [[mail]] (shipped) — A dozen ergonomic mail_* verbs over the jmap conduit — scheduled send, remote search, batching, pagination; open 13-fns-vs-one decision.
-- [[three-mcps]] (shipped) — One Worker, N per-domain /mcp connectors — vault, mail, and files all shipped + live; the lifecycle + oracle (recall) are Claude-side skills / a server verb.
+- [[three-mcps]] (shipped) — Point-in-time proposal: one Worker, N per-domain /mcp connectors (vault/mail/files). SUPERSEDED — those connectors were later retired into the single /mcp front door; the namespaces now ship as vault_/mail_/files_ verbs on the one sux-router connector. Read as history.
 - [[domains]] (designed) — Maps nine personal-data domains onto vault-hub + conduit verbs; derives the unblocked/gated law from reversibility; three transport classes.
 - [[sux-verbs]] (designed) — Collapses ~90 leaf fns into ten front-door verbs + batch/pipe; handle discipline (references-not-payloads) makes the shared fan-out/reduce cheap.
 - [[vault-backends]] (designed) — Locks four vault backends + git-as-the-sync-bus; adds 3-way task sync (vault-Todoist-JMAP) and citation management on the same store verbs.
 
 ### knowledge
-- [[vault-docs-reconciliation]] (designed) — Two SoT repos, one Obsidian view: gitignored symlink mounts public docs/ into the private vault; repo reaches the vault via the /vault/mcp tools; no cross-repo copy, so no divergence.
+- [[vault-docs-reconciliation]] (designed) — Two SoT repos, one Obsidian view: gitignored symlink mounts public docs/ into the private vault; repo reaches the vault via the vault_* tools on the one /mcp connector; no cross-repo copy, so no divergence.
 - [[knowledge-core]] (designed) — Decisions-only spec for the personal knowledge store — transport-agnostic vault ops, PARA+MOC nav, memory frontmatter, the six-verb lifecycle.
 - [[style-edit]] (parked) — style learns a writing voice / edit rewrites to it; closed style-dimension taxonomy as the injection boundary; owns the voice kind on _kb.ts.
 - [[teach-ask]] (parked) — teach writes / ask reads over a per-topic KB with agentic acquisition + Obsidian projection; owns _kb.ts v3; supersedes and deletes oracle.
@@ -27,7 +27,7 @@
 - [[platform-upgrades]] (parked) — Five infra upgrades as one substrate — notify/diff/job (scheduler + cron drain), mac-LLM tier, browse, Cloudflare Workflows, entity resolution.
 - [[keys]] (reference) — Canonical registry of every secret/binding sux uses + the ones the new plan needs, where each lives, and how to get it.
 - [[token-setup]] (reference) — Per-service, step-by-step generation of the personal-data tokens the sux namespaces need — where to click, which read-only vs read/write scope to pick, and the exact secret name + command. Values never live in the repo.
-- [[phone-setup]] (reference) — How to add the sux connectors (sux / vault / mail / files) to claude.ai on your phone, what's live right now, and the memory workflow to drive it.
+- [[phone-setup]] (reference) — How to add the one sux connector to claude.ai on your phone, what's live right now (vault/mail/files all behind it), and the memory workflow to drive it.
 
 ### operations
 - [[enterprise-ops]] (designed) — The cross-store WRITE/ACT layer (mirror of oracle's read) — pass-by-reference + batch verbs + Claude-Code scheduler + skills; heavy operate substrate deferred.
@@ -50,11 +50,11 @@
 - [[SUX]] (meta) — The pivot — declares the git-markdown knowledge store the core and everything else thin tools on top; parks the web-retrieval/algebra corpus.
 - [[claude-profile-snippet]] (reference) — Compact snippet to paste into the claude.ai Profile so chats without skills can still route to sux tools.
 - [[wiki-protocol]] (reference) — How this wiki stays true to the code and the work.
-- [[one-shot-spec]] (reference) — A single self-contained prompt that reconstructs sux from zero — the architecture, the four namespaces, the safety model, and the house rules, compressed to the minimum an agent needs to one-shot it.
+- [[one-shot-spec]] (reference) — A single self-contained prompt that reconstructs sux from zero — the architecture, the one /mcp connector with its universal + vault/mail/files verb families, the safety model, and the house rules, compressed to the minimum an agent needs to one-shot it.
 - [[wiki-conventions]] (reference) — The rules every wiki note obeys so the vault stays coherent and the generator
 
 ## Concept graph
-- [[connector-surface-policy]] (shipped) — The sux marketplace ships two plugins today, each pinned to one endpoint on the same Worker.
+- [[connector-surface-policy]] (shipped) — The sux marketplace ships two plugins today, but only one connector.
 - [[content-addressed-cache]] (shipped) — Every cacheable fn in the [[fn-registry]] gets a KV entry keyed by cacheKey: a sha256 of the fn name (namespaced ::summarize when the universal summarize flag is set) plus a stably-stringified copy of its normalized arguments — same inputs, same key, regardless of key order.
 - [[fanout]] (parked) — The shared parallel-dispatch core, sux/src/fns/_fanout.ts, extracted from three hand-rolled Promise.allSettled loops so every fan-out verb gets error isolation and ledger accounting for free.
 - [[fetch-ladder]] (shipped) — Cloudflare Workers egress from datacenter IPs, and datacenter IPs get blocked on reputation alone — residential egress is why sux exists at all.
@@ -65,14 +65,14 @@
 - [[kb-substrate]] (parked) — _kb.ts v3, the shared storage layer both teach/ask and style/edit write knowledge bases through.
 - [[mcp-gate]] (shipped) — A local Node process (gate.mjs, run under launchd) on the Mac that fronts LIVE local MCP servers — today the Obsidian Local REST API — for remote Claude clients, injecting upstream bearer tokens Mac-side from routes.json so they never leave the machine (bearer files are re-read per request, so key rotation needs no restart).
 - [[mychart]] (draft) — Separate draft (PR #31, not started) — pull health data via two pipes: clinical records over Epic SMART-on-FHIR + Apple Watch vitals via Health Auto Export; adds PHI invariants.
-- [[namespace-architecture]] (designed) — The corrected shape of the whole system: one Worker, one OAuth flow, N connector namespaces, each exposed as its own /<domain>/mcp endpoint with its own Claude Code plugin.
-- [[oauth-gate]] (shipped) — One @cloudflare/workers-oauth-provider instance, built lazily on first request, guards the whole Worker: apiRoute: ["/mcp", "/vault/mcp"] names both connector paths, apiHandler is rtServer, and defaultHandler is the GitHub OAuth flow (github-handler.ts).
+- [[namespace-architecture]] (designed) — The shape of the whole system: one Worker, one OAuth flow, one advertised connector.
+- [[oauth-gate]] (shipped) — One @cloudflare/workers-oauth-provider instance, built lazily on first request, guards the whole Worker: apiRoute: CONNECTOR_PATHS (["/mcp", "/vault/mcp", "/mail/mcp", "/files/mcp"] from [connectors.ts](../../../sux/src/connectors.ts)) names every routed connector path — /mcp is the one advertised front door, the three per-domain paths stay OAuth-authorized for back-compat but ship no plugin.
 - [[oracle-supersession]] (designed) — A tracked history of which layer holds the "read crown" — the cross-store synthesis-and-cite authority — as the design evolves, so readers of the corpus trust the right document rather than the first one they find.
 - [[records-envelope]] (parked) — The shared contract every algebra and retrieval verb emits: {records: Rec[], meta}, owned by sux/src/fns/_records.ts.
 - [[six-verb-lifecycle]] (designed) — The operating verb set for knowledge work over the vault: capture / triage / link / retrieve / consolidate / remember.
 - [[two-hard-facts]] (meta) — Two Worker platform constants that every fan-out and every caching decision in the sux design has to respect, because nothing about them can be negotiated away.
 - [[unblocked-gated-law]] (designed) — The governance law that decides which actions Claude may take without confirmation across every sux domain: "unblocked where git can undo; gated where the world can't." A reversible action — anything landing as a git commit, or anything living inside a credential-scoped folder with its own version history — runs freely, no confirm dance.
-- [[vault-backends-matrix]] (designed) — Four implementations behind the obsidian fn's backend dispatch, covering the stateful notes namespace served at /vault/mcp.
+- [[vault-backends-matrix]] (designed) — Four implementations behind the obsidian fn's backend dispatch, covering the stateful notes namespace reached via the vault_ verbs on the one /mcp connector.
 - [[vault-stack]] (shipped) — A git-backed Obsidian knowledge store, OBSIDIAN_VAULT_REPO (live: colinxs/obsidian-vault) — every write is a commit, so git history is the undo.
 - [[verb-algebra]] (parked) — Four generic combinators — map, filter, reduce, augment — operating over the [[records-envelope]] instead of one bespoke fn per data shape.
 
