@@ -186,13 +186,22 @@ async function main() {
 
   let drift = false;
 
-  // 1. FUNCTIONS.md must be exactly what `npm run docs` produces from source.
-  const before = readFileSync(FUNCTIONS, 'utf8');
+  // 1. FUNCTIONS.md is a gitignored, regenerated-on-demand artifact (nothing
+  // imports it; `/llms.txt` and the tool inventory are derived from source), so
+  // the source of truth is sux/src/fns/*.ts — always derive fnNames from a fresh
+  // render. If a committed copy still exists (legacy checkout), hold it to being
+  // in sync; when it's absent there is simply nothing to be stale against.
+  let committed = null;
+  try {
+    committed = readFileSync(FUNCTIONS, 'utf8');
+  } catch {
+    // FUNCTIONS.md isn't tracked — see .gitignore. Skip the staleness gate.
+  }
   const after = regenerateFunctions();
   const fnNames = fnNamesFrom(after);
-  if (before !== after) {
-    writeFileSync(FUNCTIONS, before); // non-destructive check: restore the committed copy
-    console.log(`\n${relative(ROOT, FUNCTIONS)} is stale — regenerate with \`npm run docs\` and commit.`);
+  if (committed !== null && committed !== after) {
+    writeFileSync(FUNCTIONS, committed); // non-destructive check: restore the committed copy
+    console.log(`\n${relative(ROOT, FUNCTIONS)} is stale — regenerate with \`npm run docs\`.`);
     drift = true;
   }
 

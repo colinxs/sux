@@ -197,3 +197,12 @@ sux/mac-render/extensions/
 # symlink here can't be committed.
 /.vault/
 /vault-mount/
+
+# Pure-generated capability docs — regenerated on demand from sux/src/fns/*.ts
+# (`npm run docs` → FUNCTIONS.md; `npm run wiki` → llms.txt). Nothing imports or
+# bundles them: `/llms.txt` is served live from the registry (renderOverview in
+# observability.ts), and FUNCTIONS.md is a human/skill reference. Committing them
+# caused every concurrent PR to collide on these files; they are no longer tracked.
+# (Contrast sux/src/fns/index.ts, which IS bundled into the Worker and stays committed.)
+/llms.txt
+/sux/FUNCTIONS.md

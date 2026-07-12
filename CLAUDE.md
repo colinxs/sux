@@ -19,16 +19,26 @@ Guiding principle: **git is the undo, CI is the gate, review is the net** — so
 
 ## CI gates — don't break these (`.github/workflows/ci.yml`)
 
-All must pass; the last two catch people constantly:
+All must pass:
 
 1. `npm run type-check` — `tsc --noEmit`
 2. `npm test` — `vitest run`
 3. `npm run check:node` — node deploy blob in sync
-4. `npm run docs` → **`sux/FUNCTIONS.md` must be committed** (docs in sync)
-5. `npm run gen:index` → **`sux/src/fns/index.ts` must be committed** (fn index in sync)
-6. `wrangler deploy --dry-run`
+4. `npm run gen:index` → **`sux/src/fns/index.ts` must be committed** (fn index in sync)
+5. `wrangler deploy --dry-run`
 
-**After touching any fn: run `npm run gen:index && npm run docs` and commit the results.** Hand-editing `index.ts` or `FUNCTIONS.md` fails CI. Run `npm test && npm run type-check` locally before pushing.
+**`sux/src/fns/index.ts` is the one generated file we still commit** — the Worker
+`import`s it (observability.ts + registry.test.ts), so it must exist at build/test
+time. **After adding/removing a fn: run `npm run gen:index` and commit `index.ts`.**
+The pre-commit hook does this for you and stages it; hand-editing it fails CI.
+
+**The pure-generated docs are NOT committed anymore** — `sux/FUNCTIONS.md` and
+`llms.txt` are gitignored and regenerated on demand (`npm run docs`, `npm run wiki`).
+Nothing imports them: `/llms.txt` is served live from the registry, and FUNCTIONS.md
+is a human/skill reference. Don't try to commit them (committing them made every
+concurrent PR collide — that's why we stopped). The hybrid wiki MOCs
+(`docs/wiki/MOCs/*`) stay tracked; refresh them with `npm run wiki` when you curate
+the wiki. Run `npm test && npm run type-check` locally before pushing.
 
 ## Sessions — separate, not shared
 

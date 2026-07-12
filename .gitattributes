@@ -1,13 +1,15 @@
 # Fully machine-generated, zero hand-authored content — never hand-merge,
 # regenerate instead. The `ours` driver is registered locally by
 # `npm run prepare` (see package.json). If not yet registered (fresh clone,
-# no `npm install` run yet), these safely fall back to a normal 3-way
+# no `npm install` run yet), this safely falls back to a normal 3-way
 # merge/conflict — zero regression risk.
 #
-# Scoped deliberately to the three 100%-generated files. NOT applied to
-# docs/wiki/MOCs/Functions-MOC.md or Status-Dashboard.md: those are hybrid
-# (hand-authored prose above a `<!-- GENERATED -->` marker), where merge=ours
-# would silently discard real edits. See docs/wiki/Meta/wiki-protocol.md.
+# Scoped to index.ts, the only 100%-generated file still committed: it is
+# `import`ed by the Worker (observability.ts + registry.test.ts) so it must
+# exist at build time. FUNCTIONS.md and llms.txt used to live here too, but
+# they are pure docs that nothing bundles, so they are now gitignored and
+# regenerated on demand (see .gitignore) — that stops the per-PR collisions.
+# NOT applied to docs/wiki/MOCs/Functions-MOC.md or Status-Dashboard.md: those
+# are hybrid (hand-authored prose above a `<!-- GENERATED -->` marker), where
+# merge=ours would silently discard real edits. See docs/wiki/Meta/wiki-protocol.md.
 sux/src/fns/index.ts merge=ours
-sux/FUNCTIONS.md merge=ours
-llms.txt merge=ours

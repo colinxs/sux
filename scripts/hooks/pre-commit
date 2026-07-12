@@ -1,11 +1,18 @@
 #!/bin/sh
-# Living-wiki: on every commit, regenerate the knowledge artifacts from source
-# and re-stage them so the wiki never drifts from the code you're committing.
-#   sux/src/fns/index.ts          <- sux/src/fns/*.ts   (npm run gen:index)
-#   sux/FUNCTIONS.md              <- sux/src/fns/*.ts   (npm run docs)
-#   docs/wiki/MOCs/Functions-MOC  <- FUNCTIONS.md       (npm run wiki)
-#   docs/wiki/MOCs/Status-Dashboard <- doc frontmatter  (npm run wiki)
-#   llms.txt                      <- the whole vault    (npm run wiki)
+# On every commit, keep the ONE build-critical generated artifact in sync and
+# staged:
+#   sux/src/fns/index.ts  <- sux/src/fns/*.ts   (npm run gen:index)
+# index.ts is `import`ed by the Worker (observability.ts + registry.test.ts), so
+# it must exist and be current at build/test time — CI gates on it (git diff
+# --exit-code sux/src/fns/index.ts). We stage it here so a new fn can't ship
+# unregistered.
+#
+# The pure-generated DOCS — sux/FUNCTIONS.md and llms.txt — are NO LONGER staged
+# or committed (they're gitignored; nothing imports/bundles them, `/llms.txt` is
+# served live from the registry). Committing them made every concurrent PR
+# collide. We still regenerate FUNCTIONS.md locally for convenience, but never
+# `git add` it. The hybrid wiki MOCs (docs/wiki/MOCs/*) stay tracked but are no
+# longer auto-regenerated here — run `npm run wiki` on demand to refresh them.
 #
 # Installed by `npm run prepare` (sets core.hooksPath=scripts/hooks).
 # Best-effort: a tooling hiccup warns but never blocks the commit — CI is the
@@ -17,16 +24,12 @@ cd "$root" || exit 0
 # No npm (odd environment, rebase bot, …) → don't block the commit.
 command -v npm >/dev/null 2>&1 || exit 0
 
-echo "· living-wiki: regenerating knowledge artifacts…"
+echo "· pre-commit: regenerating the function index…"
 npm run gen:index --silent >/dev/null 2>&1 || echo "  (npm run gen:index failed — leaving index.ts as-is)"
-npm run docs --silent >/dev/null 2>&1 || echo "  (npm run docs failed — leaving FUNCTIONS.md as-is)"
-npm run wiki --silent >/dev/null 2>&1 || echo "  (npm run wiki failed — leaving wiki notes as-is)"
+# Local convenience only — FUNCTIONS.md is gitignored, so this refreshes it on
+# disk for humans browsing the repo but is never staged.
+npm run docs --silent >/dev/null 2>&1 || true
 
-git add -- \
-  sux/src/fns/index.ts \
-  sux/FUNCTIONS.md \
-  docs/wiki/MOCs/Functions-MOC.md \
-  docs/wiki/MOCs/Status-Dashboard.md \
-  llms.txt >/dev/null 2>&1 || true
+git add -- sux/src/fns/index.ts >/dev/null 2>&1 || true
 
 exit 0
