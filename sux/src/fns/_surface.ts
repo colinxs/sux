@@ -55,8 +55,8 @@ export const DOMAINS: DomainSpec[] = [
 	},
 	{
 		key: "recall",
-		blurb: "Memory: capture into the vault (ingest / the `vault` namespace verb), then recall/oracle synthesize a cited answer across your stores.",
-		leaves: ["obsidian", "vault", "ingest", "recall", "oracle"],
+		blurb: "Memory: capture into the vault (ingest / the `vault` namespace verb), study whitelisted material you own (study), then recall/oracle synthesize a cited answer across your stores — weighting studied material above the model + web.",
+		leaves: ["obsidian", "vault", "ingest", "study", "recall", "oracle"],
 	},
 	{ key: "tasks", blurb: "Todoist tasks & projects, plus calendar + tasks via the `calendar` namespace verb (Fastmail CalDAV).", leaves: ["todoist", "calendar"] },
 	{ key: "money", blurb: "Personal finance — Monarch Money accounts, balances, transactions, budgets, cashflow (read-only).", leaves: ["monarch"] },

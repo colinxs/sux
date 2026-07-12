@@ -26,7 +26,7 @@ const CATEGORIES = [
 	["Research / reference", ["arxiv", "pubmed", "openalex", "crossref", "semantic_scholar", "clinical_trials", "stackexchange", "reddit", "coingecko", "youtube"]],
 	["People / places / social", ["people", "people_finder", "places", "linkedin", "facebook", "uw"]],
 	["Notes / knowledge / vault", ["obsidian", "ingest", "citation"]],
-	["Knowledge / learning", ["recall", "oracle", "advise", "learn", "preferences"]],
+	["Knowledge / learning", ["recall", "oracle", "study", "advise", "learn", "preferences"]],
 	["Mail (JMAP)", ["jmap", "mail_triage", "briefing"]],
 	["Personal namespaces (one /mcp)", ["vault", "mail", "files", "calendar", "contact"]],
 	["Personal finance", ["monarch"]],
