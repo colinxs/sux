@@ -21,13 +21,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  review:
+  security-review:
+    # Distinct job id + name so the check-run context is "security-review", NOT the bare
+    # "review" that claude.yml's review job produces — branch protection can then require
+    # this gate without also requiring (or being unable to disambiguate) that one.
+    name: security-review
     # Trusted authors only (public repo). Draft PRs skipped.
     if: >
       github.event.pull_request.draft == false &&
       github.event.sender.type != 'Bot' &&
       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Preflight — need the key
         id: pre
@@ -64,8 +69,14 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
+          # This step only runs when the preflight armed the review (go=true), so the
+          # Claude step definitely ran. A missing verdict here means the review did not
+          # complete — fail CLOSED (never advisory-pass): apply `hold` and block. Only a
+          # genuinely-disarmed preflight (no ANTHROPIC_API_KEY) skips the gate entirely.
           if [ ! -f .sec-verdict.json ]; then
-            echo "::warning::no verdict file produced — treating as advisory pass"; exit 0; fi
+            gh pr edit "$PR" --add-label hold 2>/dev/null || true
+            gh pr comment "$PR" --body "🛑 **no-dumb-shit bot**: the security review did not produce a verdict (it ran but did not finish). Applied \`hold\` (blocks auto-merge). Re-run the review or investigate, then remove \`hold\`." 2>/dev/null || true
+            echo "::error::no verdict file produced after an armed run — failing closed"; exit 1; fi
           crit=$(jq -r '.critical // 0' .sec-verdict.json); high=$(jq -r '.high // 0' .sec-verdict.json)
           echo "security verdict: critical=$crit high=$high"
           if [ "${crit:-0}" -gt 0 ] || [ "${high:-0}" -gt 0 ]; then
