@@ -2,12 +2,15 @@
 //   GET /metrics  — usage metrics as JSON (?format=prometheus for scraping)
 //   GET /logs     — rolling call log with metric fields (JSON; ?tool= / ?limit= )
 //   GET /feedback — server-side issue/suggest backlog (JSON; ?type= / ?tool= / ?limit= )
+//   GET /llms.txt — the capability map as markdown (CDN-cacheable, no secrets)
 // No dashboard UI by design — logging + metrics only. `/health` is intentionally
 // NOT handled here: it falls through to the richer browsable page in
 // github-handler.ts (residential-egress stats). Returns null when the path isn't
 // ours so index.ts can fall through to OAuth.
 
 import { type FeedbackKind, readFeedback } from "./fns/_feedback";
+import { FUNCTIONS } from "./fns/index";
+import { renderOverview } from "./fns/_surface";
 import { isExpired } from "./fns/_util";
 import { readMetrics, sloReport, toPrometheus } from "./metrics";
 import type { RtEnv } from "./registry";
@@ -48,6 +51,15 @@ export async function handleObservability(url: URL, request: Request, env: RtEnv
 				"x-content-type-options": "nosniff",
 				"content-security-policy": "sandbox",
 			},
+		});
+	}
+
+	// Public capability map — same source as the `sux` root verb (fns/_surface.ts),
+	// so the two surfaces can't drift. No secrets; CDN-cacheable for an hour.
+	if (url.pathname === "/llms.txt") {
+		return new Response(renderOverview(FUNCTIONS), {
+			status: 200,
+			headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "public, max-age=3600" },
 		});
 	}
 
