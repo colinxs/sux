@@ -86,6 +86,17 @@ export type RtEnv = Env &
 		// IANA tz for the vault owner's "today" (daily-note tools). Default Pacific.
 		VAULT_TZ?: string;
 
+		// Weekly recall digest (fns/_weekly_recall.ts, rides the daily cron; runs at most
+		// once per ISO week). Fail-closed, default OFF, set via `wrangler secret` (NOT
+		// declared in wrangler.jsonc — like SELF_IMPROVE_*). Unset ⇒ dormant no-op.
+		//   WEEKLY_RECALL_ENABLED   — master enable (toggle); unset/"0"/"false"/"off" ⇒ inert.
+		//   WEEKLY_RECALL_QUESTIONS — optional newline/`;`-separated standing questions to run
+		//                             through recall (else a built-in default set); capped to
+		//                             bound cron cost. recall is READ-only; the only write is a
+		//                             vault append to the Weekly note (never pushed/emailed).
+		WEEKLY_RECALL_ENABLED?: string;
+		WEEKLY_RECALL_QUESTIONS?: string;
+
 		EXA_API_KEY?: string;
 
 		KROGER_CLIENT_ID?: string;

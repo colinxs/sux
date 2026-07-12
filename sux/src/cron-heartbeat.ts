@@ -17,7 +17,7 @@ export const CRON_STALE_MS = 26 * 60 * 60 * 1000;
 
 // Every named sub-job the daily cron runs, in tick order. gatherHealth reports one
 // entry per name; a name that has never fired reports { seen: false }.
-export const CRON_JOBS = ["kroger_token", "mail_triage", "adblock", "self_improve"] as const;
+export const CRON_JOBS = ["kroger_token", "mail_triage", "weekly_recall", "adblock", "self_improve"] as const;
 export type CronJob = (typeof CRON_JOBS)[number];
 
 export type Heartbeat = { ok: boolean; at: number; error?: string };
