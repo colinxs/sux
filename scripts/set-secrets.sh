@@ -19,6 +19,15 @@
 #   op item get "<item title>" --format json | python3 -c \
 #     'import sys,json;[print(f.get("label")) for f in json.load(sys.stdin).get("fields",[])]'
 #
+# SCOPE WARNING (this is a public, bot-driven repo): the refs below point at
+# dedicated, sux-scoped op items ("Fastmail sux", "Dropbox sux app", …). Keep it
+# that way. Do NOT repoint them at your bare personal-account items (op://Private/
+# Fastmail, .../Dropbox, …) — that would push your real personal credentials into a
+# semi-autonomous Worker, so a Worker compromise leaks your accounts, not just a
+# scoped integration. Create a purpose-made, minimally-scoped credential per
+# integration (app password / dedicated OAuth app) instead. Prefer a non-personal
+# vault (e.g. Secrets) over Private for bot-facing values.
+#
 set -uo pipefail
 cd "$(dirname "$0")/.."
 CONFIG="sux/wrangler.jsonc"
