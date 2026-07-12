@@ -30,7 +30,7 @@ const CATEGORIES = [
 	["Mail (JMAP)", ["jmap", "mail_triage"]],
 	["Personal namespaces (one /mcp)", ["vault", "mail", "files", "cal", "contact"]],
 	["Feedback / meta", ["issue", "suggest"]],
-	["Infra / meta", ["selftest", "controld", "tailscale", "sux", "fn", "todoist"]],
+	["Infra / meta", ["selftest", "autonomy_status", "controld", "tailscale", "sux", "fn", "todoist"]],
 ];
 
 const files = readdirSync(FNS).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && f !== "index.ts" && !f.startsWith("_"));

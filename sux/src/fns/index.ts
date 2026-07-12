@@ -51,6 +51,7 @@ import { ace } from "./ace";
 import { advise } from "./advise";
 import { amazon } from "./amazon";
 import { arxiv } from "./arxiv";
+import { autonomy_status } from "./autonomy_status";
 import { bestbuy } from "./bestbuy";
 import { cal } from "./cal";
 import { citation } from "./citation";
@@ -161,6 +162,7 @@ export const FUNCTIONS: Fn[] = [
 	advise,
 	amazon,
 	arxiv,
+	autonomy_status,
 	bestbuy,
 	cal,
 	citation,
