@@ -2,7 +2,9 @@
 // (json/yaml/csv/xml/markdown). Each converter fn dispatches on the SOURCE type
 // (Julia-style multiple dispatch: `json(x)` parses whatever x is; `yaml(x)`
 // serialises x to YAML), and bidirectionality falls out of composing them
-// (`yaml(json(x))`). Pure, dependency-free.
+// (`yaml(json(x))`). Pure — its only dependency is _markup's shared entity decoder.
+
+import { decodeEntities } from "./_markup";
 
 export type Format = "json" | "yaml" | "csv" | "xml";
 
@@ -296,16 +298,9 @@ export function toCsv(arr: unknown[], delim: string): string {
 
 // ---------- JSON <-> XML ----------
 
-function decodeEntities(s: string): string {
-	return s
-		.replace(/&lt;/g, "<")
-		.replace(/&gt;/g, ">")
-		.replace(/&quot;/g, '"')
-		.replace(/&apos;/g, "'")
-		.replace(/&#x([0-9a-f]+);/gi, (_m, h) => String.fromCodePoint(parseInt(h, 16)))
-		.replace(/&#(\d+);/g, (_m, d) => String.fromCodePoint(parseInt(d, 10)))
-		.replace(/&amp;/g, "&");
-}
+// decodeEntities lives in ./_markup — the same named+numeric decoder the HTML/
+// Markdown converter and the retail scrapers use, so XML text/attribute decoding
+// doesn't carry its own drifted copy.
 function encodeEntities(s: string): string {
 	return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }

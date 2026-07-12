@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { csvToRows, detectFormat, parseCsv, parseXml, parseYaml, toXml, toYaml } from "./_convert";
+import { csvToRows, detectFormat, parseCsv, parseXml, parseYaml, toCsv, toXml, toYaml } from "./_convert";
 
 describe("parseYaml (zero-indent sequences under a mapping key)", () => {
 	it("parses a sequence at the same indent as its key", () => {
@@ -128,5 +128,20 @@ describe("csvToRows (duplicate header names)", () => {
 	it("suffixes repeated headers instead of collapsing them", () => {
 		// Two columns named `a` must not collapse to one; the second becomes `a_2`.
 		expect(csvToRows("a,a\n1,2\n", ",")).toEqual([{ a: "1", a_2: "2" }]);
+	});
+});
+
+describe("toCsv (spreadsheet formula-injection guard)", () => {
+	it("prefixes a leading =/+/-/@ string cell with a quote so it can't execute as a formula", () => {
+		// Opened in Excel/Sheets/LibreOffice, a cell starting with =, +, -, @, or a
+		// leading tab/CR is evaluated as a formula (DDE -> exfiltration/RCE). A
+		// prefixed single quote forces it to be read as literal text.
+		const csv = toCsv([{ cmd: "=cmd()" }], ",");
+		expect(csv).toBe("cmd\n'=cmd()");
+	});
+
+	it("leaves a genuine number (non-string) un-neutralized", () => {
+		const csv = toCsv([{ n: -5 }], ",");
+		expect(csv).toBe("n\n-5");
 	});
 });

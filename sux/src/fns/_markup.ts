@@ -2,16 +2,22 @@
 // converters (common subset: headings, links, bold/em, lists, inline code, code
 // blocks, blockquotes, paragraphs). Pure. Bidirectionality via composition.
 
-function decodeEntities(s: string): string {
+// Canonical HTML/XML entity decoder — named entities plus the general numeric
+// forms (&#39; / &#x27; etc.), so a single case list covers every specific numeric
+// entity a caller used to hand-roll. Shared by _convert.ts (XML text/attribute
+// decoding) and the retail scrapers (title/brand text lifted from rendered HTML).
+// `&amp;` must decode LAST — otherwise a double-escaped `&amp;lt;` would decode in
+// one pass to `<` instead of the literal text `&lt;`.
+export function decodeEntities(s: string): string {
 	return s
-		.replace(/&nbsp;/g, " ")
-		.replace(/&#x27;/gi, "'")
-		.replace(/&#39;/g, "'")
-		.replace(/&apos;/g, "'")
-		.replace(/&quot;/g, '"')
-		.replace(/&lt;/g, "<")
-		.replace(/&gt;/g, ">")
-		.replace(/&amp;/g, "&");
+		.replace(/&nbsp;/gi, " ")
+		.replace(/&lt;/gi, "<")
+		.replace(/&gt;/gi, ">")
+		.replace(/&quot;/gi, '"')
+		.replace(/&apos;/gi, "'")
+		.replace(/&#x([0-9a-f]+);/gi, (_m, h) => String.fromCodePoint(parseInt(h, 16)))
+		.replace(/&#(\d+);/g, (_m, d) => String.fromCodePoint(parseInt(d, 10)))
+		.replace(/&amp;/gi, "&");
 }
 
 function encodeEntities(s: string): string {
