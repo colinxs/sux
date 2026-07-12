@@ -424,6 +424,33 @@ describe("operateFull — find→plan→apply over the gated primitives", () => 
 		expect(r.applied).toBe(1); // only the un-fenced file moved
 		expect((r.results as any[])[1].error).toMatch(/protected prefix/);
 	});
+
+	it("time budget: an already-elapsed deadline applies NOTHING and flags truncated:time — the scariest property (no silent over-apply)", async () => {
+		const moved: string[] = [];
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
+			if (String(u).endsWith("/files/move_v2")) {
+				moved.push(JSON.parse(init.body).from_path);
+				return new Response(JSON.stringify({ metadata: { path_display: "x" } }), { status: 200 });
+			}
+			throw new Error(String(u));
+		}));
+		const r = await operateFull(tokenEnv(), { handles: ["/a", "/b", "/c"], action: "move", dest: "/Archive", apply: true, deadline: 1 });
+		expect(r).toMatchObject({ applied: 0, of: 3, truncated: true, reason: "time", skipped: 3 });
+		expect(moved).toEqual([]); // the mutator was NEVER called past the deadline
+	});
+
+	it("time budget: a future deadline applies the whole set (no truncation)", async () => {
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
+			if (String(u).endsWith("/files/move_v2")) {
+				const b = JSON.parse(init.body);
+				return new Response(JSON.stringify({ metadata: { path_display: b.to_path } }), { status: 200 });
+			}
+			throw new Error(String(u));
+		}));
+		const r = await operateFull(tokenEnv(), { handles: ["/a", "/b"], action: "move", dest: "/Archive", apply: true, deadline: Date.now() + 60_000 });
+		expect(r).toMatchObject({ applied: 2, of: 2 });
+		expect(r.truncated).toBeUndefined();
+	});
 });
 
 describe("transformFull — merge / extract composed through writeFull's firewall", () => {

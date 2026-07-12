@@ -1,5 +1,5 @@
 import { type Fn, type RtEnv, fail, ok } from "../registry";
-import { type BlobRef, fetchText, getBlob, isHttpUrl, noCacheOn4xx, noCacheOnMutation, pool, putBlob, readBodyBytes, storeRefUuid } from "./_util";
+import { type BlobRef, FANOUT_BUDGET_MS, fetchText, getBlob, isHttpUrl, noCacheOn4xx, noCacheOnMutation, pool, putBlob, readBodyBytes, storeRefUuid } from "./_util";
 import { smartFetch } from "../proxy";
 
 // Fetch many URLs concurrently through the residential proxy (direct fallback).
@@ -99,8 +99,11 @@ export const batch_fetch: Fn = {
 		if (!Number.isInteger(maxBytes) || maxBytes < 1) return fail("`max_bytes` must be a positive integer.");
 		if (as === "url" && !env.R2) return fail('`as: "url"` needs the R2 store (bucket binding missing).');
 
-		const results: UrlResult[] = await pool(urls, CONCURRENCY, async (raw): Promise<UrlResult> => {
-			const url = typeof raw === "string" ? raw : "";
+		// Time budget: stop firing new fetches near the hard deadline so a wide batch
+		// returns the URLs it managed instead of the whole run being killed with none.
+		const deadline = Date.now() + FANOUT_BUDGET_MS;
+		const raw = await pool(urls, CONCURRENCY, async (rawUrl): Promise<UrlResult> => {
+			const url = typeof rawUrl === "string" ? rawUrl : "";
 			if (!isHttpUrl(url)) return { url, error: "not an absolute http(s) URL." };
 			try {
 				if (as === "url") {
@@ -116,10 +119,15 @@ export const batch_fetch: Fn = {
 			} catch (e) {
 				return { url, error: String((e as Error)?.message ?? e) };
 			}
-		});
+		}, deadline);
+		// Un-fetched URLs (time budget hit) come back undefined; surface each as a
+		// skipped result so the returned array stays 1:1 with `urls` and the caller
+		// sees exactly which ones didn't run.
+		const results: UrlResult[] = raw.map((r, i) => r ?? { url: typeof urls[i] === "string" ? (urls[i] as string) : "", error: "[timeout] skipped: batch_fetch time budget reached before this URL was fetched." });
 
 		// Worst status across the batch decides cacheability — a per-URL `error`
-		// (network blip) counts as a 5xx so one bad URL never poisons the cache.
+		// (network blip) counts as a 5xx so one bad URL never poisons the cache. A
+		// truncated run is likewise non-cacheable (its partials shouldn't be frozen).
 		const worst = results.reduce((m, r) => Math.max(m, r.error !== undefined ? 599 : r.status ?? 0), 0);
 		return noCacheOnMutation(noCacheOn4xx(ok(JSON.stringify(results, null, 2)), worst), method);
 	},

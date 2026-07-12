@@ -382,4 +382,18 @@ describe("pool (bounded concurrency)", () => {
 		expect(await pool([], 4, async () => 1)).toEqual([]);
 		await expect(pool([1], 1, async () => { throw new Error("boom"); })).rejects.toThrow("boom");
 	});
+	it("stops claiming work past the deadline, leaving un-run slots undefined (dense)", async () => {
+		let ran = 0;
+		const out = await pool([1, 2, 3, 4, 5], 2, async (n) => { ran++; return n * 10; }, Date.now() - 1);
+		expect(ran).toBe(0); // deadline already elapsed → nothing dispatched
+		expect(out).toHaveLength(5);
+		// Dense array (not sparse): every index is present and undefined, so a caller's
+		// .map/.filter sees them (a hole would be silently skipped).
+		expect(out.every((v) => v === undefined)).toBe(true);
+		expect(Object.keys(out)).toHaveLength(5);
+	});
+	it("runs everything when the deadline is in the future", async () => {
+		const out = await pool([1, 2, 3], 2, async (n) => n * 10, Date.now() + 60_000);
+		expect(out).toEqual([10, 20, 30]);
+	});
 });

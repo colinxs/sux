@@ -1,7 +1,7 @@
 import { hasAI, llm } from "../ai";
 import { normalizeArgs, normalizeText } from "../normalize";
 import { type Fn, fail, ok } from "../registry";
-import { pool } from "./_util";
+import { FANOUT_BUDGET_MS, pool } from "./_util";
 
 // Map-reduce: MAP one sux tool over many argument sets, then optionally REDUCE
 // the successful results into one value. FUNCTIONS is imported dynamically
@@ -183,7 +183,11 @@ export const batch: Fn = {
 		}
 		const target: Fn = found;
 
-		const results: ItemResult[] = await pool(calls, CONCURRENCY, async (callArgs): Promise<ItemResult> => {
+		// Time budget: stop dispatching new calls near the hard deadline and return the
+		// partials we have (marked truncated) instead of losing the whole batch when
+		// index.ts's FN_DEADLINE_MS kills a long run with zero output.
+		const deadline = Date.now() + FANOUT_BUDGET_MS;
+		const raw = await pool(calls, CONCURRENCY, async (callArgs): Promise<ItemResult> => {
 			if (callArgs == null || typeof callArgs !== "object" || Array.isArray(callArgs)) {
 				return { ok: false, error: "call args must be an object." };
 			}
@@ -196,7 +200,12 @@ export const batch: Fn = {
 			} catch (e) {
 				return { ok: false, error: String((e as Error)?.message ?? e) };
 			}
-		});
+		}, deadline);
+		// Un-run slots (time budget hit) come back undefined; surface them as skipped
+		// items so reduce ignores them (ok:false) and the caller sees what didn't run.
+		const truncated = raw.some((r) => r === undefined);
+		const results: ItemResult[] = raw.map((r) => r ?? { ok: false, error: "[timeout] skipped: batch time budget reached before this call ran." });
+		const trunc = truncated ? { truncated: true, reason: "time" } : {};
 
 		// TOOL-based reduce (overrides the text reduces): run a reducer once over the
 		// mapped ok outputs, with {{items}} = their texts (and {{items.path}} plucking
@@ -214,7 +223,7 @@ export const batch: Fn = {
 				const text = rr.content?.[0]?.text ?? "";
 				if (rr.isError) return fail(`reduce_with '${rTool}' failed: ${text}`);
 				const reduced = rFound.raw ? text : normalizeText(text);
-				const payload = includeResults ? { tool: toolName, results, reduced, reduced_with: rTool } : { tool: toolName, reduced, reduced_with: rTool };
+				const payload = includeResults ? { tool: toolName, results, reduced, reduced_with: rTool, ...trunc } : { tool: toolName, reduced, reduced_with: rTool, ...trunc };
 				return ok(JSON.stringify(payload, null, 2));
 			} catch (e) {
 				return fail(`reduce_with '${rTool}' failed: ${String((e as Error)?.message ?? e)}`);
@@ -223,7 +232,7 @@ export const batch: Fn = {
 
 		// Reduce operates only over ok results; failed items stay in `results`
 		// but are skipped here.
-		if (reduce === "none") return ok(JSON.stringify({ tool: toolName, results }, null, 2));
+		if (reduce === "none") return ok(JSON.stringify({ tool: toolName, results, ...trunc }, null, 2));
 
 		const okText = results.filter((r) => r?.ok && r.text).map((r) => r.text as string);
 		const joined = okText.join(SEP);
@@ -248,7 +257,7 @@ export const batch: Fn = {
 			reduced = joined;
 		}
 
-		const payload = includeResults ? { tool: toolName, results, reduced } : { tool: toolName, reduced };
+		const payload = includeResults ? { tool: toolName, results, reduced, ...trunc } : { tool: toolName, reduced, ...trunc };
 		return ok(JSON.stringify(payload, null, 2));
 	},
 };

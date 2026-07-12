@@ -1,6 +1,6 @@
 import { DROPBOX_CONTENT as CONTENT, type DropboxScope, dropboxFetch, dropboxRpc, headerSafeJson, MAX_INLINE_BYTES, scopeConfigured, TEXT_EXT } from "./_dropbox-core";
 import { type RtEnv } from "../registry";
-import { fromB64, toB64 } from "./_util";
+import { FANOUT_BUDGET_MS, fromB64, toB64 } from "./_util";
 import { pdf } from "./pdf";
 
 // Full-Dropbox (Mode B) client — READ + SEARCH over the WHOLE Dropbox, behind a
@@ -194,7 +194,7 @@ export async function moveFull(env: RtEnv, opts: { from: string; to: string; dry
 // lives in transformFull below — same write firewall, different set-building.
 export async function operateFull(
 	env: RtEnv,
-	opts: { find?: { query?: string; path_prefix?: string; ext?: string[] }; handles?: string[]; action: "move" | "delete"; dest?: string; apply: boolean; confirm?: boolean; max?: number },
+	opts: { find?: { query?: string; path_prefix?: string; ext?: string[] }; handles?: string[]; action: "move" | "delete"; dest?: string; apply: boolean; confirm?: boolean; max?: number; deadline?: number },
 ): Promise<Record<string, unknown>> {
 	const max = Math.min(500, Math.max(1, Number(opts.max) || 100));
 	let paths: string[] = [];
@@ -229,8 +229,19 @@ export async function operateFull(
 		};
 	}
 	if (opts.action === "delete" && opts.confirm !== true) throw new Error("operate delete apply requires confirm:true.");
+	// Time budget: this loop mutates whole-Dropbox one path at a time; a wide set can
+	// exceed index.ts's 60s FN_DEADLINE_MS, which would kill the run AFTER an unknown
+	// subset already committed and report only a timeout. Stop claiming new paths at
+	// the soft budget and return applied-so-far, flagged, so the caller knows the set
+	// was NOT fully applied. Absolute-timestamp `deadline` is injectable for tests.
+	const deadline = opts.deadline ?? Date.now() + FANOUT_BUDGET_MS;
+	let timedOut = false;
 	const results: Array<Record<string, unknown>> = [];
 	for (const p of paths) {
+		if (Date.now() >= deadline) {
+			timedOut = true;
+			break;
+		}
 		try {
 			if (opts.action === "move") {
 				const base = p.split("/").filter(Boolean).pop() ?? ""; // robust basename — never empty for a normalized path
@@ -242,7 +253,19 @@ export async function operateFull(
 			results.push({ path: p, error: String((e as Error)?.message ?? e).slice(0, 150) });
 		}
 	}
-	return { applied: results.filter((r) => r.ok).length, of: paths.length, action: opts.action, ...(truncated ? { truncated: true, cap: max } : {}), results };
+	// Distinct truncation causes: `truncated` (input side — more matches than `max`
+	// fetched) vs `timedOut` (output side — the time budget stopped the apply mid-set).
+	const trunc: Record<string, unknown> = {};
+	if (truncated) {
+		trunc.truncated = true;
+		trunc.cap = max;
+	}
+	if (timedOut) {
+		trunc.truncated = true;
+		trunc.reason = "time";
+		trunc.skipped = paths.length - results.length;
+	}
+	return { applied: results.filter((r) => r.ok).length, of: paths.length, action: opts.action, ...trunc, results };
 }
 
 /** Build write bytes from either utf-8 text or base64 (for the tool layer). */

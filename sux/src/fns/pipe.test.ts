@@ -34,6 +34,7 @@ vi.mock("./index", () => ({
 }));
 
 import { batch } from "./batch";
+import { FANOUT_BUDGET_MS } from "./_util";
 import { pipe } from "./pipe";
 
 const out = async (steps: any[]) => JSON.parse((await pipe.run({} as any, { steps })).content[0].text);
@@ -185,5 +186,28 @@ describe("pipe", () => {
 	it("is itself raw (like batch) so index.ts leaves composed byte-exact data alone", () => {
 		expect(pipe.raw).toBe(true);
 		expect(batch.raw).toBe(true);
+	});
+
+	it("stops at the time budget and returns the partial chain, not zero output", async () => {
+		// Drive Date.now: call 1 (deadline calc) and call 2 (i=0 check) are on-time so
+		// step 0 runs; call 3 (i=1 check) is past the budget → truncate before step 1.
+		let c = 0;
+		const spy = vi.spyOn(Date, "now").mockImplementation(() => {
+			c++;
+			return c <= 2 ? 1_000_000 : 1_000_000 + FANOUT_BUDGET_MS + 1;
+		});
+		try {
+			const r = await out([
+				{ tool: "echo", args: { text: "hello" } },
+				{ tool: "upper", args: { text: "{{prev}}" } },
+			]);
+			expect(r.truncated).toBe(true);
+			expect(r.reason).toBe("time");
+			expect(r.stopped_at).toBe(1);
+			expect(r.output).toBe("hello"); // the last good step's full output is preserved
+			expect(r.steps).toHaveLength(1); // only step 0 ran
+		} finally {
+			spy.mockRestore();
+		}
 	});
 });

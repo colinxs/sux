@@ -41,19 +41,34 @@ export async function renderHtml(env: RtEnv, url: string, opts?: { solve?: boole
 	return r.content?.[0]?.text ?? "";
 }
 
+// Fan-out time budget. A fn.run is killed by index.ts's FN_DEADLINE_MS (60s) with
+// ZERO partials returned — so a wide batch/pipe/batch_fetch that runs long yields
+// nothing. Each fan-out site stops DISPATCHING new work at this soft budget (< the
+// 60s hard deadline, leaving headroom to reduce + serialize the collected partials)
+// and returns what it has, flagged truncated. Kept here so the sites share one number.
+export const FANOUT_BUDGET_MS = 50_000;
+
 /**
  * Run `fn` over `items` with bounded concurrency, preserving input order in the
  * result. Index-claiming worker pool (was hand-rolled identically in batch and
  * batch_fetch). `fn` should handle its own per-item errors — a throw rejects the
  * whole pool.
+ *
+ * When `deadline` (an absolute epoch-ms timestamp) is given, workers stop CLAIMING
+ * new items once `Date.now() >= deadline` — items already in flight finish, un-run
+ * slots stay `undefined`. The result array is DENSE (pre-filled), so the caller can
+ * detect skipped items with `=== undefined` (a sparse-array `.map`/`.filter` would
+ * silently skip holes) and report a partial/truncated result instead of the whole
+ * run being abandoned at the hard deadline.
  */
-export async function pool<T, R>(items: T[], concurrency: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
-	const results = new Array<R>(items.length);
+export async function pool<T, R>(items: T[], concurrency: number, fn: (item: T, index: number) => Promise<R>, deadline?: number): Promise<R[]> {
+	const results = new Array<R>(items.length).fill(undefined as R);
 	let next = 0;
 	const workers = Math.min(Math.max(1, concurrency), Math.max(1, items.length));
 	await Promise.all(
 		Array.from({ length: workers }, async () => {
 			for (;;) {
+				if (deadline !== undefined && Date.now() >= deadline) return;
 				const i = next++;
 				if (i >= items.length) return;
 				results[i] = await fn(items[i], i);

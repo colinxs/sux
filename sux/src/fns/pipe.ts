@@ -1,6 +1,6 @@
 import { normalizeArgs, normalizeText } from "../normalize";
 import { type Fn, fail, ok } from "../registry";
-import { clamp } from "./_util";
+import { clamp, FANOUT_BUDGET_MS } from "./_util";
 
 // Compose: chain sux tools so each step's text output feeds the next step's args
 // — the server-side derivation graph that pairs with the content-addressed store.
@@ -121,7 +121,14 @@ export const pipe: Fn = {
 
 		const results: StepResult[] = [];
 		let prev = "";
+		// Time budget: if a long pipeline nears index.ts's hard deadline, stop before
+		// the next step and return the partial chain (with the last good output) rather
+		// than letting FN_DEADLINE_MS kill the run with nothing.
+		const deadline = Date.now() + FANOUT_BUDGET_MS;
 		for (let i = 0; i < steps.length; i++) {
+			if (Date.now() >= deadline) {
+				return ok(JSON.stringify({ steps: results, output: prev === "" ? null : prev, truncated: true, reason: "time", stopped_at: i }, null, 2));
+			}
 			const step = steps[i];
 			const toolName = typeof step?.tool === "string" ? step.tool.trim() : "";
 			if (!toolName) return fail(`steps[${i}] is missing a tool name.`);

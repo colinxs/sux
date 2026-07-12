@@ -34,20 +34,43 @@ Algebra substrate, un-parked verb program, uw directory, unused per-store scrape
 - **RETIRE the mac node (data-grounded):** it was 502 all session (offline SPOF, 0/6 sites). cf-residential cleanly serves Amazon(search URLs, not homepage)/Lowe's/Ace/Walmart(catalog reads). Costco = flaky soft-block (retry→structured fn). **Home Depot = Akamai hard "Access Denied" — the one cf can't crack.** Policy: cf-first everywhere; escalation rung for HD/Costco = **paid residential-unlocker API** (Bright Data/Zyte/Oxylabs) on cf-failure, NOT a home Mac. Walmart: cf for reads only (PerimeterX blocks cart/interactive). One confirmation test before physical decommission (bring mac up, render HD backend:mac+solve) — but swap the ladder's mac rung for a paid unlocker regardless.
 - **Design-review round 2 — the unifying gap (C1/C2 HIGH):** batch/pipe/operateFull have COUNT caps but NO time budget → on the 60s deadline `withDeadline` abandons the run with ZERO partials (and operateFull can silently commit an unknown subset of Mode-B mutations then report only a timeout). Cheap fix (~20 lines/site): a `Date.now()-started` check in each fan-out loop → stop dispatching ~50s, return collected partials `{truncated:true, reason:"time"}`. Defer the full env._budget ledger + Workflows until a real caller strains them. → folds into chunk 4 (fan-in/out) — the one primitive that also fixes the subrequest-ceiling gap.
 
-## ▶ RESUME HERE (session handoff, 2026-07-11)
-**State:** `main` @ `37de621`, deployed (`d5c76e20`), **1417 tests green**. Chunk-1 core LIVE (#45 files-vault, #46 infra, #47 mail/caldav merged+deployed). Working tree clean.
+## ▶ RESUME HERE (session handoff, 2026-07-12 — full branch/workflow reconciliation)
+**State:** `main` @ `650828c` (**#44 merged** — `surface` field + annotations + `sux` root verb, chunk-2 foundation). **1428 tests green**, type-check + docs/index in sync. Chunk-1 core LIVE (#44/#45/#46/#47). Verify #44's deploy went green.
 
-**Open PRs (chunk-1 remnants):**
-- **#44 `fix/registry-surface-selfdescribe`** — the `surface` field + tool annotations + `sux` self-describe root verb. FOUNDATIONAL for chunk 2. Action: `git fetch` its branch, rebase onto `main`, resolve (conflicts are docs/index regen), merge+deploy. Keep.
-- **#43 `fix/render-unify-secfresh`** — RECONSIDER given the retire-mac verdict. Keep only the security bit (render_server.py HMAC ts-freshness). The "unify mac paths" is low-value now; the real render work = **cf-first ladder + paid-residential-unlocker rung** (Bright Data/Zyte) for Home Depot's Akamai wall, mac demoted to dormant option. Do that as its own render chunk, not this PR as-is. Likely close #43, salvage the ts-freshness commit.
+> **Per-session chunk briefs live in [`chunks/`](chunks/README.md)** — one
+> self-contained file per branch/session, sized to load into a fresh context with
+> `CLAUDE.md` + memory. The ledger + forward plan below is the map; a chunk file is
+> the territory for one session. Start a chunk: checkout its branch, read its one file, go.
 
-**Next actions (ultracode, maximally parallel, serial chunks per this doc):**
-1. Land #44 (rebase+merge+deploy) — unblocks the front door.
-2. **Chunk 2** front-door + one connector (needs #44's `surface` field): consolidate shop/search/fetch/research/media behind ~12 front verbs + `fn` escape + `sux` self-describe; retire mail/vault/files namespace connectors (keep routes dormant).
-3. **Chunk 3** smart-guards generalized (stage-by-default + `!`/force + sentiment/typo, all irreversible verbs).
-4. **Chunk 4** stateless-learning substrate (learned-prefs KV + vault write-hooks + embeddings/kNN via Workers AI) — FOLD IN the C1/C2 fan-out time-budget fix (batch/pipe/operateFull → `Date.now()` elapsed check → partial return `{truncated:true}`).
-5. **Chunk 5** `mail_triage` bot (cron, autonomy-on/reversible-only/confidence-gated/logged+undo, digest→daily note).
-6. **Chunk 6** self-improvement loop (recurring review → auto-deploy fixes/refactors/cleanup, PR features, PR the loop itself).
-+ render chunk: cf-first ladder + paid-unlocker rung; retire mac node.
+**In flight this session:** branch `fix/fanout-time-budget` (uncommitted, green) — the C1/C2 fan-out time-budget fix, **3 of 4 sites done**: `pool()` takes a `deadline`, `batch`/`batch_fetch`/`pipe` stop dispatching at `FANOUT_BUDGET_MS` (50s < 60s hard deadline) and return `{truncated:true, reason:"time"}`. **GAP: `operateFull` (the scariest site — silent partial Mode-B mutations) still has an unbounded apply for-loop.** Finish that site, then commit + PR (this is chunk 00).
+
+### Branch ledger (reconciled against `main` @ 650828c)
+**Merged / dead — safe to delete (local + remote):** `fix/files-vault` `fix/infra-resilience` `fix/mail-caldav` `fix/registry-surface-selfdescribe` `fix/retail-render` `fix/parsing` `fix/resource` `fix/security2` `feat/digital-life-spine` `feat/fastmail-integration` `feat/int-sweep` `feat/mcp-gate` `feat/obsidian-store-ops` `feat/sux-vault-plugin` `docs/knowledge-core` `docs/unpark-verbs-plan` `claude/sux-mychart-*`; all `worktree-wf_*` (stale #32 workflow worktrees); local aliases `as33`(=ultra-sweep) `as38`(=files-operate) `as39`(=obsidian-search) `as40`(=amazon-cf) `pr31` `pr46` `alg37`(=algebra) `uw36`(=uw-dir).
+
+**Superseded — content already on `main` via a DIFFERENT patch (verified by `git cherry` + symbol-on-main grep) — close PR, delete branch:**
+- **`chore/ultra-sweep`** — the earlier plan called this a 17-commit "salvage pile"; a `git cherry` + symbol audit shows **all 17 commits' content is already on `main`** (mail reply/forward, FUTURERELEASE send + list/cancel, `mail_move`, HTML bodies, jmap fixes, ebay self-heal, csv escape, recall-remote, citekeys, files Mode-B reject, scrape clamp, `batch_fetch` OOM bound, `_oauth`/`_dropbox-core`/`errMsg` refactors, `localshop.ts` deletion). **Nothing to salvage.** The `batch_fetch` OOM commit was the supposed overlap with `fix/fanout-time-budget` — it's already merged, so there is no reconcile.
+- **`feat/amazon-cf-fallback`** — all 5 commits `-` in `git cherry` (merged; `main` is already partly cf-first via `fix/retail-render`). See the render chunk.
+- `feat/files-operate-transform` — `transformFull` + `files_transform` tool already on `main` (`_dropbox-full.ts` + `files-mcp.ts`).
+- `feat/obsidian-structured-search` — `vault_query`/`vault_patch`/JsonLogic already on `main` (`vault-graph.ts` + `vault-mcp.ts`).
+
+**Pruned as cruft (per §"Pruned as cruft") — close:** `docs/unpark-algebra-plan`, `docs/uw-directory-fn-plan`.
+
+**LIVE unmerged work (`git cherry`-confirmed genuinely new):**
+- **`feat/front-door`** (3 commits, all `+`, 0 behind `main`) — ~13 front verbs + `fn` escape (leaves hidden but reachable) + two hardening fixes (weighted-cost through `fn`; Unicode-obfuscation bypass). `main`'s registry `surface` field is dormant metadata until this lands. **→ chunk 01.**
+- **`fix/render-unify-secfresh`** (#43, both commits `+`) — only `b363f00` (HMAC ts-freshness, replay block) is worth keeping; the mac-shared-client refactor is low-value post-retire-mac. **→ salvaged inside the render chunk (06)**, then close #43.
+
+**Saved workflows (superseded, do NOT re-run as-is):** `ground-finish-it-all` / `finish-remaining-sux-work` / `ground-backlog` — premise (algebra substrate + un-parked verbs + uw dir + the deferred obsidian/files legs) was **reversed**: now either *pruned as cruft* or *already shipped*. Provenance only. The `ultra-sweep` workflow's output = the now-superseded `chore/ultra-sweep` branch.
+
+> **Note on the sins-of-omission list (line 28):** "bulk-work > 60s → Queues/Workflows" is deliberately **deferred**, not orphaned — the fanout-time-budget chunk ships the interim partial-return; the full Queues/Workflows primitive is built inside the learning-substrate chunk only *if* a real caller strains the 60s deadline.
+
+### Forward plan (per-session chunks live in [`chunks/`](chunks/README.md); land green + deploy before the next)
+- **00 fanout-time-budget** (in flight): add the deadline check to `operateFull`'s apply loop (applied-so-far + `{truncated:true}`, never abandon a mutation-set silently). Finish, commit, PR, merge+deploy.
+- **01 front door** *(independent — can run in parallel)*: land `feat/front-door`; retire mail/vault/files namespace connectors (routes stay dormant). Establishes the `surface` field as load-bearing.
+- **02 smart-guards**: **generalize the EXISTING `stage.ts` `staged()`/`enforceGates` substrate** to default-on + annotation-driven across all irreversible/outward verbs; add agent-side conscience lint. (Not greenfield — the gate already exists.)
+- **03 learning-substrate**: learned-prefs KV + vault write-hooks + embeddings/kNN via Workers AI; extend `recall`. Owns the deferred Queues/Workflows decision.
+- **04 mail_triage bot**: cron, autonomy-on/reversible-only/confidence-gated/logged+undo, digest→daily note.
+- **05 self-improvement loop**: recurring review → auto-deploy fixes/refactors/cleanup, PR features, PR the loop itself.
+- **06 render cf-first ladder** *(independent — can run in parallel)*: finish the cf-first inversion for all retailers (amazon already is), add the paid-unlocker rung for HD/Costco, salvage `b363f00`, retire mac to dormant.
+- **07 branch cleanup**: delete the merged/superseded/cruft branches (content-verified), after the render chunk salvages `b363f00`.
 
 Config locked: daily-note channel · all 6 chunks · smart model routing (rules→Workers-AI embeddings→frontier) · merge+deploy fixes, PR features+security · keep main green, no cred/secret touching unattended.
