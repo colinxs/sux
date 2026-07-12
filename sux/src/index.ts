@@ -201,9 +201,13 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 		// Short per-call correlation id, threaded onto env so every downstream
 		// smartFetch of this tools/call can tag its egress-audit Loki line with the
 		// same reqId — grouping a call's outbound hops in the Loki stream without
-		// touching the ~20 smartFetch call sites. Inert unless Grafana is configured
-		// (shipEgress no-ops otherwise).
-		env._egress = { ctx, reqId: crypto.randomUUID().slice(0, 8) };
+		// touching the ~20 smartFetch call sites. Threaded via a PER-REQUEST env clone
+		// — a shallow copy where bindings (KV/R2/…) share the one env by reference and
+		// only `_egress` is per-request — so two concurrent tools/call requests in the
+		// same isolate can't clobber each other's reqId or call ctx.waitUntil on the
+		// other's (possibly completed) context, the bug of parking it on the shared
+		// env. Inert unless Grafana is configured (shipEgress no-ops otherwise).
+		const rtEnv: RtEnv = { ...env, _egress: { ctx, reqId: crypto.randomUUID().slice(0, 8) } };
 		const key = fn.cacheable ? await cacheKey(summarize ? `${name}::summarize` : name, args) : null;
 		// The close path for one successful run: normalize the text output, optionally
 		// summarize it, then schedule the (single) cache write and return the cleaned
@@ -224,11 +228,11 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 			// AI when the caller asked and the result is worth it. Best-effort — on AI
 			// failure or when unavailable, the raw result is returned unchanged. The
 			// summarized result is what gets cached (under the ::summarize key namespace).
-			if (summarize && !fn.raw && !out.isError && Array.isArray(out.content) && hasAI(env)) {
+			if (summarize && !fn.raw && !out.isError && Array.isArray(out.content) && hasAI(rtEnv)) {
 				const joined = out.content.filter((p) => p?.type === "text" && typeof p.text === "string").map((p) => p.text).join("\n");
 				if (joined.length >= SUMMARIZE_MIN_CHARS) {
 					try {
-						const s = await llm(env, "Summarize this tool result as concisely as possible while preserving key facts, names, numbers, dates, and URLs. Output only the summary — no preamble.", joined.slice(0, 24_000), 512);
+						const s = await llm(rtEnv, "Summarize this tool result as concisely as possible while preserving key facts, names, numbers, dates, and URLs. Output only the summary — no preamble.", joined.slice(0, 24_000), 512);
 						if (s.trim()) out = { content: [{ type: "text", text: s.trim() }], ...(out.noCache ? { noCache: true } : {}) };
 					} catch (e) {
 						console.warn(`sux summarize failed for '${name}', returning raw: ${String((e as Error).message ?? e)}`);
@@ -246,11 +250,11 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 			// run result, so coalesced callers can't poison each other's cache decision.
 			// The KV write happens off the response path via ctx.waitUntil, and fn.ttl
 			// (when set) overrides the global cache lifetime for this fn.
-			return deferCacheWrite(env.OAUTH_KV, ctx, key, out, fn.ttl);
+			return deferCacheWrite(rtEnv.OAUTH_KV, ctx, key, out, fn.ttl);
 		};
 		// Each fn.run is wrapped in a hard per-fn deadline so a hung fn resolves to a
 		// clean isError result instead of stalling the isolate (and the group).
-		const runGuarded = () => withDeadline(name, FN_DEADLINE_MS, fn.run(env, args));
+		const runGuarded = () => withDeadline(name, FN_DEADLINE_MS, fn.run(rtEnv, args));
 		// One expensive run plus its close path. Coalesce concurrent same-key runs
 		// (cacheable fns only, keyed by the content-addressed cache key) so a burst of
 		// identical calls — or a foreground miss racing a background stale refresh —

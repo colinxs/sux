@@ -9,10 +9,12 @@
 import { githubAuthHeaders } from "./github-auth";
 import { type EgressEvent, shipEgress } from "./grafana";
 
-// Per-tools/call egress-audit context, set by handleRpc (index.ts) on the env
-// before the fn runs so smartFetch — reached through ~20 fns without threading a
-// new positional arg — can ship one correlated Loki line per outbound fetch
-// decision. Absent outside a tools/call (or when Grafana is unconfigured) → no-op.
+// Per-tools/call egress-audit context. handleRpc (index.ts) hangs it off a
+// PER-REQUEST env clone before the fn runs, so smartFetch — reached through ~20
+// fns without threading a new positional arg — can ship one correlated Loki line
+// per outbound fetch decision. Per-request (not parked on the shared isolate env)
+// so concurrent tools/call requests don't clobber each other's reqId/ctx. Absent
+// outside a tools/call (or when Grafana is unconfigured) → no-op.
 export type EgressContext = { ctx: { waitUntil(p: Promise<unknown>): void }; reqId: string };
 
 export type TailscaleEnv = {
@@ -31,8 +33,9 @@ export type TailscaleEnv = {
 	GRAFANA_LOKI_URL?: string;
 	GRAFANA_LOKI_USER?: string;
 	GRAFANA_LOKI_TOKEN?: string;
-	// Set per tools/call by handleRpc; carries the correlation id + ctx so the
-	// egress audit can tag and fire-and-forget each outbound fetch decision.
+	// Set per tools/call by handleRpc on a per-request env clone; carries the
+	// correlation id + ctx so the egress audit can tag and fire-and-forget each
+	// outbound fetch decision without racing a concurrent request's context.
 	_egress?: EgressContext;
 };
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { RtEnv } from "./registry";
+import type { Fn, RtEnv } from "./registry";
 import { cacheKey, extractRpcFromText, type JsonRpc } from "./mcp-util";
+import { FUNCTIONS } from "./fns";
 import { handleRpc, oauthErrorResponse } from "./index";
 
 // End-to-end coverage of the REAL tools/call dispatch chain in index.ts
@@ -437,5 +438,50 @@ describe("summarize-before-return meta-arg", () => {
 		const bigData = JSON.stringify({ note: "y".repeat(600) });
 		const out = await callRpc(env, ctx, { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "json", arguments: { data: bigData, to: "yaml", summarize: true } } });
 		expect(out.result.content[0].text).toContain("yyyy"); // unchanged
+	});
+
+	// Adversarial: the egress-context bleed. Two concurrent tools/call requests share
+	// ONE isolate env; the per-call reqId/ctx must be threaded per-request, not parked
+	// on the shared env (where the second request would overwrite the first's).
+	it("threads egress per-request — concurrent calls keep distinct reqIds, shared env untouched", async () => {
+		// Probe fn: reads its env's reqId, holds at a barrier until BOTH requests are
+		// concurrently inside run() (the exact window a shared-env _egress would clobber),
+		// then re-reads. Per-request threading ⇒ the reqId is stable across the barrier
+		// and distinct between the two requests; the shared env is never mutated.
+		let release!: () => void;
+		const barrier = new Promise<void>((r) => (release = r));
+		let inRun = 0;
+		const seen: Array<{ before: unknown; after: unknown }> = [];
+		const probe: Fn = {
+			name: "__egress_probe",
+			cost: 0,
+			description: "test probe",
+			inputSchema: { type: "object", additionalProperties: true, properties: {} },
+			cacheable: false,
+			run: async (env: RtEnv) => {
+				const before = env._egress?.reqId;
+				if (++inRun === 2) release();
+				await barrier;
+				const after = env._egress?.reqId;
+				seen.push({ before, after });
+				return { content: [{ type: "text" as const, text: String(after) }] };
+			},
+		};
+		FUNCTIONS.push(probe);
+		try {
+			const sharedEnv = makeEnv(makeKv().kv); // ONE env object, both requests
+			const { ctx } = makeCtx();
+			const fire = (id: number) => callRpc(sharedEnv, ctx, { jsonrpc: "2.0", id, method: "tools/call", params: { name: "__egress_probe", arguments: {} } });
+			await Promise.all([fire(1), fire(2)]);
+			expect(seen).toHaveLength(2);
+			for (const s of seen) {
+				expect(typeof s.after).toBe("string");
+				expect(s.after).toBe(s.before); // no mid-run clobber from the sibling request
+			}
+			expect(seen[0].after).not.toBe(seen[1].after); // distinct correlation ids — no bleed
+			expect((sharedEnv as unknown as { _egress?: unknown })._egress).toBeUndefined(); // shared env never mutated
+		} finally {
+			FUNCTIONS.splice(FUNCTIONS.indexOf(probe), 1);
+		}
 	});
 });
