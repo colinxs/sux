@@ -1107,7 +1107,7 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 /** Move messages into a target mailbox — REPLACES the mailbox set (a real move, not an add). */
 export async function moveMessages(env: RtEnv, ids: unknown, target: string): Promise<ToolResult> {
 	const list = Array.isArray(ids) ? ids.map(String) : [];
-	if (!list.length || !target) return failWith("bad_input", "provide ids[] and a target mailbox.");
+	if (!list.length || !target) return failWith("bad_input", "mail_move requires a non-empty `ids` array and a `mailbox` (role like inbox/archive/junk/trash, a display name, or a raw id) — not `mailboxId` or `to`.");
 	try {
 		const map = await mailboxMap(env);
 		const targetId = resolveMailboxId(map, target);
@@ -1142,7 +1142,7 @@ function keywordFor(label: string): string {
 export async function labelMessages(env: RtEnv, ids: unknown, label: string, add: boolean): Promise<ToolResult> {
 	const list = Array.isArray(ids) ? ids.map(String) : [];
 	const keyword = keywordFor(label);
-	if (!list.length || !label) return failWith("bad_input", "provide ids[] and a label.");
+	if (!list.length || !label) return failWith("bad_input", "requires a non-empty `ids` array and a `label`.");
 	try {
 		const update: Record<string, unknown> = {};
 		for (const id of list) update[id] = { [`keywords/${keyword}`]: add ? true : null };

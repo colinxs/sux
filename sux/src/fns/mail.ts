@@ -33,7 +33,7 @@ export const MAIL_ACTIONS: Record<string, Dispatch> = {
 export const mail: Fn = namespaceFn({
 	name: "mail",
 	description:
-		"Fastmail email through the one /mcp connector. {action, ...args}: search·read·thread·mailboxes·identities·draft·send·schedule·scheduled·unschedule·upload·archive·move·quota·vacation_get·vacation_set·masked_list·masked_create·masked_disable·masked_enable·masked_delete. Each action's remaining args are that mail_* tool's own — e.g. mail({action:'send', to, subject, text}). send STAGES a preview by default (re-call with commit_token, or force:true to send in one shot). Calendars/tasks are the 'calendar' verb; contacts the 'contact' verb.",
+		"Fastmail email through the one /mcp connector. {action, ...args}: search·read·thread·mailboxes·identities·draft·send·schedule·scheduled·unschedule·upload·archive·move·quota·vacation_get·vacation_set·masked_list·masked_create·masked_disable·masked_enable·masked_delete. Each action's remaining args are that mail_* tool's own — e.g. mail({action:'send', to, subject, text}), mail({action:'move', ids:['msg1'], mailbox:'junk'}) — the target arg is `mailbox` (role like inbox/archive/junk/trash, a display name, or a raw id), not `mailboxId`/`to`. send STAGES a preview by default (re-call with commit_token, or force:true to send in one shot). Calendars/tasks are the 'calendar' verb; contacts the 'contact' verb.",
 	tools: () => MAIL_TOOLS,
 	actions: MAIL_ACTIONS,
 });

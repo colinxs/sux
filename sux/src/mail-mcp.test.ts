@@ -341,6 +341,16 @@ describe("mail_* ergonomic tools", () => {
 		expect(out).toMatchObject({ moved: 1, to: "archive" });
 	});
 
+	it("mail_move's bad_input error names the real `mailbox` param, not a guessed one (live bug report 2026-07-13)", async () => {
+		const wrongParams = [{ ids: ["e1"], mailboxId: "P5-" }, { ids: ["e1"], to: "P5-" }, { ids: [] }];
+		for (const args of wrongParams) {
+			const r = await tool("mail_move").run(env(), args);
+			expect(r.isError).toBe(true);
+			expect(r.content[0].text).toMatch(/`mailbox`/);
+			expect(r.content[0].text).not.toMatch(/target mailbox\.$/);
+		}
+	});
+
 	it("mail_move REPLACES the mailbox set (a real move, not an additive copy-into)", async () => {
 		installFetch();
 		lastEmailSet = null;
