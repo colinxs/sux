@@ -11,7 +11,7 @@ related: ["[[token-setup]]", "[[keys]]", "[[digital-life-spine]]", "[[connector-
 
 # Use sux from your phone
 
-Everything runs on one OAuth-gated Cloudflare Worker (`https://sux.colinxs.workers.dev`).
+Everything runs on one OAuth-gated Cloudflare Worker (`https://suxos.net`).
 To use it from the **claude.ai app on your phone**, add the **one** sux connector once. It
 logs in with your GitHub account (the same gate as everywhere else). Vault, mail, and files
 all live behind that single front door — there are no separate per-domain connectors to add.
@@ -23,7 +23,7 @@ the GitHub login in the browser sheet:
 
 | Connector | URL | What it gives you |
 |---|---|---|
-| **sux** | `https://sux.colinxs.workers.dev/mcp` | everything: web search, scrape/render, research, documents, transforms, capture, storage — PLUS your personal vault/mail/files via the `vault_`/`mail_`/`files_`/`cal_`/`contact_` verbs (+ `recall`, + the `fn` escape) |
+| **sux** | `https://suxos.net/mcp` | everything: web search, scrape/render, research, documents, transforms, capture, storage — PLUS your personal vault/mail/files via the `vault_`/`mail_`/`files_`/`cal_`/`contact_` verbs (+ `recall`, + the `fn` escape) |
 
 > The former per-domain connectors (`/vault/mcp`, `/mail/mcp`, `/files/mcp`) are retired into
 > this one front door. Their routes still resolve for back-compat, but you don't add them —

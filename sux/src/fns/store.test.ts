@@ -45,7 +45,7 @@ describe("store", () => {
 		expect(put.key).toBe(`cas/${put.sha256}`);
 		expect(put.size).toBe(11);
 		expect(put.uuid).toMatch(UUID);
-		expect(put.url).toBe(`https://sux.colinxs.workers.dev/s/${put.uuid}`);
+		expect(put.url).toBe(`https://suxos.net/s/${put.uuid}`);
 		expect(env.OAUTH_KV._m.has(`store:${put.uuid}`)).toBe(true);
 		const got = j(await store.run(env, { op: "get", id: put.uuid }));
 		expect(got.text).toBe("hello world");

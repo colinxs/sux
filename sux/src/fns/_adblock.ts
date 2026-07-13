@@ -21,7 +21,7 @@ export const ADBLOCK_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 // Registrable domains we NEVER cosmetically filter: Claude/Anthropic surfaces
 // (incl. the artifact host) and sux's own Worker/site — an adblock false-positive
 // on these would corrupt first-party content the user explicitly asked for.
-const WHITELIST_DOMAINS = new Set(["anthropic.com", "claude.ai", "claude.com", "claudeusercontent.com", "colinxs.workers.dev", "colinxsummers.com"]);
+const WHITELIST_DOMAINS = new Set(["anthropic.com", "claude.ai", "claude.com", "claudeusercontent.com", "colinxs.workers.dev", "suxos.net", "colinxsummers.com"]);
 
 /** True when `hostname` belongs to a whitelisted first-party domain (never filtered). */
 export function isWhitelisted(hostname: string): boolean {

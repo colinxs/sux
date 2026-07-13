@@ -167,7 +167,7 @@ orgs expire refresh tokens on inactivity) and optionally running a weekly
 
 1. fhir.epic.com account → Build Apps → **Application Audience: Patients**.
 2. Select USCDI R4 **read** APIs only (the §1 resource list; *no Appointment*).
-3. Redirect URI: `https://sux.colinxs.workers.dev/mychart/callback`.
+3. Redirect URI: `https://suxos.net/mychart/callback`.
 4. Request `offline_access` scopes; tick **Can Register Dynamic Clients** (free
    fallback lever); confidential client with a client secret.
 5. Fill the Data Use Questionnaire (patients see it on the consent screen).

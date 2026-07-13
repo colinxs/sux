@@ -38,10 +38,10 @@ jobs:
       - name: Smoke check (public 401 on /mcp)
         run: |
           set -euo pipefail
-          code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 https://sux.colinxs.workers.dev/mcp || echo 000)"
+          code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 https://suxos.net/mcp || echo 000)"
           echo "GET /mcp -> HTTP ${code}"
           if [ "${code}" != "401" ]; then
-            echo "::error::Expected HTTP 401 from https://sux.colinxs.workers.dev/mcp, got ${code}"
+            echo "::error::Expected HTTP 401 from https://suxos.net/mcp, got ${code}"
             exit 1
           fi
           echo "Worker is up (401 as expected)."

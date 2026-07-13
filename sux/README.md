@@ -76,7 +76,7 @@ returns 401, and the cache tests stay green.
 - **Cloudflare Worker** (`sux/src/`) — the brain. OAuth, JSON-RPC dispatch, KV
   cache, R2 store (`sux-mcp` bucket), Workers AI, Cloudflare Images, per-user
   rate limiter, and the CF Browser Rendering binding. Deployed to
-  `https://sux.colinxs.workers.dev`.
+  `https://suxos.net`.
 - **OpenWRT node** (`sux/node/openwrt/`) — the residential *fetch* proxy. x86_64
   musl box on the home network, reachable at
   `router.owl-tegu.ts.net`. A uhttpd CGI (`fetch.sh`) shells out to
@@ -274,7 +274,7 @@ cron trigger `0 13 * * *`.
 
 ## Operations
 
-### Endpoints (`https://sux.colinxs.workers.dev`)
+### Endpoints (`https://suxos.net`)
 - `/mcp` — the OAuth-gated JSON-RPC MCP endpoint (unauth → 401).
 - `/health` — the three pillars + cache hit-rate + residential-route ratio
   (`routing:true` means requests really exit via the residential IP).

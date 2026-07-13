@@ -57,7 +57,7 @@ describe("cosmeticSelectors", () => {
 
 describe("isWhitelisted", () => {
 	it("whitelists Claude/Anthropic/sux first-party domains and subdomains", () => {
-		for (const h of ["claude.ai", "www.claude.ai", "anthropic.com", "api.anthropic.com", "abc.claudeusercontent.com", "sux.colinxs.workers.dev", "colinxsummers.com"]) {
+		for (const h of ["claude.ai", "www.claude.ai", "anthropic.com", "api.anthropic.com", "abc.claudeusercontent.com", "sux.colinxs.workers.dev", "suxos.net", "colinxsummers.com"]) {
 			expect(isWhitelisted(h)).toBe(true);
 		}
 	});

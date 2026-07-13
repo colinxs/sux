@@ -5,7 +5,7 @@ runbook for the two residential machines and the Worker.
 
 ## The Cloudflare Worker
 
-- Deployed to `https://sux.colinxs.workers.dev`.
+- Deployed to `https://suxos.net`.
 - **Deploy:** `npm run deploy:sux` (= `wrangler deploy --config sux/wrangler.jsonc`).
 - **Gate before deploy:** `npm run type-check && npm test` — both green.
 - **Secrets:** `npm run secret:sux <NAME>` (= `wrangler secret put --config

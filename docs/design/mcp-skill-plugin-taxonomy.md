@@ -21,7 +21,7 @@ Companion docs: `docs/knowledge/patterns-and-conventions.md` (fn anatomy, front 
 
 | Layer | In sux, this IS… | Lives in | Count |
 |---|---|---|---|
-| **MCP server** | The **one Cloudflare Worker** at `sux.colinxs.workers.dev`, exposing every capability behind one `/mcp` front door + OAuth (`/authorize`, `/register`, `/token`; GitHub IdP). `CONNECTORS` in `sux/src/connectors.ts` now lists exactly one path: `/mcp`. | `sux/src/` | 1 |
+| **MCP server** | The **one Cloudflare Worker** at `suxos.net`, exposing every capability behind one `/mcp` front door + OAuth (`/authorize`, `/register`, `/token`; GitHub IdP). `CONNECTORS` in `sux/src/connectors.ts` now lists exactly one path: `/mcp`. | `sux/src/` | 1 |
 | **MCP fn / tool** | A **leaf capability** — one `Fn` object (`sux/src/registry.ts`), one file `sux/src/fns/<name>.ts`, collected in the generated `fns/index.ts`. `search`, `scrape`, `render`, `pack`, `wayback`, … | `sux/src/fns/` | ~95 (109 in the array) |
 | **Front verb** | The **~18 curated tools** `tools/list` actually advertises (`FRONT_VERBS`, `registry.ts`) so the surface stays phone-legible. Everything else is a leaf, still reachable by name or via the `fn({name,args})` escape, still discoverable via the self-describing `sux` map. | `registry.ts` | ~18 |
 | **Skill** | An **instruction file** (`SKILL.md`) that routes *intent → fns*. Pure Markdown + frontmatter; ships no code, calls no API itself. sux has two: **`sux`** (which fn to reach for) and **`life`** (the capture→recall→consolidate memory discipline over vault/mail). | `.claude/skills/`, and copied into the plugin | 2 |
@@ -91,7 +91,7 @@ Everything else is generated or deleted.**
 sux/src/                      ← the MCP server (the ONLY engine). ~95 fns, ~18 front verbs.
 .claude/skills/{sux,life}/    ← the ONE authoritative copy of each skill (edited here).
 plugins/sux/                  ← the ONE plugin. skills/ is GENERATED from .claude/skills/.
-  └ .claude-plugin/plugin.json  (inline mcpServers → https://sux.colinxs.workers.dev/mcp)
+  └ .claude-plugin/plugin.json  (inline mcpServers → https://suxos.net/mcp)
 .claude-plugin/marketplace.json ← points at ./plugins/sux. (unchanged)
 packaging/desktop-extension/  ← the ONE non-Claude-Code packaging: MCPB stdio bridge. Keep.
 ```

@@ -4,14 +4,14 @@
 // higher weight, so a burst of expensive calls drains the per-user budget faster.
 // Paid-upstream tools floor at 2. Prints current (parsed from the fn files) vs
 // suggested and stars the ones to bump. Run: npm run bench:costs
-//   SUX_BASE=https://sux.colinxs.workers.dev (override the target)
+//   SUX_BASE=https://suxos.net (override the target)
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FNS = join(HERE, "..", "src", "fns");
-const BASE = process.env.SUX_BASE || "https://sux.colinxs.workers.dev";
+const BASE = process.env.SUX_BASE || "https://suxos.net";
 
 // Tools that hit a paid upstream (Kagi/SerpAPI/Proxycurl/Browser-Rendering/AI) —
 // floor their weight above free deterministic transforms regardless of latency.
