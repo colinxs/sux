@@ -11,7 +11,7 @@ vi.mock("./index", () => ({ FUNCTIONS: [{ name: "render", run: renderRun }] }));
 const { smartFetch } = vi.hoisted(() => ({ smartFetch: vi.fn() }));
 vi.mock("../proxy", () => ({ smartFetch }));
 
-import { parseDdg, parseGoogleSerp, webSearch } from "./web_search";
+import { defaultEngine, parseDdg, parseGoogleSerp, parseKagiSession, webSearch } from "./web_search";
 
 const serp = (hits: Array<{ url: string; title: string }>) =>
 	`<html><body>${hits.map((h) => `<div class="g"><a href="${h.url}"><h3>${h.title}</h3></a></div>`).join("")}</body></html>`;
@@ -52,6 +52,38 @@ describe("parseDdg", () => {
 			<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fgood.example%2Ftwo">Two</a>`;
 		const hits = parseDdg(html, 10);
 		expect(hits.map((h) => h.url)).toEqual(["https://good.example/one", "https://good.example/two"]);
+	});
+});
+
+describe("parseKagiSession", () => {
+	// Trimmed from a live kagi.com/html/search response (Cookie-auth'd on the subscription).
+	const html = `
+		<div class="_0_SRI  search-result " data-highlight="">
+		  <div class="_0_TITLE __sri-title"><h3 class="__sri-title-box">
+		    <a class="__sri_title_link _ext_ub_t _0_sri_title_link _0_URL" data-domain="openwrt.org" href="https://openwrt.org/docs/guide-user/network/wan/multiwan/mwan3"> [OpenWrt Wiki] mwan3 (failover) </a>
+		  </h3></div>
+		  <div class="_0_DESC __sri-desc">Jun 1, 2026 — mwan3 does policy routing &amp; failover across WANs.</div>
+		</div>
+		<div class="_0_SRI _ext_ub_r search-result ">
+		  <div class="_0_TITLE __sri-title"><h3 class="__sri-title-box">
+		    <a class="__sri_title_link _0_URL" data-domain="forum.openwrt.org" href="https://forum.openwrt.org/t/failover/123"> Failover using mwan3 - OpenWrt Forum </a>
+		  </h3></div>
+		  <div class="__sri-desc">Greetings — here is how I configured mwan3.</div>
+		</div>`;
+	it("parses title/url/snippet from Kagi's SSR result blocks, honoring the limit", () => {
+		const hits = parseKagiSession(html, 10);
+		expect(hits.length).toBe(2);
+		expect(hits[0]).toMatchObject({ title: "[OpenWrt Wiki] mwan3 (failover)", url: "https://openwrt.org/docs/guide-user/network/wan/multiwan/mwan3" });
+		expect(hits[0].snippet).toContain("policy routing & failover"); // entities decoded
+		expect(hits[1].url).toBe("https://forum.openwrt.org/t/failover/123");
+		expect(parseKagiSession(html, 1).length).toBe(1); // limit respected
+	});
+});
+
+describe("defaultEngine", () => {
+	it("prefers free Kagi-on-the-subscription when KAGI_SESSION is set, else keyless DDG", () => {
+		expect(defaultEngine({ KAGI_SESSION: "tok" })).toBe("kagi_session");
+		expect(defaultEngine({})).toBe("ddg");
 	});
 });
 
@@ -150,13 +182,13 @@ describe("web_search", () => {
 	});
 
 	it("summarize falls back to the plain list when AI is absent", async () => {
-		const r = await webSearch.run({ KAGI_API_KEY: "k" } as any, { query: "hello", summarize: true });
+		const r = await webSearch.run({ KAGI_API_KEY: "k" } as any, { query: "hello", engine: "kagi", summarize: true });
 		expect(r.content[0].text).toMatch(/summary skipped/);
 	});
 
 	it("summarize uses Workers AI when available", async () => {
 		const env = { KAGI_API_KEY: "k", AI: { run: vi.fn(async () => ({ response: "A concise briefing [1]." })) } } as any;
-		const r = await webSearch.run(env, { query: "hello", summarize: true });
+		const r = await webSearch.run(env, { query: "hello", engine: "kagi", summarize: true });
 		expect(r.content[0].text).toContain("concise briefing");
 		expect(r.content[0].text).toContain("— Sources —");
 	});

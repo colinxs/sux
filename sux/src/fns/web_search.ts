@@ -127,12 +127,62 @@ async function kagi(env: any, q: string, limit: number, route: Route): Promise<H
 	return hits;
 }
 
+const unesc = (s: string): string =>
+	s.replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&nbsp;/g, " ");
+
+/** Parse Kagi's server-rendered /html/search page (the no-JS variant). Each result is a
+ * `.search-result` block: the title anchor carries `class="…__sri_title_link…" href="URL"`
+ * and the summary lives in the sibling `.__sri-desc`. Verified against live markup. */
+export function parseKagiSession(html: string, limit: number): Hit[] {
+	const hits: Hit[] = [];
+	const seen = new Set<string>();
+	for (const block of html.split(/(?=<div class="_0_SRI)/)) {
+		if (hits.length >= limit) break;
+		const t = block.match(/<a\b[^>]*class="[^"]*__sri_title_link[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i);
+		if (!t) continue;
+		const url = unesc(t[1]);
+		if (!/^https?:\/\//.test(url) || seen.has(url)) continue;
+		const title = unesc(stripHtml(t[2])).trim();
+		if (!title) continue;
+		const d = block.match(/class="[^"]*__sri-desc[^"]*"[^>]*>([\s\S]*?)<\/div>/i);
+		const snippet = d ? unesc(stripHtml(d[1])).trim().slice(0, 300) : undefined;
+		seen.add(url);
+		hits.push({ title, url, snippet });
+	}
+	return hits;
+}
+
+// Kagi via the user's SUBSCRIPTION (not the metered API): the Session Link token
+// authenticates the /html/search page as the account, so results are unmetered on
+// paid tiers. Routed through the residential proxy so the request looks like a normal
+// home browser (Kagi bot-gates datacenter IPs). No JS needed — /html/search is SSR.
+async function kagiSession(env: any, q: string, limit: number, route: Route): Promise<Hit[]> {
+	const url = `https://kagi.com/html/search?q=${encodeURIComponent(q)}`;
+	const resp = await smartFetch(
+		env,
+		url,
+		{ headers: { Cookie: `kagi_session=${env.KAGI_SESSION}`, "Accept-Language": "en-US,en;q=0.9" } },
+		route === "direct" ? "auto" : route,
+	);
+	if (resp.status >= 400) throw new Error(`Kagi session HTTP ${resp.status} (token expired/rotated?)`);
+	return parseKagiSession(await resp.text(), limit);
+}
+
 const ENGINES: Record<string, { envKey?: string; envName?: string; run: (env: any, q: string, n: number, route: Route) => Promise<Hit[]> }> = {
-	kagi: { envKey: "KAGI_API_KEY", envName: "KAGI_API_KEY", run: kagi },
+	kagi_session: { envKey: "KAGI_SESSION", envName: "KAGI_SESSION", run: kagiSession }, // subscription (free), residential-proxy HTML scrape
+	kagi: { envKey: "KAGI_API_KEY", envName: "KAGI_API_KEY", run: kagi }, // metered Search API
 	ddg: { run: ddg }, // no key — cheap residential HTML scrape (no JS)
 	google: { run: googleDirect }, // no key — heavy: rendered in the mac backend (Google needs JS)
 	brave: { envKey: "BRAVE_API_KEY", envName: "BRAVE_API_KEY", run: brave },
 };
+
+/** The default engine: prefer free Kagi-on-the-subscription, then the free keyless DDG,
+ * then the metered Kagi API only if that's the only thing configured. Keeps web search
+ * FREE by default whenever a free path exists. */
+export function defaultEngine(env: any): string {
+	if (env?.KAGI_SESSION) return "kagi_session";
+	return "ddg";
+}
 
 /** Engines usable right now: keyed ones only when their secret is set. */
 function available(env: any): string[] {
@@ -174,15 +224,15 @@ export const webSearch: Fn = {
 	name: "web_search",
 	cost: 3,
 	description:
-		"Web search over Kagi, native Google, and Brave. `engine`: kagi (default), google, brave, or `all` — which fans out across every currently-available engine concurrently (MAP), merges/dedupes by URL with consensus ranking, and with `summarize: true` reduces the pooled results into one Workers-AI synthesis with citations (map-reduce). " +
-		"ddg (DuckDuckGo) is scraped keyless+cheap via the residential proxy (no JS needed) — the best no-key default. google renders the real SERP in the headed `render` mac backend (Google needs JS; heavier/slower, opt-in) and parses it — no SERP API key either. kagi (default) and brave are key-gated (KAGI_API_KEY, BRAVE_API_KEY) and used only when their secret is set; `all` skips unconfigured ones. Falls back to the plain merged list if AI isn't configured. Returns numbered results (title, url, snippet) — cite by number.",
+		"Web search over Kagi, native Google, and Brave. `engine`: kagi_session, kagi, ddg, google, brave, or `all` — which fans out across every currently-available engine concurrently (MAP), merges/dedupes by URL with consensus ranking, and with `summarize: true` reduces the pooled results into one Workers-AI synthesis with citations (map-reduce). " +
+		"DEFAULT is kagi_session — Kagi run on YOUR subscription (free/unmetered) by scraping the /html/search page with the KAGI_SESSION token through the residential proxy — when that secret is set, else ddg. ddg (DuckDuckGo) is scraped keyless+cheap via the residential proxy (no JS needed) — the free no-key fallback. google renders the real SERP in the headed `render` mac backend (Google needs JS; heavier/slower, opt-in). kagi is the metered Search API and brave are key-gated (KAGI_API_KEY, BRAVE_API_KEY) and used only when their secret is set; `all` skips unconfigured ones. Falls back to the plain merged list if AI isn't configured. Returns numbered results (title, url, snippet) — cite by number.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
 		required: ["query"],
 		properties: {
 			query: { type: "string", description: "Search query." },
-			engine: { type: "string", enum: ["kagi", "ddg", "google", "brave", "all"], default: "kagi" },
+			engine: { type: "string", enum: ["kagi_session", "kagi", "ddg", "google", "brave", "all"], description: "Default: kagi_session (free, on your Kagi subscription) when KAGI_SESSION is set, else ddg (free, keyless)." },
 			limit: { type: "integer", minimum: 1, maximum: 25, default: 10 },
 			summarize: { type: "boolean", description: "Summarize the merged results with Workers AI.", default: false },
 			proxy: { type: "boolean", description: "Route the Kagi query through the Tailscale residential proxy (direct fallback if the node is down).", default: false },
@@ -193,7 +243,7 @@ export const webSearch: Fn = {
 	run: async (env, args) => {
 		const q = String(args?.query ?? "").trim();
 		if (!q) return fail("query is required.");
-		const engine = String(args?.engine ?? "kagi");
+		const engine = String(args?.engine ?? defaultEngine(env));
 		const limit = Math.min(25, Math.max(1, Number(args?.limit) || 10));
 		const wantSummary = args?.summarize === true;
 		const route: Route = args?.proxy === true ? "proxy" : "auto";

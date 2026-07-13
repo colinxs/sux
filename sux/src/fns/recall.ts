@@ -2,7 +2,7 @@ import { hasAI, llm } from "../ai";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { hasDropboxFull, readFull, searchFull } from "./_dropbox-full";
 import { obsidian } from "./obsidian";
-import { search } from "./search";
+import { defaultEngine, webSearch } from "./web_search";
 import { jmap } from "./jmap";
 import { hasCalDav, listCalendars, parseICal, reportObjects } from "./_caldav";
 import { embedOne } from "./_embed";
@@ -95,11 +95,16 @@ async function fromMail(env: RtEnv, question: string): Promise<Gathered> {
 	return { material: parts.join("\n\n"), refs };
 }
 
-/** Web: Kagi search — its numbered results (title/url/snippet) are already citation-shaped. */
+/** Web: free web search — Kagi on the subscription (kagi_session) when configured, else keyless
+ *  DDG. Never the metered Kagi API, so recall's web source costs nothing. Results are already
+ *  numbered (title/url/snippet), citation-shaped. */
 async function fromWeb(env: RtEnv, question: string): Promise<Gathered> {
-	const r = await search.run(env, { query: question });
-	if (r.isError) throw new Error(r.content?.[0]?.text ?? "web search failed");
+	const r = await webSearch.run(env, { query: question, engine: defaultEngine(env), limit: 6 });
 	const text = (r.content?.[0]?.text ?? "").trim();
+	if (r.isError) {
+		if (/no results/i.test(text)) return { material: "", refs: [] }; // legit empty, not a failure
+		throw new Error(text || "web search failed");
+	}
 	return text && text !== "(no results)" ? { material: `[web results]\n${text.slice(0, 3500)}`, refs: ["web"] } : { material: "", refs: [] };
 }
 
@@ -267,10 +272,13 @@ async function fromContacts(env: RtEnv, question: string): Promise<Gathered> {
 }
 
 const SOURCES: Record<string, (env: RtEnv, q: string) => Promise<Gathered>> = { vault: fromVault, files: fromFiles, mail: fromMail, web: fromWeb, learned: fromLearned, oracle: fromOracle, calendar: fromCalendar, contacts: fromContacts };
-// `web` is deliberately NOT a default source: recall is a personal-memory tool, and
-// fromWeb bills a (paid, uncached) Kagi search on every call. Web stays opt-in —
-// callers that want it pass sources: [..., "web"] explicitly.
-const DEFAULT_SOURCES = ["vault", "files", "mail", "learned", "oracle", "calendar", "contacts"];
+const BASE_SOURCES = ["vault", "files", "mail", "learned", "oracle", "calendar", "contacts"];
+/** `web` is a default source ONLY when it's FREE — i.e. Kagi-on-the-subscription (KAGI_SESSION)
+ *  is configured, so recall never silently bills a search. Without it, web stays opt-in
+ *  (callers pass sources: [..., "web"] to force the keyless DDG fallback). */
+function defaultSources(env: RtEnv): string[] {
+	return (env as { KAGI_SESSION?: string }).KAGI_SESSION ? [...BASE_SOURCES, "web"] : BASE_SOURCES;
+}
 
 /** The GATHER half of recall: fan out across the chosen stores (each degrading independently)
  *  and return the RAW gathered passages + citations + per-store status — WITHOUT the llm()
@@ -282,7 +290,7 @@ export async function gatherRecall(
 	question: string,
 	sources?: string[],
 ): Promise<{ materials: string[]; citations: string[]; status: Record<string, string>; chosen: string[] }> {
-	const wanted = Array.isArray(sources) && sources.length ? sources.map(String) : DEFAULT_SOURCES;
+	const wanted = Array.isArray(sources) && sources.length ? sources.map(String) : defaultSources(env);
 	const chosen = wanted.filter((s: string) => s in SOURCES);
 	const materials: string[] = [];
 	const citations: string[] = [];

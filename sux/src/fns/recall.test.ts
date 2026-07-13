@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // recall composes obsidian/search/jmap — mock them (each has its own suite) so we test
 // recall's fan-out, graceful degrade, citation collection, and untrusted-fenced synthesis.
 vi.mock("./obsidian", () => ({ obsidian: { run: vi.fn() } }));
-vi.mock("./search", () => ({ search: { run: vi.fn() } }));
+vi.mock("./web_search", () => ({ webSearch: { run: vi.fn() }, defaultEngine: vi.fn(() => "ddg") }));
 vi.mock("./jmap", () => ({ jmap: { run: vi.fn() } }));
 vi.mock("./_dropbox-full", () => ({ hasDropboxFull: vi.fn(() => false), searchFull: vi.fn(), readFull: vi.fn() }));
 // Keep parseICal real (recall parses the ical reportObjects returns) — mock only the CalDAV I/O + the gate.
@@ -14,7 +14,7 @@ vi.mock("./_caldav", async () => {
 
 import { recall } from "./recall";
 import { obsidian } from "./obsidian";
-import { search } from "./search";
+import { webSearch } from "./web_search";
 import { jmap } from "./jmap";
 import { hasDropboxFull, readFull, searchFull } from "./_dropbox-full";
 import { hasCalDav, listCalendars, reportObjects } from "./_caldav";
@@ -24,7 +24,7 @@ const errR = (text: string) => ({ content: [{ type: "text", text }], isError: tr
 const parse = (r: any) => JSON.parse(r.content[0].text);
 
 const obs = obsidian.run as unknown as ReturnType<typeof vi.fn>;
-const web = search.run as unknown as ReturnType<typeof vi.fn>;
+const web = webSearch.run as unknown as ReturnType<typeof vi.fn>;
 const mail = jmap.run as unknown as ReturnType<typeof vi.fn>;
 const dbxHas = hasDropboxFull as unknown as ReturnType<typeof vi.fn>;
 const dbxSearch = searchFull as unknown as ReturnType<typeof vi.fn>;
@@ -120,6 +120,20 @@ describe("recall", () => {
 		expect(web).not.toHaveBeenCalled();
 		expect(obs).toHaveBeenCalled();
 		expect(mail).toHaveBeenCalled();
+	});
+
+	it("web is NOT a default source without free Kagi (KAGI_SESSION unset)", async () => {
+		const out = parse(await recall.run(env(), { question: "oncologist?" })); // no sources → defaults
+		expect(web).not.toHaveBeenCalled(); // web stays opt-in so recall never bills a search
+		expect(out.sources.web).toBeUndefined();
+	});
+
+	it("web IS a default source when free Kagi is configured (KAGI_SESSION set)", async () => {
+		const freeEnv = { AI: { run: aiRun }, KAGI_SESSION: "tok" } as any;
+		const out = parse(await recall.run(freeEnv, { question: "oncologist?" })); // no sources → defaults include web
+		expect(web).toHaveBeenCalled();
+		expect(out.sources.web).toBe("1 hit(s)");
+		expect(out.citations).toContain("web");
 	});
 
 	it("strips OBSIDIAN_VAULT_DIR from search-hit paths before reading (no double-prefix 404)", async () => {
