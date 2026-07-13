@@ -58,20 +58,29 @@ jobs:
       - name: Claude security review
         if: steps.pre.outputs.go == 'true'
         uses: anthropics/claude-code-action@v1
+        env:
+          # 1-hour prompt-cache TTL (default is 5 min). The autofix→CI→re-review loop and
+          # back-to-back PR reviews span >5 min, so the stable prefix (system prompt + tools
+          # + CLAUDE.md) cache-hits at 0.1x instead of expiring. Caching itself is on by default.
+          ENABLE_PROMPT_CACHING_1H: "1"
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |
-            Do a SECURITY review of this PR's diff vs the base branch. This repo is a
-            PUBLIC Cloudflare Worker + a live autonomous CI/CD pipeline, so weigh:
-            secret handling/exposure, auth-gate bypass, SSRF, injection (incl. shell
-            injection via `${{ github.event.* }}` in workflows), GitHub Actions abuse
-            (pull_request_target + untrusted checkout, missing author gates, over-scoped
-            tokens), auto-merge/auto-deploy blast radius, and any autonomous-bot action
-            that could touch prod or user data unsafely. Use the repo's /security-review
-            skill if present. Post concise inline findings.
-            THEN, as your final action, write a machine-readable verdict to the file
-            $GITHUB_WORKSPACE/.sec-verdict.json exactly like: {"critical":N,"high":N,"note":"..."}
-            (counts of confirmed high/critical issues). If the diff is clean, write zeros.
+            Your REQUIRED, PRIMARY deliverable is a verdict file. Before you finish — no matter
+            what else you do or don't do — you MUST write `.sec-verdict.json` in the repository
+            root (your current working directory; use a RELATIVE path, not $GITHUB_WORKSPACE),
+            containing exactly: {"critical":N,"high":N,"note":"..."} — the counts of CONFIRMED
+            high/critical security issues. If the diff is clean, write zeros. The gate treats a
+            missing file as "review did not finish", so writing this file is not optional.
+
+            The review itself: assess this PR's diff vs the base branch. This repo is a PUBLIC
+            Cloudflare Worker + a live autonomous CI/CD pipeline, so weigh: secret handling/
+            exposure, auth-gate bypass, SSRF, injection (incl. shell injection via
+            `${{ github.event.* }}` in workflows), GitHub Actions abuse (pull_request_target +
+            untrusted checkout, missing author gates, over-scoped tokens), auto-merge/auto-deploy
+            blast radius, and any autonomous-bot action that could touch prod or user data
+            unsafely. Use the repo's /security-review skill if present. Post concise inline
+            findings, then write the verdict file.
           claude_args: "--max-turns 14 --model opus --allowedTools Read,Grep,Glob,Bash,Write,Edit"
       - name: Gate — scoped fail-closed on missing verdict; block on high/critical
         if: steps.pre.outputs.go == 'true'
@@ -80,6 +89,10 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
+          # Locate the verdict robustly: the reviewer writes `.sec-verdict.json` at the repo
+          # root, but tolerate it landing a level or two deep (cwd surprises) rather than
+          # mis-reporting a real verdict as "missing" and stalling the PR.
+          verdict=$(find "$GITHUB_WORKSPACE" -maxdepth 3 -name .sec-verdict.json -print -quit 2>/dev/null || true)
           # This step only runs when the preflight armed the review (go=true), so the Claude
           # step definitely ran. Three outcomes:
           #   1. A PRODUCED crit/high verdict → HARD-BLOCK: apply `hold` + exit 1 (unchanged).
@@ -93,7 +106,7 @@ jobs:
           #        • changed-file list unreadable → can't prove low-blast, so FAIL CLOSED.
           # Trusted-author-only pipeline, so an attacker can't suppress the verdict to sneak a
           # high-blast diff through — the worst case is a stall on their own PR.
-          if [ ! -f .sec-verdict.json ]; then
+          if [ -z "$verdict" ]; then
             changed=$(gh pr diff "$PR" --name-only 2>/dev/null || true)
             if [ -z "$changed" ]; then
               echo "::error::security review produced no verdict AND the changed-file list is unreadable — failing closed (cannot rule out a high-blast diff)"
@@ -111,7 +124,7 @@ jobs:
             echo "::warning::security review produced no verdict (reviewer did not finish) and the diff is not high-blast — advisory pass"
             gh pr comment "$PR" --body "⚠️ no-dumb-shit bot: the security review did not finish (no verdict) and this diff doesn't touch workflows/auth/secrets — advisory pass, not blocking. Deterministic gates still apply." 2>/dev/null || true
             exit 0; fi
-          crit=$(jq -r '.critical // 0' .sec-verdict.json); high=$(jq -r '.high // 0' .sec-verdict.json)
+          crit=$(jq -r '.critical // 0' "$verdict"); high=$(jq -r '.high // 0' "$verdict")
           echo "security verdict: critical=$crit high=$high"
           if [ "${crit:-0}" -gt 0 ] || [ "${high:-0}" -gt 0 ]; then
             gh pr edit "$PR" --add-label hold 2>/dev/null || true

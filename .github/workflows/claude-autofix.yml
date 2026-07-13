@@ -143,6 +143,7 @@ jobs:
         env:
           CI_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           CI_RUN_URL: ${{ github.event.workflow_run.html_url }}
+          ENABLE_PROMPT_CACHING_1H: "1" # 1h cache TTL — the CI→fix→CI loop spans >5 min, so the stable prefix cache-hits instead of expiring
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ steps.app-token.outputs.token }}
