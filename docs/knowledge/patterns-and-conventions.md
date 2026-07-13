@@ -274,7 +274,22 @@ no-op. Two idioms:
 - Almost every source file has a sibling `*.test.ts`. Match that when you add a fn.
 
 CI gates (`.github/workflows/ci.yml`, all must pass): `type-check` (`tsc --noEmit`), `test`,
-`check:node`, `gen:index` (index.ts committed + in sync), `wrangler deploy --dry-run`.
+`check:node`, `gen:index` (index.ts committed + in sync), `wrangler deploy --dry-run`,
+`lint:dispatcher-docs` (below).
+
+- **Dispatcher doc-example params must match the real schema.** The five `namespaceFn()`
+  front verbs (`vault`/`mail`/`files`/`calendar`/`contact`, `sux/src/fns/_namespace.ts`) carry
+  worked example calls in their `description` string — `vault({action:'read', path})` and
+  friends — that are the *only* documentation an LLM caller sees for that action's args. Three
+  separate PRs (#202 `contact_search`, #205 `contact_create`/`update`, #206 `calendar`) landed
+  where the example named a param the target tool's `inputSchema` didn't actually accept, so
+  every call built from the doc failed. `npm run lint:dispatcher-docs`
+  (`sux/scripts/lint-dispatcher-param-docs.mjs`) statically resolves each example's `action` to
+  its real namespace-tool schema (in `vault-mcp.ts`/`mail-mcp.ts`/`files-mcp.ts`) and fails CI
+  if a documented param isn't in `inputSchema.properties` (excluding the universal
+  `stage`/`commit_token`/`force`/`confirm` args). Keep dispatcher descriptions accurate the
+  first time — this catches drift the next time a target tool's schema changes but the
+  front-verb description doesn't.
 
 ---
 

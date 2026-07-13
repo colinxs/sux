@@ -54,6 +54,12 @@ jobs:
       - name: Function index in sync
         run: npm run gen:index && git diff --exit-code sux/src/fns/index.ts
 
+      # Namespace dispatcher (vault/mail/files/calendar/contact) description strings carry
+      # worked example calls like verb({action:'x', param}) — these have drifted from the
+      # real target tool's inputSchema before (#202, #205, #206) and silently misled callers.
+      - name: Dispatcher doc-example params match real schemas
+        run: npm run lint:dispatcher-docs
+
       # Validates the Worker bundles & config are deployable without deploying.
       - name: Build (dry-run deploy)
         run: npx wrangler deploy --dry-run --config sux/wrangler.jsonc

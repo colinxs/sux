@@ -23,6 +23,7 @@
     "check:node": "node sux/node/build-deploy.mjs --check",
     "bench:costs": "node sux/scripts/benchmark-costs.mjs",
     "check:pricing": "node sux/scripts/check-pricing.mjs",
+    "lint:dispatcher-docs": "node sux/scripts/lint-dispatcher-param-docs.mjs",
     "branches": "bash scripts/branch-sweep.sh"
   },
   "dependencies": {
