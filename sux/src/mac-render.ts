@@ -50,6 +50,15 @@ export type MacRenderResult =
 	| { ok: true; contentType: string; body: string; bodyEncoding?: "base64"; solverError?: string }
 	| { ok: false; error: string };
 
+// The Mac service is Playwright/patchright, whose page.goto(wait_until) accepts
+// load|domcontentloaded|networkidle|commit — NOT Puppeteer's networkidle0/2 (which
+// the cf backend + callers use). Passing those threw "expected one of …" → 502 on
+// every mac render carrying the default. Normalize to Playwright's vocabulary before
+// any mac payload is serialized — the single boundary that owns this translation.
+export function normalizeMacWaitUntil(waitUntil: string): string {
+	return waitUntil.replace(/^networkidle[02]$/, "networkidle");
+}
+
 // Cap on the AbortSignal for the Mac render call. The service egresses
 // residentially and solves active JS challenges, so it is legitimately slower
 // than a plain fetch — give it the caller's nav budget plus a margin, but keep the
@@ -101,11 +110,7 @@ export async function macRender(env: RtEnv, spec: MacRenderSpec): Promise<MacRen
 	if (macBreaker.openUntil > Date.now()) {
 		return { ok: false, error: "mac render backend circuit-open" };
 	}
-	// The Mac service is Playwright/patchright, whose page.goto(wait_until) accepts
-	// load|domcontentloaded|networkidle|commit — NOT Puppeteer's networkidle0/2 (which
-	// the cf backend + callers use). Passing those threw "expected one of …" → 502 on
-	// every mac render carrying the default. Normalize to Playwright's vocabulary.
-	const macSpec = { ...spec, ...(typeof spec.wait_until === "string" ? { wait_until: spec.wait_until.replace(/^networkidle[02]$/, "networkidle") } : {}) };
+	const macSpec = { ...spec, ...(typeof spec.wait_until === "string" ? { wait_until: normalizeMacWaitUntil(spec.wait_until) } : {}) };
 	const payload = JSON.stringify({ as: "html", ...macSpec });
 	const ts = String(Date.now());
 	const sig = await hmacHex(env.MAC_RENDER_SECRET, `${ts}\n${payload}`);

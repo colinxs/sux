@@ -1,4 +1,5 @@
 import { cfRender } from "../cf-render";
+import { normalizeMacWaitUntil } from "../mac-render";
 import { hmacHex, isBlockedTarget } from "../proxy";
 import { looksBlocked } from "../retail-render";
 import { type Fn, type RtEnv, type ToolResult, failWith, ok } from "../registry";
@@ -40,7 +41,9 @@ async function renderViaMac(env: RtEnv, payload: MacRenderPayload, delivery: str
 	if (!env.MAC_RENDER_URL || !env.MAC_RENDER_SECRET) {
 		return failWith("not_configured", "Mac render backend not configured (MAC_RENDER_URL/MAC_RENDER_SECRET).");
 	}
-	const body = JSON.stringify(payload);
+	// patchright's page.goto rejects Puppeteer's networkidle0/2 — normalize to its
+	// vocabulary (the shared mac boundary) so a default backend:mac render doesn't 502.
+	const body = JSON.stringify({ ...payload, wait_until: normalizeMacWaitUntil(payload.wait_until) });
 	const ts = String(Date.now());
 	const sig = await hmacHex(env.MAC_RENDER_SECRET, `${ts}\n${body}`);
 
