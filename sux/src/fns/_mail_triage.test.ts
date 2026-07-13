@@ -172,7 +172,7 @@ describe("auto-act allow-list — attention-increasing ops + high-confidence arc
 		expect(ARCHIVE_CONFIDENCE_THRESHOLD).toBeGreaterThan(CONFIDENCE_THRESHOLD);
 		// Below the archive bar → label the message where it is (kept visible), never hide it.
 		expect(resolveOp({ kind: "archive" }, "receipt", ARCHIVE_CONFIDENCE_THRESHOLD - 0.01)).toEqual({ kind: "label", label: "receipt", add: true });
-		expect(resolveOp({ kind: "archive" }, "newsletter", 0.85)).toEqual({ kind: "label", label: "newsletter", add: true });
+		expect(resolveOp({ kind: "archive" }, "mailing_list", 0.85)).toEqual({ kind: "label", label: "mailing_list", add: true });
 		// At/above the bar → archive survives.
 		expect(resolveOp({ kind: "archive" }, "receipt", ARCHIVE_CONFIDENCE_THRESHOLD)).toEqual({ kind: "archive" });
 		expect(resolveOp({ kind: "archive" }, "notification", 0.95)).toEqual({ kind: "archive" });
@@ -231,24 +231,25 @@ describe("runTriage — gating + idempotency", () => {
 		expect(report.suggested!.map((s) => s.id).sort()).toEqual(["p1", "u1"]);
 	});
 
-	it("ENABLED + ACT → a HIGH-confidence declutter classification (≥ archive bar) actually archives", async () => {
-		// Drive the loop through the injected classify seam (the learning-classifier hook) with a
-		// receipt scored ABOVE the archive bar — the one path that reaches a real archive move.
+	it("ENABLED + ACT → an explicit archive override (e.g. a future learning classifier) ABOVE the archive bar actually archives", async () => {
+		// ACTION_FOR no longer defaults any category to archive (this PR's whole point), so the
+		// only path that reaches a real archive move is a per-message `op` override — drive it
+		// through the injected classify seam (the learning-classifier hook) scored above the bar.
 		const msgs: TriageMsg[] = [{ id: "hi", from: "receipts@shop.example", subject: "Your receipt" }];
 		const deps = mkDeps(msgs);
 		const env = envWith({ MAIL_TRIAGE_ENABLED: "1", MAIL_TRIAGE_ACT: "1" });
-		const report = await runTriage(env, { cycle_id: "arch" }, { ...deps, classify: () => ({ label: "receipt", confidence: 0.95, reason: "high-confidence receipt" }) });
+		const report = await runTriage(env, { cycle_id: "arch" }, { ...deps, classify: () => ({ label: "receipt", confidence: 0.95, reason: "high-confidence receipt", op: { kind: "archive" } }) });
 		expect(deps.actSpy).toHaveBeenCalledTimes(1);
 		expect(deps.actSpy).toHaveBeenCalledWith(env, ["hi"], { kind: "archive" });
 		expect(report.acted).toEqual([{ id: "hi", label: "receipt", confidence: 0.95, op: "archive", to: "archive" }]);
 	});
 
-	it("ENABLED + ACT → the SAME receipt just BELOW the archive bar de-escalates to a label in place, never archived", async () => {
+	it("ENABLED + ACT → the SAME archive override just BELOW the archive bar de-escalates to a label in place, never archived", async () => {
 		const msgs: TriageMsg[] = [{ id: "lo", from: "receipts@shop.example", subject: "Your receipt" }];
 		const deps = mkDeps(msgs);
 		const env = envWith({ MAIL_TRIAGE_ENABLED: "1", MAIL_TRIAGE_ACT: "1" });
 		const below = ARCHIVE_CONFIDENCE_THRESHOLD - 0.05;
-		const report = await runTriage(env, { cycle_id: "lab" }, { ...deps, classify: () => ({ label: "receipt", confidence: below, reason: "receipt below archive bar" }) });
+		const report = await runTriage(env, { cycle_id: "lab" }, { ...deps, classify: () => ({ label: "receipt", confidence: below, reason: "receipt below archive bar", op: { kind: "archive" } }) });
 		expect(deps.actSpy).toHaveBeenCalledWith(env, ["lo"], { kind: "label", label: "receipt", add: true });
 		for (const call of deps.actSpy.mock.calls) expect((call[2] as TriageOp).kind).toBe("label");
 		expect(report.acted).toEqual([{ id: "lo", label: "receipt", confidence: below, op: "label", to: "+label:receipt" }]);
