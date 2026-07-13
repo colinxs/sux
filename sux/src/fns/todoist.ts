@@ -1,15 +1,17 @@
 import { type Fn, type FailCode, failWith, ok, type RtEnv } from "../registry";
 import { errMsg, oj } from "./_util";
 
-// Todoist tasks over the REST v2 API — a thin, honest adapter (NOT the ~50-tool
-// interactive connector). Auth is a personal API token used as a Bearer directly
+// Todoist tasks over the unified Todoist API v1 (they retired REST v2 + Sync v9
+// in favor of one merged API, same resource paths, just /api/v1 as the base) —
+// a thin, honest adapter (NOT the ~50-tool interactive connector). Auth is a
+// personal API token used as a Bearer directly
 // (no OAuth mint), so this is inert until TODOIST_TOKEN is set, exactly like the
 // other keyed fns. The one scar worth carrying (vault-backends.md §2.6): updating
 // `due_string` on a RECURRING task REPLACES its recurrence — reschedule a single
 // occurrence in the app, not here. Delete is confirm-gated (Todoist delete is not
 // a recoverable trash); complete is reversible (reopen), so it isn't gated.
 
-const API = "https://api.todoist.com/rest/v2";
+const API = "https://api.todoist.com/api/v1";
 
 /** True when the Todoist token is configured. */
 export const hasTodoist = (env: RtEnv): boolean => Boolean(env.TODOIST_TOKEN);
