@@ -1,5 +1,5 @@
 import { type Fn, type RtEnv, fail, ok } from "../registry";
-import { type BlobRef, byteBudget, FANOUT_BUDGET_MS, FANOUT_BYTE_BUDGET, FANOUT_STORE_TTL_S, fetchText, getBlob, isHttpUrl, noCacheOn4xx, noCacheOnMutation, pool, putBlob, readBodyBytes, storeRefUuid, oj } from "./_util";
+import { type BlobRef, byteBudget, FANOUT_BUDGET_MS, FANOUT_BYTE_BUDGET, FANOUT_STORE_TTL_S, FETCH_TEXT_MAX_BYTES, fetchText, getBlob, isHttpUrl, noCacheOn4xx, noCacheOnMutation, pool, putBlob, readBodyBytes, storeRefUuid, oj } from "./_util";
 import { smartFetch } from "../proxy";
 
 // Fetch many URLs concurrently through the residential proxy (direct fallback).
@@ -87,7 +87,7 @@ export const batch_fetch: Fn = {
 				default: "text",
 				description: 'Delivery: "text" inlines each body (capped by max_bytes) | "url" stores raw bytes to CAS and returns a /s/<uuid> ref (server-side bulk download).',
 			},
-			max_bytes: { type: "integer", minimum: 1, default: 20000, description: 'Max bytes of body text to return per URL (as:"text" only).' },
+			max_bytes: { type: "integer", minimum: 1, maximum: FETCH_TEXT_MAX_BYTES, default: 20000, description: 'Max bytes of body text to return per URL (as:"text" only).' },
 		},
 	},
 	cacheable: true,
@@ -100,8 +100,11 @@ export const batch_fetch: Fn = {
 		const method = String(args?.method ?? "GET").toUpperCase();
 		const as = String(args?.as ?? "text");
 		if (as !== "text" && as !== "url") return fail('`as` must be "text" or "url".');
-		const maxBytes = args?.max_bytes === undefined ? 20000 : Number(args.max_bytes);
-		if (!Number.isInteger(maxBytes) || maxBytes < 1) return fail("`max_bytes` must be a positive integer.");
+		const rawMaxBytes = args?.max_bytes === undefined ? 20000 : Number(args.max_bytes);
+		if (!Number.isInteger(rawMaxBytes) || rawMaxBytes < 1) return fail("`max_bytes` must be a positive integer.");
+		// Clamp to the text-fetch ceiling: without a cap, maxBytes flows into
+		// readBodyText's in-memory accumulator, and CONCURRENCY (8) huge reads would OOM.
+		const maxBytes = Math.min(rawMaxBytes, FETCH_TEXT_MAX_BYTES);
 		if (as === "url" && !env.R2) return fail('`as: "url"` needs the R2 store (bucket binding missing).');
 
 		// Time budget: stop firing new fetches near the hard deadline so a wide batch

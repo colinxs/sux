@@ -5,11 +5,13 @@ vi.mock("../proxy", () => ({
 		if (url.includes("boom")) throw new Error("network down");
 		if (url.includes("blocked")) return new Response("rate limited", { status: 429 });
 		if (url.includes("huge")) return new Response("x", { status: 200, headers: { "content-length": "99999999" } }); // declared > 25MB cap
+		if (url.includes("bigtext")) return new Response("y".repeat(3_000_000), { status: 200 }); // 3MB body > FETCH_TEXT_MAX_BYTES
 		return new Response(`body of ${url}`, { status: 200 });
 	}),
 }));
 
 import { batch_fetch } from "./batch_fetch";
+import { FETCH_TEXT_MAX_BYTES } from "./_util";
 
 // Minimal R2 + KV mocks (mirrors store.test.ts) so as:"url" can content-address
 // bytes into CAS and mint /s/<uuid> handles.
@@ -146,6 +148,20 @@ describe("batch_fetch", () => {
 		const now = Math.floor(Date.now() / 1000);
 		expect(handle.expiry).toBeGreaterThan(now);
 		expect(handle.expiry).toBeLessThanOrEqual(now + 7 * 24 * 60 * 60 + 5);
+	});
+
+	it("clamps an oversized max_bytes to FETCH_TEXT_MAX_BYTES so a wide batch can't OOM the isolate", async () => {
+		const r = await batch_fetch.run({} as any, { urls: ["https://ex.com/bigtext"], max_bytes: 500_000_000 });
+		expect(r.isError).toBeFalsy();
+		const out = JSON.parse(r.content[0].text);
+		expect(out[0].status).toBe(200);
+		// Body is 3MB but the returned text is capped at the 2MB ceiling, not the requested 500MB.
+		expect(out[0].text.length).toBeLessThanOrEqual(FETCH_TEXT_MAX_BYTES);
+		expect(out[0].bytes).toBe(out[0].text.length);
+	});
+
+	it("declares the max_bytes ceiling in its schema", () => {
+		expect((batch_fetch.inputSchema as any).properties.max_bytes.maximum).toBe(FETCH_TEXT_MAX_BYTES);
 	});
 
 	it('as:"url" without the R2 binding fails clearly', async () => {
