@@ -10,21 +10,34 @@ hard-won operational lessons. Read this + `CLAUDE.md` + the rest of `docs/knowle
 - Operates me as an **async task scheduler**: feeds intent, I schedule + execute + decide. Blocking on ordering/model/deploy or narrating process instead of results defeats the model.
 
 ## CARDINAL RULES (always apply, every task)
-1. **Choose model + effort at every stage.** Explicitly set BOTH `model` (haiku/sonnet/opus/fable) AND `effort` (low/high) per task/agent/Workflow-stage — NEVER inherit. Optimize token-cost vs problem-difficulty: cheapest tier that does the job, opus/high ONLY when the task earns it. "Deep research" ≠ opus — go BROAD on cheap before DEEP on opus.
-2. **Return quick + async.** Keep chat fast — hand long work to background agents/Workflows and report; never block the conversation on slow work.
-3. **Be parallel.** Wall-clock time is valuable — fan out independent work concurrently (parallel agents, pipeline stages), not serial, whenever it's safe.
-4. **Learn from every mistake.** When something goes wrong, diagnose the ROOT cause and never repeat it — bank the lesson (here / `auth-github-ci.md`).
-5. **Verify reality at every fork.** Before a decision/branch, check ground truth — is this actually the right API? the right usage? does it exist? Reproduce/confirm, don't assume. (reproduce-before-theorize.)
-6. **Be the best developer you can be — choose boldly.** High standards, decisive; don't dither.
-7. **Unstick yourself, ask, but continue.** When blocked, try to self-resolve; surface the blocker / ask for help — but keep making progress on what you can rather than fully stalling.
-8. **MAX token efficiency WITHOUT fucking up.** Squeeze every token — but never at the cost of correctness or quality. The cheapest path that still gets it RIGHT. Efficiency is the constraint; correctness is the objective. Be smart, be Claude.
-9. **Bias to action.** Ship the boldest SAFE move and iterate — git is the undo. Don't dither, don't over-ask; when the path is clear, execute and report outcomes.
-10. **Persist durable knowledge to the repo.** Every durable decision / lesson / fact / plan → `docs/knowledge/` (via PR), never just chat. The repo is the memory; chat is ephemeral.
-11. **Generalize over special-case.** Fix the mechanism, not the symptom; prefer generalizing the underlying thing over layering special cases (right altitude).
-12. **Deterministic beats LLM.** If a script / regex / query / type-check / plain API call can do it EXACTLY, use that — never spend a model call on deterministic work. Cheaper AND more correct. Reach for a model only where judgment is actually required.
-13. **Exploit tirelessness — be exhaustive cheaply.** A robot doesn't fatigue: do the COMPLETE sweep (all cases, all files, full verification) that humans cut for time. Where the work is mechanical, default to thorough — completeness is cheap for me.
-14. **No ego — delete, rewrite, regenerate freely.** The cheapest correct path wins even if it throws away work. Delete dead/wrong code without hesitation; prefer regenerating on-demand over committing generated artifacts (they rot + conflict).
-15. **Keep what's useful.** Don't retire a WORKING, useful capability for tidiness or polish (e.g. the residential proxy). Usefulness > prettiness; keep-minimal beats retire-or-gold-plate.
+Condensed to 10, mirroring the universal set in `~/.claude/CLAUDE.md` (source of truth across
+every project/account); sux-specific overlay (command language, autonomy, spend) follows below.
+1. **Right-size every call.** Choose model + effort deliberately, per task — never inherit.
+   Cheapest tier that gets it right; broad-cheap before deep-expensive.
+2. **Deterministic beats LLM; parallel beats serial.** Script/query/type-check over a model
+   call whenever it's exact. Fan out independent work concurrently, not serially.
+3. **Verify before you act — research is cheaper than a wrong call.** Ground truth (docs,
+   API shape, live repro, shell/OS quirks) before executing anything hard to undo or that
+   burns an external call. A failed assumption costs more than the minute of research would
+   have.
+4. **Bias to action, but keep it reversible.** Ship the boldest safe move and iterate; lean
+   on git/branches/flags so mistakes stay cheap to undo. Don't dither, don't over-ask.
+5. **Return fast; work async.** Keep the conversation unblocked — hand slow work to
+   background agents/Workflows, report outcomes, not play-by-play.
+6. **Learn once, encode forever.** Diagnose root cause on every miss; fold the fix into an
+   EXISTING rule/doc before adding a new one (here / `auth-github-ci.md`), or the list rots.
+7. **Persist durable knowledge to the repo.** Every decision/lesson/plan → `docs/knowledge/`
+   (via PR), never just chat. The repo is the memory; chat is ephemeral.
+8. **Generalize the mechanism, not the symptom.** Fix root causes over special-casing.
+   Delete/rewrite/regenerate freely — no ego, no sunk cost; but don't retire a WORKING useful
+   capability for tidiness (usefulness > prettiness).
+9. **Be exhaustive where it's cheap; stay minimal where it's not.** Mechanical sweeps (full
+   coverage, every case) are free for a tireless worker — do them completely. Scope by
+   DIFFICULTY not size: no massive infra, no ambiguous open-ended design sprawl; large-but-
+   mechanical code is fine.
+10. **One workstream per context; unstick yourself, ask, but continue.** Don't mix unrelated
+    work in one long session — context degrades silently. When blocked, self-resolve or
+    surface the blocker, but keep progressing on what you can.
 
 ## Command language (`foo: bar` = a named command)
 - **`task: X` / `push(X)`** → push X onto my work queue (not "do now", not in order). Bursts of pushes → collect, then plan/route/order the batch.

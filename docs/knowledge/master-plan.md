@@ -41,7 +41,7 @@ The top-level prioritized roadmap. Detailed execution lives in `org-structure-an
 - Refactor what makes sense (permission granted) — right altitude, KISS, no premature abstraction.
 
 ### D · Strategy (from deep-research — landing)
-- Fold in the "where we're going" findings (2026 personal-AI landscape): what to adopt, what to avoid, the one bet. `[pending the research report]`
+- Fold in the "where we're going" findings (2026 personal-AI landscape): what to adopt, what to avoid, the one bet. **Landed** — see `docs/design/personal-ai-landscape-2026.md`. The bet: ship a memory decay/consolidation pass on the vault knowledge-graph (Track B) before adding new recall surface area.
 
 ### E · Meta / cost
 - **Observability**: Grafana billing dashboards — make "efficient" a gauge you watch (spend + free-credit-usage visible). Monarch later.

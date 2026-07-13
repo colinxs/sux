@@ -1,6 +1,6 @@
 # CLAUDE.md — working in sux-mcp
 
-sux is a Cloudflare Worker MCP server behind one `/mcp` front door (a suite of composable fns — see `sux/FUNCTIONS.md` / call `sux()` for the live inventory) + personal-data namespaces (vault/mail/files) reached as front verbs (`vault_`/`mail_`/`files_`) on that same connector. The former per-domain `/<domain>/mcp` connectors are retired — their routes stay dormant for back-compat, dispatched by the front verbs. Deep architecture lives in Claude memory (`sux-mcp-namespaces`, `knowledge-core-decisions`); this file is **how we work**, not what we're building.
+sux is a Cloudflare Worker MCP server behind one `/mcp` front door (a suite of composable fns — see `sux/FUNCTIONS.md` / call `sux()` for the live inventory) + personal-data namespaces (vault/mail/files) reached as front verbs (`vault_`/`mail_`/`files_`) on that same connector. The former per-domain `/<domain>/mcp` connectors are retired — their routes stay dormant for back-compat, dispatched by the front verbs. Deep architecture lives in `docs/knowledge/patterns-and-conventions.md`; this file is **how we work**, not what we're building. Universal cross-project rules live in `~/.claude/CLAUDE.md`.
 
 Guiding principle: **git is the undo, CI is the gate, review is the net** — so we move fast and unblocked, and lean on those three instead of asking permission.
 
@@ -53,6 +53,13 @@ the wiki. Run `npm test && npm run type-check` locally before pushing.
 - **`/fast` (fast-mode Opus)** for tight edit→run loops — same model, faster output, no quality drop.
 - **Sonnet — mechanical/bulk fan-out** (grounding reads, scaffolding, formatting). In workflows: `ground` stage → Sonnet/medium, `design`+`verify`+synthesis → Opus/high. Keep the judgment on Opus, the legwork on Sonnet.
 - **Permissions: `bypassPermissions` is the default here** (`.claude/settings.local.json`) — deliberate, because git + the CI gates + `/code-review ultra` are the real guardrails. Keep it; don't add prompt friction.
+
+## Known gotcha
+
+- **Stale `.claude/worktrees/*` silently break `git checkout <branch>`** — it no-ops if that
+  branch is held by another worktree, and a following rebase/push then operates on the WRONG
+  branch. Drain/rebase PRs from a **detached scratch worktree** (`git worktree add --detach
+  $SCRATCH origin/<br>` → rebase → `push HEAD:<br>`), never a plain checkout.
 
 ## House style
 
