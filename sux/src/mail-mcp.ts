@@ -8,9 +8,11 @@ import { buildVEvent, buildVTodo, CALDAV_NOT_CONFIGURED, type CalendarRef, calda
 import { htmlToMd } from "./fns/_markup";
 import { errMsg } from "./fns/_util";
 
-// The mail MCP server — the ergonomic Fastmail surface, served at /mail/mcp behind
-// the same workers-oauth-provider flow, so it appears as its own "mail" connector in
-// claude.ai / mobile / desktop (zero new public surface, zero new infra). Mirrors
+// The mail MCP server — the ergonomic Fastmail surface, reached through the `mail_`
+// (and `cal_`/`contact_`) front verbs on the one /mcp connector, behind the same
+// workers-oauth-provider flow (zero new public surface, zero new infra). The old
+// /mail/mcp connector is retired — its route stays dormant for back-compat but ships
+// no plugin; front verbs dispatch into these handlers now. Mirrors
 // vault-mcp.ts: a handful of tight, handle-disciplined tools that compile down to the
 // raw `jmap` conduit (fns/jmap.ts) — which stays exposed here as the escape hatch, so
 // the whole JMAP protocol (MaskedEmail, Calendars, Contacts, custom methods) is one

@@ -9,9 +9,11 @@ import { evalFilter, extractTags, extractWikilinks, type Filter, frontmatterMatc
 
 // The vault MCP server — our rolled-own obsidian-web-mcp (prior art:
 // github.com/jimprosser/obsidian-web-mcp), kept on OUR Workers implementation.
-// Served at /vault/mcp behind the same workers-oauth-provider flow claude.ai
-// already accepts for /mcp, so it appears as its own "vault" connector in
-// claude.ai / mobile / desktop with zero new public surface and zero new infra.
+// Reached through the `vault_` front verbs on the one /mcp connector (behind the
+// same workers-oauth-provider flow claude.ai accepts for /mcp), with zero new
+// public surface and zero new infra. The old /vault/mcp connector is retired —
+// its route stays dormant for back-compat but ships no plugin; front verbs
+// dispatch into these handlers now.
 //
 // The source of truth is in the cloud: tools read and write the git store
 // (GitHub colinxs/vault — every write a revertible commit, KV-cached) and work

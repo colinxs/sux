@@ -365,8 +365,9 @@ export function toolList(fns: Fn[]): Array<{ name: string; description: string; 
 //   store — blob storage        · preferences/issue — tell sux what you want / what broke
 //   vault/mail/files/cal/contact — the personal-data namespaces, dispatched into the
 //     existing VAULT_TOOLS/MAIL_TOOLS/FILES_TOOLS handlers so the whole digital-life
-//     spine is reachable on the ONE /mcp connector (every surface, incl. mobile),
-//     not only via the separate /<ns>/mcp connectors.
+//     spine is reachable on the ONE /mcp connector (every surface, incl. mobile). The
+//     old per-namespace /<ns>/mcp connectors are retired: front verbs are how you reach
+//     them now (their routes stay dormant for back-compat).
 export const FRONT_VERBS = new Set<string>([
 	"sux", "fn",
 	"search", "scrape", "shop",

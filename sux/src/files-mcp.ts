@@ -7,9 +7,11 @@ import { fingerprint, ledger } from "./ledger";
 import { staged } from "./stage";
 import { errMsg } from "./fns/_util";
 
-// The files MCP server — the personal blob workspace, served at /files/mcp behind
-// the same workers-oauth-provider flow (a fourth connector; zero new infra). Mirrors
-// vault-mcp / mail-mcp: tight, handle-disciplined tools over the built `dropbox` fn
+// The files MCP server — the personal blob workspace, reached through the `files_`
+// front verbs on the one /mcp connector, behind the same workers-oauth-provider flow
+// (zero new infra). The old /files/mcp connector is retired — its route stays dormant
+// for back-compat but ships no plugin; front verbs dispatch into these handlers now.
+// Mirrors vault-mcp / mail-mcp: tight, handle-disciplined tools over the built `dropbox` fn
 // (App-folder scoped — it can ONLY see /Apps/<app>/, so scope is the safety wall).
 // The raw `dropbox` fn is exposed here as the escape hatch. Design: docs/proposals/files.md
 // (Mode A — the bidirectional app workspace). Mode B (whole-Dropbox) rides a SEPARATE
