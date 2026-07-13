@@ -1,4 +1,4 @@
-import { type Fn, fail, ok, type RtEnv } from "../registry";
+import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { oj } from "./_util";
 import { retailRender } from "../retail-render";
 import { decodeEntities, normalizeMoney, type RetailProduct } from "./_retail";
@@ -150,11 +150,11 @@ export const amazon: Fn = {
 		let asin = "";
 		if (action === "product") {
 			asin = String(args?.asin ?? "").trim().toUpperCase();
-			if (!isAsin(asin)) return fail("action=product requires a valid 10-char `asin`.");
+			if (!isAsin(asin)) return failWith("bad_input", "action=product requires a valid 10-char `asin`.");
 			url = `https://www.amazon.com/dp/${asin}`;
 		} else {
 			const term = String(args?.term ?? "").trim();
-			if (!term) return fail("action=search requires a `term`.");
+			if (!term) return failWith("bad_input", "action=search requires a `term`.");
 			url = `https://www.amazon.com/s?k=${encodeURIComponent(term)}`;
 		}
 		const limit = Math.min(40, Math.max(1, Number(args?.limit) || 15));
@@ -162,7 +162,7 @@ export const amazon: Fn = {
 		// cf-residential+stealth is the default retailRender backend and a PROVEN pass
 		// for Amazon's AWS WAF (verified live); the flaky mac node stays as the fallback.
 		const r = await retailRender(env, { url, block_resources: true, wait_until: "networkidle2", wait_ms: 6000 });
-		if (!r.ok) return fail(`amazon: blocked or render failed — ${r.error}`);
+		if (!r.ok) return failWith("blocked", `amazon: blocked or render failed — ${r.error}`);
 
 		let products = action === "product" ? fromProduct(r.body, asin) : fromSearch(r.body);
 		products = products.filter((p) => p.id && p.title).slice(0, limit);
@@ -172,9 +172,9 @@ export const amazon: Fn = {
 			// served its captcha/robot interstitial, say so — otherwise it parsed clean
 			// but the layout changed.
 			if (CHALLENGE_MARKERS.some((m) => r.body.includes(m))) {
-				return fail("amazon: Amazon challenged the request (Robot Check / captcha) — try again or narrow the query.");
+				return failWith("blocked", "amazon: Amazon challenged the request (Robot Check / captcha) — try again or narrow the query.");
 			}
-			return fail(NO_PRODUCTS_MSG);
+			return failWith("layout_change", NO_PRODUCTS_MSG);
 		}
 		return ok(oj({ retailer: "amazon", action, count: products.length, products }));
 	},

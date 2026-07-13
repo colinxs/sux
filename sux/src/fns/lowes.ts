@@ -1,6 +1,6 @@
 import { looksBlocked, retailRender } from "../retail-render";
 import { oj } from "./_util";
-import { type Fn, fail, ok, type RtEnv } from "../registry";
+import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { decodeEntities, normalizeMoney, type RetailProduct } from "./_retail";
 
 // Lowe's has no public product API and serves its catalog from a client-side React
@@ -178,7 +178,7 @@ export const lowes: Fn = {
 
 		if (action === "product") {
 			const itemId = String(args?.item_id ?? "").trim();
-			if (!itemId) return fail("action=product requires an `item_id`.");
+			if (!itemId) return failWith("bad_input", "action=product requires an `item_id`.");
 			const r = await retailRender(env, {
 				url: `https://www.lowes.com/pd/-/${encodeURIComponent(itemId)}`,
 				block_resources: true,
@@ -186,16 +186,19 @@ export const lowes: Fn = {
 				wait_ms: 6000,
 				timeout_ms: 55000,
 			});
-			if (!r.ok) return fail(`lowes: blocked or render failed — ${r.error}`);
+			if (!r.ok) return failWith("blocked", `lowes: blocked or render failed — ${r.error}`);
 			// A product must at least carry a title or a price to be worth returning.
 			const products = fromProductPage(r.body, itemId).filter((p) => p.id && (p.title || p.price)).slice(0, limit);
-			if (products.length === 0) return fail(looksBlocked(r.body, 1000) ? BLOCKED_MSG : NO_PRODUCTS_MSG);
+			if (products.length === 0) {
+				const blocked = looksBlocked(r.body, 1000);
+				return failWith(blocked ? "blocked" : "layout_change", blocked ? BLOCKED_MSG : NO_PRODUCTS_MSG);
+			}
 			return ok(oj({ retailer: "lowes", action, count: products.length, products }));
 		}
 
 		// Default: search.
 		const term = String(args?.term ?? "").trim();
-		if (!term) return fail("action=search requires a `term`.");
+		if (!term) return failWith("bad_input", "action=search requires a `term`.");
 
 		const r = await retailRender(env, {
 			url: `https://www.lowes.com/search?searchTerm=${encodeURIComponent(term)}`,
@@ -204,13 +207,16 @@ export const lowes: Fn = {
 			wait_ms: 6000,
 			timeout_ms: 55000,
 		});
-		if (!r.ok) return fail(`lowes: blocked or render failed — ${r.error}`);
+		if (!r.ok) return failWith("blocked", `lowes: blocked or render failed — ${r.error}`);
 
 		// Prefer an embedded state blob (richer), fall back to DOM anchor parsing.
 		let products = fromStateBlob(r.body);
 		if (products.length === 0) products = fromAnchors(r.body);
 		products = products.filter((p) => p.id && p.title).slice(0, limit);
-		if (products.length === 0) return fail(looksBlocked(r.body, 1000) ? BLOCKED_MSG : NO_PRODUCTS_MSG);
+		if (products.length === 0) {
+			const blocked = looksBlocked(r.body, 1000);
+			return failWith(blocked ? "blocked" : "layout_change", blocked ? BLOCKED_MSG : NO_PRODUCTS_MSG);
+		}
 		return ok(oj({ retailer: "lowes", action: "search", count: products.length, products }));
 	},
 };
