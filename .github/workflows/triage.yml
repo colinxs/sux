@@ -1,0 +1,18 @@
+name: Triage
+
+# Investigator stage: independently re-checks every untriaged issue (fixer's proposals AND
+# ones a human filed), assigns its own type + confidence, opt-out-queues most for build
+# (fires issue-build.yml via the queued-for-build label). Fires on a newly-filed issue;
+# workflow_dispatch drains the whole untriaged backlog on demand. Runs on the Claude Pro/Max
+# subscription (CLAUDE_CODE_OAUTH_TOKEN).
+# Reusable workflow: SuxOS/.github/.github/workflows/triage.yml
+
+on:
+  issues:
+    types: [opened, reopened]
+  workflow_dispatch:
+
+jobs:
+  triage:
+    uses: SuxOS/.github/.github/workflows/triage.yml@main
+    secrets: inherit

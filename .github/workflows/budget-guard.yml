@@ -3,8 +3,9 @@ name: Actions budget guard
 # The missing spend brake. Nothing else in the pipeline watches the monthly GitHub Actions
 # minute bill, so a stuck autofix loop or a burst of PRs could quietly run it up. Hourly (and
 # on demand) this reads the account's used-minutes and, if it crosses a soft cap, PAUSES only
-# the DISCRETIONARY spenders — the @claude review/mention bot (claude.yml) and the CI autofix
-# bot (claude-autofix.yml) — leaving every safety/deploy gate untouched. Two brakes, belt +
+# the DISCRETIONARY spenders — the @claude review/mention bot (claude.yml), the CI autofix bot
+# (claude-autofix.yml), and the propose→investigate→build backlog pipeline (fixer.yml /
+# triage.yml / issue-build.yml) — leaving every safety/deploy gate untouched. Two brakes, belt +
 # suspenders:
 #   1. it sets the repo variable ACTIONS_BUDGET_PAUSED=true — a race-free fast-path the two
 #      discretionary jobs also gate their `if:` on (instant, self-documenting), and
@@ -35,7 +36,7 @@ env:
   BUDGET: "2500" # soft cap: pause discretionary spenders at/above this many used minutes
   RESUME_BELOW: "2400" # resume only once used minutes drop back under this (hysteresis)
   ISSUE_TITLE: "Actions budget — discretionary spenders paused"
-  DISCRETIONARY: "claude.yml claude-autofix.yml" # the ONLY workflows this guard ever pauses
+  DISCRETIONARY: "claude.yml claude-autofix.yml fixer.yml triage.yml issue-build.yml" # the ONLY workflows this guard ever pauses
 
 jobs:
   guard:
@@ -92,10 +93,11 @@ jobs:
               "" \
               "- \`claude.yml\` (PR review + @claude mention bot)" \
               "- \`claude-autofix.yml\` (CI autofix bot)" \
+              "- \`fixer.yml\` / \`triage.yml\` / \`issue-build.yml\` (backlog pipeline)" \
               "" \
               "Safety/deploy gates (CI, Deploy, security-review, audit, secret-scan) are untouched and still run." \
               "" \
-              "Auto-resumes once used minutes drop below **$RESUME_BELOW**. To resume now: \`gh workflow enable claude.yml && gh workflow enable claude-autofix.yml\` and set the repo variable \`ACTIONS_BUDGET_PAUSED=false\`.")
+              "Auto-resumes once used minutes drop below **$RESUME_BELOW**. To resume now: \`for w in claude claude-autofix fixer triage issue-build; do gh workflow enable \$w.yml; done\` and set the repo variable \`ACTIONS_BUDGET_PAUSED=false\`.")
             if [ -n "$existing" ]; then
               gh issue edit "$existing" --repo "$REPO" --body "$body" && echo "refreshed tracking issue #$existing"
             else

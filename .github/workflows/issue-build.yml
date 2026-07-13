@@ -1,0 +1,24 @@
+name: Issue build
+
+# Collate + build stage: clusters queued-for-build issues (n issues -> m PRs, never n->1;
+# confidence-pure), fans out one build session + PR per cluster. confidence:high clusters get
+# `automerge`, the rest `needs-review`. Fires when queued-for-build is applied (by triage.yml
+# or a human); workflow_dispatch drains the queue on demand. Runs on the Claude Pro/Max
+# subscription (CLAUDE_CODE_OAUTH_TOKEN). PRs flow into the existing automerge/merge-queue.
+# Reusable workflow: SuxOS/.github/.github/workflows/issue-build.yml
+
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+
+jobs:
+  issue-build:
+    if: github.event_name != 'issues' || github.event.label.name == 'queued-for-build'
+    uses: SuxOS/.github/.github/workflows/issue-build.yml@main
+    with:
+      gates-summary: |
+        npm run type-check · npm test · npm run check:node ·
+        npm run gen:index (commit the regenerated index.ts) ·
+        npx wrangler deploy --dry-run --config sux/wrangler.jsonc
+    secrets: inherit
