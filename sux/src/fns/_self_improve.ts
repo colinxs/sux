@@ -98,7 +98,7 @@ const FINDINGS_KEY = "sux:selfimprove:findings";
 const FINDINGS_CAP = 200;
 const COUNTER_TTL_SECONDS = 60 * 60 * 48; // two days — a day-counter needs no longer
 
-const DEFAULT_REPO = "colinxs/sux";
+const DEFAULT_REPO = "SuxOS/sux";
 const SELF_IMPROVE_LABEL = "self-improve";
 // The one auto-merge-eligible label (matches automerge.yml's eligible set). Attached ONLY on
 // the HIGH + canAutoMerge path; every other route deliberately withholds it.

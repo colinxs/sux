@@ -26,7 +26,7 @@ const UA_OAUTH = "sux/1.0 (by /u/sux)";
 
 // Keyless public-JSON base + its own descriptive User-Agent.
 const PUBLIC = "https://www.reddit.com";
-const UA_KEYLESS = "sux/1.0 (+https://github.com/colinxs/sux)";
+const UA_KEYLESS = "sux/1.0 (+https://github.com/SuxOS/sux)";
 
 
 /** Sentinel for a Reddit block on the keyless proxy path (403 / empty / non-JSON
