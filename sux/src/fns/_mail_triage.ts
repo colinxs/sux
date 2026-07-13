@@ -316,6 +316,10 @@ export type TriageReport = {
 	digest_written?: boolean;
 	undo?: string;
 	note?: string;
+	// Set only when the digest vault-append throws (caught, not rethrown); runSubJob reads this
+	// to flip the heartbeat, since the digest is the job's visible output. Benign no-write cases
+	// (nothing to act on, already written this cycle) leave it unset.
+	error?: string;
 };
 
 const numClamp = (v: unknown, lo: number, hi: number, dflt: number): number => Math.min(hi, Math.max(lo, Math.floor(Number(v) || dflt)));
@@ -473,6 +477,7 @@ export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps):
 
 	// Digest: best-effort, idempotent per cycle id (a double cron-fire won't double-append).
 	let digestWritten = false;
+	let digestError: string | undefined;
 	if (acted.length || suggested.length) {
 		const dled = ledger(env, "mail_triage_digest");
 		const digKey = `digest::${cycle}`;
@@ -481,13 +486,15 @@ export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps):
 				await deps.digestAppend(env, `Daily/${vaultToday(env.VAULT_TZ)}.md`, buildDigest({ cycle, mailbox, actEnabled: actAllowed, acted, suggested }));
 				await dled.mark(digKey);
 				digestWritten = true;
-			} catch {
-				// A vault-append failure must never fail the cycle — the moves are already done + logged.
+			} catch (e) {
+				// A vault-append failure must never fail the cycle — the moves are already done +
+				// logged — but surface it so the heartbeat flips (the digest is the visible output).
+				digestError = `digest append failed: ${errMsg(e)}`;
 			}
 		}
 	}
 
-	return { cycle, mailbox, act_enabled: actAllowed, scanned, new: acted.length + suggested.length, skipped_seen: skipped, acted, suggested, truncated, digest_written: digestWritten, undo: cycle };
+	return { cycle, mailbox, act_enabled: actAllowed, scanned, new: acted.length + suggested.length, skipped_seen: skipped, acted, suggested, truncated, digest_written: digestWritten, undo: cycle, ...(digestError ? { error: digestError } : {}) };
 }
 
 // The reply-draft system prompt: a SHORT holding reply, saved as a DRAFT for Colin's review (never

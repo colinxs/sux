@@ -96,6 +96,10 @@ export type BriefingReport = {
 	digest_written?: boolean;
 	undo?: string;
 	note?: string;
+	// Set only when the digest vault-append throws (caught, not rethrown); runSubJob reads this
+	// to flip the heartbeat, since the digest is the job's visible output. Benign no-write cases
+	// (dry-run, already written this cycle) leave it unset.
+	error?: string;
 };
 
 const numClamp = (v: unknown, lo: number, hi: number, dflt: number): number => Math.min(hi, Math.max(lo, Math.floor(Number(v) || dflt)));
@@ -403,6 +407,7 @@ export async function runBriefing(env: RtEnv, opts: BriefingOpts, deps: Briefing
 
 	let drafts: Array<{ id: string; to?: string; subject?: string }> = [];
 	let digestWritten = false;
+	let digestError: string | undefined;
 
 	if (!dryRun) {
 		if (stageEnabled && g.flagged.length) {
@@ -417,8 +422,10 @@ export async function runBriefing(env: RtEnv, opts: BriefingOpts, deps: Briefing
 				await deps.digestAppend(env, `Daily/${vaultToday(env.VAULT_TZ)}.md`, buildDigestBlock({ cycle, date, stageEnabled, digest, drafts }));
 				await dled.mark(digKey);
 				digestWritten = true;
-			} catch {
-				// A vault-append failure must never fail the cycle — the digest text is already returned.
+			} catch (e) {
+				// A vault-append failure must never fail the cycle — the digest text is already
+				// returned — but surface it so the heartbeat flips (the append is the visible output).
+				digestError = `digest append failed: ${errMsg(e)}`;
 			}
 		}
 	}
@@ -439,6 +446,7 @@ export async function runBriefing(env: RtEnv, opts: BriefingOpts, deps: Briefing
 		drafts_staged: drafts.length,
 		digest_written: digestWritten,
 		undo: cycle,
+		...(digestError ? { error: digestError } : {}),
 	};
 }
 
