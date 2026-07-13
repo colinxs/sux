@@ -284,8 +284,9 @@ cron trigger `0 13 * * *`.
   `render` mint).
 
 ### Deploy & gate
-- Deploy: `npm run deploy:sux`. Gate before deploying: `npm run type-check &&
-  npm test` (both must be green). Regenerate docs: `npm run docs`. Regenerate
+- Deploy: `npm run deploy:sux`. Gate before deploying: `npm run ci` (the whole
+  CI gate — type-check, tests, blob/index/wiki/skill drift, dispatcher-doc lint,
+  dry-run deploy — all green). Regenerate docs: `npm run docs`. Regenerate
   the fn registry after adding/removing a fn: `npm run gen:index`.
 
 ### Mac render service

@@ -1,0 +1,108 @@
+name: Auto-rebase resolver
+
+# The documented-but-missing piece of the autonomous pipeline (docs/design/
+# autonomous-pipeline.md advertises "fixes red CI, resolves conflicts, reviews, and
+# merges" — nothing did the rebase). When main advances, an auto-merge-eligible PR that
+# is BEHIND main can sit unmergeable; this rebases it onto main and force-pushes so CI
+# re-fires on the fresh base.
+#
+# Push with the SUX_BOT App token, NOT GITHUB_TOKEN: GitHub suppresses workflow runs for
+# GITHUB_TOKEN pushes, so a GITHUB_TOKEN force-push would never re-fire CI and native
+# auto-merge would stall — same reason automerge.yml / claude-autofix.yml use the App token.
+#
+# Safety: trusted authors only (OWNER/MEMBER/COLLABORATOR, never a fork), skips `hold` /
+# `needs-human`, and on a merge conflict it tags `needs-human` + comments rather than
+# guessing at a resolution. Inert (no-op) unless SUX_BOT_APP_ID / SUX_BOT_PRIVATE_KEY are set.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 */6 * * *" # every 6h — catch PRs that fell behind between main pushes
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: auto-rebase
+  cancel-in-progress: false
+
+jobs:
+  rebase:
+    if: vars.ACTIONS_BUDGET_PAUSED != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Preflight — need the App creds
+        id: pre
+        env:
+          HAVE_APP: ${{ secrets.SUX_BOT_APP_ID != '' && secrets.SUX_BOT_PRIVATE_KEY != '' }}
+        run: |
+          if [ "$HAVE_APP" != "true" ]; then
+            echo "SUX_BOT App creds not set → auto-rebase inert"; echo "go=false" >> "$GITHUB_OUTPUT"
+          else echo "go=true" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Mint app token
+        if: steps.pre.outputs.go == 'true'
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.SUX_BOT_APP_ID }}
+          private-key: ${{ secrets.SUX_BOT_PRIVATE_KEY }}
+
+      - name: Checkout (full history for rebase)
+        if: steps.pre.outputs.go == 'true'
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Rebase eligible behind-main PRs onto main
+        if: steps.pre.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -uo pipefail
+          git config user.name "sux-bot[bot]"
+          git config user.email "sux-bot[bot]@users.noreply.github.com"
+          git fetch origin main --quiet
+
+          # Only same-repo (never fork), open, non-draft PRs from a trusted author. The
+          # author-association gate mirrors automerge.yml — a fork PR must never be pushed to.
+          prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --base main \
+                  --json number,headRefName,headRefOid,isDraft,isCrossRepository,authorAssociation,labels \
+                  --jq '[.[] | select(.isDraft == false and .isCrossRepository == false
+                          and (.authorAssociation | IN("OWNER","MEMBER","COLLABORATOR")))]')
+          count=$(echo "$prs" | jq 'length')
+          echo "candidate PRs: $count"
+
+          echo "$prs" | jq -c '.[]' | while read -r pr; do
+            num=$(echo "$pr" | jq -r .number)
+            branch=$(echo "$pr" | jq -r .headRefName)
+            labels=$(echo "$pr" | jq -r '[.labels[].name] | join(",")')
+
+            case ",$labels," in
+              *,hold,*|*,needs-human,*) echo "PR #$num: hold/needs-human → skip"; continue;;
+            esac
+
+            git fetch origin "$branch" --quiet || { echo "PR #$num: could not fetch $branch → skip"; continue; }
+
+            # Already up to date with main? (no commits from main missing on the branch)
+            behind=$(git rev-list --count "origin/${branch}..origin/main")
+            if [ "$behind" -eq 0 ]; then echo "PR #$num: up to date → skip"; continue; fi
+
+            echo "PR #$num ($branch): $behind commit(s) behind main → rebasing"
+            git checkout -B "$branch" "origin/${branch}" --quiet
+            if git rebase origin/main; then
+              git push --force-with-lease origin "$branch"
+              echo "PR #$num: rebased and force-pushed"
+            else
+              git rebase --abort || true
+              echo "PR #$num: merge conflict → tagging needs-human"
+              gh pr edit "$num" --repo "$GITHUB_REPOSITORY" --add-label needs-human 2>/dev/null || true
+              gh pr comment "$num" --repo "$GITHUB_REPOSITORY" \
+                --body "🤖 auto-rebase: this PR is behind \`main\` and rebasing hit a merge conflict I won't guess at. Tagged \`needs-human\` — rebase it by hand, then remove the label." 2>/dev/null || true
+            fi
+            git checkout main --quiet 2>/dev/null || true
+          done

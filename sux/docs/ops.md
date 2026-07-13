@@ -7,7 +7,8 @@ runbook for the two residential machines and the Worker.
 
 - Deployed to `https://suxos.net`.
 - **Deploy:** `npm run deploy:sux` (= `wrangler deploy --config sux/wrangler.jsonc`).
-- **Gate before deploy:** `npm run type-check && npm test` — both green.
+- **Gate before deploy:** `npm run ci` — the full CI gate locally (type-check,
+  tests, blob/index/wiki/skill drift, dispatcher-doc lint, dry-run deploy).
 - **Secrets:** `npm run secret:sux <NAME>` (= `wrangler secret put --config
   sux/wrangler.jsonc`). See the README's Config section for the full list.
   - **Gotcha:** the repo root holds a separate, stale `kagi-mcp` worker. A bare

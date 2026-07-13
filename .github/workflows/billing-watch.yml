@@ -1,0 +1,118 @@
+name: Billing watch
+
+# Weekly usage-vs-limit watch over the three metered meters (GitHub Actions minutes,
+# Cloudflare Workers requests + AI neurons, Anthropic spend estimate) via
+# scripts/billing-check.mjs — the auto-merge pipeline now runs Claude on every PR and the
+# repo is going private (Actions minutes metered), so a runaway meter shouldn't go unseen.
+#
+# A breach is a SIGNAL, not a red X: the job never fails on a breach. Instead it upserts a
+# single tracking issue (append a dated line per breached meter) so it never spams a fresh
+# issue each week. Each meter degrades to a skip when its token is absent, so this is inert-
+# safe — no configured token just means fewer meters, never a failure.
+
+on:
+  schedule:
+    - cron: "0 14 * * 1" # Mondays 14:00 UTC
+  workflow_dispatch:
+    inputs:
+      threshold:
+        description: "Breach percentage (a meter at/above this is 'over')"
+        required: false
+        default: "80"
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: billing-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+
+      - name: Run billing check
+        id: check
+        env:
+          # PAT with read:billing/admin:org for the Actions-minutes meter — optional; the
+          # script degrades that meter to a skip when absent (the default token 403s there).
+          GH_BILLING_TOKEN: ${{ secrets.GH_BILLING_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ANTHROPIC_ADMIN_KEY: ${{ secrets.ANTHROPIC_ADMIN_KEY }}
+          THRESHOLD: ${{ github.event.inputs.threshold || '80' }}
+        run: |
+          set -uo pipefail
+          # A breach exits non-zero on purpose; capture it, don't let it fail the job.
+          node scripts/billing-check.mjs --json --threshold "$THRESHOLD" > billing.json
+          code=$?
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          cat billing.json
+          # Human-readable copy in the step summary for the manual-dispatch case.
+          node scripts/billing-check.mjs --threshold "$THRESHOLD" >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
+
+      - name: Upsert tracking issue on breach
+        if: steps.check.outputs.exit_code != '0'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require("fs");
+            const report = JSON.parse(fs.readFileSync("billing.json", "utf8"));
+            const over = (report.meters || []).filter((m) => m.level === "over");
+            if (!over.length) {
+              core.info("No meter over threshold — nothing to upsert.");
+              return;
+            }
+
+            const title = "chore(billing): usage over threshold";
+            const date = new Date().toISOString().slice(0, 10);
+            const lines = over.map((m) => {
+              const pct = m.pct == null ? "?" : `${m.pct.toFixed(0)}%`;
+              const used = m.unit === "USD" ? `$${m.used}` : `${m.used} ${m.unit}`;
+              const limit = m.unit === "USD" ? `$${m.limit}` : `${m.limit} ${m.unit}`;
+              return `- **${date}** — ${m.name}: ${pct} (${used} / ${limit})${m.note ? ` — ${m.note}` : ""}`;
+            });
+            const section = `#### ${date} (threshold ${report.threshold}%)\n${lines.join("\n")}`;
+
+            const open = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              per_page: 100,
+            });
+            const hit = open.find((i) => !i.pull_request && i.title === title);
+
+            if (hit) {
+              const body = `${hit.body || ""}\n\n${section}`.trim();
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: hit.number,
+                body,
+              });
+              core.info(`Appended breach to issue #${hit.number}.`);
+            } else {
+              const body = [
+                "One or more usage meters crossed the configured threshold.",
+                "`scripts/billing-check.mjs` (Billing watch, weekly) appends a dated section",
+                "here each week the breach persists; close this once usage is back under.",
+                "",
+                section,
+              ].join("\n");
+              const created = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ["chore-safe"],
+              });
+              core.info(`Opened issue #${created.data.number}.`);
+            }

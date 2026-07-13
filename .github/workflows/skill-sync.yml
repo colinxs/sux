@@ -46,7 +46,7 @@ jobs:
           node-version: 24
 
       - name: Check (source-derived, offline)
-        run: node scripts/check-skill-sync.mjs --offline
+        run: npm run check:skill
 
   fix:
     name: Re-mirror plugin skill
@@ -63,7 +63,7 @@ jobs:
           node-version: 24
 
       - name: Re-mirror plugin skill from source
-        run: node scripts/check-skill-sync.mjs --write
+        run: npm run fix:skill
 
       - name: Open or refresh PR if anything changed
         env:

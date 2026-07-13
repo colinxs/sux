@@ -38,7 +38,7 @@ Nothing imports them: `/llms.txt` is served live from the registry, and FUNCTION
 is a human/skill reference. Don't try to commit them (committing them made every
 concurrent PR collide — that's why we stopped). The hybrid wiki MOCs
 (`docs/wiki/MOCs/*`) stay tracked; refresh them with `npm run wiki` when you curate
-the wiki. Run `npm test && npm run type-check` locally before pushing.
+the wiki. Run `npm run ci` (the full CI gate) locally before pushing.
 
 ## Sessions — separate, not shared
 
