@@ -26,7 +26,7 @@ The two corpora have genuinely different authorities and must keep them:
 
 | | (A) repo docs | (B) runtime vault |
 |---|---|---|
-| Home | `colinxs/sux` (**PUBLIC**) — `docs/` + `Home.md` + `llms.txt` | `colinxs/obsidian-vault` (**PRIVATE**) + live Mac |
+| Home | `SuxOS/sux` (**PUBLIC**) — `docs/` + `Home.md` + `llms.txt` | `colinxs/obsidian-vault` (**PRIVATE**) + live Mac |
 | Gate | CI (`check:wiki`, type-check, deploy dry-run), `gen-wiki`, pre-commit hook | git history = undo; KV cache; 409 optimistic-concurrency |
 | Co-versioned with | the sux Worker code | Colin's life, mail digests, `vault_capture` |
 | Conventions | `status/cluster/type/summary` frontmatter, MOCs | `Daily/ Inbox/ Templates/`, no such frontmatter |
@@ -54,7 +54,7 @@ gets it through the *already-built* sux vault MCP — not a filesystem symlink.
    Colin's daily-driver vault with working backlinks/search across both corpora —
    **same inodes, zero copy**. Add `sux/` to the *vault repo's* `.gitignore` so
    obsidian-git never commits the mount into the private repo. Edits to those
-   files are still committed to `colinxs/sux` through the normal branch→PR flow,
+   files are still committed to `SuxOS/sux` through the normal branch→PR flow,
    so CI + `gen-wiki` + the pre-commit hook still gate them. (The sux repo's own
    root `.obsidian/` already lets Colin open the repo directly as a second vault —
    the mount just gives *one unified graph* instead of vault-switching.)
@@ -79,7 +79,7 @@ gets it through the *already-built* sux vault MCP — not a filesystem symlink.
 
 - **Edit a sux doc** (in the vault's `sux/` mount, in the repo-as-vault, or via
   Claude Code) → all touch the *one* file in the sux working tree → committed to
-  `colinxs/sux` via branch→PR→CI (`check:wiki` gates the regenerated
+  `SuxOS/sux` via branch→PR→CI (`check:wiki` gates the regenerated
   [[Functions-MOC]] / [[Status-Dashboard]] / `llms.txt`). The vault repo never
   sees it (gitignored). One copy, one git home → no conflict.
 - **Edit a personal note** (Obsidian, or the sux vault MCP) → committed to

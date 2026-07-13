@@ -22,7 +22,7 @@ The top-level prioritized roadmap. Detailed execution lives in `org-structure-an
 
 ## Tracks (sequenced by worthiness; parallel where safe)
 
-### A · Finish the migration (foundation — first, mostly staged)
+### A · Finish the migration (foundation — first, mostly staged) — **DONE (2026-07-13)**
 1. Drain the PR queue to empty (autonomous, in progress).
 2. Transfer `colinxs/sux → SuxOS/sux`; re-apply branch protection + deploy secrets (runbook).
 3. Repoint the MCP connectors → `suxos.net`.
