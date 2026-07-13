@@ -10,13 +10,11 @@ name: Audit & SBOM
 # supply-chain provenance. On a genuine audit failure, a tracking issue is
 # opened/updated so a Monday CVE trip isn't silently red with nobody watching.
 # Also runs on merge_group so the "npm audit & SBOM" required check reports on the
-# queue's speculative ref (or the merge queue freezes). push excludes gh-readonly-queue/**
-# so it can't collide with the merge_group run on the ref-keyed cancel-in-progress
-# concurrency group.
+# queue's speculative ref (or the merge queue freezes). Push is scoped to `main`
+# (post-merge guard) so a feature branch isn't double-run — its PR already covers it.
 on:
   push:
-    branches-ignore:
-      - "gh-readonly-queue/**"
+    branches: [main]
   pull_request:
   merge_group:
   schedule:

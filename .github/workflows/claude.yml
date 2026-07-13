@@ -25,12 +25,17 @@ permissions:
   actions: read
   id-token: write  # OIDC token-exchange for the Claude app
 
-concurrency:
-  group: claude-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
-  cancel-in-progress: true
+# Per-JOB concurrency, not workflow-level: the mention job (issue_comment) and the
+# review job (pull_request) can both be live on the same PR. A shared workflow-level
+# group with cancel-in-progress made them cancel each other — an @claude mention would
+# kill an in-flight review and vice versa. Distinct groups keep each self-cancelling
+# (a newer mention/review supersedes the prior one) without touching the other job.
 
 jobs:
   mention:
+    concurrency:
+      group: claude-mention-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: true
     # Fire only when a TRUSTED human (@claude) asks — never on the bot's own comments,
     # and never from an external user on this PUBLIC repo (else anyone could drive the
     # write-scoped bot). author_association gates comment + review authors to the repo.
@@ -79,13 +84,23 @@ jobs:
           claude_args: "--max-turns 12 --model sonnet"
 
   review:
+    concurrency:
+      group: claude-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     # Trusted-author PRs only — an external/fork PR must not spin up the review bot.
+    # Cost guard: skip the unprompted auto-review on rubber-stamp chore/docs PRs (the
+    # `chore-safe` label or a chore(/docs( title) — they auto-merge anyway, so paying
+    # Claude to review them is waste. The @claude mention job stays untouched: an
+    # explicit mention always responds, even on a chore PR.
     if: >
       vars.ACTIONS_BUDGET_PAUSED != 'true' &&
       github.event_name == 'pull_request' &&
       github.event.pull_request.draft == false &&
       github.event.sender.type != 'Bot' &&
-      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) &&
+      !contains(github.event.pull_request.labels.*.name, 'chore-safe') &&
+      !startsWith(github.event.pull_request.title, 'chore(') &&
+      !startsWith(github.event.pull_request.title, 'docs(')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

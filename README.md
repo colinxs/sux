@@ -50,10 +50,9 @@ Two artifacts teach Claude to pick the right sux tool for a query:
 `scripts/check-skill-sync.mjs` keeps everything honest **from the repo alone**
 (no live server): `sux/FUNCTIONS.md` matches `npm run docs`, every function is
 named in the skill, and the plugin's `skills/` dir mirrors `.claude/skills/`
-byte-for-byte. Run it with `node scripts/check-skill-sync.mjs --offline`. After
-changing the tool surface, run `npm run docs` and
-`node scripts/check-skill-sync.mjs --write`, then update the skill prose if you
-added a function.
+byte-for-byte. Run it with `npm run check:skill`. After changing the tool
+surface, run `npm run docs` and `npm run fix:skill`, then update the skill prose
+if you added a function.
 
 ## Scripts
 

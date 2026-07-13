@@ -1,16 +1,13 @@
 name: CI
 
-# Triggers on every push and pull request (all branches) — fails on any error.
-# Also runs on merge_group so the "Type-check & build" required check reports on the
-# queue's speculative ref; without it the merge queue would freeze waiting forever.
-# The push trigger EXCLUDES the queue's synthetic gh-readonly-queue/** branches: the
-# merge_group run already covers that ref, and letting push also fire there would share
-# the ref-keyed, cancel-in-progress concurrency group and cancel the merge_group run —
-# a cancelled required check stalls the queue.
+# Runs on every pull request (pre-merge gate on the branch), on push to `main`
+# (post-merge / auto-deploy guard), and on merge_group so the "Type-check & build"
+# required check reports on the queue's speculative ref — without it the merge queue
+# would freeze waiting forever. Push is scoped to `main` so a feature branch isn't
+# double-run (once on push, again on its PR); the PR already covers pre-merge.
 on:
   push:
-    branches-ignore:
-      - "gh-readonly-queue/**"
+    branches: [main]
   pull_request:
   merge_group:
 
@@ -53,6 +50,12 @@ jobs:
       # (fix: npm run gen:index) — a new fn that isn't registered ships silently.
       - name: Function index in sync
         run: npm run gen:index && git diff --exit-code sux/src/fns/index.ts
+
+      # The pre-commit hook regenerates+stages the wiki (Functions-MOC, Status-Dashboard,
+      # llms.txt) but no-ops without npm (rebase-bot / odd env), so a hook-bypassing commit
+      # can land drifted wiki. gen-wiki --check is the CI backstop.
+      - name: Wiki in sync
+        run: npm run check:wiki
 
       # Namespace dispatcher (vault/mail/files/calendar/contact) description strings carry
       # worked example calls like verb({action:'x', param}) — these have drifted from the

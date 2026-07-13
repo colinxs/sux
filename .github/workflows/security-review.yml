@@ -41,6 +41,9 @@ jobs:
     # that label is addable only by trusted write access, and self-improve branches are same-repo
     # (never a fork), so there's no untrusted-checkout surface. Inert in practice until Colin arms
     # SELF_IMPROVE_AUTOMERGE; harmless before then (self-improve PRs simply also get reviewed).
+    # Cost guard: skip the paid opus review on rubber-stamp chore/docs PRs (the
+    # `chore-safe` label or a chore(/docs( title) — they auto-merge anyway. The
+    # merge_group passthrough and self-improve arming paths are unaffected.
     if: >
       github.event_name == 'merge_group' ||
       (
@@ -48,7 +51,10 @@ jobs:
         (
           (
             github.event.sender.type != 'Bot' &&
-            contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
+            contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) &&
+            !contains(github.event.pull_request.labels.*.name, 'chore-safe') &&
+            !startsWith(github.event.pull_request.title, 'chore(') &&
+            !startsWith(github.event.pull_request.title, 'docs(')
           ) ||
           contains(github.event.pull_request.labels.*.name, 'self-improve')
         )
@@ -107,7 +113,11 @@ jobs:
             --allowedTools Read,Grep,Glob,Bash
             --json-schema '{"type":"object","properties":{"critical":{"type":"integer"},"high":{"type":"integer"},"note":{"type":"string"}},"required":["critical","high","note"],"additionalProperties":false}'
       - name: Gate — scoped fail-closed on missing verdict; block on high/critical
-        if: steps.pre.outputs.go == 'true'
+        # always() so a CRASHED reviewer step (infra failure) still runs the gate and takes
+        # the same advisory/blast-radius path as a MISSING verdict, instead of skipping the
+        # gate and failing the job closed on every PR. Matches this file's documented
+        # advisory-on-infra-failure intent (commit f7feb91).
+        if: always() && steps.pre.outputs.go == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
