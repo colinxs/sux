@@ -198,7 +198,14 @@ async function handleStatus(url: URL, env: RtEnv): Promise<Response> {
 	const raw = await env.OAUTH_KV.get(statusKey(nodeId));
 	if (!raw) return json({ error: "not_found", node_id: nodeId }, 404);
 	const now = Math.floor(Date.now() / 1000);
-	const status = JSON.parse(raw) as StoredStatus;
+	// Parity with readQueue: handleRecovery runs before index.ts's try/catch, so an
+	// unguarded throw here escapes as a raw Worker 5xx instead of a clean JSON error.
+	let status: StoredStatus;
+	try {
+		status = JSON.parse(raw) as StoredStatus;
+	} catch {
+		return json({ error: "corrupt_status", node_id: nodeId }, 500);
+	}
 	const pending = (await readQueue(env, nodeId)).filter((c) => c.expires > now).length;
 	return json({ ok: true, status, pending_commands: pending, server_time: now, age_seconds: now - status.received_at });
 }

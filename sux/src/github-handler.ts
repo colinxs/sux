@@ -239,7 +239,9 @@ function renderHealthHtml(h: any): string {
 		check(nodeOk, "Funnel / node reachable", node.reason ?? "node /status unreachable"),
 		check(routingOk, "Routing live", res && dc && res.ip === dc.ip ? "residential IP == datacenter — falling back to direct" : "requests not exiting via the residential IP"),
 	].join("");
-	const loc = (o: any) => (o ? `${[o.city, o.region, o.country].filter(Boolean).join(", ") || "?"}${o.colo ? " · " + o.colo : ""}` : "—");
+	// Geo comes from the third-party ipwho.is API; escape it like every other value on
+	// this pre-auth, CSP-less page (the static separators pass through esc untouched).
+	const loc = (o: any) => esc(o ? `${[o.city, o.region, o.country].filter(Boolean).join(", ") || "?"}${o.colo ? " · " + o.colo : ""}` : "—");
 
 	// Daily cron heartbeats — a green dot needs BOTH a healthy last run and freshness
 	// (stale ⇒ the sub-job stopped firing, which the ok flag alone can't reveal).
@@ -315,8 +317,8 @@ function renderHealthHtml(h: any): string {
  <div class="row"><span class="k">Proxy URL valid</span><span class="v">${dot(ts.proxy_url_valid)}${ts.configured && !ts.proxy_url_valid ? ' <span class="k">needs https:// scheme</span>' : ""}</span></div>
  <div class="row"><span class="k">Routing residentially</span><span class="v">${dot(ts.routing)} ${ts.routing ? "live" : "falling back to direct"}</span></div>
  <div class="row"><span class="k">Tunnel round-trip</span><span class="v">${ts.tunnel_ms} ms</span></div>
- <div class="row"><span class="k">Residential exit (wrapped)</span><span class="v big">${res ? res.ip : "—"}<br><span class="k">${loc(res)}${res?.org ? " · " + res.org : ""}</span></span></div>
- <div class="row"><span class="k">Datacenter exit (bare)</span><span class="v">${dc ? dc.ip : "—"}<br><span class="k">${loc(dc)}${dc?.org ? " · " + dc.org : ""}</span></span></div>
+ <div class="row"><span class="k">Residential exit (wrapped)</span><span class="v big">${res ? esc(res.ip) : "—"}<br><span class="k">${loc(res)}${res?.org ? " · " + esc(res.org) : ""}</span></span></div>
+ <div class="row"><span class="k">Datacenter exit (bare)</span><span class="v">${dc ? esc(dc.ip) : "—"}<br><span class="k">${loc(dc)}${dc?.org ? " · " + esc(dc.org) : ""}</span></span></div>
 </div>
 
 <div class="card"><h2>cache &amp; routing</h2>
@@ -331,14 +333,14 @@ ${cronCard}
 <div class="card"><h2>tailscale · node <code>tailscaled status</code></h2>
  ${
 		node.available
-			? `<div class="row"><span class="k">Backend</span><span class="v">${dot(node.backendState === "Running")} ${node.backendState}</span></div>
- <div class="row"><span class="k">Hostname</span><span class="v">${node.hostname ?? "—"}</span></div>
- <div class="row"><span class="k">Tailscale IPs</span><span class="v">${(node.tailscaleIPs ?? []).join(", ") || "—"}</span></div>
+			? `<div class="row"><span class="k">Backend</span><span class="v">${dot(node.backendState === "Running")} ${esc(node.backendState)}</span></div>
+ <div class="row"><span class="k">Hostname</span><span class="v">${esc(node.hostname ?? "—")}</span></div>
+ <div class="row"><span class="k">Tailscale IPs</span><span class="v">${esc((node.tailscaleIPs ?? []).join(", ") || "—")}</span></div>
  <div class="row"><span class="k">Online</span><span class="v">${dot(Boolean(node.online))}</span></div>
  <div class="row"><span class="k">Peers</span><span class="v">${node.peersOnline}/${node.peers} online</span></div>
- <div class="row"><span class="k">Version</span><span class="v">${node.version ?? "—"}</span></div>`
+ <div class="row"><span class="k">Version</span><span class="v">${esc(node.version ?? "—")}</span></div>`
 			: `<div class="row"><span class="k">Status</span><span class="v">unavailable</span></div>
- <div class="row"><span class="k">Reason</span><span class="v">${node.reason ?? "—"}</span></div>`
+ <div class="row"><span class="k">Reason</span><span class="v">${esc(node.reason ?? "—")}</span></div>`
 	}
 </div>`;
 }

@@ -41,6 +41,15 @@ const agent = new http.Agent({ keepAlive: true });
 const redact = (p) => SECRET ? p.split(SECRET).join('<secret>') : p;
 const log = (...parts) => console.log(new Date().toISOString(), ...parts);
 
+// Constant-time compare (avoids leaking the path secret via early-exit timing),
+// mirroring tokenEq/timingSafeEq in the Worker. Length mismatch is a rejection.
+const tokenEq = (a, b) => {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+};
+
 function proxy(routeName, who, req, res, url) {
   const route = routes[routeName];
   if (!route) {
@@ -75,10 +84,19 @@ function proxy(routeName, who, req, res, url) {
 
 function makeServer(handler) {
   const server = http.createServer((req, res) => {
-    const url = new URL(req.url, 'http://localhost');
-    const path = url.pathname.replace(/\/+$/, '');
-    if (path === '/healthz') { res.writeHead(200); res.end('ok'); return; }
-    handler(path, req, res, url);
+    // Error boundary: a transient per-request fault (a mid-rotation bearerFile that's
+    // momentarily missing/invalid, a malformed route.upstream) must degrade to one 5xx,
+    // never crash the process and take down every route on both listeners.
+    try {
+      const url = new URL(req.url, 'http://localhost');
+      const path = url.pathname.replace(/\/+$/, '');
+      if (path === '/healthz') { res.writeHead(200); res.end('ok'); return; }
+      handler(path, req, res, url);
+    } catch (err) {
+      log(req.method, redact(req.url || ''), 500, err.code || err.message);
+      if (res.headersSent) { res.end(); return; }
+      res.writeHead(500); res.end('internal error');
+    }
   });
   server.requestTimeout = 0; // SSE streams stay open indefinitely
   server.headersTimeout = 30_000;
@@ -105,7 +123,7 @@ makeServer((path, req, res, url) => {
 if (/^[0-9a-f]{32,}$/.test(SECRET)) {
   makeServer((path, req, res, url) => {
     const m = path.match(/^\/([^/]+)(?:\/([^/]+))?\/mcp$/);
-    if (!m || m[1] !== SECRET) {
+    if (!m || !tokenEq(m[1], SECRET)) {
       log(req.method, redact(url.pathname), 404, '<public>');
       res.writeHead(404); res.end('not found'); return;
     }
