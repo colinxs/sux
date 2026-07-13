@@ -50,14 +50,28 @@ jobs:
           if [ "${{ secrets.ANTHROPIC_API_KEY != '' }}" != "true" ]; then
             echo "ANTHROPIC_API_KEY not set → inert"; echo "go=false" >> "$GITHUB_OUTPUT"
           else echo "go=true" >> "$GITHUB_OUTPUT"; fi
+      # The mention bot can push (when asked to "fix"/"rebase"). Push with the SUX_BOT App
+      # identity, not GITHUB_TOKEN — GitHub suppresses workflow runs for GITHUB_TOKEN pushes,
+      # so a GITHUB_TOKEN-pushed change would never re-fire CI and native auto-merge would
+      # stall. The App token pushes look like a normal user push, so ci.yml fires.
+      - name: Mint app token
+        if: steps.pre.outputs.go == 'true'
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.SUX_BOT_APP_ID }}
+          private-key: ${{ secrets.SUX_BOT_PRIVATE_KEY }}
       - name: Checkout
         if: steps.pre.outputs.go == 'true'
         uses: actions/checkout@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
       - name: Claude respond
         if: steps.pre.outputs.go == 'true'
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ steps.app-token.outputs.token }}
           trigger_phrase: "@claude"
           claude_args: "--max-turns 12 --model sonnet"
 
