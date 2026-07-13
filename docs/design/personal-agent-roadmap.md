@@ -11,6 +11,36 @@ related: ["[[master-plan]]", "[[improvement-backlog]]", "[[autonomous-pipeline]]
 
 # sux as a personal agent
 
+## North star — an executive-function prosthesis, not a productivity app
+
+What this is FOR, in four words: **catch the drops, cut the noise.**
+
+Colin has ADHD. The problem was never too few tools — it's two things: (1)
+high-consequence stuff silently slipping (a prescription lapsing, an appointment
+missed, a payment failing), and (2) overwhelm drowning the signal (a 50-item inbox
+where you can't tell what actually matters). The agent's entire job is the two
+things ADHD makes hardest: **surface the ball about to drop, and quiet everything
+else.**
+
+This is not abstract. One real week (2026-07-13) held, all at once: a filled Rx
+about to return to stock, a therapy enrollment at risk from missed sessions, a
+backlog of unread medical messages, a payment-failure storm plus a questioned
+charge, and an auto-drafted reply to a probable cold-scam. Every one is a *drop
+about to happen* that low visibility + executive-function load makes easy to miss.
+**That** is the product — not another place to type.
+
+**The filter for every feature, forever:** does it *catch a drop* or *cut the
+noise*? If not, it does not ship. This is the anti-bloat contract — no
+reimplementing Gmail / a task app / a note editor, no new UI to open, no storing
+the firehose, no frontier model to sort mail. The interfaces are the apps Colin
+already lives in (Fastmail, Todoist, Obsidian, phone) plus the agent talking
+through drafts / vault notes / push. sux is a Worker that *watches and proposes* —
+never an app he has to remember to open.
+
+Everything below (architecture, cost ladder, workstreams) is just *how* this gets
+delivered cheaply. This section is *why*, and it's the tie-breaker for every
+scoping call.
+
 ## The one idea
 
 sux already contains the **entire kernel of a personal agent** — it just isn't
