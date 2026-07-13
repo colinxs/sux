@@ -5,7 +5,7 @@ cluster: meta
 type: backlog
 summary: "The single ranked top-10 highest-value improvements synthesized from the session's audit backlog, de-duplicated and with in-flight work excluded; each tagged SAFE (auto-deployable) vs UNSAFE (needs review), rough effort, and any in-flight dependency."
 tags: [sux, meta, backlog]
-updated: 2026-07-11
+updated: 2026-07-13
 related: ["[[session-audit-summary]]", "[[design-review-2026-07]]", "[[autonomous-pipeline]]"]
 ---
 
@@ -28,11 +28,11 @@ an in-flight workstream owns; it can't start until that lands.
 |---|---|---|---|---|---|
 | 1 | Share one `looksBlocked` bot-wall detector across lowes/ace/costco | debloat (2A) | **SAFE** | S | none |
 | 2 | Pre-commit hook runs `gen:index` (stage `index.ts`, not just FUNCTIONS.md/wiki) | best-practices (A1) | **SAFE** | S | none |
-| 3 | Remove `winco` (~300 LOC, subsumed by `places`) | debloat (S1) | **SAFE** | S | none |
+| 3 | ~~Remove `winco`~~ — DONE (already removed) | debloat (S1) | SAFE | S | none |
 | 4 | Fold `packCsv` into `_convert.toCsv` (fixes CSV formula-injection) | debloat (2A) | **SAFE** | S–M | after converter wave (`csv.ts`) |
 | 5 | Stage irreversible JMAP send/destroy behind the email-conscience + tone gate | intent (C1/C4/C5) | **UNSAFE** | M | after mail-cal (`_jmap`/`mail-mcp`) |
 | 6 | Unify the 3 destructive-confirm DSLs into one path | best-practices (D1) | **UNSAFE** | M | after mail-cal + vault land |
-| 7 | Remove `geo_fetch` (~119 LOC); fold its streaming byte-cap into `proxy` | debloat (S2) | **SAFE** | S–M | none |
+| 7 | ~~Remove `geo_fetch`~~ — DONE (folded into proxy `x-exit-geo`) | debloat (S2) | SAFE | S–M | none |
 | 8 | Document `GITHUB_TOKEN` scope; reconcile secrets.md ⇄ keys.md | best-practices (C1) | **SAFE** | S | none |
 | 9 | Route Workers-AI through AI Gateway (cache / observe / cost-cap) | best-practices (E1) | **UNSAFE** | M | none |
 | 10 | Enable `noUncheckedIndexedAccess` + add a lint gate (staged) | best-practices (F) | **UNSAFE** | L | none |
