@@ -1,3 +1,13 @@
+---
+title: Generalized cross-tier watchdog + debug + auto-remediation
+status: designed
+cluster: infrastructure
+type: design
+summary: "Design for a cross-tier (router/host/Worker) watchdog + debug + auto-remediation plane that reasserts known-good state in the safe/reversible direction; ~80% rides the already-shipped /health hub + dead-drop rather than a new orchestration framework."
+tags: [sux, infrastructure, watchdog, observability]
+updated: 2026-07-12
+---
+
 # Generalized cross-tier watchdog + debug + auto-remediation
 
 Design only — no code changes. Opinionated, buildable, KISS.
