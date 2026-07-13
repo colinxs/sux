@@ -366,8 +366,18 @@ function quoteBody(mode: string, text: string, src: any): string {
 	return `${text}\n\n${attribution}\n${quoted}`.trimStart();
 }
 
-/** Fetch the mailbox role→id map (inbox/drafts/sent/archive/trash/junk). */
-async function mailboxMap(env: RtEnv): Promise<{ byRole: Record<string, string>; byName: Record<string, string>; list: any[] }> {
+type MailboxMap = { byRole: Record<string, string>; byName: Record<string, string>; list: any[] };
+
+// Per-isolate, short-TTL memo of the mailbox role→id map, keyed on `env`. mail_triage acts one
+// message at a time and each move op refetches this map — a fresh `Mailbox/get` JMAP round trip —
+// so an all-archive cycle over 25 messages fired 25 identical fetches. The role→id layout is
+// effectively stable within a request, so one fetch serves the whole cycle. Disabled under vitest
+// (mirroring _util.ts's FETCH_CACHE) so tests keep deterministic Mailbox/get call counts.
+const MAILBOX_MAP_CACHE = new WeakMap<RtEnv, { at: number; map: MailboxMap }>();
+const MAILBOX_MAP_TTL_MS = 30_000;
+const mailboxMapCacheActive = (): boolean => !(typeof process !== "undefined" && process.env?.VITEST);
+
+async function fetchMailboxMap(env: RtEnv): Promise<MailboxMap> {
 	const resp = await jmapCall(env, { method: "Mailbox/get", args: {} });
 	const list = resultFor(resp, "Mailbox/get")?.list ?? [];
 	const byRole: Record<string, string> = {};
@@ -377,6 +387,16 @@ async function mailboxMap(env: RtEnv): Promise<{ byRole: Record<string, string>;
 		if (m?.name) byName[String(m.name).toLowerCase()] = m.id;
 	}
 	return { byRole, byName, list };
+}
+
+/** Fetch the mailbox role→id map (inbox/drafts/sent/archive/trash/junk), memoized per env. */
+async function mailboxMap(env: RtEnv): Promise<MailboxMap> {
+	if (!mailboxMapCacheActive()) return fetchMailboxMap(env);
+	const hit = MAILBOX_MAP_CACHE.get(env);
+	if (hit && Date.now() - hit.at <= MAILBOX_MAP_TTL_MS) return hit.map;
+	const map = await fetchMailboxMap(env);
+	MAILBOX_MAP_CACHE.set(env, { at: Date.now(), map });
+	return map;
 }
 
 /** Resolve a mailbox arg (a role like "inbox", a display name, or a raw id) to an id. */
