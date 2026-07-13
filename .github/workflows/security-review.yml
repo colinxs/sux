@@ -53,35 +53,56 @@ jobs:
           else echo "go=true" >> "$GITHUB_OUTPUT"; fi
       - name: Checkout
         if: steps.pre.outputs.go == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with: { fetch-depth: 0 }
       - name: Claude security review
+        id: claude
         if: steps.pre.outputs.go == 'true'
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@e90deca47693f9457b72f2b53c17d7c445a87342 # v1
+        env:
+          # 1-hour prompt-cache TTL (default is 5 min). The autofix→CI→re-review loop and
+          # back-to-back PR reviews span >5 min, so the stable prefix (system prompt + tools
+          # + CLAUDE.md) cache-hits at 0.1x instead of expiring. Caching itself is on by default.
+          ENABLE_PROMPT_CACHING_1H: "1"
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |
-            Do a SECURITY review of this PR's diff vs the base branch. This repo is a
-            PUBLIC Cloudflare Worker + a live autonomous CI/CD pipeline, so weigh:
-            secret handling/exposure, auth-gate bypass, SSRF, injection (incl. shell
-            injection via `${{ github.event.* }}` in workflows), GitHub Actions abuse
-            (pull_request_target + untrusted checkout, missing author gates, over-scoped
-            tokens), auto-merge/auto-deploy blast radius, and any autonomous-bot action
-            that could touch prod or user data unsafely. Use the repo's /security-review
-            skill if present. Post concise inline findings.
-            THEN, as your final action, write a machine-readable verdict to the file
-            $GITHUB_WORKSPACE/.sec-verdict.json exactly like: {"critical":N,"high":N,"note":"..."}
-            (counts of confirmed high/critical issues). If the diff is clean, write zeros.
-          claude_args: "--max-turns 14 --model opus --allowedTools Read,Grep,Glob,Bash,Write,Edit"
+            Do a SECURITY review of this PR's diff vs the base branch. This repo is a PUBLIC
+            Cloudflare Worker + a live autonomous CI/CD pipeline, so weigh: secret handling/
+            exposure, auth-gate bypass, SSRF, injection (incl. shell injection via
+            `${{ github.event.* }}` in workflows), GitHub Actions abuse (pull_request_target +
+            untrusted checkout, missing author gates, over-scoped tokens), auto-merge/auto-deploy
+            blast radius, and any autonomous-bot action that could touch prod or user data
+            unsafely. Use the repo's /security-review skill if present. Post concise inline findings.
+
+            Your FINAL message MUST be the machine-readable verdict object matching the provided
+            JSON schema: {"critical":N,"high":N,"note":"..."} — the counts of CONFIRMED
+            critical/high issues (zeros if the diff is clean). Do NOT write any file; the verdict
+            is captured from your structured output, not the filesystem.
+          # --json-schema surfaces the model's final object as the step output `structured_output`,
+          # which is CWD-INDEPENDENT — the file-write channel was unreliable because the action
+          # runs Claude in a sandbox cwd that isn't the checkout the gate reads. (Empty output =>
+          # no verdict => existing blast-radius fail-closed, incl. the workflow-edit self-skip case.)
+          claude_args: >-
+            --max-turns 14 --model opus
+            --allowedTools Read,Grep,Glob,Bash
+            --json-schema '{"type":"object","properties":{"critical":{"type":"integer"},"high":{"type":"integer"},"note":{"type":"string"}},"required":["critical","high","note"],"additionalProperties":false}'
       - name: Gate — scoped fail-closed on missing verdict; block on high/critical
         if: steps.pre.outputs.go == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
+          # Empty when the action self-skipped (a workflow-editing PR fails claude-code-action's
+          # OIDC→app-token workflow-integrity check, so the model never runs) OR the model
+          # returned no verdict — both route into the fail-closed policy below.
+          VERDICT: ${{ steps.claude.outputs.structured_output }}
         run: |
           set -euo pipefail
-          # This step only runs when the preflight armed the review (go=true), so the Claude
-          # step definitely ran. Three outcomes:
+          verdict="${VERDICT:-}"
+          # The verdict is the reviewer's structured output. It's empty in two cases: the model
+          # returned no verdict, OR the action self-skipped (claude-code-action refuses to run on
+          # a PR that edits a workflow file — an anti-exfiltration integrity check — so those PRs
+          # ALWAYS land here and are correctly fail-closed below, needing a human review). Outcomes:
           #   1. A PRODUCED crit/high verdict → HARD-BLOCK: apply `hold` + exit 1 (unchanged).
           #   2. A MISSING verdict (reviewer did not finish — infra, not proof the diff is
           #      unsafe) is gated by BLAST RADIUS, not a blanket policy:
@@ -93,7 +114,7 @@ jobs:
           #        • changed-file list unreadable → can't prove low-blast, so FAIL CLOSED.
           # Trusted-author-only pipeline, so an attacker can't suppress the verdict to sneak a
           # high-blast diff through — the worst case is a stall on their own PR.
-          if [ ! -f .sec-verdict.json ]; then
+          if [ -z "$verdict" ]; then
             changed=$(gh pr diff "$PR" --name-only 2>/dev/null || true)
             if [ -z "$changed" ]; then
               echo "::error::security review produced no verdict AND the changed-file list is unreadable — failing closed (cannot rule out a high-blast diff)"
@@ -111,7 +132,7 @@ jobs:
             echo "::warning::security review produced no verdict (reviewer did not finish) and the diff is not high-blast — advisory pass"
             gh pr comment "$PR" --body "⚠️ no-dumb-shit bot: the security review did not finish (no verdict) and this diff doesn't touch workflows/auth/secrets — advisory pass, not blocking. Deterministic gates still apply." 2>/dev/null || true
             exit 0; fi
-          crit=$(jq -r '.critical // 0' .sec-verdict.json); high=$(jq -r '.high // 0' .sec-verdict.json)
+          crit=$(printf '%s' "$verdict" | jq -r '.critical // 0'); high=$(printf '%s' "$verdict" | jq -r '.high // 0')
           echo "security verdict: critical=$crit high=$high"
           if [ "${crit:-0}" -gt 0 ] || [ "${high:-0}" -gt 0 ]; then
             gh pr edit "$PR" --add-label hold 2>/dev/null || true

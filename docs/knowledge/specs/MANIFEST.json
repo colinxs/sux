@@ -1,0 +1,352 @@
+[
+  {
+    "api": "obsidian-local-rest",
+    "source_url": "https://coddingtonbear.github.io/obsidian-local-rest-api/openapi.yaml",
+    "path": "obsidian-local-rest.yaml.gz",
+    "sha256": "60580154def86af01eea469285c051060b8b3f55cec32dbc4b4aec3351758397",
+    "bytes": 169015,
+    "status": "fetched",
+    "note": "OpenAPI 3 YAML, verified with python3 yaml.safe_load. Used by sux/src/fns/vault*.ts (obsidian-local-rest-api plugin).",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "exa",
+    "source_url": "https://raw.githubusercontent.com/exa-labs/openapi-spec/master/exa-openapi-spec.yaml",
+    "path": "exa.yaml.gz",
+    "sha256": "de1e8f95c9a3c07e807ee0de4d8880816919a04e7e6a8518e319b6dcbaf64d25",
+    "bytes": 66386,
+    "status": "fetched",
+    "note": "Official spec from exa-labs/openapi-spec GitHub repo (default branch is 'master', not 'main'). docs.exa.ai/reference/openapi-spec itself is a JS-rendered page, not raw.",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "coingecko",
+    "source_url": "https://raw.githubusercontent.com/coingecko/coingecko-api-oas/main/demo-api.json",
+    "path": "coingecko.json.gz",
+    "sha256": "b960a81767159112ba9e029e0bb92d321a02ed313b9d4afadf9e19bc3e75ea06",
+    "bytes": 580649,
+    "status": "fetched",
+    "note": "Official CoinGecko demo/public API OAS from coingecko/coingecko-api-oas GitHub repo (also contains pro-api.json for the paid tier, not vendored). docs.coingecko.com/openapi is a JS-rendered Next.js page, not a raw spec URL.",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "clinicaltrials",
+    "source_url": "https://clinicaltrials.gov/api/oas/v2",
+    "path": "clinicaltrials.yaml.gz",
+    "sha256": "ba31adaea67e6bb09ff77af5c0c11daf36d5aff7f5d6cbed89f0aab04b297aea",
+    "bytes": 80983,
+    "status": "fetched",
+    "note": "ClinicalTrials.gov REST API v2, OpenAPI 3.0.3 YAML served directly (despite the .../oas/v2 path with no extension).",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "google-places",
+    "source_url": "https://places.googleapis.com/$discovery/rest?version=v1",
+    "path": "google-places.json.gz",
+    "sha256": "437bb2258d031ee6c54ca03befbc4472381c5872104bd8cb035e42daa46bbfc2",
+    "bytes": 143916,
+    "status": "fetched",
+    "note": "Google API Discovery Document (Google's own format, not OpenAPI) for Places API (New) v1.",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "youtube",
+    "source_url": "https://www.googleapis.com/discovery/v1/apis/youtube/v3/rest",
+    "path": "youtube.json.gz",
+    "sha256": "67be1f078726b0afcb82ae0a9b7ae10035a4ba83c04682d52ec18b5a1e155d70",
+    "bytes": 514696,
+    "status": "fetched",
+    "note": "Google API Discovery Document for YouTube Data API v3.",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "semantic-scholar",
+    "source_url": "https://api.semanticscholar.org/graph/v1/swagger.json",
+    "path": "semantic-scholar.json.gz",
+    "sha256": "00d7302bcb07414971a0b483d332e57c01344e037ce878d5baab3c312df039ae",
+    "bytes": 123200,
+    "status": "fetched",
+    "note": "Swagger 2.0 spec for the Graph API, served directly at /graph/v1/swagger.json (the /api-docs/graph URL is the human Swagger-UI page).",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "github-rest",
+    "source_url": "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json",
+    "path": null,
+    "sha256": null,
+    "bytes": 12735015,
+    "status": "url-only",
+    "note": "~12.1 MB (Content-Length header), over the 2MB vendoring cap. Not downloaded; refetch on demand from github/rest-api-description.",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "cloudflare",
+    "source_url": "https://raw.githubusercontent.com/cloudflare/api-schemas/main/openapi.json",
+    "path": null,
+    "sha256": null,
+    "bytes": 10773086,
+    "status": "url-only",
+    "note": "~10.3 MB (Content-Length header), over the 2MB cap. A yaml variant (openapi.yaml, ~24MB) also exists in the same repo. Not downloaded.",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "ebay-browse",
+    "source_url": "https://developer.ebay.com/api-docs/master/buy-browse/openapi/3/buy_browse_v1_oas3.json",
+    "path": null,
+    "sha256": null,
+    "bytes": null,
+    "status": "url-only",
+    "note": "Official OpenAPI 3 spec exists at this URL but developer.ebay.com returns HTTP 403 (bot/UA detection) to curl; needs a browser session or API key to fetch. No public GitHub mirror found.",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "kagi",
+    "source_url": "https://help.kagi.com/kagi/api/search.html",
+    "path": null,
+    "sha256": null,
+    "bytes": null,
+    "status": "no-spec",
+    "note": "Prose docs only (Search API + MCP pages); no OpenAPI/Postman spec published by Kagi.",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "brave-search",
+    "source_url": "https://api-dashboard.search.brave.com/app/documentation/web-search/get-started",
+    "path": null,
+    "sha256": null,
+    "bytes": null,
+    "status": "no-spec",
+    "note": "The dashboard 'exposes the spec' only inside the authenticated developer dashboard UI; no public static openapi.json found (guessed /openapi.json returned the dashboard SPA shell, not a spec).",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "duckduckgo",
+    "source_url": null,
+    "path": null,
+    "sha256": null,
+    "bytes": null,
+    "status": "no-spec",
+    "note": "sux calls the undocumented /html endpoint; no official API or spec exists.",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "google-serp",
+    "source_url": "https://developers.google.com/custom-search/v1/overview",
+    "path": null,
+    "sha256": null,
+    "bytes": null,
+    "status": "no-spec",
+    "note": "No official SERP API (scrape-based). The CSE alternative (100/day free) has a Discovery Doc but sux does not use CSE, so not vendored.",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "tavily",
+    "source_url": "https://docs.tavily.com/documentation/api-reference/introduction",
+    "path": null,
+    "sha256": null,
+    "bytes": null,
+    "status": "no-spec",
+    "note": "docs.tavily.com is a JS-rendered Mintlify site; guessed static spec paths (/openapi.json, /api-reference/openapi.json) all 404. No public GitHub mirror found.",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "arxiv",
+    "source_url": "https://info.arxiv.org/help/api/user-manual.html",
+    "path": null,
+    "sha256": null,
+    "bytes": null,
+    "status": "no-spec",
+    "note": "Legacy Atom/XML API, prose docs only, no OpenAPI.",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "pubmed-ncbi",
+    "source_url": "https://www.ncbi.nlm.nih.gov/books/NBK25497/",
+    "path": null,
+    "sha256": null,
+    "bytes": null,
+    "status": "no-spec",
+    "note": "E-utilities, prose docs only, no OpenAPI.",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "crossref",
+    "source_url": "https://api.crossref.org/swagger-ui/index.html",
+    "path": null,
+    "sha256": null,
+    "bytes": null,
+    "status": "no-spec",
+    "note": "The 'Swagger UI' page name is misleading: the CrossRef/rest-api-doc GitHub repo contains only Markdown (api_format.md), and guessed spec endpoints (api.crossref.org/openapi.json, swagger.json) 404. No machine spec found.",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "openalex",
+    "source_url": "https://docs.openalex.org/how-to-use-the-api/api-overview",
+    "path": null,
+    "sha256": null,
+    "bytes": null,
+    "status": "no-spec",
+    "note": "Prose docs only; guessed openapi.json/yaml endpoints on api.openalex.org and in ourresearch/openalex-guts 404. Only third-party unofficial OAS mirrors exist (diverged/openalex-openapi), not vendored.",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "stackexchange",
+    "source_url": "https://api.stackexchange.com/docs",
+    "path": null,
+    "sha256": null,
+    "bytes": null,
+    "status": "no-spec",
+    "note": "Interactive docs UI only; no OpenAPI/Swagger spec published.",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "reddit",
+    "source_url": "https://www.reddit.com/dev/api/",
+    "path": null,
+    "sha256": null,
+    "bytes": null,
+    "status": "no-spec",
+    "note": "Prose API docs + OAuth wiki only; no official machine spec.",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "tailscale",
+    "source_url": "https://tailscale.com/kb/1101/api",
+    "path": null,
+    "sha256": null,
+    "bytes": null,
+    "status": "no-spec",
+    "note": "Prose docs only; guessed api.tailscale.com/api/v2/openapi.json 404s. No public spec found.",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "grafana-cloud-push-apis",
+    "source_url": "https://grafana.com/docs/loki/latest/reference/loki-http-api/",
+    "path": null,
+    "sha256": null,
+    "bytes": null,
+    "status": "no-spec",
+    "note": "Loki push API and Prometheus remote-write (Influx line protocol) are documented as prose HTTP API references, not OpenAPI.",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "monarch",
+    "source_url": null,
+    "path": null,
+    "sha256": null,
+    "bytes": null,
+    "status": "no-spec",
+    "note": "Unofficial reverse-engineered GraphQL API; no published GraphQL schema/SDL or OpenAPI spec.",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "jmap",
+    "source_url": "https://www.rfc-editor.org/rfc/rfc8620",
+    "path": null,
+    "sha256": null,
+    "bytes": null,
+    "status": "no-spec",
+    "note": "RFC-only protocol (JMAP core, RFC 8620); no OpenAPI-style spec exists for an RFC-defined JSON protocol.",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "caldav",
+    "source_url": "https://www.rfc-editor.org/rfc/rfc4791",
+    "path": null,
+    "sha256": null,
+    "bytes": null,
+    "status": "no-spec",
+    "note": "RFC-only (WebDAV/CalDAV, RFC 4791), XML/WebDAV protocol, no machine spec format applies.",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "jscontact",
+    "source_url": "https://www.rfc-editor.org/rfc/rfc9553",
+    "path": null,
+    "sha256": null,
+    "bytes": null,
+    "status": "no-spec",
+    "note": "RFC-only (JSContact, RFC 9553), a data-model RFC, not a fetchable API spec.",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "dropbox",
+    "source_url": "https://github.com/dropbox/dropbox-api-spec",
+    "path": null,
+    "sha256": null,
+    "bytes": null,
+    "status": "no-spec",
+    "note": "Dropbox publishes its API spec as a 'Stone' IDL (.stone files), not OpenAPI/Swagger/Postman. No OpenAPI export found (guessed openapi.yaml in the repo 404s).",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "anthropic",
+    "source_url": "https://docs.claude.com/en/api",
+    "path": null,
+    "sha256": null,
+    "bytes": null,
+    "status": "no-spec",
+    "note": "docs.claude.com/en/api/openapi is a JS-rendered page, not a raw spec; no publicly hosted static openapi.json/yaml found.",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "bestbuy",
+    "source_url": "https://developer.bestbuy.com/",
+    "path": null,
+    "sha256": null,
+    "bytes": null,
+    "status": "no-spec",
+    "note": "The bestbuyapis/api-documentation GitHub repo (Jekyll site source) contains no swagger/openapi file; developer portal has prose docs only.",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "kroger",
+    "source_url": "https://developer.kroger.com/reference/",
+    "path": null,
+    "sha256": null,
+    "bytes": null,
+    "status": "no-spec",
+    "note": "Reference docs are behind the developer portal UI; guessed api.kroger.com/v1/openapi.json 404s. No public spec download found without a portal login.",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "flipp",
+    "source_url": null,
+    "path": null,
+    "sha256": null,
+    "bytes": null,
+    "status": "no-spec",
+    "note": "Unofficial/undocumented backend, scrape-only, no public docs at all.",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "wayback-machine",
+    "source_url": "https://archive.org/help/wayback_api.php",
+    "path": null,
+    "sha256": null,
+    "bytes": null,
+    "status": "no-spec",
+    "note": "Availability API + CDX server API, both prose-documented, no OpenAPI.",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "facebook-graph",
+    "source_url": "https://developers.facebook.com/docs/graph-api",
+    "path": null,
+    "sha256": null,
+    "bytes": null,
+    "status": "no-spec",
+    "note": "Graph Explorer + prose docs only; no vendorable OpenAPI/Postman spec published.",
+    "fetched_at": "2026-07-13"
+  },
+  {
+    "api": "linkedin",
+    "source_url": null,
+    "path": null,
+    "sha256": null,
+    "bytes": null,
+    "status": "no-spec",
+    "note": "No official public-scrape API; sux reads page-embedded JSON-LD, not a documented API.",
+    "fetched_at": "2026-07-13"
+  }
+]
