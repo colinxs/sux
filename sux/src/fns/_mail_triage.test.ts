@@ -206,6 +206,19 @@ describe("runTriage — gating + idempotency", () => {
 		expect(report.suggested!.length).toBe(4);
 	});
 
+	it("a vault digest-append failure never fails the cycle but is logged + surfaced as digest_error", async () => {
+		const deps = mkDeps(SAMPLE);
+		deps.digested.mockRejectedValueOnce(new Error("git push rejected"));
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const env = envWith({ MAIL_TRIAGE_ENABLED: "1" });
+		const report = await runTriage(env, { cycle_id: "cerr" }, deps);
+		expect(report.digest_written).toBe(false);
+		expect(report.digest_error).toMatch(/git push rejected/);
+		expect(warn).toHaveBeenCalledWith(expect.stringMatching(/mail_triage: vault digest-append failed.*git push rejected/));
+		expect(report.suggested!.length).toBe(4); // the cycle still completed normally
+		warn.mockRestore();
+	});
+
 	it("dry_run forces suggest-only even with ACT set", async () => {
 		const deps = mkDeps(SAMPLE);
 		const env = envWith({ MAIL_TRIAGE_ENABLED: "1", MAIL_TRIAGE_ACT: "1" });
