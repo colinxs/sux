@@ -23,7 +23,7 @@ flowchart TB
   classDef infra fill:#0b2a3d,stroke:#3f9fd4,color:#e6f6ff;
 
   CL["MCP clients<br/>Code · CLI · Cowork · Desktop"]:::infra
-  CL -->|"tools/list = ~13 front verbs + <b>sux</b> + <b>fn</b> escape"| FD
+  CL -->|"tools/list = 16 front verbs + <b>sux</b> + <b>fn</b> escape"| FD
 
   subgraph W["sux · one Cloudflare Worker · single /mcp surface"]
     direction TB
@@ -77,7 +77,7 @@ flowchart TB
   %% ---------- MAIL ----------
   subgraph M["mail · Fastmail JMAP"]
     MV["mail verbs 🟢<br/>search/read/move · send (staged, no undo)"]:::live
-    MT["<b>mail-triage bot</b> 🟡 DORMANT<br/>MAIL_TRIAGE_ENABLED unset = no-op<br/>egress-free · reversible-only · never deletes"]:::dormant
+    MT["<b>mail-triage bot</b> 🟢 LIVE<br/>classify+suggest+digest ON · mutation (MAIL_TRIAGE_ACT) dormant<br/>egress-free · reversible-only · never deletes"]:::live
   end
   TB2 --> M
   MT -->|label/move/junk only| MV
@@ -85,7 +85,7 @@ flowchart TB
   %% ---------- SELF-IMPROVE ----------
   SI["<b>self-improve loop</b> 🟡 DORMANT<br/>daily cron no-ops until armed<br/>kill-switch wins · security→PR always · rate-cap const<br/>auto-merge only safe lane when armed"]:::dormant
   W --> SI
-  SI -.->|opens PRs when armed| GH["GitHub 🔴 needs GITHUB_TOKEN + SELF_IMPROVE_*"]:::blocked
+  SI -.->|opens PRs when armed| GH["GitHub 🟡 token set · self-improve dormant until SELF_IMPROVE_ENABLE"]:::dormant
 
   %% ---------- HEALTH (planned) ----------
   subgraph H["personal data (planned/PR)"]
