@@ -66,7 +66,7 @@ jobs:
 
       # Protection assertion. Native auto-merge completes the instant main's REQUIRED status
       # checks go green — GitHub never waits for a check that isn't required. So the security
-      # net (security-review's high/crit `hold`, gitleaks, npm audit) is only real if branch
+      # net (security-review's high/crit `hold`, npm audit) is only real if branch
       # protection actually REQUIRES those contexts; otherwise the fast deterministic CI goes
       # green and the merge fires while the slow opus review is still running (the race). We
       # therefore refuse to enable auto-merge unless every required gate below is present in
@@ -86,13 +86,15 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           # The check-run contexts that must gate main before auto-merge is safe. Each is a
           # job `name`: ci.yml "Type-check & build", security-review.yml "security-review",
-          # secret-scan.yml "gitleaks", audit.yml "npm audit & SBOM". gitleaks + audit run
-          # unconditionally; security-review runs for the trusted, non-draft PRs this job
-          # ever auto-merges, so requiring it can't wedge an eligible PR on a skipped check.
+          # audit.yml "npm audit & SBOM". Secret scanning is now GitHub's native
+          # secret-scanning + push-protection (repo Settings → Security), not a status
+          # check — it blocks a leaked secret from ever being pushed, so it doesn't need
+          # a REQUIRED_GATES entry here. audit runs unconditionally; security-review runs
+          # for the trusted, non-draft PRs this job ever auto-merges, so requiring it
+          # can't wedge an eligible PR on a skipped check.
           REQUIRED_GATES: |
             Type-check & build
             security-review
-            gitleaks
             npm audit & SBOM
         run: |
           set -euo pipefail

@@ -109,8 +109,9 @@ jobs:
           #        • diff touches .github/workflows/**, auth, or secrets → FAIL CLOSED
           #          (hold + exit 1): high-blast changes must never merge unreviewed.
           #        • any other diff → ADVISORY PASS (::warning:: + exit 0): a flaky reviewer
-          #          must never DoS routine merges. The deterministic gates (strict + gitleaks
-          #          + trusted-author + features-need-human) remain the real merge floor.
+          #          must never DoS routine merges. The deterministic gates (strict + native
+          #          secret scanning/push-protection + trusted-author + features-need-human)
+          #          remain the real merge floor.
           #        • changed-file list unreadable → can't prove low-blast, so FAIL CLOSED.
           # Trusted-author-only pipeline, so an attacker can't suppress the verdict to sneak a
           # high-blast diff through — the worst case is a stall on their own PR.
