@@ -1,3 +1,13 @@
+---
+title: sux integration program — ultracode workflow
+status: superseded
+cluster: meta
+type: workflow
+summary: "The end-to-end ultracode build workflow that specced mail hardening, the CalDAV calendar+tasks subsystem, vault graph features, and Todoist repositioning — now shipped on main (cal/contact/caldav fns, vault_query/vault_patch). Provenance/reference only."
+tags: [sux, meta, workflow]
+updated: 2026-07-11
+---
+
 # sux integration program — ultracode workflow
 
 One end-to-end build workflow for the `sux` Cloudflare Worker (MCP at `sux.colinxs.workers.dev/mcp`). Covers every piece of feedback: mail hardening, a new CalDAV calendar+tasks subsystem, vault graph features, and Todoist repositioning. Execute phases in order; each ends in a live verification gate. Everything needed is inline — no external files required.

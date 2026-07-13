@@ -1,3 +1,13 @@
+---
+title: The ideal owl-tegu router image — master reference spec
+status: designed
+cluster: infrastructure
+type: reference
+summary: "Umbrella reference spec for the owl-tegu router image — the clean-image build, LuCI apps, Grafana observability, and watchdog workstreams that implement against it. Design/reference only; sux-tailscale + sux-cloudflare LuCI apps already built and merged."
+tags: [sux, infrastructure, router]
+updated: 2026-07-12
+---
+
 # The ideal owl-tegu router image — MASTER reference spec
 
 **Status:** design only. No config changes on the box; no flash. This is the umbrella
