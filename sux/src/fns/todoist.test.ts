@@ -21,10 +21,25 @@ describe("todoist (REST v2 adapter)", () => {
 			expect(url.pathname).toEqual(expect.stringContaining("/tasks"));
 			expect(url.searchParams.get("project_id")).toBe("P1");
 			expect(url.searchParams.get("filter")).toBe("today | overdue");
-			return new Response(JSON.stringify([{ id: "1", content: "Pay rent", project_id: "P1", priority: 4, due: { string: "today", is_recurring: true }, labels: ["home"], url: "https://todoist.com/showTask?id=1" }]), { status: 200 });
+			return new Response(JSON.stringify({ results: [{ id: "1", content: "Pay rent", project_id: "P1", priority: 4, due: { string: "today", is_recurring: true }, labels: ["home"], url: "https://todoist.com/showTask?id=1" }], next_cursor: null }), { status: 200 });
 		}));
 		const out = parse(await todoist.run(ENV, { action: "list", project_id: "P1", filter: "today | overdue" }));
 		expect(out).toMatchObject({ count: 1, tasks: [{ id: "1", content: "Pay rent", priority: 4, due: "today", is_recurring: true }] });
+	});
+
+	it("list tolerates a bare-array response (older/alternate shape)", async () => {
+		vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify([{ id: "2", content: "Water plants" }]), { status: 200 })));
+		const out = parse(await todoist.run(ENV, { action: "list" }));
+		expect(out).toMatchObject({ count: 1, tasks: [{ id: "2", content: "Water plants" }] });
+	});
+
+	it("projects unwraps the {results:[...]} shape", async () => {
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL) => {
+			expect(String(u).endsWith("/projects")).toBe(true);
+			return new Response(JSON.stringify({ results: [{ id: "p1", name: "Inbox", is_inbox_project: true }], next_cursor: null }), { status: 200 });
+		}));
+		const out = parse(await todoist.run(ENV, { action: "projects" }));
+		expect(out).toMatchObject({ projects: [{ id: "p1", name: "Inbox", is_inbox: true }] });
 	});
 
 	it("add requires content and POSTs the defined fields", async () => {

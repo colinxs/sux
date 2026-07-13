@@ -45,6 +45,13 @@ const defined = (o: Record<string, unknown>): Record<string, unknown> => Object.
 
 const task = (t: any) => ({ id: t?.id, content: t?.content, description: t?.description || undefined, project_id: t?.project_id, priority: t?.priority, due: t?.due?.string, is_recurring: t?.due?.is_recurring, labels: t?.labels, url: t?.url });
 
+/** The unified Todoist API v1 wraps list responses as {results:[...], next_cursor}, unlike the
+ *  old rest/v2's bare array — live-verified 2026-07-13. Accept both shapes so a future API
+ *  change (or an endpoint that still returns bare) doesn't silently break `.map`. This fn
+ *  doesn't paginate (next_cursor is ignored) — a single page is enough for its batch/pipeline
+ *  use case; a caller needing more should page via Todoist's own tools. */
+const results = (json: any): any[] => (Array.isArray(json) ? json : Array.isArray(json?.results) ? json.results : []);
+
 export const todoist: Fn = {
 	name: "todoist",
 	cost: 1,
@@ -79,7 +86,7 @@ export const todoist: Fn = {
 			if (action === "projects") {
 				const r = await tapi(env, "GET", "/projects");
 				if (r.status >= 400) return failWith(codeFor(r.status), `Todoist projects: ${r.json?.error ?? (r.text.slice(0, 200) || `HTTP ${r.status}`)}`);
-				return ok(oj({ projects: (r.json ?? []).map((p: any) => ({ id: p?.id, name: p?.name, is_inbox: p?.is_inbox_project })) }));
+				return ok(oj({ projects: results(r.json).map((p: any) => ({ id: p?.id, name: p?.name, is_inbox: p?.is_inbox_project })) }));
 			}
 			if (action === "list") {
 				const qs = new URLSearchParams();
@@ -87,7 +94,7 @@ export const todoist: Fn = {
 				if (a?.filter) qs.set("filter", String(a.filter));
 				const r = await tapi(env, "GET", `/tasks${qs.toString() ? `?${qs}` : ""}`);
 				if (r.status >= 400) return failWith(codeFor(r.status), `Todoist list: ${r.json?.error ?? (r.text.slice(0, 200) || `HTTP ${r.status}`)}`);
-				const tasks = (r.json ?? []).map(task);
+				const tasks = results(r.json).map(task);
 				return ok(oj({ count: tasks.length, tasks }));
 			}
 			if (action === "add") {
