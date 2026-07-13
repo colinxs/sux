@@ -192,6 +192,24 @@ export type RtEnv = Env &
 		// mail-triage / self-improve / maintenance cycle on demand instead of waiting for cron.
 		SUX_CRON_TOKEN?: string;
 
+		// Recovery dead-drop (src/recovery.ts) — the out-of-band control channel the home
+		// router (owl-tegu) phones home to when it's unreachable inbound. All fail-closed,
+		// default OFF, set via `wrangler secret` (NOT declared in wrangler.jsonc — like
+		// SUX_CRON_TOKEN). Unset RECOVERY_HMAC_SECRET ⇒ every /recovery/* route 404s.
+		//   RECOVERY_HMAC_SECRET  — shared box↔Worker secret; authenticates the box's checkin
+		//                           (HMAC-SHA256 over the raw POST body) AND is the fallback
+		//                           signer for commands handed back. Master gate: unset ⇒ off.
+		//   RECOVERY_CMD_SECRET   — optional SEPARATE secret for signing the commands the box
+		//                           executes, so the checkin-auth secret and the command-auth
+		//                           secret can be rotated independently. Unset ⇒ reuse HMAC secret.
+		//   RECOVERY_ADMIN_SECRET — bearer that gates the operator enqueue + status-read routes
+		//                           (POST /recovery/enqueue, GET /recovery/status). Unset ⇒ those
+		//                           two routes 404 while checkin still works (box can poll, nobody
+		//                           can queue commands until it's set).
+		RECOVERY_HMAC_SECRET?: string;
+		RECOVERY_CMD_SECRET?: string;
+		RECOVERY_ADMIN_SECRET?: string;
+
 
 		TAVILY_API_KEY?: string;
 

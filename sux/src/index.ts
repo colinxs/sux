@@ -18,6 +18,7 @@ import { runSubJob } from "./cron-heartbeat";
 import { recordCall } from "./metrics";
 import { shipMetricsSnapshot, shipToLoki } from "./grafana";
 import { handleObservability } from "./observability";
+import { handleRecovery } from "./recovery";
 import { normalizeArgs, normalizeText } from "./normalize";
 
 type Props = { login: string; name: string; email: string; accessToken: string };
@@ -593,6 +594,14 @@ export default {
 		// are served before the OAuth provider claims every path.
 		const obs = await handleObservability(new URL(request.url), request, env);
 		if (obs) return obs;
+
+		// Recovery dead-drop — the out-of-band control channel the home router phones
+		// home to (HMAC-authed checkin, bearer-authed operator enqueue/status). Served
+		// before the OAuth provider claims every path; fail-closed (404) when its secret
+		// is unset. The Worker only stores health + vends Worker-signed commands — it
+		// executes nothing (the box pulls, verifies, and acts). See src/recovery.ts.
+		const recovery = await handleRecovery(new URL(request.url), request, env);
+		if (recovery) return recovery;
 
 		// Manual ops trigger for the daily cron ticks — POST /admin/tick?job=mail-triage|
 		// self-improve|maintenance, bearer-gated by SUX_CRON_TOKEN (unset ⇒ 404, feature off).
