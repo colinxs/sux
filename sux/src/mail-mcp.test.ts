@@ -451,6 +451,10 @@ describe("mail_* ergonomic tools", () => {
 		expect(st).toMatchObject({ staged: true, kind: "cal_create" }); // previews, no PUT
 		const done = parse(await tool("cal_create").run(e, { summary: "Standup", start: "2026-07-11T09:00:00Z", commit_token: st.commit_token }));
 		expect(done).toMatchObject({ created: true, etag: '"new"' });
+		// `title` was the doc'd param (calendar.ts's dispatcher example) before this
+		// schema ever had `summary` — regression guard for the alias.
+		const stTitle = parse(await tool("cal_create").run(e, { title: "Retro", start: "2026-07-12T09:00:00Z", stage: true }));
+		expect(stTitle).toMatchObject({ staged: true, kind: "cal_create" });
 	});
 
 	it("cal_events bounds the REPORT with a default time-range window (§2)", async () => {
@@ -467,6 +471,23 @@ describe("mail_* ergonomic tools", () => {
 		}) as any;
 		await tool("cal_events").run(e, {});
 		expect(reportBody).toMatch(/<c:time-range start="\d{8}T\d{6}Z" end="\d{8}T\d{6}Z"\/>/);
+	});
+
+	it("cal_events accepts `from`/`to`, the doc'd param name (regression: silently ignored before)", async () => {
+		const e = calEnv();
+		let reportBody = "";
+		global.fetch = vi.fn(async (_input: any, init: any) => {
+			const method = init?.method ?? "GET";
+			if (method === "PROPFIND") return new Response(CALS_XML, { status: 207 });
+			if (method === "REPORT") {
+				reportBody = String(init?.body ?? "");
+				return new Response(`<d:multistatus xmlns:d="DAV:"></d:multistatus>`, { status: 207 });
+			}
+			return new Response("", { status: 200 });
+		}) as any;
+		await tool("cal_events").run(e, { from: "2026-08-01T00:00:00Z", to: "2026-08-02T00:00:00Z" });
+		expect(reportBody).toContain("20260801T000000Z");
+		expect(reportBody).toContain("20260802T000000Z");
 	});
 
 	// A stored VEVENT with a TZID + an alarm, so cal_update's GET→rewrite→PUT can be asserted to

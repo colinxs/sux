@@ -791,12 +791,17 @@ const TOOLS: MailTool[] = [
 	{
 		name: "cal_events",
 		description: "List events in a calendar (references: {uid, summary, start, end, all_day, tz, href, etag}). Pass `calendar` (an href from cal_list) or omit to use your first calendar. The window defaults to now..+90 days — override with `start`/`end` (ISO-8601) to look further out or back. Needs CalDAV credentials.",
-		inputSchema: { type: "object", additionalProperties: false, properties: { calendar: { type: "string", description: "Calendar href from cal_list (defaults to your first calendar)." }, start: { type: "string", description: "Window start (ISO-8601); default now." }, end: { type: "string", description: "Window end (ISO-8601); default +90 days." } } },
+		inputSchema: { type: "object", additionalProperties: false, properties: { calendar: { type: "string", description: "Calendar href from cal_list (defaults to your first calendar)." }, start: { type: "string", description: "Window start (ISO-8601); default now." }, end: { type: "string", description: "Window end (ISO-8601); default +90 days." }, from: { type: "string", description: "Alias for `start` (kept for back-compat)." }, to: { type: "string", description: "Alias for `end` (kept for back-compat)." } } },
 		run: async (env, a) => {
 			if (!hasCalDav(env)) return failWith("not_configured", CALDAV_NOT_CONFIGURED);
 			try {
 				const cal = await pickCalendar(env, false, a?.calendar ? String(a.calendar) : undefined);
-				const window = a?.start || a?.end ? { start: a?.start ? String(a.start) : undefined, end: a?.end ? String(a.end) : undefined } : undefined;
+				// `calendar`'s own dispatcher doc used to say from/to (this schema only ever
+				// had start/end) — from/to silently vanished and every call fell back to the
+				// default 90-day window with no error. Accept both.
+				const s = a?.start ?? a?.from;
+				const e2 = a?.end ?? a?.to;
+				const window = s || e2 ? { start: s ? String(s) : undefined, end: e2 ? String(e2) : undefined } : undefined;
 				const objs = await reportObjects(env, cal.href, "VEVENT", window);
 				return ok({ calendar: cal.href, count: objs.length, events: objs.map(shapeCalObject).filter(Boolean) });
 			} catch (e) {
@@ -807,8 +812,12 @@ const TOOLS: MailTool[] = [
 	{
 		name: "cal_create",
 		description: "Create a calendar event. Provide summary + start (ISO-8601; a date-only value is all-day), optional end/description/location and `calendar` (href). Applies directly (reversible); pass stage:true to preview first. Needs CalDAV credentials.",
-		inputSchema: { type: "object", additionalProperties: false, required: ["summary", "start"], properties: { calendar: { type: "string" }, summary: { type: "string" }, start: { type: "string", description: "ISO-8601 start; date-only (YYYY-MM-DD) = all-day." }, end: { type: "string" }, description: { type: "string" }, location: { type: "string" }, stage: { type: "boolean" }, commit_token: { type: "string" }, force: { type: "boolean", description: "Skip staging and apply in one shot (the ! override). By default this verb stages a preview first." } } },
-		run: async (env, a) => {
+		inputSchema: { type: "object", additionalProperties: false, required: ["summary", "start"], properties: { calendar: { type: "string" }, summary: { type: "string" }, title: { type: "string", description: "Alias for `summary` (kept for back-compat)." }, start: { type: "string", description: "ISO-8601 start; date-only (YYYY-MM-DD) = all-day." }, end: { type: "string" }, description: { type: "string" }, location: { type: "string" }, stage: { type: "boolean" }, commit_token: { type: "string" }, force: { type: "boolean", description: "Skip staging and apply in one shot (the ! override). By default this verb stages a preview first." } } },
+		run: async (env, rawA) => {
+			// `calendar`'s own dispatcher doc used to say `title` (this schema only ever had
+			// `summary`) — `title` would fail loud (bad_input), which is safer than the other
+			// namespace-doc mismatches but still worth accepting the natural alias.
+			const a = rawA?.title !== undefined && rawA?.summary === undefined ? { ...rawA, summary: rawA.title } : rawA;
 			if (!hasCalDav(env)) return failWith("not_configured", CALDAV_NOT_CONFIGURED);
 			if (!a?.summary || !a?.start) return failWith("bad_input", "cal_create needs summary and start.");
 			try {

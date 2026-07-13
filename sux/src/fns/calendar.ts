@@ -20,7 +20,7 @@ export const CALENDAR_ACTIONS: Record<string, Dispatch> = {
 export const calendar: Fn = namespaceFn({
 	name: "calendar",
 	description:
-		"Fastmail calendars + tasks (CalDAV) through the one /mcp connector. {action, ...args}: list·events·create·update·delete·task_list·task_create·task_update·task_complete·caldav (raw). Each action's remaining args are that cal_*/task_* tool's own — e.g. calendar({action:'events', calendar, from, to}), calendar({action:'create', calendar, title, start, end}).",
+		"Fastmail calendars + tasks (CalDAV) through the one /mcp connector. {action, ...args}: list·events·create·update·delete·task_list·task_create·task_update·task_complete·caldav (raw). Each action's remaining args are that cal_*/task_* tool's own — e.g. calendar({action:'events', calendar, start, end}), calendar({action:'create', calendar, summary, start, end}).",
 	tools: () => MAIL_TOOLS,
 	actions: CALENDAR_ACTIONS,
 });
