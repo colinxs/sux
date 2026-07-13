@@ -2,7 +2,7 @@ import { checkArgs, FN_DEADLINE_MS, withDeadline } from "./index";
 import { type JsonRpc, sseResponse } from "./mcp-util";
 import { fail, failWith, type RtEnv, type ToolResult } from "./registry";
 import { dropbox } from "./fns/dropbox";
-import { deleteFull, hasDropboxFull, listFull, moveFull, operateFull, readFull, searchFull, transformFull, writeBytes, writeFull } from "./fns/_dropbox-full";
+import { deleteFull, hasDropboxFull, hasDropboxFullWrite, listFull, moveFull, operateFull, readFull, searchFull, transformFull, writeBytes, writeFull } from "./fns/_dropbox-full";
 import { fingerprint, ledger } from "./ledger";
 import { staged } from "./stage";
 import { errMsg } from "./fns/_util";
@@ -14,13 +14,16 @@ import { errMsg } from "./fns/_util";
 // The raw `dropbox` fn is exposed here as the escape hatch. Design: docs/proposals/files.md
 // (Mode A — the bidirectional app workspace). Mode B (whole-Dropbox) rides a SEPARATE
 // full-scope credential (_dropbox-full.ts): read/search (files_search + files_read/
-// files_list `full:true`) and, behind the write firewall (files.md §6), gated mutation —
-// files_write/files_upload/files_delete/files_move `full:true` route through the default-on
-// smart guard (stage.ts: stage a preview by default, then commit_token/force to apply),
-// over rev-conditioning, a protected-prefix deny-list, and /.sux-trash recoverability.
+// files_list `full:true`) light up on the credential (hasDropboxFull) alone. The WRITE
+// verbs — files_write/files_upload/files_delete/files_move `full:true` — require a SECOND,
+// separate arm (hasDropboxFullWrite / DROPBOX_FULL_WRITE_ENABLED, unset by default) so
+// enabling Mode B read never arms the injection-reachable whole-account write/delete. Once
+// armed they route through the write firewall (files.md §6): the default-on smart guard
+// (stage.ts: stage a preview by default, then commit_token/force to apply), over rev-
+// conditioning, a protected-prefix deny-list, and /.sux-trash recoverability.
 // files_operate (set organize/cleanup) and files_transform (merge N→1 /
-// extract a slice) compose those same gated primitives server-side, no bytes through
-// context. Nothing in Mode B fires without the deliberate second credential.
+// extract a slice) compose those same write-gated primitives server-side, no bytes through
+// context. Mode B read needs the second credential; Mode B write needs that AND the arm flag.
 //
 // The rule (files.md): markdown → vault, blobs → files. This is where PDFs, images,
 // and exports live; the vault holds the *note* about them. list/read return references
@@ -38,6 +41,17 @@ async function dbx(env: RtEnv, args: Record<string, unknown>): Promise<any> {
 		return { text: body };
 	}
 }
+
+// Mode B WRITE gate — the security boundary for whole-account mutation. Read/search gate on
+// hasDropboxFull (the credential); every WRITE verb gates on this instead, which ALSO requires
+// the separate DROPBOX_FULL_WRITE_ENABLED arm. So enabling Mode B read (recall's files source)
+// leaves the injection-reachable write/delete surface dormant. Two-tier message: credential-
+// missing vs armed-off are distinct fixes. Returns the failure ToolResult, or null when armed.
+const gateModeBWrite = (env: RtEnv): ToolResult | null => {
+	if (!hasDropboxFull(env)) return failWith("not_configured", "full-Dropbox (Mode B) not configured — set DROPBOX_FULL_*. Without it, files_* covers the app-folder workspace only.");
+	if (!hasDropboxFullWrite(env)) return failWith("not_configured", "full-Dropbox (Mode B) WRITE is not armed — set DROPBOX_FULL_WRITE_ENABLED (a separate toggle, unset by default). Read/search light up on DROPBOX_FULL_* alone; whole-account write/delete/move stays dormant until you explicitly arm it.");
+	return null;
+};
 
 // The write firewall flags only mean something for whole-Dropbox (Mode B) writes. In the
 // app-folder (Mode A) — where the /Apps scope IS the wall and writes are unblocked — the
@@ -132,7 +146,8 @@ const TOOLS: FileTool[] = [
 			if (!a?.path || a?.text === undefined) return failWith("bad_input", "files_write requires `path` and `text`.");
 			try {
 				if (a?.full === true) {
-					if (!hasDropboxFull(env)) return failWith("not_configured", "full-Dropbox (Mode B) write not configured — set DROPBOX_FULL_*. Without it, files_write covers the app-folder workspace only.");
+					const g = gateModeBWrite(env);
+					if (g) return g;
 					const path = String(a.path), text = String(a.text);
 					const rev = a?.rev ? String(a.rev) : undefined, overwrite = a?.overwrite === true, backup = a?.backup !== false;
 					const opts = { path, bytes: writeBytes(text, undefined), rev, overwrite, backup };
@@ -156,7 +171,8 @@ const TOOLS: FileTool[] = [
 			if (!a?.path || !a?.base64) return failWith("bad_input", "files_upload requires `path` and `base64`.");
 			try {
 				if (a?.full === true) {
-					if (!hasDropboxFull(env)) return failWith("not_configured", "full-Dropbox (Mode B) upload not configured — set DROPBOX_FULL_*. Without it, files_upload covers the app-folder workspace only.");
+					const g = gateModeBWrite(env);
+					if (g) return g;
 					const path = String(a.path), base64 = String(a.base64);
 					const rev = a?.rev ? String(a.rev) : undefined, overwrite = a?.overwrite === true, backup = a?.backup !== false;
 					const opts = { path, bytes: writeBytes(undefined, base64), rev, overwrite, backup };
@@ -239,7 +255,8 @@ const TOOLS: FileTool[] = [
 		run: async (env, a) => {
 			if (!a?.from || !a?.to) return failWith("bad_input", "files_move requires `from` and `to`.");
 			if (a?.full === true) {
-				if (!hasDropboxFull(env)) return failWith("not_configured", "full-Dropbox (Mode B) move not configured — set DROPBOX_FULL_*. Without it, files_move covers the app-folder workspace only.");
+				const g = gateModeBWrite(env);
+				if (g) return g;
 				try {
 					const from = String(a.from), to = String(a.to);
 						const preview = await moveFull(env, { from, to, dryRun: true });
@@ -262,7 +279,8 @@ const TOOLS: FileTool[] = [
 		run: async (env, a) => {
 			if (!a?.path) return failWith("bad_input", "files_delete requires a `path`.");
 			if (a?.full === true) {
-				if (!hasDropboxFull(env)) return failWith("not_configured", "full-Dropbox (Mode B) delete not configured — set DROPBOX_FULL_*. Without it, files_delete covers the app-folder workspace only.");
+				const g = gateModeBWrite(env);
+				if (g) return g;
 								try {
 						const path = String(a.path);
 						const preview = await deleteFull(env, { path, dryRun: true });
@@ -299,7 +317,8 @@ const TOOLS: FileTool[] = [
 			},
 		},
 		run: async (env, a) => {
-			if (!hasDropboxFull(env)) return failWith("not_configured", "full-Dropbox (Mode B) not configured — set DROPBOX_FULL_*. files_operate works over the whole account.");
+			const g = gateModeBWrite(env);
+			if (g) return g;
 			const action = String(a?.action ?? "");
 			if (action !== "move" && action !== "delete") return failWith("bad_input", "files_operate action must be 'move' or 'delete'.");
 			try {
@@ -336,7 +355,8 @@ const TOOLS: FileTool[] = [
 			},
 		},
 		run: async (env, a) => {
-			if (!hasDropboxFull(env)) return failWith("not_configured", "full-Dropbox (Mode B) not configured — set DROPBOX_FULL_*. files_transform composes whole-account files server-side.");
+			const g = gateModeBWrite(env);
+			if (g) return g;
 			const op = String(a?.op ?? "");
 			if (op !== "merge" && op !== "extract") return failWith("bad_input", "files_transform op must be 'merge' or 'extract'.");
 			if (!a?.dest) return failWith("bad_input", "files_transform requires a `dest`.");

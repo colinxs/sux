@@ -42,9 +42,22 @@ describe("autonomy_status — read-only gate mirror", () => {
 		expect(j.surfaces[2]).toMatchObject({ surface: "self_improve", armed: false, mode: "killed" });
 	});
 
-	it("dropbox_full_write + cron_trigger arm on their own config, without printing secret values", async () => {
-		const j = await run({ DROPBOX_FULL_REFRESH_TOKEN: "rt", DROPBOX_FULL_APP_KEY: "ak", SUX_CRON_TOKEN: "s3cr3t" });
-		expect(j.armed).toEqual(expect.arrayContaining(["dropbox_full_write", "cron_trigger"]));
+	it("dropbox_full_write stays read-only on the credential alone — arms only when DROPBOX_FULL_WRITE_ENABLED is also set", async () => {
+		const byName = (j: any) => j.surfaces.find((s: any) => s.surface === "dropbox_full_write");
+		// Credential-only: READ is live but the write surface must report NOT armed (the security split).
+		const readOnly = await run({ DROPBOX_FULL_REFRESH_TOKEN: "rt", DROPBOX_FULL_APP_KEY: "ak" });
+		expect(byName(readOnly)).toMatchObject({ armed: false });
+		expect(byName(readOnly).mode).toMatch(/read-only/);
+		expect(readOnly.armed).not.toContain("dropbox_full_write");
+		// Credential + arm flag: now armed.
+		const armed = await run({ DROPBOX_FULL_REFRESH_TOKEN: "rt", DROPBOX_FULL_APP_KEY: "ak", DROPBOX_FULL_WRITE_ENABLED: "1" });
+		expect(byName(armed)).toMatchObject({ armed: true });
+		expect(armed.armed).toContain("dropbox_full_write");
+	});
+
+	it("cron_trigger arms on its own config, without printing secret values", async () => {
+		const j = await run({ SUX_CRON_TOKEN: "s3cr3t" });
+		expect(j.armed).toContain("cron_trigger");
 		expect(r_text(j)).not.toContain("s3cr3t");
 	});
 });

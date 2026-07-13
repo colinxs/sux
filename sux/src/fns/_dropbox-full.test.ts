@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { deleteFull, hasDropboxFull, listFull, moveFull, normFull, operateFull, readFull, searchFull, transformFull, writeFull } from "./_dropbox-full";
+import { deleteFull, hasDropboxFull, hasDropboxFullWrite, listFull, moveFull, normFull, operateFull, readFull, searchFull, transformFull, writeFull } from "./_dropbox-full";
 
 // Read-only full-Dropbox (Mode B) client. These tests hit the real fetch paths via a
 // stub, asserting: the credential is isolated to DROPBOX_FULL_* (its own KV key), reads
@@ -23,6 +23,18 @@ describe("hasDropboxFull / normFull", () => {
 		expect(hasDropboxFull({ DROPBOX_FULL_TOKEN: "ft" } as any)).toBe(true);
 		expect(hasDropboxFull({ DROPBOX_FULL_REFRESH_TOKEN: "rt", DROPBOX_FULL_APP_KEY: "ak" } as any)).toBe(true);
 		expect(hasDropboxFull({ DROPBOX_FULL_REFRESH_TOKEN: "rt" } as any)).toBe(false); // refresh needs the app key
+	});
+
+	it("gates WRITE on a SEPARATE arm flag — the credential alone lights up READ only", () => {
+		// Read-armed (credential set) must NOT arm write: whole-account mutation stays dormant
+		// until DROPBOX_FULL_WRITE_ENABLED is explicitly truthy. This is the injection boundary.
+		expect(hasDropboxFullWrite({ DROPBOX_FULL_TOKEN: "ft" } as any)).toBe(false);
+		expect(hasDropboxFullWrite({ DROPBOX_FULL_TOKEN: "ft", DROPBOX_FULL_WRITE_ENABLED: "1" } as any)).toBe(true);
+		expect(hasDropboxFullWrite({ DROPBOX_FULL_TOKEN: "ft", DROPBOX_FULL_WRITE_ENABLED: "true" } as any)).toBe(true);
+		// Falsy toggles stay off (explicit-0 ≠ armed), so a stray value can't arm it.
+		for (const v of ["0", "false", "no", "off", ""]) expect(hasDropboxFullWrite({ DROPBOX_FULL_TOKEN: "ft", DROPBOX_FULL_WRITE_ENABLED: v } as any)).toBe(false);
+		// The flag WITHOUT the credential arms nothing (fail-closed: write needs both).
+		expect(hasDropboxFullWrite({ DROPBOX_FULL_WRITE_ENABLED: "1" } as any)).toBe(false);
 	});
 
 	it("normalizes to absolute paths with '' as the account root", () => {

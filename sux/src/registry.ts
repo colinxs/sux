@@ -67,6 +67,13 @@ export type RtEnv = Env &
 		// mirror. Empty → no deny-list (the always-on guards — dry-run default, confirm on
 		// delete, rev-conditioning, recoverable trash — still apply). See _dropbox-full.ts.
 		DROPBOX_FULL_PROTECT_PREFIXES?: string;
+		// Mode B WRITE arm — a SEPARATE truthy toggle gating the whole-account MUTATION verbs
+		// (write/upload/delete/move/operate/transform full:true), DISTINCT from the read
+		// credential above. READ/search light up on DROPBOX_FULL_* alone; WRITE stays dormant
+		// until this is explicitly set (unset/"0"/"false"/"off" ⇒ off), so enabling recall's
+		// files source can't also arm the injection-reachable whole-account write/delete. An
+		// env flag is not injection-settable (unlike the in-request force:true). See _dropbox-full.ts.
+		DROPBOX_FULL_WRITE_ENABLED?: string;
 
 		// Self-improvement loop (fns/_self_improve.ts, rides the daily cron). ALL
 		// fail-closed, defaults OFF, set via `wrangler secret` (NOT declared in

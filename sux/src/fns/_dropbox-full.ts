@@ -3,14 +3,15 @@ import { type RtEnv } from "../registry";
 import { FANOUT_BUDGET_MS, fromB64, toB64 } from "./_util";
 import { pdf } from "./pdf";
 
-// Full-Dropbox (Mode B) client — READ + SEARCH over the WHOLE Dropbox, behind a
-// SEPARATE full-scope credential (DROPBOX_FULL_*) at a DISTINCT KV key. This never
-// touches the App-folder credential (Mode A stays the /Apps/<app>/ safety wall), and
-// it is dormant unless hasDropboxFull(env). Read-only by construction: no upload/move/
-// delete lives here — whole-account MUTATION is a deliberate, separately-gated build
-// (see docs/proposals/files.md Mode B: the injection-reachable delete/overwrite surface
-// needs the vault-mirror guard configured fail-closed first). Design + adversarial
-// review: the design-full-dropbox-mode-b workflow.
+// Full-Dropbox (Mode B) client — READ/SEARCH and (separately armed) WRITE over the WHOLE
+// Dropbox, behind a SEPARATE full-scope credential (DROPBOX_FULL_*) at a DISTINCT KV key.
+// This never touches the App-folder credential (Mode A stays the /Apps/<app>/ safety wall).
+// TWO gates, deliberately split: READ/search are dormant unless hasDropboxFull(env) (the
+// credential); the WHOLE-ACCOUNT MUTATION verbs below (write/upload/delete/move/operate/
+// transform) also require hasDropboxFullWrite(env) — a SEPARATE DROPBOX_FULL_WRITE_ENABLED
+// toggle that is UNSET by default. So lighting up recall's files source (read) does NOT arm
+// the injection-reachable delete/overwrite surface; whole-account write stays a deliberate,
+// separately-flagged step. Design + adversarial review: the design-full-dropbox-mode-b workflow.
 //
 // Token lifecycle + fetch/rpc plumbing is the shared _dropbox-core (same mint/cache/
 // self-heal as Mode A); only the credential set + KV key differ, captured in fullScope.
@@ -26,8 +27,22 @@ const fullScope = (env: RtEnv): DropboxScope => ({
 	notConfigured: "Full-Dropbox not configured. Set DROPBOX_FULL_REFRESH_TOKEN + DROPBOX_FULL_APP_KEY (+ optional DROPBOX_FULL_APP_SECRET).",
 });
 
-/** True when the full-Dropbox (Mode B) credential is configured. */
+/** True when the full-Dropbox (Mode B) credential is configured — gates READ/search. */
 export const hasDropboxFull = (env: RtEnv): boolean => scopeConfigured(fullScope(env));
+
+// A truthy toggle ("0"/"false"/"no"/"off"/empty ⇒ off), so an explicit DROPBOX_FULL_WRITE_ENABLED=0
+// stays off rather than arming on mere presence — mirrors _mail_triage/_briefing's flagOn.
+const flagOn = (v: string | undefined): boolean => {
+	const s = String(v ?? "").trim().toLowerCase();
+	return s !== "" && s !== "0" && s !== "false" && s !== "no" && s !== "off";
+};
+
+/** True when the whole-account WRITE verbs (write/upload/delete/move/operate/transform) are ARMED.
+ *  Requires the read credential too — so a stray flag without DROPBOX_FULL_* never arms anything —
+ *  AND the SEPARATE DROPBOX_FULL_WRITE_ENABLED toggle, which is unset by default. This is the
+ *  security boundary: enabling Mode B READ (recall's files source) must NOT arm the injection-
+ *  reachable whole-account mutation surface. An env flag is not injection-settable (unlike force:true). */
+export const hasDropboxFullWrite = (env: RtEnv): boolean => hasDropboxFull(env) && flagOn(env.DROPBOX_FULL_WRITE_ENABLED);
 
 /** Absolute Dropbox path: "" = account root; a file/folder is "/Foo/bar". */
 export const normFull = (p: unknown): string => {

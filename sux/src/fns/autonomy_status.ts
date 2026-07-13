@@ -1,7 +1,7 @@
 import { type Fn, ok } from "../registry";
 import { oj } from "./_util";
 import { hasMailTriage, hasMailTriageAct } from "./_mail_triage";
-import { hasDropboxFull } from "./_dropbox-full";
+import { hasDropboxFull, hasDropboxFullWrite } from "./_dropbox-full";
 import { canAutoMerge, canOpenPr, hasSelfImprove, isKilled } from "./_self_improve";
 import { hasBriefing, hasBriefingStageDrafts } from "./_briefing";
 import { hasWeeklyRecall } from "./_weekly_recall";
@@ -24,14 +24,15 @@ type Surface = { surface: string; armed: boolean; mode: string; reversible: bool
 export const autonomy_status: Fn = {
 	name: "autonomy_status",
 	description:
-		"Read-only mirror of which autonomous, act-on-your-behalf surfaces are ARMED right now — one call instead of grepping GitHub secrets + wrangler vars + 1Password. Reports the Worker-side consequential gates as booleans (never their secret VALUES, never any upstream call): the mail-triage bot (dormant / suggest-only / reversible auto-act), Mode-B whole-Dropbox writes (dormant vs. armed behind the dry-run-by-default firewall), the self-improve loop (killed / dormant / suggest-only / may-open-PR / may-arm-auto-merge), the manual cron trigger endpoint, the morning briefing (dormant / digest-only / stages reply drafts), and the weekly-recall digest (read-only, vault-append only). Each surface carries its consequence + whether its acts are reversible. Returns JSON { armed_count, armed:[names], surfaces:[{surface, armed, mode, reversible, consequence}], note }. GitHub-side gates (branch auto-merge rule, CI GATE_SECRET tier) live in the repo not the Worker, so they're deliberately out of scope. Never cached.",
+		"Read-only mirror of which autonomous, act-on-your-behalf surfaces are ARMED right now — one call instead of grepping GitHub secrets + wrangler vars + 1Password. Reports the Worker-side consequential gates as booleans (never their secret VALUES, never any upstream call): the mail-triage bot (dormant / suggest-only / reversible auto-act), Mode-B whole-Dropbox writes (dormant / read-only / armed behind the dry-run-by-default firewall — write needs a separate arm flag atop the read credential), the self-improve loop (killed / dormant / suggest-only / may-open-PR / may-arm-auto-merge), the manual cron trigger endpoint, the morning briefing (dormant / digest-only / stages reply drafts), and the weekly-recall digest (read-only, vault-append only). Each surface carries its consequence + whether its acts are reversible. Returns JSON { armed_count, armed:[names], surfaces:[{surface, armed, mode, reversible, consequence}], note }. GitHub-side gates (branch auto-merge rule, CI GATE_SECRET tier) live in the repo not the Worker, so they're deliberately out of scope. Never cached.",
 	inputSchema: { type: "object", additionalProperties: false, required: [], properties: {} },
 	cacheable: false,
 	annotations: { readOnlyHint: true, openWorldHint: false },
 	run: async (env) => {
 		const triageOn = hasMailTriage(env);
 		const triageAct = hasMailTriageAct(env);
-		const dropboxFull = hasDropboxFull(env);
+		const dropboxFullRead = hasDropboxFull(env);
+		const dropboxFullWrite = hasDropboxFullWrite(env);
 		const selfKilled = isKilled(env);
 		const selfOn = hasSelfImprove(env);
 		const selfPr = canOpenPr(env);
@@ -51,10 +52,10 @@ export const autonomy_status: Fn = {
 			},
 			{
 				surface: "dropbox_full_write",
-				armed: dropboxFull,
-				mode: dropboxFull ? "armed (dry-run by default, confirm on delete)" : "dormant",
+				armed: dropboxFullWrite,
+				mode: !dropboxFullRead ? "dormant" : dropboxFullWrite ? "armed (dry-run by default, confirm on delete)" : "read-only (write not armed — set DROPBOX_FULL_WRITE_ENABLED)",
 				reversible: true,
-				consequence: "whole-account Dropbox write/move/delete behind the plan→confirm firewall. Recoverable via version history + Dropbox 'Deleted files' + a pre-op /.sux-trash copy.",
+				consequence: "whole-account Dropbox write/move/delete behind the plan→confirm firewall. Recoverable via version history + Dropbox 'Deleted files' + a pre-op /.sux-trash copy. Read/search light up on the credential alone; write needs the separate arm flag.",
 			},
 			{
 				surface: "self_improve",
