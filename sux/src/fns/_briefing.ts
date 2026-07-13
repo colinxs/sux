@@ -14,7 +14,8 @@
 //     composes the digest, appends it to the Daily note, but stages ZERO reply drafts
 //     (structural, not a mutable default).
 //   • both set → it may additionally STAGE reply drafts to the Drafts folder (mail_draft,
-//     send=false). It NEVER sends: the mail surface here is mail_search/mail_read/mail_draft
+//     send=false), up to BRIEFING_MAX_DRAFTS per run (integer, clamped [1,20], default 5).
+//     It NEVER sends: the mail surface here is mail_search/mail_read/mail_draft
 //     only — no mail_send, no EmailSubmission, no moveMessages/delete. Every read is
 //     read-only; the digest append is git-reversible; a draft sits in Drafts (edit/delete,
 //     never dispatched). No irreversible act is representable in this module.
@@ -101,8 +102,12 @@ const numClamp = (v: unknown, lo: number, hi: number, dflt: number): number => M
 
 /** Cap on the top flagged messages we mail_read (bodies) and may draft for, per run. */
 export const MAX_FLAGGED = 5;
-/** Cap on reply drafts staged per run (bounded autonomy). */
-export const MAX_DRAFTS = 3;
+/** Default cap on reply drafts staged per run when BRIEFING_MAX_DRAFTS is unset. */
+export const DEFAULT_MAX_DRAFTS = 5;
+
+/** Cap on reply drafts staged per run (bounded autonomy), read from BRIEFING_MAX_DRAFTS.
+ *  Parsed as an integer, clamped to [1, 20]; unset/invalid ⇒ DEFAULT_MAX_DRAFTS (5). */
+export const maxDrafts = (env: RtEnv): number => numClamp(env.BRIEFING_MAX_DRAFTS, 1, 20, DEFAULT_MAX_DRAFTS);
 
 /** Add `n` days to a YYYY-MM-DD date (UTC arithmetic — fine for a look-ahead window). */
 function addDays(date: string, n: number): string {
@@ -317,9 +322,10 @@ async function stageDrafts(env: RtEnv, cycle: string, flagged: Flagged[], deps: 
 	const drafts: Array<{ id: string; to?: string; subject?: string }> = [];
 	const nudged: string[] = [];
 	const led = ledger(env, "briefing_draft");
+	const cap = maxDrafts(env);
 	let staged = 0;
 	for (const f of flagged) {
-		if (staged >= MAX_DRAFTS) {
+		if (staged >= cap) {
 			nudged.push(f.id);
 			continue;
 		}
