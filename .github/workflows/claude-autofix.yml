@@ -31,6 +31,7 @@ jobs:
   autofix:
     # Only on a FAILED CI run that came from a pull request.
     if: >
+      vars.ACTIONS_BUDGET_PAUSED != 'true' &&
       github.event.workflow_run.conclusion == 'failure' &&
       github.event.workflow_run.event == 'pull_request'
     runs-on: ubuntu-latest

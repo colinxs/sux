@@ -44,9 +44,18 @@ jobs:
     # PUBLIC REPO: only auto-merge PRs from trusted authors. A fork/external PR
     # (author_association CONTRIBUTOR/NONE/FIRST_TIME_*) can NEVER auto-merge — else a
     # malicious `fix:`-titled PR would auto-deploy to production on green CI.
+    # ARMING PREREQUISITE for self-improve auto-merge: a HIGH-confidence self-improve PR is
+    # authored by the SUX_BOT App (author_association falls outside OWNER/MEMBER/COLLABORATOR),
+    # so also admit a Bot-authored PR that carries the `self-improve` label — that label is
+    # addable only by trusted write access, and the eligibility step below still requires the
+    # `automerge` label (which the loop attaches ONLY on the armed HIGH path), so an UNarmed
+    # self-improve PR entering here is still made ineligible and never merges.
     if: >
       github.event.pull_request.state == 'open' &&
-      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
+      (
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) ||
+        (github.event.pull_request.user.type == 'Bot' && contains(github.event.pull_request.labels.*.name, 'self-improve'))
+      )
     steps:
       - name: Mint app token
         id: app-token

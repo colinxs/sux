@@ -1,0 +1,121 @@
+name: Actions budget guard
+
+# The missing spend brake. Nothing else in the pipeline watches the monthly GitHub Actions
+# minute bill, so a stuck autofix loop or a burst of PRs could quietly run it up. Hourly (and
+# on demand) this reads the account's used-minutes and, if it crosses a soft cap, PAUSES only
+# the DISCRETIONARY spenders — the @claude review/mention bot (claude.yml) and the CI autofix
+# bot (claude-autofix.yml) — leaving every safety/deploy gate untouched. Two brakes, belt +
+# suspenders:
+#   1. it sets the repo variable ACTIONS_BUDGET_PAUSED=true — a race-free fast-path the two
+#      discretionary jobs also gate their `if:` on (instant, self-documenting), and
+#   2. it `gh workflow disable`s the two workflows — the real, durable brake.
+# It NEVER touches ci.yml / deploy.yml / security-review.yml / audit.yml / secret-scan.yml:
+# pausing a safety or deploy gate is worse than overspending. Hysteresis (resume-below <
+# soft-cap) keeps it from flapping at the boundary. If the billing read fails, it does NOTHING
+# (never pauses on missing data) — a blind guard must not brake the whole pipeline.
+#
+# Uses the SUX_BOT App token (needs its Actions + Variables scope). All mutations are
+# best-effort (`|| true` / logged warnings): a perms blip degrades to a no-op, never a jam.
+
+on:
+  schedule:
+    - cron: "0 * * * *" # hourly (~1 min/run ≈ 720 min/mo — a rounding error against the cap)
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+  issues: write
+
+concurrency:
+  group: budget-guard
+  cancel-in-progress: false
+
+env:
+  BUDGET: "2500" # soft cap: pause discretionary spenders at/above this many used minutes
+  RESUME_BELOW: "2400" # resume only once used minutes drop back under this (hysteresis)
+  ISSUE_TITLE: "Actions budget — discretionary spenders paused"
+  DISCRETIONARY: "claude.yml claude-autofix.yml" # the ONLY workflows this guard ever pauses
+
+jobs:
+  guard:
+    name: Watch the Actions minute budget
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint app token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.SUX_BOT_APP_ID }}
+          private-key: ${{ secrets.SUX_BOT_PRIVATE_KEY }}
+
+      - name: Read used minutes and pause/resume the discretionary spenders
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+
+          # Read the account's used Actions minutes. If this fails (perms/API/network), we
+          # cannot prove we're over budget, so we do NOTHING — a blind guard must never brake.
+          billing=$(gh api "/users/${OWNER}/settings/billing/actions" 2>/dev/null || true)
+          used=$(printf '%s' "$billing" | jq -r '.total_minutes_used // empty' 2>/dev/null || true)
+          if ! printf '%s' "$used" | grep -qE '^[0-9]+$'; then
+            echo "::warning::could not read used Actions minutes (billing API returned nothing usable) — no-op this run"
+            exit 0
+          fi
+          echo "used Actions minutes this cycle: $used (soft cap $BUDGET, resume-below $RESUME_BELOW)"
+
+          # Best-effort repo-variable setter: PATCH the existing var, else create it.
+          set_var() {
+            gh api --method PATCH "/repos/${REPO}/actions/variables/ACTIONS_BUDGET_PAUSED" \
+              -f "name=ACTIONS_BUDGET_PAUSED" -f "value=$1" >/dev/null 2>&1 && return 0
+            gh api --method POST "/repos/${REPO}/actions/variables" \
+              -f "name=ACTIONS_BUDGET_PAUSED" -f "value=$1" >/dev/null 2>&1 || true
+          }
+
+          # The single rolling tracking issue, if open.
+          existing=$(gh issue list --repo "$REPO" --state open --limit 100 --json number,title \
+            | jq -r --arg t "$ISSUE_TITLE" '[.[] | select(.title == $t) | .number] | first // empty')
+
+          if [ "$used" -ge "$BUDGET" ]; then
+            echo "OVER soft cap → pausing discretionary spenders ($DISCRETIONARY)"
+            set_var "true"
+            for wf in $DISCRETIONARY; do
+              gh workflow disable "$wf" --repo "$REPO" 2>/dev/null && echo "disabled $wf" || echo "::warning::could not disable $wf (already off / perms)"
+            done
+            body=$(printf '%s\n' \
+              "Auto-maintained by the Actions budget guard (${GITHUB_SERVER_URL}/${REPO}/actions/workflows/budget-guard.yml). $(date -u '+%Y-%m-%d %H:%M UTC')." \
+              "" \
+              "Used Actions minutes (**$used**) crossed the soft cap (**$BUDGET**). To protect the bill, the DISCRETIONARY spenders are paused:" \
+              "" \
+              "- \`claude.yml\` (PR review + @claude mention bot)" \
+              "- \`claude-autofix.yml\` (CI autofix bot)" \
+              "" \
+              "Safety/deploy gates (CI, Deploy, security-review, audit, secret-scan) are untouched and still run." \
+              "" \
+              "Auto-resumes once used minutes drop below **$RESUME_BELOW**. To resume now: \`gh workflow enable claude.yml && gh workflow enable claude-autofix.yml\` and set the repo variable \`ACTIONS_BUDGET_PAUSED=false\`.")
+            if [ -n "$existing" ]; then
+              gh issue edit "$existing" --repo "$REPO" --body "$body" && echo "refreshed tracking issue #$existing"
+            else
+              gh issue create --repo "$REPO" --title "$ISSUE_TITLE" --body "$body" && echo "opened tracking issue"
+            fi
+            exit 0
+          fi
+
+          if [ "$used" -lt "$RESUME_BELOW" ]; then
+            echo "UNDER resume-below → ensuring discretionary spenders are enabled"
+            set_var "false"
+            for wf in $DISCRETIONARY; do
+              gh workflow enable "$wf" --repo "$REPO" 2>/dev/null && echo "enabled $wf" || echo "$wf already enabled / perms"
+            done
+            if [ -n "$existing" ]; then
+              gh issue comment "$existing" --repo "$REPO" \
+                --body "Used Actions minutes back under the resume threshold ($used < $RESUME_BELOW) as of $(date -u '+%Y-%m-%d %H:%M UTC'). Discretionary spenders re-enabled. Closing." 2>/dev/null || true
+              gh issue close "$existing" --repo "$REPO" 2>/dev/null && echo "closed tracking issue #$existing" || true
+            fi
+            exit 0
+          fi
+
+          echo "in the hysteresis band ($RESUME_BELOW ≤ $used < $BUDGET) → leaving current state unchanged"

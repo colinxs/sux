@@ -78,10 +78,15 @@ export type RtEnv = Env &
 		//                         `self-improve` (NOT auto-merge-eligible), and hands
 		//                         authoring to the existing @claude autofix/mention loop.
 		//   SELF_IMPROVE_REPO   — 'owner/repo' target (default the sux repo).
+		//   SELF_IMPROVE_AUTOMERGE — exact-off by default; when 'on', HIGH-confidence
+		//                         fix/refactor/cleanup findings get the `automerge` label (the
+		//                         only route that can arm native auto-merge). Inert until the
+		//                         security-review/automerge arming prerequisites are also in place.
 		SELF_IMPROVE_KILL?: string;
 		SELF_IMPROVE_ENABLE?: string;
 		SELF_IMPROVE_PR?: string;
 		SELF_IMPROVE_REPO?: string;
+		SELF_IMPROVE_AUTOMERGE?: string;
 
 		// IANA tz for the vault owner's "today" (daily-note tools). Default Pacific.
 		VAULT_TZ?: string;
