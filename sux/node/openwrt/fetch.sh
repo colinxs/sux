@@ -56,28 +56,82 @@ url=$(jq -r '.url // empty' "$req")
 [ -n "$url" ] || { emit 400 '{"error":"missing_url"}'; exit 0; }
 case "$url" in http://*|https://*) : ;; *) emit 400 '{"error":"bad_scheme"}'; exit 0 ;; esac
 
-# SSRF guard (defense-in-depth; mirrors src/proxy.ts isBlockedTarget). This box
-# sits inside the home LAN, so refuse loopback / private / link-local / CGNAT /
-# ULA / metadata destinations before curl ever reaches them. Extract the host:
-# drop scheme, path/query/fragment, and userinfo; unwrap a bracketed IPv6, else
-# strip the :port.
-authority=$(printf '%s' "$url" | sed -e 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##' -e 's#[/?#].*$##' -e 's#^[^@]*@##')
-case "$authority" in
-	\[*\]*) host=$(printf '%s' "$authority" | sed -e 's#^\[##' -e 's#\].*$##') ;;
-	*) host=${authority%%:*} ;;
-esac
-host=$(printf '%s' "$host" | tr 'A-Z' 'a-z')
-case "$host" in
-	*:*) # IPv6 literal: loopback / ULA (fc00::/7) / link-local (fe80::/10)
-		case "$host" in ::1|::ffff:*|fc*|fd*|fe8*|fe9*|fea*|feb*) emit 400 '{"error":"blocked_target"}'; exit 0 ;; esac ;;
-	*) # localhost / IPv4 dotted-decimal private ranges
-		case "$host" in
-			localhost|*.localhost|0.*|10.*|127.*|169.254.*|192.168.* \
+# SSRF guard (defense-in-depth; mirrors node/server.mjs assertPublicTarget). This
+# box sits inside the home LAN, so a request must never reach a loopback / private
+# / link-local / CGNAT / ULA / metadata address. A host-STRING glob match isn't
+# enough: a public hostname whose DNS A-record points at 127.0.0.1 / 192.168.x /
+# 169.254.169.254 passes such a check and then curl resolves it and connects
+# straight into the LAN (DNS-rebinding-style SSRF). So resolve the host up front,
+# reject if ANY resolved address is private, and --resolve-PIN curl to the vetted
+# IP(s) so it can't re-resolve the name to a different address between our check
+# and its connect (the TTL-0 rebinding TOCTOU). Redirects aren't followed
+# (--no-location below), so a 3xx can't bounce curl past the pin onto the LAN.
+
+# True (return 0) for a loopback / private / link-local / CGNAT / ULA / metadata
+# IP literal (v4 dotted-decimal or v6). Mirrors server.mjs / proxy.ts isPrivateIp.
+is_private_ip() {
+	_ip=$(printf '%s' "$1" | tr 'A-Z' 'a-z')
+	case "$_ip" in
+		*:*) case "$_ip" in ::|::1|::ffff:*|fc*|fd*|fe8*|fe9*|fea*|feb*) return 0 ;; esac ;;
+		*) case "$_ip" in
+			0.*|10.*|127.*|169.254.*|192.168.* \
 			|172.1[6-9].*|172.2[0-9].*|172.3[01].* \
 			|100.6[4-9].*|100.7[0-9].*|100.8[0-9].*|100.9[0-9].*|100.1[01][0-9].*|100.12[0-7].*)
-				emit 400 '{"error":"blocked_target"}'; exit 0 ;;
+				return 0 ;;
 		esac ;;
+	esac
+	return 1
+}
+
+# Resolve a hostname to its A/AAAA addresses, one per line. busybox nslookup
+# prints the resolver's own address in the header block ahead of the `Name:` line,
+# so only take `Address` lines that follow `Name:`, and pull the leading IP-literal
+# run off each (ignoring any trailing hostname). Empty output (NXDOMAIN, or no
+# nslookup on the box) fails the guard closed — we refuse rather than fetch blind.
+resolve_ips() {
+	nslookup "$1" 2>/dev/null | awk '
+		/^Name:/ { ans = 1; next }
+		ans && /^Address/ {
+			line = $0
+			sub(/^Address[^:]*:/, "", line)
+			if (match(line, /[0-9A-Fa-f:.]+/)) print substr(line, RSTART, RLENGTH)
+		}'
+}
+
+# Extract host + port: drop scheme, path/query/fragment and userinfo, then split
+# a bracketed IPv6 or a host:port authority. Default the port from the scheme so
+# the --resolve pin below targets the exact port curl will connect to.
+authority=$(printf '%s' "$url" | sed -e 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##' -e 's#[/?#].*$##' -e 's#^[^@]*@##')
+case "$authority" in
+	\[*\]:*) host=$(printf '%s' "$authority" | sed -e 's#^\[##' -e 's#\]:.*$##'); port=${authority##*]:} ;;
+	\[*\]) host=$(printf '%s' "$authority" | sed -e 's#^\[##' -e 's#\]$##'); port="" ;;
+	*:*) host=${authority%%:*}; port=${authority##*:} ;;
+	*) host="$authority"; port="" ;;
 esac
+host=$(printf '%s' "$host" | tr 'A-Z' 'a-z')
+case "$port" in ''|*[!0-9]*) case "$url" in https://*) port=443 ;; *) port=80 ;; esac ;; esac
+
+# A localhost name never leaves the box — refuse before spending a DNS lookup.
+case "$host" in localhost|*.localhost) emit 400 '{"error":"blocked_target"}'; exit 0 ;; esac
+
+# An IP-literal host is its own resolution; a hostname gets resolved to every
+# A/AAAA it points at (so a multi-record answer can't hide a private address).
+case "$host" in
+	*:*) ips="$host"; is_name=0 ;;
+	*[!0-9.]*) ips=$(resolve_ips "$host"); is_name=1 ;;
+	*) ips="$host"; is_name=0 ;;
+esac
+[ -n "$ips" ] || { emit 400 '{"error":"blocked_target"}'; exit 0; }
+
+# Refuse if ANY resolved address is private; collect the vetted set to pin curl to
+# (bracket IPv6 so curl's host:port:addr --resolve grammar parses it).
+pin=""
+for ip in $ips; do
+	is_private_ip "$ip" && { emit 400 '{"error":"blocked_target"}'; exit 0; }
+	case "$ip" in *:*) ip="[$ip]" ;; esac
+	pin="${pin:+$pin,}$ip"
+done
+
 method=$(jq -r '.method // "GET" | ascii_upcase' "$req")
 
 # Header config. With curl-impersonate, forward only NON-fingerprint headers
@@ -104,14 +158,22 @@ else
 		| "header = \"\(.key): \(.value)\""' "$req" >> "$cfg" 2>/dev/null
 fi
 
+# Pin curl to the vetted IP(s): it connects to exactly what we resolved and
+# checked and can't re-resolve the hostname to a private address at connect time.
+# (IP-literal hosts need no pin — curl dials the literal we already vetted.)
+[ "$is_name" = 1 ] && printf 'resolve = "%s:%s:%s"\n' "$host" "$port" "$pin" >> "$cfg"
+
 CURL="${IMP:-curl}"
 has_body=$(jq -r 'if (.body // "") == "" then "0" else "1" end' "$req")
 [ "$has_body" = "1" ] && jq -rj '.body' "$req" > "$bodyf"
 
+# --no-location: never follow redirects. curl would re-resolve a 3xx Location's
+# host itself, sidestepping the --resolve pin and possibly landing on the LAN; the
+# Worker traces redirect chains hop-by-hop instead (each hop re-enters this guard).
 if [ "$has_body" = "1" ]; then
-	code=$("$CURL" -sS -m 30 --max-filesize 5000000 -o "$resp" -D "$hdr" -w '%{http_code}' -X "$method" --config "$cfg" --data-binary @"$bodyf" --url "$url" 2>/dev/null) || code=000
+	code=$("$CURL" -sS -m 30 --no-location --max-filesize 5000000 -o "$resp" -D "$hdr" -w '%{http_code}' -X "$method" --config "$cfg" --data-binary @"$bodyf" --url "$url" 2>/dev/null) || code=000
 else
-	code=$("$CURL" -sS -m 30 --max-filesize 5000000 -o "$resp" -D "$hdr" -w '%{http_code}' -X "$method" --config "$cfg" --url "$url" 2>/dev/null) || code=000
+	code=$("$CURL" -sS -m 30 --no-location --max-filesize 5000000 -o "$resp" -D "$hdr" -w '%{http_code}' -X "$method" --config "$cfg" --url "$url" 2>/dev/null) || code=000
 fi
 
 [ "$code" = "000" ] && { emit 502 '{"error":"upstream_failed"}'; exit 0; }
