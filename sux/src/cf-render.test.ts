@@ -98,6 +98,21 @@ describe("cfRender", () => {
 		expect(stubs.close).toHaveBeenCalled();
 	});
 
+	it("stealth UA advertises a current Chrome major, not the stale pinned 124", async () => {
+		stubs.setUserAgent.mockClear();
+		await cfRender(BROWSER_ENV, { url: "https://example.com" });
+		const ua = stubs.setUserAgent.mock.calls[0][0] as string;
+		expect(ua).toMatch(/Chrome\/\d+\.0\.0\.0/);
+		const major = Number(ua.match(/Chrome\/(\d+)\./)![1]);
+		expect(major).toBeGreaterThan(124);
+	});
+
+	it("STEALTH_CHROME_MAJOR env overrides the UA's Chrome major (bump without redeploy)", async () => {
+		stubs.setUserAgent.mockClear();
+		await cfRender({ ...BROWSER_ENV, STEALTH_CHROME_MAJOR: "141" } as any, { url: "https://example.com" });
+		expect(stubs.setUserAgent.mock.calls[0][0]).toMatch(/Chrome\/141\.0\.0\.0/);
+	});
+
 	it("text: returns the page innerText as text/plain", async () => {
 		const r = await cfRender(BROWSER_ENV, { url: "https://example.com", as: "text" });
 		expect(r).toEqual({ ok: true, contentType: "text/plain", body: "rendered text" });

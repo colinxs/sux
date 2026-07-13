@@ -32,6 +32,18 @@ describe("macRender", () => {
 		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 
+	it("propagates a node-side solver_error onto the ok result (a CapSolver breakage must not vanish)", async () => {
+		fetchSpy.mockResolvedValueOnce(macJson({ status: 200, content_type: "text/html", body: "<html>wall</html>", solver_error: "capsolver 429" }));
+		const r = await macRender(ENV, { url: "https://walmart.com" });
+		expect(r).toMatchObject({ ok: true, body: "<html>wall</html>", solverError: "capsolver 429" });
+	});
+
+	it("omits solverError when the node reports none (happy path unchanged)", async () => {
+		fetchSpy.mockResolvedValueOnce(macJson({ status: 200, content_type: "text/html", body: "<html>ok</html>" }));
+		const r = await macRender(ENV, { url: "https://homedepot.com" });
+		expect(r.ok && "solverError" in r).toBe(false);
+	});
+
 	it("POSTs an HMAC-signed html payload — sig is HMAC-SHA256(secret, `${ts}\\n${body}`), on the query string and mirrored headers", async () => {
 		fetchSpy.mockResolvedValueOnce(macJson({ status: 200, content_type: "text/html", body: "<html>ok</html>" }));
 

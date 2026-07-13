@@ -40,10 +40,14 @@ type MacRenderResponse = {
 	body?: string;
 	bodyEncoding?: "base64";
 	error?: string;
+	// The headed CapSolver tier threw while solving a challenge: the node fell back
+	// to the (still-likely-blocked) unsolved page rather than erroring the request.
+	// Propagated so a CapSolver breakage surfaces instead of vanishing behind a wall.
+	solver_error?: string;
 };
 
 export type MacRenderResult =
-	| { ok: true; contentType: string; body: string; bodyEncoding?: "base64" }
+	| { ok: true; contentType: string; body: string; bodyEncoding?: "base64"; solverError?: string }
 	| { ok: false; error: string };
 
 // Cap on the AbortSignal for the Mac render call. The service egresses
@@ -139,5 +143,6 @@ export async function macRender(env: RtEnv, spec: MacRenderSpec): Promise<MacRen
 		contentType: data.content_type ?? "text/html",
 		body: typeof data.body === "string" ? data.body : "",
 		bodyEncoding: data.bodyEncoding,
+		...(data.solver_error ? { solverError: data.solver_error } : {}),
 	};
 }

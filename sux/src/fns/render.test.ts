@@ -481,5 +481,32 @@ describe("render", () => {
 			expect(r.isError).toBe(true);
 			expect(r.content[0].text).toMatch(/HTTP 502/);
 		});
+
+		it("a bot-wall page returned as a 200 surfaces as an error, not as content (looksBlocked guard)", async () => {
+			// The node answers a challenge/block page as valid HTML with status 200 — without
+			// the guard render would hand the wall back as a successful body.
+			fetchSpy.mockResolvedValueOnce(macJson({ status: 200, content_type: "text/html", body: "<html><body>Access Denied Reference #18.abc</body></html>" }));
+			const r = await render.run(MAC_ENV, { url: "https://walmart.com", backend: "mac" });
+			expect(r.isError).toBe(true);
+			expect(r.content[0].text).toMatch(/bot wall/);
+		});
+
+		it("names a solver_error when the walled page also reports a CapSolver breakage", async () => {
+			fetchSpy.mockResolvedValueOnce(
+				macJson({ status: 200, content_type: "text/html", body: "<html><body>Pardon Our Interruption</body></html>", solver_error: "capsolver timeout" }),
+			);
+			const r = await render.run(MAC_ENV, { url: "https://walmart.com", backend: "mac" });
+			expect(r.isError).toBe(true);
+			expect(r.content[0].text).toMatch(/solver errored: capsolver timeout/);
+		});
+
+		it("a genuine (non-wall) page still returns as content even if a solver_error rode along", async () => {
+			// solver_error without a wall means the solver tripped but the page loaded fine —
+			// the happy path (return the content) must be unchanged.
+			fetchSpy.mockResolvedValueOnce(macJson({ status: 200, content_type: "text/html", body: "<html>real product page</html>", solver_error: "capsolver 429" }));
+			const r = await render.run(MAC_ENV, { url: "https://homedepot.com/p/1", backend: "mac" });
+			expect(r.isError).toBeFalsy();
+			expect(r.content[0].text).toBe("<html>real product page</html>");
+		});
 	});
 });

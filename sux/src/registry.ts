@@ -205,6 +205,11 @@ export type RtEnv = Env &
 
 		BROWSER?: BrowserWorker;
 
+		// Override the stealth UA's Chrome major (cf-render). Bump as Chrome's stable
+		// channel advances so the UA stays coherent with the real current major without
+		// a redeploy; unset → cf-render's tracked default.
+		STEALTH_CHROME_MAJOR?: string;
+
 		MAC_RENDER_URL?: string;
 		MAC_RENDER_SECRET?: string;
 

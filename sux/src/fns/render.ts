@@ -1,5 +1,6 @@
 import { cfRender } from "../cf-render";
 import { hmacHex, isBlockedTarget } from "../proxy";
+import { looksBlocked } from "../retail-render";
 import { type Fn, type RtEnv, type ToolResult, failWith, ok } from "../registry";
 import { clamp, deliverBytes, fromB64, inlineB64, isHttpUrl } from "./_util";
 
@@ -29,6 +30,10 @@ type MacRenderResponse = {
 	body?: string;
 	bodyEncoding?: "base64";
 	error?: string;
+	// The headed CapSolver tier threw while solving a challenge — the node returned
+	// the unsolved (likely still-blocked) page instead of erroring. Surfaced below so
+	// a CapSolver breakage isn't swallowed and mistaken for a plain wall.
+	solver_error?: string;
 };
 
 async function renderViaMac(env: RtEnv, payload: MacRenderPayload, delivery: string | undefined): Promise<ToolResult> {
@@ -70,6 +75,13 @@ async function renderViaMac(env: RtEnv, payload: MacRenderPayload, delivery: str
 		return deliverBytes(env, bytes, contentType, delivery ?? "url", () => inlineB64(bytes, contentType));
 	}
 
+	// The mac node can answer a bot wall as a 200 (a block/challenge page IS valid
+	// HTML) — mirror retail-render's guard so a detected wall surfaces as an error
+	// envelope instead of being returned as content. If the CapSolver tier also
+	// errored, name it: an invisible solver breakage is exactly what this must expose.
+	if (looksBlocked(text)) {
+		return failWith("upstream_error", data.solver_error ? `mac render blocked (bot wall); solver errored: ${data.solver_error}` : "mac render blocked (bot wall)");
+	}
 	return ok(clamp(text, MAX_OUTPUT_BYTES));
 }
 

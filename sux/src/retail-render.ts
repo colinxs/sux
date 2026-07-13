@@ -82,8 +82,12 @@ export async function retailRender(env: RtEnv, spec: RetailRenderSpec, opts: Ret
 		if (backend === "mac") {
 			const m = await macRender(env, { as: "html", ...spec, timeout_ms: budget });
 			// A mac leg that returns a wall (rare — mac solves challenges — but possible) must
-			// also escalate, not pass the block page through as content.
-			if (m.ok && "body" in m && looksBlocked(m.body)) return { ok: false, error: "mac render blocked (bot wall)" };
+			// also escalate, not pass the block page through as content. A concurrent
+			// solverError means the CapSolver tier itself broke — name it in the signal so a
+			// solver breakage isn't invisible behind a generic "blocked".
+			if (m.ok && "body" in m && looksBlocked(m.body)) {
+				return { ok: false, error: m.solverError ? `mac render blocked (bot wall); solver errored: ${m.solverError}` : "mac render blocked (bot wall)" };
+			}
 			return m;
 		}
 		const cf = await cfRender(env, { url: spec.url, as: "html", wait_until: spec.wait_until, wait_ms: spec.wait_ms, block_resources: spec.block_resources, timeout_ms: budget, residential: true, stealth: true });

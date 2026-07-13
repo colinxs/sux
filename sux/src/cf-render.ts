@@ -16,7 +16,19 @@ import type { RtEnv } from "./registry";
 
 const BLOCKED_RESOURCE_TYPES = new Set(["image", "media", "font", "stylesheet"]);
 
-const STEALTH_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+// Chrome's stable channel ships a new MAJOR roughly monthly, so a UA pinned to a
+// fixed old major is itself a bot signal: the UA string, the TLS ClientHello, and
+// the JS-runtime fingerprint have to stay COHERENT, and a request advertising an
+// ancient Chrome/124 in 2026 reads as spoofed to a bot manager that knows the real
+// current major. Track the current stable major here and BUMP it as Chrome ships;
+// `STEALTH_CHROME_MAJOR` env overrides it so we can follow the channel without a
+// redeploy. Keep this UA moving with the viewport/accept-language as one identity.
+const DEFAULT_STEALTH_CHROME_MAJOR = 138;
+
+function stealthUa(chromeMajor: number | string): string {
+	return `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeMajor}.0.0.0 Safari/537.36`;
+}
+
 const STEALTH_VIEWPORT = { width: 1280, height: 800, deviceScaleFactor: 1 } as const;
 const STEALTH_ACCEPT_LANGUAGE = "en-US,en;q=0.9";
 
@@ -27,10 +39,10 @@ type PageForStealth = {
 	evaluateOnNewDocument?(fn: (...args: unknown[]) => unknown): void | Promise<void>;
 };
 
-async function applyStealth(page: PageForStealth): Promise<void> {
+async function applyStealth(page: PageForStealth, ua: string): Promise<void> {
 
 	try {
-		if (typeof page.setUserAgent === "function") await page.setUserAgent(STEALTH_UA);
+		if (typeof page.setUserAgent === "function") await page.setUserAgent(ua);
 	} catch {
 		// setUserAgent unsupported on this build — skip; the (headless) UA remains.
 	}
@@ -169,7 +181,7 @@ export async function cfRender(env: RtEnv, spec: CfRenderSpec): Promise<CfRender
 		browser = await puppeteer.launch(env.BROWSER);
 		const page = await browser.newPage();
 
-		if (stealth) await applyStealth(page as unknown as PageForStealth);
+		if (stealth) await applyStealth(page as unknown as PageForStealth, stealthUa(env.STEALTH_CHROME_MAJOR || DEFAULT_STEALTH_CHROME_MAJOR));
 
 		if (residential || blockResources) {
 			await page.setRequestInterception(true);
