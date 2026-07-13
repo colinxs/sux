@@ -34,7 +34,7 @@ The mess came from cramming three different things into "wrangler secret." They'
 | Tier | Examples | Where it lives | Why |
 |---|---|---|---|
 | **1. Credentials** (must stay hidden) | API keys, tokens, passwords | **op → Worker/GitHub** via `secret-sync.sh` | never in git; op is source of truth |
-| **2. Settings** (non-sensitive tuning) | caps (≤5 PR, ≤10 commits), model choices, mail categories, timeouts, `DEBUG_MCP` | **`wrangler.jsonc` `[vars]`** (or a committed `config.ts`) | version-controlled, reviewable, PR-gated, revertable via git |
+| **2. Settings** (non-sensitive tuning) | caps (≤5 PR, ≤10 commits), model choices, mail categories, timeouts | **`wrangler.jsonc` `[vars]`** (or a committed `config.ts`) | version-controlled, reviewable, PR-gated, revertable via git |
 | **3. Switches** (the "big red buttons") | `MAIL_TRIAGE_ENABLED/ACT`, `SELF_IMPROVE_ENABLE/PR/ARM/KILL` | **Worker secrets** (set deliberately, out of git) | arming an autonomous bot should be a conscious act, not a merged diff; fail-closed by default |
 
 Rule of thumb: **secret it if leaking it is bad; `[vars]` it if you'd want it in a code review; switch it (Worker secret) if flipping it makes a bot act on the world.**

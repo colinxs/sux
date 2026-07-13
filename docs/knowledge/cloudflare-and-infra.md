@@ -28,7 +28,7 @@ From `sux/wrangler.jsonc` (Worker name `sux`, `main: src/index.ts`,
 | `MCP_RATE_LIMITER` | `ratelimit` (unsafe, ns 2001) | Per-user (login) limit on `tools/call`: **120 / 60 s** |
 | `OBS_RATE_LIMITER` | `ratelimit` (unsafe, ns 2002) | Per-IP limit on anonymous obs/content routes (`/metrics`, `/logs`, `/feedback`, `/s/*`): **60 / 60 s** |
 
-`vars`: `DEBUG_MCP=0`, `MAIL_TRIAGE_ENABLED=1`, `WEEKLY_RECALL_ENABLED=1`,
+`vars`: `MAIL_TRIAGE_ENABLED=1`, `WEEKLY_RECALL_ENABLED=1`,
 `SELF_IMPROVE_ENABLE=1`. `observability.enabled=true` (head sampling 1.0).
 `triggers.crons`: `0 13 * * *` (daily maintenance) + `*/5 * * * *` (Prometheus snapshot push).
 

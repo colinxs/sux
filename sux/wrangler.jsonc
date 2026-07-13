@@ -47,7 +47,7 @@
 	//
 	// BRIEFING_ENABLED is deliberately NOT set here — pending H1 (untrusted mail through the llm()
 	// fence); arm it once that fix lands.
-	"vars": { "DEBUG_MCP": "0", "MAIL_TRIAGE_ENABLED": "1", "WEEKLY_RECALL_ENABLED": "1", "SELF_IMPROVE_ENABLE": "1" },
+	"vars": { "MAIL_TRIAGE_ENABLED": "1", "WEEKLY_RECALL_ENABLED": "1", "SELF_IMPROVE_ENABLE": "1" },
 	// Per-user rate limit (same as core).
 	"unsafe": {
 		"bindings": [

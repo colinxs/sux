@@ -110,6 +110,32 @@ describe("watch", () => {
 		expect(store.size).toBe(2);
 	});
 
+	it("reset drops the baseline (no fetch) so the next check re-baselines", async () => {
+		const { env, store } = fakeEnv();
+		body("<h1>seed</h1>");
+		const first = parse(await watch.run(env, { url: "https://example.com/r" }));
+		expect(first.first_seen).toBe(true);
+		expect(store.size).toBe(1);
+
+		// reset deletes the stored hash without fetching (no body() queued).
+		const cleared = parse(await watch.run(env, { url: "https://example.com/r", reset: true }));
+		expect(cleared.reset).toBe(true);
+		expect(cleared.existed).toBe(true);
+		expect(store.size).toBe(0);
+
+		// The next check is a fresh first sight again.
+		body("<h1>seed</h1>");
+		const reseen = parse(await watch.run(env, { url: "https://example.com/r" }));
+		expect(reseen.first_seen).toBe(true);
+	});
+
+	it("reset on an unknown watch reports existed:false", async () => {
+		const { env } = fakeEnv();
+		const r = parse(await watch.run(env, { url: "https://example.com/never", reset: true }));
+		expect(r.reset).toBe(true);
+		expect(r.existed).toBe(false);
+	});
+
 	it("surfaces an upstream failure without throwing", async () => {
 		const { env } = fakeEnv();
 		vi.mocked(smartFetch).mockResolvedValueOnce(new Response("nope", { status: 503 }));

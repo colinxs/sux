@@ -30,12 +30,6 @@ describe("obsidian (git backend)", () => {
 		expect(r.content[0].text).toMatch(/OBSIDIAN_VAULT_REPO/);
 	});
 
-	it("points the local backend at remote", async () => {
-		const r = await obsidian.run(ENV, { action: "read", path: "x.md", backend: "local" });
-		expect(r.isError).toBe(true);
-		expect(r.content[0].text).toMatch(/backend:'remote'|Funnel/);
-	});
-
 	it("lists only .md notes from the git tree", async () => {
 		routes.handler = (url) => {
 			expect(url).toContain("/git/trees/main?recursive=1");

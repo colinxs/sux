@@ -3,16 +3,13 @@ import { smartFetch } from "../proxy";
 import { extractRpcFromText } from "../mcp-util";
 import { fromB64, toB64, oj } from "./_util";
 
-// Work with Obsidian markdown notes across three backends:
+// Work with Obsidian markdown notes across two backends:
 //   git    (default) — a git-backed vault via the GitHub API (async, versioned).
 //   remote          — Obsidian's official Local REST API exposed over a PUBLIC
 //                     HTTPS URL (Tailscale Funnel), authed with the plugin's
 //                     bearer key. The cloud Worker can reach a Funnel URL
 //                     directly, so this is real-time to the LIVE vault with no
 //                     SSRF issue (the funnel host is public, not LAN).
-//   local           — the same Local REST API on localhost/LAN; the Worker can't
-//                     reach it and the node SSRF guard blocks LAN IPs, so it's a
-//                     stub pointing at `remote`.
 const GH = "https://api.github.com";
 const ghHeaders = { Accept: "application/vnd.github+json", "User-Agent": "sux-obsidian" };
 
@@ -329,7 +326,7 @@ export const obsidian: Fn = {
 	name: "obsidian",
 	cost: 2,
 	description:
-		"Work with Obsidian markdown notes. action: list (notes, optionally under `path`) | read (a note by `path`) | search (`query`) | append (add `content` to a note at `path`, creating it if absent) | write (create/overwrite a note with `content`) | edit (surgical find/replace: `find` + `replace`, unique match unless `all`) | delete (remove a note). backend: git (default) — a GitHub-backed vault; every write is a commit, so git history is the undo (OBSIDIAN_VAULT_REPO='owner/repo', optional OBSIDIAN_VAULT_BRANCH/OBSIDIAN_VAULT_DIR; GITHUB_TOKEN for private repos + writes); remote — the LIVE vault via Obsidian's Local REST API over a public HTTPS URL (Tailscale Funnel; OBSIDIAN_REMOTE_URL + OBSIDIAN_REMOTE_KEY). remote also wraps the vault's built-in MCP server: action=tools lists its ~15 vault tools and action=call runs one (tool + tool_args). local — same API on localhost, unreachable from the cloud Worker (use remote). Reads are KV-cached: git reads validate against the vault HEAD sha; remote `read` writes through and falls back to the cached copy when the Mac is unreachable (fetch failure or 5xx — remote list/search are uncached). Mutating actions refuse dot-prefixed path segments (.github/, .obsidian/, dotfiles): repo/vault infra is not reachable through this fn.",
+		"Work with Obsidian markdown notes. action: list (notes, optionally under `path`) | read (a note by `path`) | search (`query`) | append (add `content` to a note at `path`, creating it if absent) | write (create/overwrite a note with `content`) | edit (surgical find/replace: `find` + `replace`, unique match unless `all`) | delete (remove a note). backend: git (default) — a GitHub-backed vault; every write is a commit, so git history is the undo (OBSIDIAN_VAULT_REPO='owner/repo', optional OBSIDIAN_VAULT_BRANCH/OBSIDIAN_VAULT_DIR; GITHUB_TOKEN for private repos + writes); remote — the LIVE vault via Obsidian's Local REST API over a public HTTPS URL (Tailscale Funnel; OBSIDIAN_REMOTE_URL + OBSIDIAN_REMOTE_KEY). remote also wraps the vault's built-in MCP server: action=tools lists its ~15 vault tools and action=call runs one (tool + tool_args). Reads are KV-cached: git reads validate against the vault HEAD sha; remote `read` writes through and falls back to the cached copy when the Mac is unreachable (fetch failure or 5xx — remote list/search are uncached). Mutating actions refuse dot-prefixed path segments (.github/, .obsidian/, dotfiles): repo/vault infra is not reachable through this fn.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -344,7 +341,7 @@ export const obsidian: Fn = {
 			all: { type: "boolean", description: "Replace every occurrence of `find` (action=edit)." },
 			tool: { type: "string", description: "MCP tool name (remote, action=call). Run action=tools to list them." },
 			tool_args: { type: "object", additionalProperties: true, description: "Arguments for the MCP tool (remote, action=call)." },
-			backend: { type: "string", enum: ["git", "remote", "local"], default: "git" },
+			backend: { type: "string", enum: ["git", "remote"], default: "git" },
 		},
 	},
 	cacheable: false, // notes are mutable; reads should reflect the live vault
@@ -359,9 +356,6 @@ export const obsidian: Fn = {
 			if (bad) return fail(bad);
 		}
 		if (backend === "remote") return runRemote(env, action, args);
-		if (backend === "local") {
-			return fail("backend:'local' (Obsidian Local REST API over the tailnet) isn't wired yet — expose the Local REST API over Tailscale Funnel and use backend:'remote' (OBSIDIAN_REMOTE_URL + OBSIDIAN_REMOTE_KEY), or use the git backend.");
-		}
 		// tools/call are remote-only (they wrap the live vault's MCP server); check
 		// this BEFORE vaultCfg so a remote-only config isn't misdirected to "set
 		// OBSIDIAN_VAULT_REPO".
