@@ -203,3 +203,86 @@ auth/security design.
   morning briefing, phone push, or a mix? (Push depends on #219.)
 - **MyChart** credential handling comfort: app-password/session-cookie in a Worker
   secret vs. a more isolated store? (Gates W6's design.)
+
+---
+
+# The cost ladder — solve at the cheapest rung (the ".22 principle")
+
+The organizing principle for the whole agent. Every capability can be solved at
+several rungs; the discipline is to solve at the **lowest rung that actually
+works**, and climb only when the situation genuinely demands it. Reaching for a
+model to sort mail is a cannon at a knife fight — and you pay for the cannon
+every single time it fires.
+
+**Rung 0 — Server-side deterministic filter.** *Free · stateless · event-driven ·
+applied at delivery.* Fastmail applies filters/rules at delivery time. sux's
+`classifyMessage` (junk / receipt / transaction / mailing-list / service-notification)
+is **already pure, deterministic, table-driven** — it is a set of server-side
+rules in disguise. Compile them once, push them to the server, and mail is sorted
+*before it ever reaches the inbox*: no cron, no Worker compute, no tokens, and **no
+backlog to clean because it never forms.** This is the single highest-leverage
+cheap move on the board, and sux does **none** of it today (it pulls mail via a
+5-min cron and runs the rules in the Worker instead).
+  > **Mechanism UNVERIFIED — spike before building.** Standard JMAP has no `Filter`
+  > type; `scope_probe` confirms Fastmail doesn't expose one there. The real path is
+  > **ManageSieve** (the standard sieve-management protocol) or Fastmail's own rules
+  > API. A short spike confirms which; the design holds regardless.
+
+**Rung 1 — Cheap edge compute, event-triggered.** *Near-free.* For what needs sux's
+context but no model: run rules/kNN in the Worker, triggered by a **push event**
+(JMAP PushSubscription — shipped tonight, #223) instead of a 5-min cron poll.
+Event-driven beats polling three ways: acts in seconds, does *zero* work when
+nothing arrives, and stays stateless. mail-triage is rung-1-**by-polling** today →
+move it to rung-1-**by-event**.
+
+**Rung 2 — Cheap model (Workers-AI `llama-3.2-3b` / embeddings + kNN).** For genuine
+ambiguity only. The `classify()` seam is already built for a **kNN-over-your-own-
+filing-history** classifier: embed the message, find the *k* nearest of Colin's own
+past filings, vote. Learns from real behavior — no training, no labels, no frontier
+model, brute-force cosine over KV below ~10k vectors (the learning-substrate design).
+This is the "learn cheaply" win.
+
+**Rung 3 — Frontier model (Opus/Sonnet).** Almost never. Reserve for genuine
+*synthesis* (a briefing narrative, a hard reply draft) — never for
+classification / detection / routing.
+
+**Design rule:** a capability may *start* at a high rung during a spike (fastest to
+a working prototype), then gets **pushed down the ladder** as its patterns become
+deterministic. Most "AI assistant" work belongs on rungs 0–1.
+
+## The data philosophy — store the signal, not the stream
+
+"Do I really want every transaction in the vault?" — almost always **no.** Raw
+streams are cheap to *generate* and expensive to *store meaningfully*: every Monarch
+transaction written to the vault is a git commit, index churn, and bloat — and raw
+rows aren't knowledge. Store the **signal** a cheap detector extracts (an anomaly, a
+decision, a weekly rollup), not the firehose. The vault is distilled memory, not a
+sink.
+
+- **Monarch** → don't mirror transactions; detect (unusual charge, bill due,
+  subscription creep, low balance) and emit only those as proposals + a one-line
+  weekly rollup.
+- **Mail** → don't archive the corpus; keep the *decisions* (what was filed where,
+  what was flagged) — which double as the kNN training signal (rung 2).
+- **MyChart** → don't scrape-and-store records; surface the *change* (new result,
+  new message, appointment moved) as a proposal.
+
+Cheap signal beats expensive completeness — the same instinct as kNN over a vector DB.
+
+## What the ladder re-sequences
+
+Elevated to the top of Phase 1 (cheapest × highest leverage):
+- **NEW · W9 — Sieve/rules compilation (rung 0).** Compile the deterministic
+  `classifyMessage` rules into server-side Fastmail filters. **Spike the mechanism
+  first** (ManageSieve vs. rules API). Highest leverage / lowest cost on the board.
+- **NEW · W10 — Event-driven triage (rung 1).** Wire mail-triage to the
+  PushSubscription surface shipped tonight (#223), replacing the 5-min cron poll.
+
+Kept cheap (unchanged, just re-affirmed): W4 spam = rung-0/1 rules, never a model;
+W3 backlog = `batch`/`pipe` (bulk, server-side reduce, never pull the corpus into
+context); the kNN filing classifier = rung 2 behind the existing `classify()` seam.
+Data philosophy applies to W7 (Monarch = signal) and W6 (MyChart = change).
+
+**Non-negotiable:** cheap does **not** mean ungated. Every rung still routes acts
+through the propose→gate kernel (W1) and stays fail-closed / dormant by default.
+Sieve rules are reversible tags (never delete/hide), same as the in-Worker classifier.
