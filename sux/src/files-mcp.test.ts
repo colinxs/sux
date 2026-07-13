@@ -176,17 +176,47 @@ describe("full-Dropbox (Mode B) gating — dormant without DROPBOX_FULL_*", () =
 		expect(runMock).not.toHaveBeenCalled(); // Mode A (the mocked dropbox fn) is never touched
 	});
 
+	it("credential-only (read-armed) leaves whole-account WRITE dormant — write verbs fail closed until DROPBOX_FULL_WRITE_ENABLED", async () => {
+		// The security boundary: DROPBOX_FULL_* alone lights up READ but NOT the injection-reachable
+		// write/delete surface. Every write verb must fail closed with the arm-flag hint, mutating nothing.
+		const readArmed = { DROPBOX_FULL_TOKEN: "ft" } as any; // credential set, WRITE flag UNSET
+		const writeCases: Array<[string, any]> = [
+			["files_write", { path: "/x.txt", text: "hi", full: true }],
+			["files_upload", { path: "/x.bin", base64: "AAAA", full: true }],
+			["files_delete", { path: "/x.txt", full: true }],
+			["files_move", { from: "/a", to: "/b", full: true }],
+			["files_operate", { action: "delete", handles: ["/a"] }],
+			["files_transform", { op: "merge", sources: ["/a", "/b"], dest: "/out" }],
+		];
+		for (const [name, args] of writeCases) {
+			const r = await tool(name).run(readArmed, args);
+			expect(r.isError, name).toBe(true);
+			expect(r.content[0].text, name).toMatch(/WRITE is not armed|DROPBOX_FULL_WRITE_ENABLED/);
+		}
+		expect(runMock).not.toHaveBeenCalled(); // Mode A untouched
+
+		// Read verbs, by contrast, are live on the credential alone (they reach the network, not the gate).
+		const origFetch = global.fetch;
+		global.fetch = vi.fn(async () => new Response(JSON.stringify({ entries: [] }), { status: 200 })) as any;
+		try {
+			const list = parse(await tool("files_list").run(readArmed, { path: "/Docs", full: true }));
+			expect(list).toMatchObject({ scope: "full-dropbox" });
+		} finally {
+			global.fetch = origFetch;
+		}
+	});
+
 	it("files_operate fails closed without DROPBOX_FULL_* and validates the action", async () => {
 		const gated = await tool("files_operate").run(env(), { action: "move", handles: ["/a"], dest: "/b" });
 		expect(gated.isError).toBe(true);
 		expect(gated.content[0].text).toMatch(/DROPBOX_FULL_|not configured/);
-		const badAction = await tool("files_operate").run({ DROPBOX_FULL_TOKEN: "ft" } as any, { action: "frobnicate" });
+		const badAction = await tool("files_operate").run({ DROPBOX_FULL_TOKEN: "ft", DROPBOX_FULL_WRITE_ENABLED: "1" } as any, { action: "frobnicate" });
 		expect(badAction.isError).toBe(true);
 		expect(badAction.content[0].text).toMatch(/must be 'move' or 'delete'/);
 	});
 
 	it("full delete STAGES by default — the destructive apply is gated behind the smart guard", async () => {
-		const envFull = { DROPBOX_FULL_TOKEN: "ft", OAUTH_KV: fakeKV() } as any;
+		const envFull = { DROPBOX_FULL_TOKEN: "ft", DROPBOX_FULL_WRITE_ENABLED: "1", OAUTH_KV: fakeKV() } as any;
 		const origFetch = global.fetch;
 		const calls: string[] = [];
 		global.fetch = vi.fn(async (url: any) => {
@@ -214,7 +244,7 @@ describe("full-Dropbox (Mode B) gating — dormant without DROPBOX_FULL_*", () =
 		expect(gated.content[0].text).toMatch(/DROPBOX_FULL_|not configured/);
 		expect(runMock).not.toHaveBeenCalled(); // Mode A untouched
 
-		const envFull = { DROPBOX_FULL_TOKEN: "ft" } as any; // configured, but bad op never reaches the network
+		const envFull = { DROPBOX_FULL_TOKEN: "ft", DROPBOX_FULL_WRITE_ENABLED: "1" } as any; // configured + write-armed, but bad op never reaches the network
 		const badOp = await tool("files_transform").run(envFull, { op: "frobnicate", dest: "/out" });
 		expect(badOp.isError).toBe(true);
 		expect(badOp.content[0].text).toMatch(/must be 'merge' or 'extract'/);
@@ -225,7 +255,7 @@ describe("full-Dropbox (Mode B) gating — dormant without DROPBOX_FULL_*", () =
 	});
 
 	it("files_transform surfaces a transformFull validation error as fail(...), not a throw", async () => {
-		const envFull = { DROPBOX_FULL_TOKEN: "ft" } as any; // reaches transformFull; merge<2 sources rejects before any network
+		const envFull = { DROPBOX_FULL_TOKEN: "ft", DROPBOX_FULL_WRITE_ENABLED: "1" } as any; // reaches transformFull; merge<2 sources rejects before any network
 		const r = await tool("files_transform").run(envFull, { op: "merge", sources: ["/only"], dest: "/out" });
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toMatch(/at least 2/);
