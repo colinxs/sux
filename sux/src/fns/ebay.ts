@@ -1,5 +1,5 @@
 import { getClientToken, mintClientToken, type OAuthClientCreds } from "./_oauth";
-import { type Fn, fail, ok, type RtEnv } from "../registry";
+import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { normalizeMoney, type RetailProduct } from "./_retail";
 import { errMsg, oj } from "./_util";
 
@@ -65,7 +65,7 @@ export const ebay: Fn = {
 	ttl: 300,
 	run: async (env, args) => {
 		if (!env.EBAY_CLIENT_ID || !env.EBAY_CLIENT_SECRET)
-			return fail("eBay API not configured (EBAY_CLIENT_ID/EBAY_CLIENT_SECRET). Free at developer.ebay.com.");
+			return failWith("not_configured", "eBay API not configured (EBAY_CLIENT_ID/EBAY_CLIENT_SECRET). Free at developer.ebay.com.");
 
 		const action = String(args?.action ?? "search");
 		const limit = Math.min(50, Math.max(1, Number(args?.limit) || 15));
@@ -73,13 +73,13 @@ export const ebay: Fn = {
 		try {
 			// action === "search"
 			const term = String(args?.term ?? "").trim();
-			if (!term) return fail("action=search requires a `term`.");
+			if (!term) return failWith("bad_input", "action=search requires a `term`.");
 			const p = new URLSearchParams({ q: term, limit: String(limit) });
 			const j = await api(env, `${API}/item_summary/search?${p}`);
 			const products = (j?.itemSummaries ?? []).map(normProduct);
 			return ok(oj({ retailer: "ebay", action, count: products.length, products }));
 		} catch (e) {
-			return fail(`ebay (${action}) failed: ${errMsg(e)}`);
+			return failWith("upstream_error", `ebay (${action}) failed: ${errMsg(e)}`);
 		}
 	},
 };

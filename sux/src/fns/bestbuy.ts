@@ -1,4 +1,4 @@
-import { type Fn, fail, ok } from "../registry";
+import { type Fn, failWith, ok } from "../registry";
 import { normalizeMoney, type RetailProduct } from "./_retail";
 import { errMsg, oj } from "./_util";
 
@@ -52,7 +52,7 @@ export const bestbuy: Fn = {
 	cacheable: true,
 	ttl: 300,
 	run: async (env, args) => {
-		if (!env.BESTBUY_API_KEY) return fail("Best Buy API not configured (BESTBUY_API_KEY). Free key at developer.bestbuy.com.");
+		if (!env.BESTBUY_API_KEY) return failWith("not_configured", "Best Buy API not configured (BESTBUY_API_KEY). Free key at developer.bestbuy.com.");
 
 		const action = String(args?.action ?? "search");
 		const limit = Math.min(50, Math.max(1, Number(args?.limit) || 15));
@@ -61,23 +61,23 @@ export const bestbuy: Fn = {
 		try {
 			if (action === "product") {
 				const sku = String(args?.sku ?? "").trim();
-				if (!sku) return fail("action=product requires a `sku`.");
+				if (!sku) return failWith("bad_input", "action=product requires a `sku`.");
 				const p = new URLSearchParams({ apiKey: key, format: "json", show: SHOW });
 				const j = await api(`${API}/products/${encodeURIComponent(sku)}.json?${p}`);
 				const d = Array.isArray(j?.products) ? j.products[0] : j;
-				if (!d || d?.sku === undefined) return fail(`No Best Buy product found for SKU '${sku}'.`);
+				if (!d || d?.sku === undefined) return failWith("not_found", `No Best Buy product found for SKU '${sku}'.`);
 				return ok(oj({ retailer: "bestbuy", action, count: 1, products: [normProduct(d)] }));
 			}
 
 			// action === "search"
 			const term = String(args?.term ?? "").trim();
-			if (!term) return fail("action=search requires a `term`.");
+			if (!term) return failWith("bad_input", "action=search requires a `term`.");
 			const p = new URLSearchParams({ apiKey: key, format: "json", show: SHOW, pageSize: String(limit) });
 			const j = await api(`${API}/products((search=${encodeURIComponent(term)}))?${p}`);
 			const products = (j?.products ?? []).map(normProduct);
 			return ok(oj({ retailer: "bestbuy", action, count: products.length, products }));
 		} catch (e) {
-			return fail(`bestbuy (${action}) failed: ${errMsg(e)}`);
+			return failWith("upstream_error", `bestbuy (${action}) failed: ${errMsg(e)}`);
 		}
 	},
 };
