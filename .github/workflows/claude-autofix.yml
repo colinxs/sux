@@ -102,7 +102,7 @@ jobs:
 
       - name: Checkout PR branch
         if: steps.pre.outputs.go == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.event.workflow_run.head_branch }}
           fetch-depth: 0
@@ -135,7 +135,7 @@ jobs:
 
       - name: Claude — fix the CI failure
         if: steps.pre.outputs.go == 'true' && steps.cap.outputs.go == 'true'
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@e90deca47693f9457b72f2b53c17d7c445a87342 # v1
         # head_branch / html_url are attacker-influenced (a PR author controls the branch
         # name); interpolating them inline as ${{ }} would splice their raw text into the
         # prompt (script-injection surface). Pass them through env: and reference $VARS so
