@@ -1,0 +1,14 @@
+name: Fixer
+
+# Scans this repo and files bugs/forgotten-work as GitHub issues. Never opens a PR,
+# never touches code, never labels what it files `queued-for-build` — a human decides
+# what's worth autonomously building (see issue-build.yml). Manual for now.
+# Reusable workflow: SuxOS/.github/.github/workflows/fixer.yml
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fixer:
+    uses: SuxOS/.github/.github/workflows/fixer.yml@main
+    secrets: inherit

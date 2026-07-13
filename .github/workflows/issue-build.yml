@@ -1,0 +1,22 @@
+name: Issue build
+
+# Fires when a human labels an issue queued-for-build. Clusters related
+# queued-for-build issues (n issues -> m PRs, never n->1) and fans out one build
+# session + one PR per cluster. PRs are labeled with the same eligibility rule
+# automerge.yml already uses, so they flow into the existing automerge pipeline.
+# Reusable workflow: SuxOS/.github/.github/workflows/issue-build.yml
+
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  issue-build:
+    if: github.event.label.name == 'queued-for-build'
+    uses: SuxOS/.github/.github/workflows/issue-build.yml@main
+    with:
+      gates-summary: |
+        npm run type-check · npm test · npm run check:node ·
+        npm run gen:index (commit the regenerated index.ts) ·
+        npx wrangler deploy --dry-run --config sux/wrangler.jsonc
+    secrets: inherit
