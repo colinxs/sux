@@ -630,6 +630,25 @@ export default {
 				}
 			}
 		}
+
+		// JMAP push webhook — Fastmail POSTs here the moment new mail arrives (once
+		// mail({action:'push_subscribe'}) is armed), letting mail_triage react in
+		// seconds instead of waiting for the next ~5min cron tick. The URL's <token>
+		// segment IS the credential (Fastmail's POST carries no auth header of ours);
+		// an unmatched token 404s, indistinguishable from the route not existing. See
+		// handleMailPushWebhook's own comment for why a guessed token still can't do
+		// anything the existing bearer-gated /admin/tick couldn't already.
+		{
+			const u = new URL(request.url);
+			const m = request.method === "POST" && u.pathname.match(/^\/push\/jmap\/([^/]+)$/);
+			if (m) {
+				const body = await request.text();
+				if (body.length > 16_000) return new Response("payload too large", { status: 413 });
+				const mod = await import("./mail-mcp");
+				const matched = await mod.handleMailPushWebhook(env, m[1], body, () => mailTriageTick(env));
+				return matched ? new Response(null, { status: 200 }) : new Response("not found", { status: 404 });
+			}
+		}
 		try {
 			return await (await getOAuthProvider()).fetch(request, env as any, ctx);
 		} catch (e) {

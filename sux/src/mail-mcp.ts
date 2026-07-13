@@ -6,7 +6,7 @@ import { jmap } from "./fns/jmap";
 import { doUpload, jstr, scopeProbe } from "./fns/_jmap";
 import { buildVEvent, buildVTodo, CALDAV_NOT_CONFIGURED, type CalendarRef, caldavFetch, calendarHome, dateProp, hasCalDav, icalDateToIso, listCalendars, parseICal, replaceProps, reportObjects, textProp } from "./fns/_caldav";
 import { htmlToMd } from "./fns/_markup";
-import { errMsg } from "./fns/_util";
+import { errMsg, storeBase } from "./fns/_util";
 
 // The mail MCP server — the ergonomic Fastmail surface, reached through the `mail_`
 // (and `cal_`/`contact_`) front verbs on the one /mcp connector, behind the same
@@ -41,6 +41,62 @@ function resultFor(resp: { methodResponses: any[] }, method: string, callId?: st
 }
 
 const clamp = (v: unknown, lo: number, hi: number, dflt: number): number => Math.min(hi, Math.max(lo, Number(v) || dflt));
+
+// --- mail_push (JMAP PushSubscription) — one KV record, keyed by a fixed key since sux
+// only ever needs one live subscription (one Fastmail account). The URL path segment
+// (`token`) IS the credential: Fastmail's push POST carries no auth header of ours, so an
+// unguessable token in the webhook URL is the boundary. Even a guessed/leaked token can only
+// trigger an extra mail_triage cycle early — triage's own MAIL_TRIAGE_ENABLED gate still
+// applies, so this can't do anything the existing bearer-gated /admin/tick couldn't already.
+const PUSH_KV_KEY = "sux:mailpush:sub";
+type PushState = { id: string; token: string; verified: boolean; createdAt: number; expires: string | null };
+
+async function pushState(env: RtEnv): Promise<PushState | null> {
+	const raw = await env.OAUTH_KV?.get(PUSH_KV_KEY);
+	return raw ? JSON.parse(raw) : null;
+}
+async function savePushState(env: RtEnv, s: PushState | null): Promise<void> {
+	if (!s) await env.OAUTH_KV?.delete(PUSH_KV_KEY);
+	else await env.OAUTH_KV?.put(PUSH_KV_KEY, JSON.stringify(s));
+}
+function randomPushToken(): string {
+	return [...crypto.getRandomValues(new Uint8Array(24))].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * The public webhook target Fastmail POSTs to. Two cases:
+ *   1. The FIRST push after subscribing carries a `verificationCode` — confirm it via
+ *      PushSubscription/set update, per RFC 8620 §7.2.2. No confirm, no future pushes.
+ *   2. Any later push is a StateChange notification — trigger `trigger()` (the caller wires
+ *      this to mailTriageTick) iff the subscription is verified, so a spoofed/pre-verification
+ *      POST to a guessed token can't fire anything.
+ * Returns true iff the token matched a live subscription (index.ts uses this to 404 otherwise,
+ * so a wrong/expired token is indistinguishable from the route not existing).
+ */
+export async function handleMailPushWebhook(env: RtEnv, token: string, rawBody: string, trigger: () => Promise<unknown>): Promise<boolean> {
+	const existing = await pushState(env);
+	if (!existing || existing.token !== token) return false;
+	let body: any = null;
+	try {
+		body = rawBody ? JSON.parse(rawBody) : null;
+	} catch {
+		/* a malformed body still 200s (Fastmail just wants the ack) but does nothing */
+	}
+	const isVerification = body?.["@type"] === "PushVerification";
+	const verificationCode = isVerification ? body?.verificationCode : undefined;
+	if (verificationCode && !existing.verified) {
+		try {
+			const resp = await jmapCall(env, { calls: [["PushSubscription/set", { update: { [existing.id]: { verificationCode: String(verificationCode) } } }, "s"]] });
+			const setR = resultFor(resp, "PushSubscription/set");
+			if (Object.prototype.hasOwnProperty.call(setR?.updated ?? {}, existing.id)) await savePushState(env, { ...existing, verified: true });
+		} catch {
+			/* verification confirm failed — leave unverified; a later legit push will retry */
+		}
+		return true;
+	}
+	if (existing.verified) await trigger();
+	return true;
+}
 
 /** The stage-guard arg triplet, threaded uniformly at every staged() call site. `force` finally
  *  rides through (was dropped everywhere), so the one-shot `!`-override is live for every mail verb. */
@@ -734,6 +790,42 @@ const TOOLS: MailTool[] = [
 				const resp = await jmapCall(env, { calls: [["Quota/get", {}, "g"]] });
 				const list = resultFor(resp, "Quota/get")?.list ?? [];
 				return ok({ count: list.length, quotas: list.map((q: any) => ({ id: q?.id, name: q?.name, used: q?.used, limit: q?.limit, scope: q?.scope, resourceType: q?.resourceType })) });
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "mail_push",
+		description:
+			"Subscribe/unsubscribe a JMAP PushSubscription so Fastmail notifies sux the moment new mail arrives, instead of waiting for the next mail_triage cron tick (up to 5min). action:'subscribe' (default) creates one (idempotent — a no-op if already subscribed) and returns verified:false until Fastmail's confirmation push lands (usually within seconds; check with action:'status'). action:'unsubscribe' tears it down. action:'status' reports the current subscription. The webhook itself only ever triggers a normal mail_triage cycle — same fail-closed MAIL_TRIAGE_ENABLED gate as the cron path, so an unexpected push can't do anything the cron tick couldn't already do. Needs FASTMAIL_TOKEN.",
+		inputSchema: { type: "object", additionalProperties: false, properties: { action: { type: "string", enum: ["subscribe", "unsubscribe", "status"], default: "subscribe" } } },
+		run: async (env, a) => {
+			try {
+				const action = String(a?.action ?? "subscribe");
+				if (action === "status") {
+					const existing = await pushState(env);
+					return ok(existing ? { subscribed: true, id: existing.id, verified: existing.verified, createdAt: existing.createdAt, expires: existing.expires } : { subscribed: false });
+				}
+				if (action === "unsubscribe") {
+					const existing = await pushState(env);
+					if (!existing) return ok({ unsubscribed: true, note: "no active subscription." });
+					const resp = await jmapCall(env, { allow_destroy: true, calls: [["PushSubscription/set", { destroy: [existing.id] }, "s"]] });
+					const setR = resultFor(resp, "PushSubscription/set");
+					await savePushState(env, null);
+					return ok({ unsubscribed: true, destroyed: (setR?.destroyed ?? []).includes(existing.id) });
+				}
+				// subscribe
+				const existing = await pushState(env);
+				if (existing) return ok({ already: true, verified: existing.verified, id: existing.id, note: existing.verified ? undefined : "still awaiting Fastmail's confirmation push — check action:'status'." });
+				const token = randomPushToken();
+				const url = `${storeBase(env)}/push/jmap/${token}`;
+				const resp = await jmapCall(env, { calls: [["PushSubscription/set", { create: { p: { deviceClientId: "sux-worker", url, types: ["Email"] } } }, "s"]] });
+				const setR = resultFor(resp, "PushSubscription/set");
+				const created = setR?.created?.p;
+				if (!created) return fail(`PushSubscription create failed: ${JSON.stringify(setR?.notCreated ?? {})}`);
+				await savePushState(env, { id: created.id, token, verified: false, createdAt: Date.now(), expires: created.expires ?? null });
+				return ok({ subscribed: true, id: created.id, verified: false, note: "Awaiting Fastmail's verification push — check action:'status' shortly." });
 			} catch (e) {
 				return fail(errMsg(e));
 			}

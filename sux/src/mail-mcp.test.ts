@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { handleMailRpc, MAIL_TOOLS } from "./mail-mcp";
+import { handleMailPushWebhook, handleMailRpc, MAIL_TOOLS } from "./mail-mcp";
 
 // Reuse the jmap.test mocking approach: a Map-backed KV + a URL-routed fetch that
 // answers Session discovery and the JMAP api endpoint. The mail_* tools compile to
@@ -64,6 +64,14 @@ function answer([method, args]: any): any {
 		const destroyed = destroyIds.filter((id: string) => !id.includes("nonempty"));
 		const notDestroyed = Object.fromEntries(destroyIds.filter((id: string) => id.includes("nonempty")).map((id: string) => [id, { type: "mailboxHasEmail" }]));
 		return [method, { created, notCreated, updated, notUpdated, destroyed, notDestroyed }, "x"];
+	}
+	if (method === "PushSubscription/set") {
+		const created = args?.create ? Object.fromEntries(Object.keys(args.create).map((k) => [k, { id: "push-1", expires: null }])) : undefined;
+		const updateKeys = args?.update ? Object.keys(args.update) : [];
+		const updated = Object.fromEntries(updateKeys.filter((k) => !k.includes("bad")).map((k) => [k, null]));
+		const notUpdated = Object.fromEntries(updateKeys.filter((k) => k.includes("bad")).map((k) => [k, { type: "invalidProperties" }]));
+		const destroyed = args?.destroy ?? undefined;
+		return [method, { created, updated, notUpdated, destroyed }, "x"];
 	}
 	if (method === "MaskedEmail/get") return [method, { list: [{ id: "m1", email: "x@fastmail.com", state: "enabled", forDomain: "shop.com" }] }, "x"];
 	if (method === "MaskedEmail/set") return [method, { created: args?.create ? { m: { id: "m2", email: "y@fastmail.com", forDomain: "new.com" } } : undefined, updated: args?.update ? Object.fromEntries(Object.keys(args.update).map((k) => [k, null])) : undefined }, "x"];
@@ -435,6 +443,88 @@ describe("mail_* ergonomic tools", () => {
 		const r = await tool("mail_mailbox").run(env(), { action: "delete", mailbox: "mb-nonempty", force: true });
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toMatch(/move its mail out first with mail_move/);
+	});
+
+	it("mail_push status reports no subscription until one exists", async () => {
+		expect(parse(await tool("mail_push").run(env(), { action: "status" }))).toEqual({ subscribed: false });
+	});
+
+	it("mail_push subscribe creates a PushSubscription and is idempotent on re-call", async () => {
+		installFetch();
+		const e = env();
+		const first = parse(await tool("mail_push").run(e, { action: "subscribe" }));
+		expect(first).toMatchObject({ subscribed: true, id: "push-1", verified: false });
+		const status = parse(await tool("mail_push").run(e, { action: "status" }));
+		expect(status).toMatchObject({ subscribed: true, id: "push-1", verified: false });
+		const second = parse(await tool("mail_push").run(e, { action: "subscribe" }));
+		expect(second).toMatchObject({ already: true, id: "push-1", verified: false });
+	});
+
+	it("mail_push unsubscribe destroys the subscription and clears state", async () => {
+		installFetch();
+		const e = env();
+		await tool("mail_push").run(e, { action: "subscribe" });
+		const out = parse(await tool("mail_push").run(e, { action: "unsubscribe" }));
+		expect(out).toMatchObject({ unsubscribed: true, destroyed: true });
+		expect(parse(await tool("mail_push").run(e, { action: "status" }))).toEqual({ subscribed: false });
+	});
+
+	it("mail_push unsubscribe with nothing subscribed is a clean no-op", async () => {
+		const out = parse(await tool("mail_push").run(env(), { action: "unsubscribe" }));
+		expect(out).toMatchObject({ unsubscribed: true });
+	});
+
+	it("handleMailPushWebhook: wrong/unknown token doesn't match (index.ts 404s on false)", async () => {
+		installFetch();
+		const e = env();
+		await tool("mail_push").run(e, { action: "subscribe" });
+		const trigger = vi.fn();
+		const matched = await handleMailPushWebhook(e, "wrong-token", "{}", trigger);
+		expect(matched).toBe(false);
+		expect(trigger).not.toHaveBeenCalled();
+	});
+
+	it("handleMailPushWebhook: verification push confirms the subscription without triggering triage", async () => {
+		installFetch();
+		const e = env();
+		await tool("mail_push").run(e, { action: "subscribe" });
+		const subState = JSON.parse(e.OAUTH_KV.map.get("sux:mailpush:sub"));
+		const trigger = vi.fn();
+		const matched = await handleMailPushWebhook(e, subState.token, JSON.stringify({ "@type": "PushVerification", pushSubscriptionId: "push-1", verificationCode: "abc123" }), trigger);
+		expect(matched).toBe(true);
+		expect(trigger).not.toHaveBeenCalled();
+		const status = parse(await tool("mail_push").run(e, { action: "status" }));
+		expect(status).toMatchObject({ verified: true });
+	});
+
+	it("handleMailPushWebhook: a StateChange push triggers triage only once verified", async () => {
+		installFetch();
+		const e = env();
+		await tool("mail_push").run(e, { action: "subscribe" });
+		const subState = JSON.parse(e.OAUTH_KV.map.get("sux:mailpush:sub"));
+		const trigger = vi.fn();
+
+		// Before verification: a StateChange push matches (200s) but does NOT trigger.
+		const early = await handleMailPushWebhook(e, subState.token, JSON.stringify({ "@type": "StateChange", changed: {} }), trigger);
+		expect(early).toBe(true);
+		expect(trigger).not.toHaveBeenCalled();
+
+		// Verify, then a StateChange push DOES trigger.
+		await handleMailPushWebhook(e, subState.token, JSON.stringify({ "@type": "PushVerification", pushSubscriptionId: "push-1", verificationCode: "abc123" }), trigger);
+		const after = await handleMailPushWebhook(e, subState.token, JSON.stringify({ "@type": "StateChange", changed: {} }), trigger);
+		expect(after).toBe(true);
+		expect(trigger).toHaveBeenCalledTimes(1);
+	});
+
+	it("handleMailPushWebhook: a malformed body still acks (matches) but never throws or triggers", async () => {
+		installFetch();
+		const e = env();
+		await tool("mail_push").run(e, { action: "subscribe" });
+		const subState = JSON.parse(e.OAUTH_KV.map.get("sux:mailpush:sub"));
+		const trigger = vi.fn();
+		const matched = await handleMailPushWebhook(e, subState.token, "not json{{{", trigger);
+		expect(matched).toBe(true);
+		expect(trigger).not.toHaveBeenCalled();
 	});
 
 	it("mail_upload streams bytes to a reusable blobId (§1e)", async () => {
