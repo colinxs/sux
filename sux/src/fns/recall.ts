@@ -174,19 +174,28 @@ async function fromOracle(env: RtEnv, _question: string): Promise<Gathered> {
 		cursor = page.list_complete ? undefined : page.cursor;
 	} while (cursor && topics.length < MAX_TOPICS);
 	if (!topics.length) return { material: "", refs: [] };
+	// recall is interactive, so fan the ≤MAX_TOPICS KV reads out in parallel — the serial await here
+	// was the long pole inside gatherRecall's own Promise.allSettled. Order-preserving map keeps the
+	// distilled notes stably ordered by topic key, exactly as the old sequential loop emitted them.
+	const loaded = await Promise.all(
+		topics.slice(0, MAX_TOPICS).map(async (topic): Promise<{ part: string; ref: string } | null> => {
+			try {
+				const stored = await kv.get(`${KV_PREFIX}${topic}`);
+				if (!stored) return null;
+				const distilled = String(pj(await maybeDecompressString(stored))?.distilled ?? "").trim();
+				if (!distilled) return null;
+				return { part: `[oracle:${topic}]\n${distilled.slice(0, 8_000)}`, ref: `oracle:${topic}` };
+			} catch {
+				return null; // skip an unreadable / unparseable KB
+			}
+		}),
+	);
 	const parts: string[] = [];
 	const refs: string[] = [];
-	for (const topic of topics.slice(0, MAX_TOPICS)) {
-		try {
-			const stored = await kv.get(`${KV_PREFIX}${topic}`);
-			if (!stored) continue;
-			const distilled = String(pj(await maybeDecompressString(stored))?.distilled ?? "").trim();
-			if (!distilled) continue;
-			parts.push(`[oracle:${topic}]\n${distilled.slice(0, 8_000)}`);
-			refs.push(`oracle:${topic}`);
-		} catch {
-			/* skip an unreadable / unparseable KB */
-		}
+	for (const entry of loaded) {
+		if (!entry) continue;
+		parts.push(entry.part);
+		refs.push(entry.ref);
 	}
 	return { material: parts.join("\n\n"), refs };
 }
