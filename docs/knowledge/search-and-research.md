@@ -212,7 +212,7 @@ All keyless-first, plain `fetch` (public academic/gov APIs, no bot wall — **no
   ```ts
   // publicUrl() inserts ".json" before any query string
   const resp = await smartFetch(env, publicUrl(path),
-    { headers: { "User-Agent": "sux/1.0 (+https://github.com/colinxs/sux)" } }, "proxy");
+    { headers: { "User-Agent": "sux/1.0 (+https://github.com/SuxOS/sux)" } }, "proxy");
   ```
 - **Limits/gotchas**: A stable, descriptive `User-Agent` rides EVERY request on both paths (Reddit blocks default UAs). OAuth ~100 QPM/client; keyless is unmetered-ish but IP-block-prone → surfaces `failWith("blocked")` on 403/empty/HTML-challenge (retryable, hints the OAuth upgrade). OAuth path self-heals a rejected token (drops KV, re-mints once on 401/403). Cached token TTL = `expires_in − 60`, ≥60s (KV floor). `ttl: 300`.
 - **Refs**: https://www.reddit.com/dev/api/ · OAuth: https://github.com/reddit-archive/reddit/wiki/OAuth2

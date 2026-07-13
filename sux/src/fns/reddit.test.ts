@@ -49,7 +49,7 @@ const LISTING = {
 	},
 };
 
-const UA_KEYLESS = "sux/1.0 (+https://github.com/colinxs/sux)";
+const UA_KEYLESS = "sux/1.0 (+https://github.com/SuxOS/sux)";
 const UA_OAUTH = "sux/1.0 (by /u/sux)";
 
 /** Install a global.fetch mock that routes by URL, records init, and counts token mints. */

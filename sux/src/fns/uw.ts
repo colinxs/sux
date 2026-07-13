@@ -23,7 +23,7 @@ import { oj } from "./_util";
 const BASE = "https://directory.uw.edu";
 const PWS_BASE = "https://ws.admin.washington.edu";
 // Identifying, non-deceptive UA + contact per the directory's non-commercial ToS.
-const UA = "sux-mcp/1.0 (+https://github.com/colinxs/sux; personal single-lookup)";
+const UA = "sux-mcp/1.0 (+https://github.com/SuxOS/sux; personal single-lookup)";
 
 type Method = "name" | "email" | "department" | "box" | "phone";
 // The directory <select name="method"> option values (box → box_number).
