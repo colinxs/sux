@@ -13,6 +13,7 @@
 //   POST /recovery/enqueue  — operator→Worker, bearer-authed. Sign + queue a command for a node.
 //   GET  /recovery/status   — operator→Worker, bearer-authed. Read a node's last-seen health.
 
+import { keyedSerialize } from "./keyed-serialize";
 import type { RtEnv } from "./registry";
 
 // The only actions the box will ever act on. STRINGS ONLY — the Worker never
@@ -89,6 +90,13 @@ const cmdSecret = (env: RtEnv): string => env.RECOVERY_CMD_SECRET || (env.RECOVE
 
 const statusKey = (nodeId: string): string => `recovery:status:${nodeId}`;
 const queueKey = (nodeId: string): string => `recovery:queue:${nodeId}`;
+
+// Serializes read-modify-writes of a node's queue within an isolate: two concurrent
+// enqueues (an operator firing commands back-to-back) — or an enqueue racing the
+// checkin's deliver-and-clear — would otherwise clobber, silently dropping a signed
+// command the box never receives. Chaining same-node ops keeps the append atomic
+// per isolate. Cross-isolate is still racy (a Durable Object per node would close it).
+const queueChains = new Map<string, Promise<unknown>>();
 const nonceKey = (nodeId: string, nonce: string): string => `recovery:nonce:${nodeId}:${nonce}`;
 
 // A node_id must be a short, filesystem/KV-safe slug so it can't smuggle a KV key
@@ -154,9 +162,14 @@ async function handleCheckin(request: Request, env: RtEnv): Promise<Response> {
 	// Deliver-and-consume: return the live (unexpired) queued commands and clear the
 	// queue in one shot. A dead-drop is at-most-once by design — the box acts on what
 	// it pulled; anything it missed is re-enqueued by the operator, not retried here.
-	const queued = await readQueue(env, nodeId);
-	const commands = queued.filter((c) => c.expires > now);
-	if (queued.length) await env.OAUTH_KV.delete(queueKey(nodeId));
+	// Serialized on the node's queue key so a concurrent enqueue isn't read-then-erased
+	// (the delete would drop a command that landed between this read and clear).
+	const commands = await keyedSerialize(queueChains, queueKey(nodeId), async () => {
+		const queued = await readQueue(env, nodeId);
+		const live = queued.filter((c) => c.expires > now);
+		if (queued.length) await env.OAUTH_KV.delete(queueKey(nodeId));
+		return live;
+	});
 
 	return json({ ok: true, node_id: nodeId, server_time: now, commands });
 }
@@ -183,8 +196,13 @@ async function handleEnqueue(request: Request, env: RtEnv): Promise<Response> {
 	const expires = Math.floor(Date.now() / 1000) + ttl;
 
 	const cmd = await signCommand(env, action as RecoveryAction, args, expires);
-	const queue = [...(await readQueue(env, nodeId)), cmd].slice(-MAX_QUEUE);
-	await env.OAUTH_KV.put(queueKey(nodeId), JSON.stringify(queue));
+	// Serialized append: read the current queue, append, cap, and write — without a
+	// concurrent enqueue on the same node reading the same snapshot and clobbering us.
+	const queue = await keyedSerialize(queueChains, queueKey(nodeId), async () => {
+		const next = [...(await readQueue(env, nodeId)), cmd].slice(-MAX_QUEUE);
+		await env.OAUTH_KV.put(queueKey(nodeId), JSON.stringify(next));
+		return next;
+	});
 
 	return json({ ok: true, node_id: nodeId, queued: cmd, queue_depth: queue.length });
 }
