@@ -26,11 +26,22 @@ jobs:
     # "review" that claude.yml's review job produces — branch protection can then require
     # this gate without also requiring (or being unable to disambiguate) that one.
     name: security-review
-    # Trusted authors only (public repo). Draft PRs skipped.
+    # Trusted authors only (public repo). Draft PRs skipped. ARMING PREREQUISITE for
+    # self-improve auto-merge: a HIGH-confidence self-improve PR is opened by the SUX_BOT App
+    # (sender.type == 'Bot'), so the plain sender!=Bot gate would skip it and an armed bot PR
+    # would auto-merge UNREVIEWED. So ALSO run for any PR carrying the `self-improve` label —
+    # that label is addable only by trusted write access, and self-improve branches are same-repo
+    # (never a fork), so there's no untrusted-checkout surface. Inert in practice until Colin arms
+    # SELF_IMPROVE_AUTOMERGE; harmless before then (self-improve PRs simply also get reviewed).
     if: >
       github.event.pull_request.draft == false &&
-      github.event.sender.type != 'Bot' &&
-      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
+      (
+        (
+          github.event.sender.type != 'Bot' &&
+          contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
+        ) ||
+        contains(github.event.pull_request.labels.*.name, 'self-improve')
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

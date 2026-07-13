@@ -43,13 +43,21 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Gate the deploy on a green build: type-check + full test suite must pass
-      # before wrangler ships anything.
+      # Gate the deploy on the same floor as ci.yml: type-check, tests, node-blob
+      # sync, and fn-index sync must all pass before wrangler ships anything. The
+      # last two matter for workflow_dispatch — a manual deploy from a stale/dirty
+      # ref would otherwise skip them and ship generated-artifact drift to prod.
       - name: Type-check
         run: npm run type-check
 
       - name: Test
         run: npm test
+
+      - name: Node deploy blob in sync
+        run: npm run check:node
+
+      - name: Function index in sync
+        run: npm run gen:index && git diff --exit-code sux/src/fns/index.ts
 
       # Deploys code + wrangler.jsonc vars (including the Cron Trigger). Does NOT
       # touch secrets (KAGI_API_KEY, GITHUB_CLIENT_ID/SECRET, COOKIE_ENCRYPTION_KEY,

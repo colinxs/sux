@@ -1,4 +1,4 @@
-import { type Fn, fail, ok } from "../registry";
+import { type Fn, failWith, ok } from "../registry";
 import { oj } from "./_util";
 import { normalizeMoney, type RetailProduct } from "./_retail";
 
@@ -59,9 +59,9 @@ export const weekly_ad: Fn = {
 	ttl: 3600,
 	run: async (_env, args) => {
 		const term = String(args?.term ?? "").trim();
-		if (!term) return fail("term is required.");
+		if (!term) return failWith("bad_input", "term is required.");
 		const zip = String(args?.zip ?? "").trim();
-		if (!/^\d{5}$/.test(zip)) return fail("zip is required (5 digits).");
+		if (!/^\d{5}$/.test(zip)) return failWith("bad_input", "zip is required (5 digits).");
 		const merchant = args?.merchant ? String(args.merchant).trim().toLowerCase() : "";
 		const limit = Math.min(50, Math.max(1, Number(args?.limit) || 20));
 
@@ -70,9 +70,9 @@ export const weekly_ad: Fn = {
 		try {
 			resp = await fetch(`${API}?${p}`, { headers: { Accept: "application/json" } });
 		} catch (e) {
-			return fail(`Flipp fetch failed: ${String((e as Error)?.message ?? e)}`);
+			return failWith("upstream_error", `Flipp fetch failed: ${String((e as Error)?.message ?? e)}`);
 		}
-		if (!resp.ok) return fail(`Flipp API HTTP ${resp.status}.`);
+		if (!resp.ok) return failWith("upstream_error", `Flipp API HTTP ${resp.status}.`);
 		const j: any = await resp.json();
 
 		let items = (Array.isArray(j?.items) ? j.items : []).map(normItem);

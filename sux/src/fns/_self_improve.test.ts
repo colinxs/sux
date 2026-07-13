@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import type { FeedbackEntry } from "./_feedback";
-import { canOpenPr, classifyLane, type Finding, type GithubClient, hasSelfImprove, isKilled, selfImproveTick } from "./_self_improve";
+import { canAutoMerge, canOpenPr, classifyConfidence, classifyLane, type Finding, type GithubClient, hasSelfImprove, isKilled, selfImproveTick } from "./_self_improve";
 
 // In-memory KV + a spy on put, so tests can assert what keys the loop writes.
 function fakeKv() {
@@ -21,18 +21,23 @@ function seedFeedback(store: Map<string, string>, entries: FeedbackEntry[]) {
 
 type FakeGithub = GithubClient & {
 	openPr: ReturnType<typeof vi.fn>;
+	openIssue: ReturnType<typeof vi.fn>;
 	labelPr: ReturnType<typeof vi.fn>;
 	commentPr: ReturnType<typeof vi.fn>;
 	openSelfImprovePrCount: ReturnType<typeof vi.fn>;
+	openSelfImproveIssueCount: ReturnType<typeof vi.fn>;
 };
 
-function fakeGithub(opts: { openCount?: number } = {}): FakeGithub {
+function fakeGithub(opts: { openCount?: number; openIssueCount?: number } = {}): FakeGithub {
 	let n = 0;
+	let m = 0;
 	const openPr = vi.fn(async (_f: Finding) => ({ number: ++n, sha: `sha-${n}` }));
+	const openIssue = vi.fn(async (_f: Finding) => ({ number: ++m, created: true }));
 	const labelPr = vi.fn(async (_pr: number, _labels: string[]) => {});
 	const commentPr = vi.fn(async (_pr: number, _body: string) => {});
 	const openSelfImprovePrCount = vi.fn(async () => opts.openCount ?? 0);
-	return { openPr, labelPr, commentPr, openSelfImprovePrCount };
+	const openSelfImproveIssueCount = vi.fn(async () => opts.openIssueCount ?? 0);
+	return { openPr, openIssue, labelPr, commentPr, openSelfImprovePrCount, openSelfImproveIssueCount };
 }
 
 const baseEnv = (over: Record<string, string> = {}) => {
@@ -70,6 +75,13 @@ describe("self-improve gate predicates", () => {
 		expect(canOpenPr({ SELF_IMPROVE_ENABLE: "1", SELF_IMPROVE_PR: "on" } as any)).toBe(false); // no token
 		expect(canOpenPr({ SELF_IMPROVE_ENABLE: "1", SELF_IMPROVE_PR: "yes", GITHUB_TOKEN: "t" } as any)).toBe(false); // not the exact sentinel
 	});
+	it("auto-merge needs canOpenPr AND the flag; default off, and stacked on the PR gate", () => {
+		expect(canAutoMerge({ ...ENABLED_PR, SELF_IMPROVE_AUTOMERGE: "on" } as any)).toBe(true);
+		expect(canAutoMerge(ENABLED_PR as any)).toBe(false); // flag unset ⇒ off
+		expect(canAutoMerge({ ...ENABLED_PR, SELF_IMPROVE_AUTOMERGE: "off" } as any)).toBe(false); // explicit off
+		// The flag can never arm while the PR gate itself is closed (no token).
+		expect(canAutoMerge({ SELF_IMPROVE_ENABLE: "1", SELF_IMPROVE_PR: "on", SELF_IMPROVE_AUTOMERGE: "on" } as any)).toBe(false);
+	});
 });
 
 describe("classifyLane", () => {
@@ -87,6 +99,27 @@ describe("classifyLane", () => {
 	});
 	it("ambiguous issue ⇒ security (suggest-only, bias to safe)", () => {
 		expect(classifyLane({} as any, e("hmm not sure about this one")).lane).toBe("security");
+	});
+});
+
+describe("classifyConfidence", () => {
+	const e = (text: string, kind: FeedbackEntry["kind"] = "issue", tool?: string): FeedbackEntry => ({ kind, text, at: 1, ...(tool ? { tool } : {}) });
+	it("HIGH only on issue-kind + concrete failure + a known tool tag (fix/refactor/cleanup)", () => {
+		expect(classifyConfidence({} as any, e("the scrape tool crashed with a 500 error", "issue", "scrape"), "fix").confidence).toBe("high");
+	});
+	it("security / feature lanes are CAPPED at medium — never high", () => {
+		expect(classifyConfidence({} as any, e("the scrape tool crashed with a 500 error", "issue", "scrape"), "security").confidence).toBe("medium");
+		expect(classifyConfidence({} as any, e("the scrape tool crashed with a 500 error", "issue", "scrape"), "feature").confidence).toBe("medium");
+	});
+	it("a concrete failure but no known tool tag ⇒ medium, not high", () => {
+		expect(classifyConfidence({} as any, e("the tool crashed with a 500 error"), "fix").confidence).toBe("medium");
+	});
+	it("a vague keyword with no failure signal and no tool ⇒ low", () => {
+		expect(classifyConfidence({} as any, e("the ui feels a bit slow"), "refactor").confidence).toBe("low");
+		expect(classifyConfidence({} as any, e("there is some redundant code here"), "cleanup").confidence).toBe("low");
+	});
+	it("a partial signal (known tool but no concrete failure) ⇒ medium", () => {
+		expect(classifyConfidence({} as any, e("the scrape tool feels slow", "issue", "scrape"), "refactor").confidence).toBe("medium");
 	});
 });
 
@@ -140,6 +173,89 @@ describe("selfImproveTick gating matrix", () => {
 		expect(gh.commentPr.mock.calls[0][1]).toContain("@claude");
 		expect(r.prs).toBe(1);
 		expect(r.comments).toBe(1);
+	});
+
+	it("HIGH fix + auto-merge armed: PR + self-improve + automerge label + @claude comment", async () => {
+		const { env, store } = baseEnv({ ...ENABLED_PR, SELF_IMPROVE_AUTOMERGE: "on" });
+		seedFeedback(store, [{ kind: "issue", text: "the scrape tool crashed with a 500 error", at: 100, tool: "scrape" }]);
+		const gh = fakeGithub();
+		const r = await selfImproveTick(env, { github: gh });
+		expect(gh.openPr).toHaveBeenCalledTimes(1);
+		expect(gh.labelPr).toHaveBeenCalledWith(1, ["self-improve", "automerge"]);
+		expect(gh.commentPr).toHaveBeenCalledTimes(1); // fix lane still hands off to @claude
+		expect(r.armed).toBe(1);
+		expect(r.prs).toBe(1);
+		expect(gh.openIssue).not.toHaveBeenCalled();
+	});
+
+	it("HIGH fix but the auto-merge flag is OFF ⇒ MEDIUM path (self-improve only, never armed)", async () => {
+		const { env, store } = baseEnv(ENABLED_PR); // SELF_IMPROVE_AUTOMERGE unset
+		seedFeedback(store, [{ kind: "issue", text: "the scrape tool crashed with a 500 error", at: 100, tool: "scrape" }]);
+		const gh = fakeGithub();
+		const r = await selfImproveTick(env, { github: gh });
+		expect(gh.labelPr).toHaveBeenCalledWith(1, ["self-improve"]); // no automerge label
+		expect(r.armed).toBe(0);
+		expect(r.prs).toBe(1);
+	});
+
+	it("security lane never arms — even with the auto-merge flag on (capped at medium)", async () => {
+		const { env, store } = baseEnv({ ...ENABLED_PR, SELF_IMPROVE_AUTOMERGE: "on" });
+		seedFeedback(store, [{ kind: "issue", text: "the auth token crashed with a leak error", at: 100, tool: "scrape" }]);
+		const gh = fakeGithub();
+		const r = await selfImproveTick(env, { github: gh });
+		expect(gh.labelPr).toHaveBeenCalledWith(1, ["self-improve"]); // no automerge label on a spicy lane
+		expect(r.armed).toBe(0);
+	});
+
+	it("LOW finding routes to an ISSUE, not a PR (and doesn't draw the PR budget)", async () => {
+		const { env, store } = baseEnv(ENABLED_PR);
+		seedFeedback(store, [{ kind: "issue", text: "the ui feels a bit slow", at: 100 }]);
+		const gh = fakeGithub();
+		const r = await selfImproveTick(env, { github: gh });
+		expect(gh.openIssue).toHaveBeenCalledTimes(1);
+		expect(gh.openPr).not.toHaveBeenCalled();
+		expect(r.issues).toBe(1);
+		expect(r.prs).toBe(0);
+		// The PR daily counter is untouched — issues have their own budget.
+		const day = new Date().toISOString().slice(0, 10);
+		expect(store.get(`sux:selfimprove:count:${day}`)).toBeUndefined();
+		expect(store.get(`sux:selfimprove:issuecount:${day}`)).toBe("1");
+	});
+
+	it("LOW dedupe: an existing open issue ⇒ no new issue, no cap spend", async () => {
+		const { env, store } = baseEnv(ENABLED_PR);
+		seedFeedback(store, [{ kind: "issue", text: "the ui feels a bit slow", at: 100 }]);
+		const gh = fakeGithub();
+		gh.openIssue.mockResolvedValueOnce({ number: 7, created: false }); // dedup hit
+		const r = await selfImproveTick(env, { github: gh });
+		expect(gh.openIssue).toHaveBeenCalledTimes(1);
+		expect(r.issues).toBe(0);
+		const day = new Date().toISOString().slice(0, 10);
+		expect(store.get(`sux:selfimprove:issuecount:${day}`)).toBeUndefined(); // not bumped on a dedupe
+	});
+
+	it("issue daily cap: opens at most SELF_IMPROVE_ISSUE_DAILY_CAP low issues in a day", async () => {
+		const { env, store } = baseEnv(ENABLED_PR);
+		seedFeedback(
+			store,
+			Array.from({ length: 6 }, (_v, i) => ({ kind: "issue" as const, text: `some redundant code block number ${i}`, at: 100 + i })),
+		);
+		const gh = fakeGithub();
+		const r = await selfImproveTick(env, { github: gh });
+		expect(gh.openIssue).toHaveBeenCalledTimes(5); // cap is 5; the 6th is skipped
+		expect(r.issues).toBe(5);
+		expect(r.skipped).toBe(1);
+	});
+
+	it("open-issue count failure ⇒ fail-closed for LOW findings (opens no issue, still records)", async () => {
+		const { env, store } = baseEnv(ENABLED_PR);
+		seedFeedback(store, [{ kind: "issue", text: "the ui feels a bit slow", at: 100 }]);
+		const gh = fakeGithub();
+		gh.openSelfImproveIssueCount.mockRejectedValueOnce(new Error("api down"));
+		const r = await selfImproveTick(env, { github: gh });
+		expect(gh.openIssue).not.toHaveBeenCalled();
+		expect(r.skipped).toBe(1);
+		expect(store.get("sux:selfimprove:findings")).toBeTruthy();
 	});
 
 	it("security lane: PR + label, but NO @claude comment (suggest-only)", async () => {

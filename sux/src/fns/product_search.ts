@@ -1,4 +1,4 @@
-import { type Fn, fail, ok, type RtEnv } from "../registry";
+import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { oj } from "./_util";
 import type { RetailProduct } from "./_retail";
 
@@ -66,7 +66,7 @@ export const product_search: Fn = {
 	ttl: 300,
 	run: async (env: RtEnv, args) => {
 		const term = String(args?.term ?? "").trim();
-		if (!term) return fail("term is required.");
+		if (!term) return failWith("bad_input", "term is required.");
 		const zip = args?.zip ? String(args.zip).trim() : "";
 		const limit = Math.min(100, Math.max(1, Number(args?.limit) || 30));
 
@@ -74,7 +74,7 @@ export const product_search: Fn = {
 		// retailers it names (unknowns silently dropped); absent → all of them.
 		const requested = Array.isArray(args?.retailers) ? args.retailers.map((r: unknown) => String(r).trim().toLowerCase()) : null;
 		const retailers = requested ? RETAILERS.filter((r) => requested.includes(r)) : [...RETAILERS];
-		if (retailers.length === 0) return fail(`No known retailers selected. Options: ${RETAILERS.join(", ")}.`);
+		if (retailers.length === 0) return failWith("bad_input", `No known retailers selected. Options: ${RETAILERS.join(", ")}.`);
 
 		// Dynamic import breaks the static cycle (index.ts -> product_search.ts -> index.ts).
 		const { FUNCTIONS } = (await import("./index")) as { FUNCTIONS: Fn[] };

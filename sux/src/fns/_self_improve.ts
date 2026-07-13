@@ -1,9 +1,9 @@
 // Chunk 05 — the self-improvement loop. Rides the daily Cron (index.ts scheduled()
 // → selfImproveTick, beside maintenanceTick): consume the `issue`/`suggest` feedback
 // backlog (fns/_feedback.ts) since a KV cursor, build a finding per entry, classify a
-// LANE, and route by lane. This is the sharpest tool in the box, so it is gated the
-// HARDEST — every outward action is fail-closed, defaults OFF, and the module
-// structurally cannot loosen its own guards.
+// LANE and a CONFIDENCE, and route by confidence. This is the sharpest tool in the box,
+// so it is gated the HARDEST — every outward action is fail-closed, defaults OFF, and the
+// module structurally cannot loosen its own guards.
 //
 // SAFETY MODEL (fail-closed, layered — mirrors hasDropboxFull's pure env predicates;
 // the gate vars are `wrangler secret`s Colin controls, NOT declared in wrangler.jsonc):
@@ -17,15 +17,20 @@
 //                    sentinel, stricter than a toggle). Absent ⇒ REVIEW-ONLY: reads
 //                    feedback, records findings to KV, opens NOTHING outward.
 //
-// The loop NEVER authors code and NEVER merges. Its one outward action is to open a
-// stub PR carrying the finding, label it `self-improve` (deliberately NOT an
-// auto-merge-eligible label — see automerge.yml — and the `self-improve(...)` title
-// matches no safe-type regex either, so a human always merges these), and, for the
-// auto-fixable lanes (fix/refactor/cleanup), post an "@claude fix this" comment so the
-// EXISTING, already-bounded claude-autofix/mention loop authors the actual fix onto the
-// branch. Security/feature lanes are suggest-only: labeled + discoverable, no
-// auto-author, no auto-merge — a human decides. So the worst an enabled+PR loop can do
-// is file a bounded number of clearly-labeled, human-gated PRs.
+// The loop NEVER authors code and NEVER merges. Its outward actions, by confidence:
+//   LOW    → open (or dedupe onto) a `self-improve` tracking issue — no branch, no CI.
+//   MEDIUM → open a stub PR, label it `self-improve` (deliberately NOT an auto-merge-eligible
+//            label — see automerge.yml — and the `self-improve(...)` title matches no safe-type
+//            regex either, so a human always merges these), and, for the auto-fixable lanes
+//            (fix/refactor/cleanup), post an "@claude fix this" comment so the EXISTING,
+//            already-bounded claude-autofix/mention loop authors the actual fix onto the branch.
+//   HIGH   → the MEDIUM path PLUS the `automerge` label, but ONLY for an auto-fixable lane and
+//            ONLY when SELF_IMPROVE_AUTOMERGE is on (default OFF); otherwise it fails safe to the
+//            plain MEDIUM path. Even then the loop never merges — native auto-merge does, and
+//            only after CI + the security gates pass. Security/feature lanes are capped at MEDIUM
+//            (suggest-only, never armed). So the worst an enabled+PR loop can do is file a bounded
+//            number of clearly-labeled, gated PRs/issues; arming a merge additionally needs Colin's
+//            flag AND the arming prerequisites (security-review + automerge author-gate) in place.
 //
 // INJECTION: feedback text originates off-Worker (a tool's issue()/suggest() call, whose
 // argument may be attacker-influenced web content). It is treated as INERT DATA
@@ -33,10 +38,12 @@
 // stripped) and wrapped in a banner'd code fence — so it can never steer the PR title,
 // body, or the @claude comment it rides in.
 //
-// RATE CAPS — both compile-time literal consts (below), NOT from env or KV, so no code
+// RATE CAPS — all compile-time literal consts (below), NOT from env or KV, so no code
 // path (and no injected KV value) can lift them:
-//   SELF_IMPROVE_DAILY_CAP        — outward PRs opened per UTC day (KV day-counter).
-//   MAX_OPEN_SELF_IMPROVE_PRS     — total open `self-improve/*` PRs at once (live count).
+//   SELF_IMPROVE_DAILY_CAP         — outward PRs opened per UTC day (KV day-counter).
+//   MAX_OPEN_SELF_IMPROVE_PRS      — total open `self-improve/*` PRs at once (live count).
+//   SELF_IMPROVE_ISSUE_DAILY_CAP   — LOW-finding tracking issues opened per UTC day.
+//   MAX_OPEN_SELF_IMPROVE_ISSUES   — total open `self-improve`-labeled issues at once.
 //
 // The module imports nothing that can write env vars, wrangler config, or the repo's
 // workflow/CI files — so it cannot disable its own kill-switch or edit the CI that gates
@@ -65,20 +72,37 @@ export const hasSelfImprove = (env: RtEnv): boolean => flagOn(env.SELF_IMPROVE_E
 /** May open a PR: enabled + a GitHub token + the explicit PR opt-in. Else review-only. */
 export const canOpenPr = (env: RtEnv): boolean => hasSelfImprove(env) && !!env.GITHUB_TOKEN && env.SELF_IMPROVE_PR === "on";
 
+/**
+ * May attach the `automerge` label to a HIGH-confidence fix/refactor/cleanup PR — the ONLY
+ * path that can arm a merge. Default OFF (fail-closed toggle), stacked on top of canOpenPr so
+ * it can never arm while the PR gate is closed. With the flag dormant, HIGH findings degrade to
+ * the plain MEDIUM path (labeled + hand-off, never `automerge`). Arming is inert until Colin
+ * also lands the security-review/automerge arming prerequisites — see the PR body.
+ */
+export const canAutoMerge = (env: RtEnv): boolean => canOpenPr(env) && flagOn(env.SELF_IMPROVE_AUTOMERGE);
+
 // ── Rate caps (compile-time literals — the loop cannot raise them) ────────────
 // Consts, deliberately NOT read from env or KV: the loop reads these numbers and writes
 // only a per-day KV counter, so no code path (and no injected KV value) can lift a cap.
 const SELF_IMPROVE_DAILY_CAP = 3;
 const MAX_OPEN_SELF_IMPROVE_PRS = 5;
+// LOW findings become tracking issues (cheapest path — no branch, no CI, no @claude). Their
+// own budget, disjoint from the PR budget: a per-day counter + a live open-issue count cap.
+const SELF_IMPROVE_ISSUE_DAILY_CAP = 5;
+const MAX_OPEN_SELF_IMPROVE_ISSUES = 10;
 
 const CURSOR_KEY = "sux:selfimprove:cursor";
 const COUNT_PREFIX = "sux:selfimprove:count:";
+const ISSUE_COUNT_PREFIX = "sux:selfimprove:issuecount:";
 const FINDINGS_KEY = "sux:selfimprove:findings";
 const FINDINGS_CAP = 200;
 const COUNTER_TTL_SECONDS = 60 * 60 * 48; // two days — a day-counter needs no longer
 
 const DEFAULT_REPO = "colinxs/sux";
 const SELF_IMPROVE_LABEL = "self-improve";
+// The one auto-merge-eligible label (matches automerge.yml's eligible set). Attached ONLY on
+// the HIGH + canAutoMerge path; every other route deliberately withholds it.
+const AUTOMERGE_LABEL = "automerge";
 const BRANCH_PREFIX = "self-improve/";
 
 // ── Lane classifier ──────────────────────────────────────────────────────────
@@ -95,14 +119,42 @@ const CLEANUP_RE = /\b(dead code|unused|duplicate|dupe|cleanup|clean up|remove|s
 const REFACTOR_RE = /\b(slow|perf|performance|refactor|simplify|optimi[sz]e|tidy|reorgani[sz]e)\b/i;
 const FIX_RE = /\b(wrong|crash|error|broken|broke|fail|failed|failing|bug|500|regression|throws?|exception|incorrect)\b/i;
 
+// Confidence is a SECOND dimension on top of the lane — how sure we are the finding is a real,
+// actionable defect — and it, not the lane alone, picks the route (see routeFinding):
+//   high   → a concrete, tagged failure in an auto-fixable lane; the ONLY route that may arm.
+//   medium → some signal, or any security/feature finding (those are capped here, never high).
+//   low    → a vague/uncertain signal → the cheapest path (a tracking issue, no PR/CI spend).
+export type Confidence = "high" | "medium" | "low";
+
 export type Finding = {
 	lane: Lane;
 	reason: string;
+	confidence: Confidence;
+	confReason: string;
 	text: string;
 	at: number;
 	kind: FeedbackKind;
 	tool?: string;
 };
+
+/**
+ * Layer a confidence onto the lane. KISS heuristic, biased to caution:
+ *   - security / feature lanes are CAPPED at `medium` — they can never be `high`, so a
+ *     high-confidence guess can never auto-arm a spicy lane (the suggest-only invariant).
+ *   - fix / refactor / cleanup reach `high` only on a strong, concrete signal: an `issue`-kind
+ *     entry (never a `suggest`) AND a concrete failure keyword (FIX_RE) AND a known tool tag.
+ *   - a vague keyword with no failure signal and no tool tag → `low` (file an issue, don't PR).
+ *   - anything partial in between → `medium` (today's default PR path).
+ */
+export function classifyConfidence(env: RtEnv, entry: FeedbackEntry, lane: Lane): { confidence: Confidence; reason: string } {
+	if (lane === "security" || lane === "feature") return { confidence: "medium", reason: `${lane} lane capped at medium (suggest-only — a human decides)` };
+	const text = String(entry.text ?? "");
+	const knownTool = !!entry.tool && !!TOOL_ANNOTATIONS[entry.tool];
+	const concreteFailure = FIX_RE.test(text);
+	if (entry.kind === "issue" && concreteFailure && knownTool) return { confidence: "high", reason: "issue-kind + concrete failure keyword + known tool tag" };
+	if (!concreteFailure && !knownTool) return { confidence: "low", reason: "vague keyword — no concrete failure and no tool tag" };
+	return { confidence: "medium", reason: "partial signal — not a concrete, tagged failure" };
+}
 
 /**
  * Derive a lane from a feedback entry: its `tool` tag (via TOOL_ANNOTATIONS) plus a
@@ -131,7 +183,8 @@ export function classifyLane(env: RtEnv, entry: FeedbackEntry): { lane: Lane; re
 
 function buildFinding(env: RtEnv, entry: FeedbackEntry): Finding {
 	const { lane, reason } = classifyLane(env, entry);
-	return { lane, reason, text: String(entry.text ?? ""), at: entry.at, kind: entry.kind, ...(entry.tool ? { tool: entry.tool } : {}) };
+	const { confidence, reason: confReason } = classifyConfidence(env, entry, lane);
+	return { lane, reason, confidence, confReason, text: String(entry.text ?? ""), at: entry.at, kind: entry.kind, ...(entry.tool ? { tool: entry.tool } : {}) };
 }
 
 // ── Untrusted-text neutralizer (injection defense) ────────────────────────────
@@ -168,12 +221,17 @@ function fenceUntrusted(text: string): string {
 export interface GithubClient {
 	/** Open a stub PR carrying the finding; returns the PR number + head commit sha. */
 	openPr(finding: Finding): Promise<{ number: number; sha: string }>;
+	/** Open (or dedupe onto) a `self-improve` tracking issue for a LOW finding. `created` is
+	 * false when an open issue with the same title already exists (so no cap is spent). */
+	openIssue(finding: Finding): Promise<{ number: number; created: boolean }>;
 	/** Add labels to a PR (self-improve marks it discoverable + NOT auto-merge-eligible). */
 	labelPr(prNumber: number, labels: string[]): Promise<void>;
 	/** Post a comment on a PR (the "@claude fix this" hand-off to the autofix loop). */
 	commentPr(prNumber: number, body: string): Promise<void>;
 	/** Count currently-open `self-improve/*` PRs, to enforce the open-PR cap. */
 	openSelfImprovePrCount(): Promise<number>;
+	/** Count currently-open `self-improve`-labeled issues, to enforce the open-issue cap. */
+	openSelfImproveIssueCount(): Promise<number>;
 }
 
 const GH_API = "https://api.github.com";
@@ -227,6 +285,20 @@ export function githubClient(env: RtEnv): GithubClient {
 			if (pr.status >= 400) throw new Error(`self-improve: PR open failed HTTP ${pr.status}`);
 			return { number: Number(pr.json?.number), sha: headSha };
 		},
+		async openIssue(finding) {
+			// LOW route: a plain tracking issue, no branch/commit. Dedupe first so a recurring
+			// low finding can't spam — match an OPEN self-improve issue by exact title (PRs share
+			// the /issues list and carry a `pull_request` field, so filter those out).
+			const title = issueTitle(finding);
+			const existing = await ghFetch(env, "GET", `${base}/issues?labels=${SELF_IMPROVE_LABEL}&state=open&per_page=100`);
+			if (existing.status < 400 && Array.isArray(existing.json)) {
+				const hit = existing.json.find((i: any) => !i?.pull_request && String(i?.title ?? "") === title);
+				if (hit) return { number: Number(hit.number), created: false };
+			}
+			const issue = await ghFetch(env, "POST", `${base}/issues`, { title, body: issueBody(finding), labels: [SELF_IMPROVE_LABEL] });
+			if (issue.status >= 400) throw new Error(`self-improve: issue open failed HTTP ${issue.status}`);
+			return { number: Number(issue.json?.number), created: true };
+		},
 		async labelPr(prNumber, labels) {
 			const r = await ghFetch(env, "POST", `${base}/issues/${prNumber}/labels`, { labels });
 			if (r.status >= 400) throw new Error(`self-improve: label failed HTTP ${r.status}`);
@@ -241,7 +313,18 @@ export function githubClient(env: RtEnv): GithubClient {
 			const list: any[] = Array.isArray(r.json) ? r.json : [];
 			return list.filter((p) => String(p?.head?.ref ?? "").startsWith(BRANCH_PREFIX)).length;
 		},
+		async openSelfImproveIssueCount() {
+			const r = await ghFetch(env, "GET", `${base}/issues?labels=${SELF_IMPROVE_LABEL}&state=open&per_page=100`);
+			if (r.status >= 400) throw new Error(`self-improve: open-issue count failed HTTP ${r.status}`);
+			const list: any[] = Array.isArray(r.json) ? r.json : [];
+			return list.filter((i) => !i?.pull_request).length; // the /issues list includes PRs — exclude them
+		},
 	};
+}
+
+/** Stable, defanged title for a LOW finding's tracking issue — also the dedupe key. */
+function issueTitle(f: Finding): string {
+	return `self-improve(${f.lane}/low): ${inlineSafe(f.text)}`;
 }
 
 function prBody(f: Finding): string {
@@ -249,6 +332,7 @@ function prBody(f: Finding): string {
 		`Auto-filed by the sux self-improvement loop.`,
 		``,
 		`- **lane**: ${f.lane}`,
+		`- **confidence**: ${f.confidence} (${f.confReason})`,
 		`- **why**: ${f.reason}`,
 		f.tool ? `- **tool**: ${inlineSafe(f.tool, 60)}` : ``,
 		`- **kind**: ${f.kind}`,
@@ -257,7 +341,26 @@ function prBody(f: Finding): string {
 		``,
 		fenceUntrusted(f.text),
 		``,
-		`This branch has no code change yet — the \`@claude\` autofix/mention loop (or a maintainer) authors the fix on it. This PR is labeled \`self-improve\` and is NOT auto-merge-eligible; a human merges it.`,
+		`This branch has no code change yet — the \`@claude\` autofix/mention loop (or a maintainer) authors the fix on it. This PR is labeled \`self-improve\`; a human merges it unless the \`automerge\` label is present (HIGH-confidence fix/refactor/cleanup only, and only while the arming prerequisites are in place).`,
+	].filter(Boolean).join("\n");
+}
+
+/** LOW-confidence findings become a tracking issue instead of a PR — no branch, no CI spend. */
+function issueBody(f: Finding): string {
+	return [
+		`Auto-filed by the sux self-improvement loop (LOW confidence — filed as an issue, not a PR).`,
+		``,
+		`- **lane**: ${f.lane}`,
+		`- **confidence**: ${f.confidence} (${f.confReason})`,
+		`- **why**: ${f.reason}`,
+		f.tool ? `- **tool**: ${inlineSafe(f.tool, 60)}` : ``,
+		`- **kind**: ${f.kind}`,
+		``,
+		`Original feedback:`,
+		``,
+		fenceUntrusted(f.text),
+		``,
+		`A maintainer triages this. No branch or code change is created for low-confidence findings.`,
 	].filter(Boolean).join("\n");
 }
 
@@ -300,7 +403,7 @@ export async function readFindings(env: RtEnv, limit = 50): Promise<Finding[]> {
 // ── Rate cap: read the const, write only the KV day-counter ───────────────────
 const utcDay = (): string => new Date().toISOString().slice(0, 10);
 
-/** Consume one unit of today's outward budget. False (skip) once the const cap is hit. */
+/** Consume one unit of today's outward PR budget. False (skip) once the const cap is hit. */
 async function tryConsumeCap(env: RtEnv): Promise<boolean> {
 	const key = `${COUNT_PREFIX}${utcDay()}`;
 	const n = Number(await env.OAUTH_KV.get(key)) || 0;
@@ -309,30 +412,70 @@ async function tryConsumeCap(env: RtEnv): Promise<boolean> {
 	return true;
 }
 
+/** How many issues the loop has already opened today (its own budget, separate from PRs). */
+async function issueCountToday(env: RtEnv): Promise<number> {
+	return Number(await env.OAUTH_KV.get(`${ISSUE_COUNT_PREFIX}${utcDay()}`)) || 0;
+}
+
+/** Record one newly-opened issue against today's issue budget (bumped only on a real create). */
+async function bumpIssueCount(env: RtEnv): Promise<void> {
+	const key = `${ISSUE_COUNT_PREFIX}${utcDay()}`;
+	const n = Number(await env.OAUTH_KV.get(key)) || 0;
+	await env.OAUTH_KV.put(key, String(n + 1), { expirationTtl: COUNTER_TTL_SECONDS });
+}
+
 // ── Routing (safety enforced structurally by control flow) ────────────────────
 export type TickResult = {
 	dormant: boolean;
 	reason: string;
 	processed: number;
 	prs: number;
+	issues: number;
+	armed: number;
 	comments: number;
 	skipped: number;
 	error?: string;
 };
 
-type OutwardBudget = { openSlots: number };
+type OutwardBudget = { openSlots: number; issueSlots: number };
 
 /**
- * Route one finding. The loop NEVER merges — its only outward act is to open a stub PR,
- * label it `self-improve` (non-auto-merge-eligible + discoverable), and, for the
- * auto-fixable lanes only, post the "@claude fix this" hand-off comment. Security +
- * feature lanes get the PR + label but no comment (suggest-only, human-driven).
+ * Route one finding by CONFIDENCE. The loop NEVER merges; the most it does is open a stub PR
+ * and, on the single HIGH+armed path, attach the `automerge` label (native auto-merge then
+ * merges only after CI + the gates pass). Routes:
+ *   LOW    → the cheapest path: a deduped `self-improve` tracking issue (own daily + open cap).
+ *            No branch, no CI, no @claude hand-off — and it does NOT draw the PR budget.
+ *   MEDIUM → today's behavior: a stub PR + `self-improve` label + (auto-fixable lanes) the
+ *            "@claude fix this" hand-off. Draws a PR-budget slot + the daily PR counter.
+ *   HIGH   → the MEDIUM path PLUS the `automerge` label — but ONLY for an auto-fixable lane
+ *            AND when canAutoMerge is on. Otherwise it fails safe to the plain MEDIUM path, so
+ *            a high-confidence guess never arms a spicy lane and never arms while the flag is off.
  */
 async function routeFinding(env: RtEnv, finding: Finding, github: GithubClient, result: TickResult, budget: OutwardBudget): Promise<void> {
 	if (!canOpenPr(env)) return; // review-only: recordFinding already ran; open nothing outward.
 
-	// Two caps gate every open: the live open-PR count and the per-day counter. Either
-	// exhausted ⇒ skip (the finding is still recorded for review).
+	// LOW → a tracking issue on its own budget (disjoint from PRs). Daily cap pre-check, then
+	// dedupe-aware open: the daily counter is bumped only when a NEW issue is actually created.
+	if (finding.confidence === "low") {
+		if (budget.issueSlots <= 0) {
+			result.skipped++;
+			return;
+		}
+		if ((await issueCountToday(env)) >= SELF_IMPROVE_ISSUE_DAILY_CAP) {
+			result.skipped++;
+			return;
+		}
+		const issue = await github.openIssue(finding);
+		if (issue.created) {
+			await bumpIssueCount(env);
+			result.issues++;
+			budget.issueSlots--;
+		}
+		return;
+	}
+
+	// MEDIUM / HIGH → a PR. Two caps gate every open: the live open-PR count and the per-day
+	// counter. Either exhausted ⇒ skip (the finding is still recorded for review).
 	if (budget.openSlots <= 0) {
 		result.skipped++;
 		return;
@@ -346,8 +489,13 @@ async function routeFinding(env: RtEnv, finding: Finding, github: GithubClient, 
 	result.prs++;
 	budget.openSlots--;
 
-	// Always label — discoverable, and deliberately NOT an auto-merge-eligible label.
-	await github.labelPr(pr.number, [SELF_IMPROVE_LABEL]);
+	// Arm ONLY on HIGH + an auto-fixable lane + the (default-off) flag. Every other route
+	// withholds the `automerge` label. classifyConfidence already caps security/feature at
+	// medium, so the lane check here is belt-and-suspenders.
+	const arm = finding.confidence === "high" && AUTOFIX_LANES.has(finding.lane) && canAutoMerge(env);
+	const labels = arm ? [SELF_IMPROVE_LABEL, AUTOMERGE_LABEL] : [SELF_IMPROVE_LABEL];
+	await github.labelPr(pr.number, labels);
+	if (arm) result.armed++;
 
 	// Auto-fixable lanes hand the actual authoring to the EXISTING @claude loop.
 	if (AUTOFIX_LANES.has(finding.lane)) {
@@ -358,7 +506,7 @@ async function routeFinding(env: RtEnv, finding: Finding, github: GithubClient, 
 
 // ── The tick (rides index.ts scheduled(), beside maintenanceTick) ─────────────
 export async function selfImproveTick(env: RtEnv, deps: { github?: GithubClient } = {}): Promise<TickResult> {
-	const result: TickResult = { dormant: false, reason: "", processed: 0, prs: 0, comments: 0, skipped: 0 };
+	const result: TickResult = { dormant: false, reason: "", processed: 0, prs: 0, issues: 0, armed: 0, comments: 0, skipped: 0 };
 	try {
 		// Kill wins over everything — checked before enable and before any feedback read.
 		if (isKilled(env)) {
@@ -379,13 +527,19 @@ export async function selfImproveTick(env: RtEnv, deps: { github?: GithubClient 
 		// The open-PR cap is a LIVE count of self-improve/* PRs still open on GitHub, read
 		// once per tick and drawn down locally. Fail-closed: if the count can't be read,
 		// open nothing this tick (still record findings for review).
-		const budget: OutwardBudget = { openSlots: 0 };
+		const budget: OutwardBudget = { openSlots: 0, issueSlots: 0 };
 		if (opening) {
 			try {
 				budget.openSlots = Math.max(0, MAX_OPEN_SELF_IMPROVE_PRS - (await github.openSelfImprovePrCount()));
 			} catch (e) {
 				budget.openSlots = 0;
-				console.warn(`sux self-improve: open-PR count failed, opening nothing this tick: ${String((e as Error)?.message ?? e)}`);
+				console.warn(`sux self-improve: open-PR count failed, opening no PRs this tick: ${String((e as Error)?.message ?? e)}`);
+			}
+			try {
+				budget.issueSlots = Math.max(0, MAX_OPEN_SELF_IMPROVE_ISSUES - (await github.openSelfImproveIssueCount()));
+			} catch (e) {
+				budget.issueSlots = 0;
+				console.warn(`sux self-improve: open-issue count failed, opening no issues this tick: ${String((e as Error)?.message ?? e)}`);
 			}
 		}
 

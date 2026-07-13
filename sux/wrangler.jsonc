@@ -35,7 +35,19 @@
 	// Colin flips it (dashboard/secret) to move from suggest-only to acting on the reversible-only
 	// allow-list (label/archive/unarchive/undelete). Escape hatch: unset MAIL_TRIAGE_ENABLED (whole
 	// feature dormant) or run mail_triage {action:"undo", cycle_id} to reverse a cycle.
-	"vars": { "DEBUG_MCP": "0", "MAIL_TRIAGE_ENABLED": "1" },
+	//
+	// WEEKLY_RECALL_ENABLED arms the once-per-ISO-week recall digest: standing questions run through
+	// recall (READ-only cross-store fan-out) and the ONLY write is a git-reversible vault append to
+	// Weekly/<week>.md — no mailbox, no external surface, strictly less privileged than mail triage.
+	//
+	// SELF_IMPROVE_ENABLE arms the feedback loop in REVIEW-ONLY mode: it reads the issue/suggest
+	// backlog and records findings to KV, opening NOTHING outward. Outward PRs stay gated behind
+	// SELF_IMPROVE_PR="on" + GITHUB_TOKEN (both deliberately NOT set here), so this flag alone acts
+	// on nothing. SELF_IMPROVE_KILL (secret) hard-stops the whole loop even when enabled.
+	//
+	// BRIEFING_ENABLED is deliberately NOT set here — pending H1 (untrusted mail through the llm()
+	// fence); arm it once that fix lands.
+	"vars": { "DEBUG_MCP": "0", "MAIL_TRIAGE_ENABLED": "1", "WEEKLY_RECALL_ENABLED": "1", "SELF_IMPROVE_ENABLE": "1" },
 	// Per-user rate limit (same as core).
 	"unsafe": {
 		"bindings": [

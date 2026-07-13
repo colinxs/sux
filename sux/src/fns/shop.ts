@@ -1,4 +1,4 @@
-import { type Fn, fail, type RtEnv } from "../registry";
+import { type Fn, failWith, type RtEnv } from "../registry";
 
 // shop is a thin DISPATCHER over the dedicated retail fns — it does NOT scrape.
 // The old SerpAPI / Google Shopping path is dead (SerpAPI's product engine went
@@ -55,23 +55,23 @@ export const shop: Fn = {
 	ttl: 300, // prices/availability are live external state — keep fresh
 	run: async (env: RtEnv, args) => {
 		const query = String(args?.query ?? "").trim();
-		if (!query) return fail("query is required.");
+		if (!query) return failWith("bad_input", "query is required.");
 		const store = String(args?.store ?? "").trim().toLowerCase();
 		const route = ROUTES[store];
-		if (!route) return fail(`store must be one of: ${STORES.join(", ")}.`);
+		if (!route) return failWith("bad_input", `store must be one of: ${STORES.join(", ")}.`);
 		const limit = Math.min(25, Math.max(1, Number(args?.limit) || 10));
 		const zip = args?.zip ? String(args.zip).trim() : "";
-		if (store === "deals" && !/^\d{5}$/.test(zip)) return fail("store='deals' (weekly_ad) requires a 5-digit `zip`.");
+		if (store === "deals" && !/^\d{5}$/.test(zip)) return failWith("bad_input", "store='deals' (weekly_ad) requires a 5-digit `zip`.");
 
 		// Dispatch through the registry (dynamic import avoids the shop↔index cycle).
 		const { FUNCTIONS } = (await import("./index")) as { FUNCTIONS: Fn[] };
 		const target = FUNCTIONS.find((f) => f.name === route.fn);
-		if (!target) return fail(`shop: dispatch target '${route.fn}' is not registered.`);
+		if (!target) return failWith("upstream_error", `shop: dispatch target '${route.fn}' is not registered.`);
 
 		try {
 			return await target.run(env, route.args({ term: query, limit, zip }));
 		} catch (e) {
-			return fail(`shop → ${route.fn} failed: ${String((e as Error)?.message ?? e)}`);
+			return failWith("upstream_error", `shop → ${route.fn} failed: ${String((e as Error)?.message ?? e)}`);
 		}
 	},
 };
