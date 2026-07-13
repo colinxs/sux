@@ -8,10 +8,12 @@ import {
 	type Flagged,
 	type MailRef,
 	type TaskRef,
+	DEFAULT_MAX_DRAFTS,
 	deriveBills,
 	gatherBriefing,
 	hasBriefing,
 	hasBriefingStageDrafts,
+	maxDrafts,
 	passesDraftGate,
 	runBriefing,
 } from "./_briefing";
@@ -68,6 +70,31 @@ describe("gates — fail-closed, two-stage", () => {
 		expect(hasBriefingStageDrafts({ BRIEFING_ENABLED: "1" } as any)).toBe(false);
 		expect(hasBriefingStageDrafts({ BRIEFING_ENABLED: "1", BRIEFING_STAGE_DRAFTS: "0" } as any)).toBe(false);
 		expect(hasBriefingStageDrafts({ BRIEFING_ENABLED: "1", BRIEFING_STAGE_DRAFTS: "1" } as any)).toBe(true);
+	});
+});
+
+describe("draft cap — configurable via BRIEFING_MAX_DRAFTS", () => {
+	it("defaults to 5 when unset or invalid", () => {
+		expect(DEFAULT_MAX_DRAFTS).toBe(5);
+		expect(maxDrafts({} as any)).toBe(5);
+		expect(maxDrafts({ BRIEFING_MAX_DRAFTS: "" } as any)).toBe(5);
+		expect(maxDrafts({ BRIEFING_MAX_DRAFTS: "abc" } as any)).toBe(5);
+	});
+	it("reads an integer from env", () => {
+		expect(maxDrafts({ BRIEFING_MAX_DRAFTS: "3" } as any)).toBe(3);
+		expect(maxDrafts({ BRIEFING_MAX_DRAFTS: "12" } as any)).toBe(12);
+		expect(maxDrafts({ BRIEFING_MAX_DRAFTS: "7.9" } as any)).toBe(7);
+	});
+	it("clamps to [1, 20] (0 is falsy → default, per the numClamp idiom)", () => {
+		expect(maxDrafts({ BRIEFING_MAX_DRAFTS: "0" } as any)).toBe(DEFAULT_MAX_DRAFTS);
+		expect(maxDrafts({ BRIEFING_MAX_DRAFTS: "-4" } as any)).toBe(1);
+		expect(maxDrafts({ BRIEFING_MAX_DRAFTS: "999" } as any)).toBe(20);
+	});
+	it("caps drafts staged per run at the env value", async () => {
+		const deps = mkDeps();
+		const report = await runBriefing(envWith({ BRIEFING_ENABLED: "1", BRIEFING_STAGE_DRAFTS: "1", BRIEFING_MAX_DRAFTS: "1" }), { cycle_id: "cap1", date: "2026-07-11" }, deps);
+		expect(deps.mailDraft).toHaveBeenCalledTimes(1); // 2 flagged, capped to 1
+		expect(report.drafts_staged).toBe(1);
 	});
 });
 

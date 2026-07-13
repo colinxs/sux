@@ -176,6 +176,9 @@ export type RtEnv = Env &
 		// cycle stages zero drafts by construction. It never sends, never deletes.
 		BRIEFING_ENABLED?: string;
 		BRIEFING_STAGE_DRAFTS?: string;
+		// Cap on reply drafts staged per briefing run (bounded autonomy). Parsed as an integer,
+		// clamped to [1, 20]; unset/invalid ⇒ default 5. Set via `wrangler secret`.
+		BRIEFING_MAX_DRAFTS?: string;
 
 		// Manual ops trigger for the daily cron ticks (POST /admin/tick?job=…), bearer-gated
 		// by this token. Unset ⇒ the endpoint 404s (feature off). Lets an operator run a
