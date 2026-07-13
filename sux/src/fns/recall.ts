@@ -267,7 +267,10 @@ async function fromContacts(env: RtEnv, question: string): Promise<Gathered> {
 }
 
 const SOURCES: Record<string, (env: RtEnv, q: string) => Promise<Gathered>> = { vault: fromVault, files: fromFiles, mail: fromMail, web: fromWeb, learned: fromLearned, oracle: fromOracle, calendar: fromCalendar, contacts: fromContacts };
-const DEFAULT_SOURCES = ["vault", "files", "mail", "web", "learned", "oracle", "calendar", "contacts"];
+// `web` is deliberately NOT a default source: recall is a personal-memory tool, and
+// fromWeb bills a (paid, uncached) Kagi search on every call. Web stays opt-in —
+// callers that want it pass sources: [..., "web"] explicitly.
+const DEFAULT_SOURCES = ["vault", "files", "mail", "learned", "oracle", "calendar", "contacts"];
 
 /** The GATHER half of recall: fan out across the chosen stores (each degrading independently)
  *  and return the RAW gathered passages + citations + per-store status — WITHOUT the llm()

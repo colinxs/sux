@@ -62,7 +62,8 @@ describe("recall", () => {
 	});
 
 	it("fans out across vault+mail+web, cites, and synthesizes one answer", async () => {
-		const out = parse(await recall.run(env(), { question: "who is my oncologist?" }));
+		// web is opt-in (not a default source), so request it explicitly here.
+		const out = parse(await recall.run(env(), { question: "who is my oncologist?", sources: ["vault", "mail", "web"] }));
 		expect(out.answer).toContain("Dr. Chen");
 		expect(out.sources).toMatchObject({ vault: "1 hit(s)", mail: "1 hit(s)", web: "1 hit(s)" });
 		expect(out.citations).toEqual(expect.arrayContaining(["vault:Areas/Health.md", "mail:Scan", "web"]));
