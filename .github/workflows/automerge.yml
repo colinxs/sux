@@ -1,9 +1,14 @@
 name: Auto-merge
 
-# Enable GitHub NATIVE auto-merge on eligible PRs. GitHub then merges the PR by
-# itself the moment branch protection is satisfied (the required "Type-check & build"
-# check is green) — so nothing red ever reaches the auto-deploying main. This job
-# only *enables* auto-merge; it never force-merges. Merge method: squash.
+# Enable GitHub NATIVE auto-merge on eligible PRs. With the MERGE QUEUE enabled on main,
+# `gh pr merge --auto` no longer merges the PR directly — it ADDS the PR to the merge queue
+# once it's eligible (approvals/labels satisfied). GitHub then forms a merge group, runs the
+# required checks on the queue's speculative `gh-readonly-queue/main/...` ref, and merges the
+# batch — so nothing red ever reaches the auto-deploying main, and N queued PRs collapse into
+# ONE push to main (one deploy) instead of N racing rebase+merge+deploy cycles. This job only
+# ENQUEUES; it never force-merges. The merge METHOD (squash) is dictated by the queue config,
+# not by the `--squash` flag below (which is kept only so this still works if the queue is ever
+# turned off). See docs/design/merge-queue.md.
 #
 # Eligibility (the safe, hands-off subset):
 #   - a conventional-commit "safe type" title: fix|security|perf|refactor|chore|docs|test|build|ci|revert
@@ -21,10 +26,12 @@ name: Auto-merge
 # token makes the merge push look like a normal user push, so deploy.yml's on:push fires
 # unchanged. See https://docs.github.com/actions/using-workflows/triggering-a-workflow
 #
-# SAFETY NOTE: the safe-to-auto-merge property depends on two things this workflow
-# cannot verify at runtime — branch protection requiring the "Type-check & build" check,
-# and "Allow auto-merge" being enabled on the repo. If either is off, this degrades to
-# a no-op (auto-merge can't be enabled), never to an unguarded merge.
+# SAFETY NOTE: the safe-to-auto-merge property depends on things this workflow cannot verify
+# at runtime — the required checks (Type-check & build, security-review, gitleaks, npm audit &
+# SBOM) being required on main, "Allow auto-merge" being enabled, and the merge queue being
+# enabled with those same checks required on the merge_group. If any is off, this degrades to a
+# no-op (nothing gets enqueued/merged), never to an unguarded merge. The runtime assert below
+# additionally refuses to arm unless the security gates are required (classic protection OR ruleset).
 
 on:
   pull_request_target:
@@ -97,9 +104,30 @@ jobs:
             security-review
             npm audit & SBOM
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          # Gather the required check contexts main enforces from BOTH governance surfaces:
+          #   • classic branch protection → repos/{repo}/branches/main/protection
+          #   • repository rulesets       → repos/{repo}/rules/branches/main (union of active rulesets)
+          # The merge queue is typically enabled via a RULESET, whose required checks do NOT appear
+          # in the classic-protection payload. Reading only classic would then see "no gates" on a
+          # ruleset-gated repo and jam every auto-merge — so union both; a gate need only be present
+          # in EITHER. Readable if EITHER endpoint responds; only fail-closed on a definite miss.
+          read_ok=false
+          required=""
           if prot=$(gh api "repos/${GITHUB_REPOSITORY}/branches/main/protection" 2>/dev/null); then
-            required=$(printf '%s' "$prot" | jq -r '[(.required_status_checks.contexts // [])[], (.required_status_checks.checks // [])[].context] | unique[]')
+            read_ok=true
+            required="$required
+          $(printf '%s' "$prot" | jq -r '[(.required_status_checks.contexts // [])[], (.required_status_checks.checks // [])[].context] | .[]')"
+          fi
+          if rules=$(gh api "repos/${GITHUB_REPOSITORY}/rules/branches/main" 2>/dev/null); then
+            read_ok=true
+            required="$required
+          $(printf '%s' "$rules" | jq -r '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]?.context] | .[]')"
+          fi
+          if [ "$read_ok" != "true" ]; then
+            echo "::warning::could not READ main branch protection OR rulesets (token perms / 404 / network) — cannot determine protection state, so continuing WITHOUT blocking; a token/API blip must not jam the queue. If the checks are required, GitHub still gates the actual merge."
+          else
+            required=$(printf '%s\n' "$required" | sed 's/^ *//' | grep -v '^$' | sort -u)
             missing=""
             while IFS= read -r gate; do
               [ -z "$gate" ] && continue
@@ -108,12 +136,10 @@ jobs:
               fi
             done <<< "$REQUIRED_GATES"
             if [ -n "$missing" ]; then
-              echo "::error::main branch protection does NOT require these gates: $missing — refusing to enable auto-merge (they'd stay advisory and lose the race to fast CI). Add them to main's required_status_checks to re-arm auto-merge."
+              echo "::error::main does NOT require these gates (checked classic protection + rulesets): $missing — refusing to enable auto-merge (they'd stay advisory and lose the race). Add them to main's required_status_checks (branch protection or the merge-queue ruleset) to re-arm auto-merge."
               exit 1
             fi
-            echo "branch protection OK: main requires all security gates"
-          else
-            echo "::warning::could not READ main branch protection (token perms / 404 / network) — cannot determine protection state, so continuing WITHOUT blocking; a token blip must not jam the merge queue. If the checks are required, GitHub still gates the actual merge."
+            echo "branch protection/ruleset OK: main requires all security gates"
           fi
 
       - name: Decide eligibility and enable auto-merge
@@ -160,8 +186,12 @@ jobs:
           if [ "$eligible" != "true" ]; then
             ineligible "feature or unlabeled PR"; fi
 
-          echo "eligible → enabling native auto-merge (squash)"
+          # With the queue enabled this ENQUEUES the PR (adds it to the merge queue) once it's
+          # eligible; GitHub merges the batch on the queue's terms. The method is the queue's
+          # (squash); the --squash flag is a no-op under the queue but keeps this correct if the
+          # queue is ever turned off. See docs/design/merge-queue.md.
+          echo "eligible → enabling native auto-merge / adding to the merge queue (squash)"
           gh pr merge --auto --squash "$PR_URL" || {
-            echo "::warning::could not enable auto-merge (branch protection unmet or already merging)"; exit 0; }
+            echo "::warning::could not enable auto-merge / enqueue (branch protection unmet or already merging/queued)"; exit 0; }
           # Visibility: reflect the decision with the automerge label (best-effort).
           gh pr edit "$PR_URL" --add-label automerge 2>/dev/null || true

@@ -2,9 +2,12 @@ name: Stuck-PR watcher
 
 # Read-only visibility net for the autonomy pipeline. Every 6h (and on demand) it
 # lists open PRs and flags the ones that are silently stalled:
-#   - BEHIND main (nothing here auto-rebases them),
 #   - a failing required check, or
 #   - green + mergeable but auto-merge was never armed and it's been idle >STALE_HOURS.
+# NOTE: BEHIND-main is intentionally NOT flagged anymore. Under the GitHub merge queue a PR
+# no longer needs to be up-to-date with main to merge — the queue rebases it onto the queue
+# head as part of forming the merge group — so "behind main" is expected, not stuck. (This is
+# also why pr-auto-update.yml was retired.)
 # It NEVER merges or mutates a PR. It only maintains a single rolling "Stuck PRs"
 # tracking issue — opened when stalls appear, refreshed while they persist, and
 # auto-closed when all clear — so a stuck PR can't rot unnoticed. gh CLI + jq only.
@@ -48,7 +51,8 @@ jobs:
           stale=$(( STALE_HOURS * 3600 ))
 
           # Classify. Skip drafts and intentionally-paused (`hold`) PRs. Priority:
-          # BEHIND > failing check > idle-green-no-automerge. One row per stuck PR.
+          # failing check > idle-green-no-automerge. One row per stuck PR. (BEHIND is not
+          # stuck under the merge queue — see the header note.)
           stuck=$(echo "$prs" | jq -c --argjson now "$now" --argjson stale "$stale" '
             [ .[]
               | select(.isDraft | not)
@@ -56,8 +60,7 @@ jobs:
               | ([.statusCheckRollup[]? | (.conclusion // .state // "" | ascii_upcase)]) as $st
               | (($st | map(select(. == "FAILURE" or . == "ERROR" or . == "CANCELLED" or . == "TIMED_OUT" or . == "STARTUP_FAILURE")) | length) > 0) as $failing
               | (($now - (.updatedAt | fromdateiso8601)) >= $stale) as $isStale
-              | ( if .mergeStateStatus == "BEHIND" then "behind main — needs rebase/update"
-                  elif $failing then "failing required check"
+              | ( if $failing then "failing required check"
                   elif (.mergeStateStatus == "CLEAN" and (.autoMergeRequest == null) and $isStale) then "green + mergeable but auto-merge not armed"
                   else null end ) as $reason
               | select($reason != null)
@@ -95,7 +98,6 @@ jobs:
             "|----|-------------|----------------|-------|" \
             "$rows" \
             "" \
-            "- **behind main** → rebase/update the branch onto main." \
             "- **failing required check** → fix CI (or the autofix bot handles it, if eligible)." \
             "- **auto-merge not armed** → add an eligible label / conventional title, or enable auto-merge.")
 

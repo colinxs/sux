@@ -62,7 +62,7 @@ verbs. Add a namespace to the `CONNECTORS` array and it routes + self-describes 
 
 - **`actions/create-github-app-token@v3.2.0`** — mints a **`SUX_BOT` GitHub App** token
   (`app/sux1241`) from `SUX_BOT_APP_ID` + `SUX_BOT_PRIVATE_KEY`. Used by every workflow that
-  **pushes or arms auto-merge** (`claude.yml`, `claude-autofix.yml`, `pr-auto-update.yml`,
+  **pushes or arms auto-merge** (`claude.yml`, `claude-autofix.yml`,
   `pr-drain.yml`, `automerge.yml`, `budget-guard.yml`). Reason in §3.
 - **`actions/github-script@v7`** — REST calls for the upsert-a-tracking-issue pattern
   (`deploy.yml`, `health.yml`, `pr-watch.yml`, `budget-guard.yml`).
@@ -146,8 +146,18 @@ Sources: [claude-code-action action.yml](https://github.com/anthropics/claude-co
    one generated file that IS committed — the Worker imports it)
 5. `wrangler deploy --dry-run` (bundles/config deployable)
 
-`strict=true` means a PR must be **up-to-date with `main`** to merge — hence the
-auto-update limb (`pr-auto-update.yml`). Branch protection also requires the
+The 4 branch-protection required contexts are **"Type-check & build"** (`ci.yml`),
+**"security-review"** (`security-review.yml`), **"gitleaks"** (`secret-scan.yml`), and
+**"npm audit & SBOM"** (`audit.yml`). Under the **merge queue** (see
+`docs/design/merge-queue.md`) each of these ALSO triggers `on: merge_group` — a required
+context that doesn't report on the queue's speculative `gh-readonly-queue/...` ref freezes
+the queue forever. security-review passes through (green no-op) on `merge_group` because it's
+a PR-stage gate.
+
+`strict=true` means a PR must be **up-to-date with `main`** to merge — which historically
+required the auto-update limb (`pr-auto-update.yml`, now **retired**: the merge queue rebases
+each PR onto the queue head itself, so PRs no longer need to be up-to-date before queueing).
+Branch protection also requires the
 `security-review` check. Losing branch protection (e.g. going private without Pro, #4)
 silently disarms the whole "green gates the merge" safety — re-verify after any visibility
 change.
@@ -162,7 +172,6 @@ change.
 | `security-review.yml` | pull_request opened/synchronize/reopened/ready | Opus security review; **hard-blocks** merge on high/critical by applying `hold` + exit 1. Distinct check name `security-review`. | Self-skips on workflow-editing PRs (#11) → those need human merge. Missing-verdict handling is blast-radius-gated (workflows/auth/secrets ⇒ fail-closed). |
 | `claude-autofix.yml` | workflow_run (CI) completed=failure | Reads the CI failure and pushes a fix to the PR branch; native auto-merge lands it if green. | Safe PR classes only; `MAX_ATTEMPTS` cap then `needs-human`; RCE guard = same-repo trusted authors only; SUX_BOT push. |
 | `automerge.yml` | pull_request_target (opened/…/labeled/edited) | Enables **native** auto-merge (squash) on the safe hands-off subset. Only enables, never force-merges. | Uses `pull_request_target` but never checks out PR code; trusted authors only (+ `self-improve`-labelled bot PRs); features/`hold`/`!` excluded. Enables with App token. |
-| `pr-auto-update.yml` | push, schedule (`17 */2 * * *`), dispatch | `gh pr update-branch` on armed-but-BEHIND PRs so the strict-mode queue self-drains. | Pushes to PR branch only (can't self-loop on push:main); SUX_BOT token. |
 | `pr-drain.yml` | schedule (`37 6 * * *`), dispatch | Close-stale (`self-improve`/`needs-human` idle > 14d) + reconcile (arm auto-merge on eligible-but-unarmed green PRs). | No checkout; `hold`/`keep` opt-out; every mutation `|| true`; SUX_BOT token. |
 | `pr-watch.yml` | schedule (`23 */6 * * *`), dispatch | **Read-only** stuck-PR detector → one rolling "Stuck PRs" tracking issue. | Never merges/mutates a PR. |
 | `budget-guard.yml` | schedule (hourly), dispatch | Pauses ONLY discretionary spenders (`claude.yml`, `claude-autofix.yml`) when used Actions minutes cross `BUDGET=2500` (resume < 2400). | Never touches safety/deploy gates; no-op if billing read fails; sets `ACTIONS_BUDGET_PAUSED` + `gh workflow disable`. |

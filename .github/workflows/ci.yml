@@ -1,9 +1,18 @@
 name: CI
 
 # Triggers on every push and pull request (all branches) — fails on any error.
+# Also runs on merge_group so the "Type-check & build" required check reports on the
+# queue's speculative ref; without it the merge queue would freeze waiting forever.
+# The push trigger EXCLUDES the queue's synthetic gh-readonly-queue/** branches: the
+# merge_group run already covers that ref, and letting push also fire there would share
+# the ref-keyed, cancel-in-progress concurrency group and cancel the merge_group run —
+# a cancelled required check stalls the queue.
 on:
   push:
+    branches-ignore:
+      - "gh-readonly-queue/**"
   pull_request:
+  merge_group:
 
 permissions:
   contents: read

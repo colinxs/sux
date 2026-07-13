@@ -6,9 +6,16 @@ name: Security review (no-dumb-shit bot)
 # high/critical finding by applying `hold` (which automerge.yml refuses) and failing.
 # Inert until ANTHROPIC_API_KEY is set.
 
+# Also runs on merge_group: branch protection requires the "security-review" context, so
+# it MUST report on the merge queue's speculative ref or the queue freezes forever. The
+# real opus review is a PR-stage gate (a high/critical finding applies `hold`, which keeps
+# the PR out of the queue entirely) — so on the merge_group ref there is no PR to review and
+# the review has already happened. The job therefore short-circuits to a green passthrough on
+# merge_group, satisfying the required check without re-running (and re-paying for) opus.
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
 
 permissions:
   contents: read
@@ -17,7 +24,8 @@ permissions:
   id-token: write
 
 concurrency:
-  group: secreview-${{ github.event.pull_request.number }}
+  # PR number on pull_request; the speculative head SHA on merge_group (no PR in that payload).
+  group: secreview-${{ github.event.pull_request.number || github.event.merge_group.head_sha }}
   cancel-in-progress: true
 
 jobs:
@@ -34,19 +42,30 @@ jobs:
     # (never a fork), so there's no untrusted-checkout surface. Inert in practice until Colin arms
     # SELF_IMPROVE_AUTOMERGE; harmless before then (self-improve PRs simply also get reviewed).
     if: >
-      github.event.pull_request.draft == false &&
+      github.event_name == 'merge_group' ||
       (
+        github.event.pull_request.draft == false &&
         (
-          github.event.sender.type != 'Bot' &&
-          contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
-        ) ||
-        contains(github.event.pull_request.labels.*.name, 'self-improve')
+          (
+            github.event.sender.type != 'Bot' &&
+            contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
+          ) ||
+          contains(github.event.pull_request.labels.*.name, 'self-improve')
+        )
       )
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      # Merge queue: the PR was already security-reviewed before it was armed/queued, and the
+      # speculative merge_group ref carries no PR to review. Report the required "security-review"
+      # context green so the queue can proceed; the PR-only review machinery below is skipped.
+      - name: Merge queue — security review satisfied by the pre-queue PR review
+        if: github.event_name == 'merge_group'
+        run: echo "merge_group event - security-review already performed on the PR before queueing"
+
       - name: Preflight — need the key
         id: pre
+        if: github.event_name == 'pull_request'
         run: |
           if [ "${{ secrets.ANTHROPIC_API_KEY != '' }}" != "true" ]; then
             echo "ANTHROPIC_API_KEY not set → security review inert"; echo "go=false" >> "$GITHUB_OUTPUT"

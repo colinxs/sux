@@ -1,8 +1,8 @@
 name: PR drain (close-stale + reconcile)
 
-# The two drain gaps the pipeline was missing. pr-auto-update.yml already handles the
-# rebase-behind limb (push-driven `gh pr update-branch` on armed BEHIND PRs) — this workflow
-# deliberately does NOT duplicate that. It adds only:
+# The two drain gaps the pipeline was missing. The rebase-behind limb is now handled by the
+# GitHub MERGE QUEUE itself — it rebases each PR onto the queue head to form the merge group —
+# so the old pr-auto-update.yml was retired and this workflow does NOT re-add that. It adds only:
 #   CLOSE-STALE — bot PRs (`self-improve`) and human-punted ones (`needs-human`) that have gone
 #     untouched for STALE_DAYS get a heads-up comment and are closed, so abandoned PRs stop
 #     accreting (the "merge treadmill" failure mode). Opt out per-PR with `hold` or `keep`.
@@ -78,8 +78,9 @@ jobs:
 
           # ── RECONCILE ────────────────────────────────────────────────────────────────
           # Green + mergeable + eligible (automerge.yml's predicate) but auto-merge never armed.
-          # Arm it. Same eligibility: trusted author, not draft/hold/feature, not a breaking
-          # `!` title, and (an eligible label OR a safe-type conventional title).
+          # Arm it — under the merge queue this ENQUEUES the PR (adds it to the queue) rather than
+          # merging directly. Same eligibility: trusted author, not draft/hold/feature, not a
+          # breaking `!` title, and (an eligible label OR a safe-type conventional title).
           to_arm=$(echo "$prs" | jq -r '
             .[]
             | select(.isDraft | not)
