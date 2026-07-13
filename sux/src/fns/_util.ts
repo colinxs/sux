@@ -452,7 +452,7 @@ export const STORE_KV_PREFIX = "store:";
  */
 export function storeBase(env: RtEnv): string {
 	const v = (env as { STORE_BASE?: string }).STORE_BASE;
-	return (typeof v === "string" && v ? v : "https://sux.colinxs.workers.dev").replace(/\/+$/, "");
+	return (typeof v === "string" && v ? v : "https://suxos.net").replace(/\/+$/, "");
 }
 
 /** Accept a bare uuid or a .../s/<uuid> URL and return the uuid (shared with `store`). */

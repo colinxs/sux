@@ -1,12 +1,12 @@
 {
   "name": "sux",
-  "description": "Marketplace for sux: ONE OAuth-gated plugin — one universal connector (https://sux.colinxs.workers.dev/mcp) whose front-door verbs cover web/data/compute — search, scrape/render, papers, shopping, transforms, pipe/batch — plus `recall` and the `fn` escape hatch, bundled with both the `sux` routing skill and the `life` memory skill. Your personal namespaces are ordinary front-door verbs on the same one /mcp connector (vault_/mail_/files_/cal_/contact_) — they appear directly in the standard tools/list, no separate connectors and no opt-in flag.",
+  "description": "Marketplace for sux: ONE OAuth-gated plugin — one universal connector (https://suxos.net/mcp) whose front-door verbs cover web/data/compute — search, scrape/render, papers, shopping, transforms, pipe/batch — plus `recall` and the `fn` escape hatch, bundled with both the `sux` routing skill and the `life` memory skill. Your personal namespaces are ordinary front-door verbs on the same one /mcp connector (vault_/mail_/files_/cal_/contact_) — they appear directly in the standard tools/list, no separate connectors and no opt-in flag.",
   "owner": { "name": "colinxs" },
   "plugins": [
     {
       "name": "sux",
       "source": "./plugins/sux",
-      "description": "The one sux connector (https://sux.colinxs.workers.dev/mcp) + both skills: the `sux` routing skill AND the `life` memory skill. A single OAuth-gated front door — web search, scraping/rendering, papers, shopping, documents, transforms, pipe/batch composition, plus `recall` and the `fn` escape hatch; the `life` skill turns it into a second brain (capture, remember durable facts/people/decisions, recall with citations, triage the inbox, consolidate into a linked graph). Personal vault/mail/files are ordinary front-door verbs on the same one /mcp connector (`vault_`/`mail_`/`files_`/`cal_`/`contact_`) — directly in the standard tools/list, no separate connectors or opt-in flag. One install, one connector, everything behind it. OAuth in-browser on first connect.",
+      "description": "The one sux connector (https://suxos.net/mcp) + both skills: the `sux` routing skill AND the `life` memory skill. A single OAuth-gated front door — web search, scraping/rendering, papers, shopping, documents, transforms, pipe/batch composition, plus `recall` and the `fn` escape hatch; the `life` skill turns it into a second brain (capture, remember durable facts/people/decisions, recall with citations, triage the inbox, consolidate into a linked graph). Personal vault/mail/files are ordinary front-door verbs on the same one /mcp connector (`vault_`/`mail_`/`files_`/`cal_`/`contact_`) — directly in the standard tools/list, no separate connectors or opt-in flag. One install, one connector, everything behind it. OAuth in-browser on first connect.",
       "version": "0.4.0"
     }
   ]

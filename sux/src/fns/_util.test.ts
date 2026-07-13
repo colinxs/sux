@@ -60,7 +60,7 @@ describe("putBlob / deliverBytes (shared CAS store)", () => {
 		const env = blobEnv();
 		const ref = await putBlob(env, new TextEncoder().encode("hello"), "text/plain");
 		expect(ref.key).toBe(`cas/${ref.sha256}`);
-		expect(ref.url).toBe(`https://sux.colinxs.workers.dev/s/${ref.uuid}`);
+		expect(ref.url).toBe(`https://suxos.net/s/${ref.uuid}`);
 		expect(env._r2.has(ref.key)).toBe(true);
 		expect(env._kv.has(`store:${ref.uuid}`)).toBe(true);
 	});
@@ -142,7 +142,7 @@ describe("loadBytes (shared binary loader)", () => {
 
 describe("store base + ref parsing", () => {
 	it("storeBase prefers the STORE_BASE env var (trailing slash trimmed)", () => {
-		expect(storeBase({} as any)).toBe("https://sux.colinxs.workers.dev");
+		expect(storeBase({} as any)).toBe("https://suxos.net");
 		expect(storeBase({ STORE_BASE: "https://staging.example/" } as any)).toBe("https://staging.example");
 	});
 
@@ -155,7 +155,7 @@ describe("store base + ref parsing", () => {
 
 	it("storeRefUuid recognizes only /s/<uuid> paths", () => {
 		const u = "3f0a2b1c-4d5e-6f70-8a9b-0c1d2e3f4a5b";
-		expect(storeRefUuid(`https://sux.colinxs.workers.dev/s/${u}`)).toBe(u);
+		expect(storeRefUuid(`https://suxos.net/s/${u}`)).toBe(u);
 		expect(storeRefUuid(`https://other.host/s/${u}/`)).toBe(u);
 		expect(storeRefUuid("https://example.com/page")).toBeNull();
 		expect(storeRefUuid(`https://example.com/x/s/${u}`)).toBeNull();
