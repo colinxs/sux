@@ -53,12 +53,12 @@ jobs:
           else echo "go=true" >> "$GITHUB_OUTPUT"; fi
       - name: Checkout
         if: steps.pre.outputs.go == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with: { fetch-depth: 0 }
       - name: Claude security review
         id: claude
         if: steps.pre.outputs.go == 'true'
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@e90deca47693f9457b72f2b53c17d7c445a87342 # v1
         env:
           # 1-hour prompt-cache TTL (default is 5 min). The autofix→CI→re-review loop and
           # back-to-back PR reviews span >5 min, so the stable prefix (system prompt + tools

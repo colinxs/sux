@@ -64,12 +64,12 @@ jobs:
           private-key: ${{ secrets.SUX_BOT_PRIVATE_KEY }}
       - name: Checkout
         if: steps.pre.outputs.go == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           token: ${{ steps.app-token.outputs.token }}
       - name: Claude respond
         if: steps.pre.outputs.go == 'true'
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@e90deca47693f9457b72f2b53c17d7c445a87342 # v1
         env:
           ENABLE_PROMPT_CACHING_1H: "1" # 1h cache TTL — keeps the stable prefix warm across a back-and-forth @claude thread
         with:
@@ -97,11 +97,11 @@ jobs:
           else echo "go=true" >> "$GITHUB_OUTPUT"; fi
       - name: Checkout
         if: steps.pre.outputs.go == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with: { fetch-depth: 0 }
       - name: Claude review
         if: steps.pre.outputs.go == 'true'
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@e90deca47693f9457b72f2b53c17d7c445a87342 # v1
         env:
           ENABLE_PROMPT_CACHING_1H: "1" # 1h cache TTL — the review runs minutes after CI; keeps the stable prefix cached
         with:
