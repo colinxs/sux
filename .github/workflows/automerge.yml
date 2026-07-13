@@ -1,14 +1,17 @@
 name: Auto-merge
 
-# Enable GitHub NATIVE auto-merge on eligible PRs. With the MERGE QUEUE enabled on main,
-# `gh pr merge --auto` no longer merges the PR directly — it ADDS the PR to the merge queue
-# once it's eligible (approvals/labels satisfied). GitHub then forms a merge group, runs the
-# required checks on the queue's speculative `gh-readonly-queue/main/...` ref, and merges the
-# batch — so nothing red ever reaches the auto-deploying main, and N queued PRs collapse into
-# ONE push to main (one deploy) instead of N racing rebase+merge+deploy cycles. This job only
-# ENQUEUES; it never force-merges. The merge METHOD (squash) is dictated by the queue config,
-# not by the `--squash` flag below (which is kept only so this still works if the queue is ever
-# turned off). See docs/design/merge-queue.md.
+# Enable GitHub NATIVE auto-merge on eligible PRs. Once the MERGE QUEUE is enabled on main (as
+# of this writing it is BUILT but NOT YET ENABLED — see docs/design/merge-queue.md), `gh pr
+# merge --auto` no longer merges the PR directly — it ADDS the PR to the merge queue once it's
+# eligible (approvals/labels satisfied). GitHub then forms a merge group, runs the required
+# checks on the queue's speculative `gh-readonly-queue/main/...` ref, and merges the batch — so
+# nothing red ever reaches the auto-deploying main, and N queued PRs collapse into ONE push to
+# main (one deploy) instead of N racing rebase+merge+deploy cycles. This job only ENQUEUES; it
+# never force-merges. The merge METHOD (squash) is dictated by the queue config, not by the
+# `--squash` flag below (which is kept only so this still works if the queue is ever turned
+# off). Until the queue is enabled, `--auto` merges directly the moment CI is green AND the PR
+# is up to date with main — pr-drain.yml's REBASE-BEHIND step keeps eligible PRs up to date in
+# the meantime, since the queue's own rebasing isn't live yet.
 #
 # Eligibility (the safe, hands-off subset):
 #   - a conventional-commit "safe type" title: fix|security|perf|refactor|chore|docs|test|build|ci|revert

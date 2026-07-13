@@ -1,11 +1,23 @@
-name: PR drain (close-stale + reconcile)
+name: PR drain (close-stale + rebase-behind + reconcile)
 
-# The two drain gaps the pipeline was missing. The rebase-behind limb is now handled by the
-# GitHub MERGE QUEUE itself — it rebases each PR onto the queue head to form the merge group —
-# so the old pr-auto-update.yml was retired and this workflow does NOT re-add that. It adds only:
+# Three drain gaps. pr-auto-update.yml (blanket rebase-on-behind, every open PR) was retired
+# when the merge-queue workflow changes landed (#195), on the assumption that the native
+# GitHub merge queue would take over rebasing PRs onto the queue head. That queue is BUILT but
+# NOT YET ENABLED (docs/design/merge-queue.md: "Status: built, not yet enabled") — main's
+# branch protection is still plain strict-mode, so a PR falling BEHIND (because another PR
+# merged ahead of it) is never rebased and an armed auto-merge just sits there forever. This
+# is the stuck-merge-queue failure mode: 25+ automerge PRs piled up green + armed + BEHIND with
+# no path to merge, invisible to pr-watch.yml (which stopped flagging BEHIND for the same
+# not-yet-true reason). Rather than reinstating the old blanket treadmill, this workflow closes
+# the gap narrowly:
 #   CLOSE-STALE — bot PRs (`self-improve`) and human-punted ones (`needs-human`) that have gone
 #     untouched for STALE_DAYS get a heads-up comment and are closed, so abandoned PRs stop
 #     accreting (the "merge treadmill" failure mode). Opt out per-PR with `hold` or `keep`.
+#   REBASE-BEHIND — a PR eligible under the SAME predicate automerge.yml uses (see RECONCILE)
+#     that has fallen BEHIND main gets `gh api PUT .../update-branch`, unwedging it without
+#     waiting on a queue that isn't live. Scoped to automerge-eligible PRs only, not every open
+#     PR, so a human-owned PR that's behind is left for its author. Once the queue really is
+#     enabled its head is never BEHIND, so this step becomes a permanent no-op — safe to leave.
 #   RECONCILE — a green, mergeable PR that is eligible under the SAME predicate automerge.yml
 #     uses but never got auto-merge armed (e.g. opened before its label existed) gets
 #     `gh pr merge --auto --squash`, turning pr-watch.yml's read-only "green but not armed"
@@ -72,6 +84,34 @@ jobs:
             echo "::group::close-stale PR #$n"
             gh pr comment "$n" --body "🧹 Closing as stale — no activity in ${STALE_DAYS}+ days. This was a bot/needs-human PR; reopen it, or add \`keep\`/\`hold\` to retain it next time." 2>/dev/null || true
             gh pr close "$n" 2>/dev/null && echo "closed #$n" || echo "::warning::could not close #$n (skipping)"
+            echo "::endgroup::"
+            sleep 2
+          done
+
+          # ── REBASE-BEHIND ────────────────────────────────────────────────────────────
+          # An automerge-eligible PR that has fallen BEHIND main (another PR merged ahead of
+          # it) but nothing rebases it now that pr-auto-update.yml is gone and the real queue
+          # isn't enabled yet. Same eligibility predicate as RECONCILE below. A conflicted
+          # (DIRTY) PR can't be updated this way and needs a human — that failure is `|| true`'d
+          # and left for pr-watch.yml to flag.
+          to_update=$(echo "$prs" | jq -r '
+            .[]
+            | select(.isDraft | not)
+            | select(.mergeStateStatus == "BEHIND")
+            | select(["OWNER","MEMBER","COLLABORATOR"] | index(.authorAssociation))
+            | ([.labels[].name]) as $l
+            | select(($l | index("hold")) | not)
+            | select(($l | index("feature")) | not)
+            | select((.title | test("^[a-z]+(\\([^)]*\\))?!:"; "i")) | not)
+            | select(
+                (($l | index("automerge")) or ($l | index("bug")) or ($l | index("security")) or ($l | index("chore-safe")))
+                or (.title | test("^(fix|security|perf|refactor|chore|docs|test|build|ci|revert)(\\([^)]*\\))?:"; "i"))
+              )
+            | .number')
+          for n in $to_update; do
+            echo "::group::rebase-behind PR #$n (update branch)"
+            gh api -X PUT "repos/${GH_REPO}/pulls/${n}/update-branch" --silent 2>/dev/null \
+              && echo "updated #$n" || echo "::warning::could not update #$n (conflict / already up to date / race with a concurrent merge)"
             echo "::endgroup::"
             sleep 2
           done
