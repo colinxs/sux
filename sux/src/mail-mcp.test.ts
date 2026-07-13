@@ -421,6 +421,11 @@ describe("mail_* ergonomic tools", () => {
 		const e = env();
 		installFetch(SESSION_SCOPED);
 		expect(parse(await tool("contact_search").run(e, { text: "ada" })).contacts[0]).toMatchObject({ id: "c1", name: "Ada Lovelace", emails: ["ada@x.com"] });
+		// `query` is the documented param name (contact.ts's dispatcher description,
+		// every real caller) — the schema only ever defined `text`, so `query` was
+		// silently dropped and the search returned everything unfiltered. Regression
+		// guard: `query` must filter identically to `text`.
+		expect(parse(await tool("contact_search").run(e, { query: "ada" })).contacts[0]).toMatchObject({ id: "c1", name: "Ada Lovelace", emails: ["ada@x.com"] });
 		const st = parse(await tool("contact_create").run(e, { firstName: "Grace", emails: ["grace@x.com"], stage: true }));
 		expect(st).toMatchObject({ staged: true, kind: "contact_create" });
 		expect(parse(await tool("contact_create").run(e, { firstName: "Grace", emails: ["grace@x.com"], commit_token: st.commit_token })).created).toMatchObject({ id: "c2" });

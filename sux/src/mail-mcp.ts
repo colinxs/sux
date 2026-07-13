@@ -666,13 +666,17 @@ const TOOLS: MailTool[] = [
 	{
 		name: "contact_search",
 		description: "Search your Fastmail contacts by free text (name/email). Returns references {id, name, emails, phones} — never the full card. Needs a FASTMAIL_TOKEN scoped for contacts.",
-		inputSchema: { type: "object", additionalProperties: false, properties: { text: { type: "string", description: "Free-text query over name/email." }, limit: { type: "integer", minimum: 1, maximum: 100 } } },
+		inputSchema: { type: "object", additionalProperties: false, properties: { query: { type: "string", description: "Free-text query over name/email." }, text: { type: "string", description: "Alias for `query` (kept for back-compat)." }, limit: { type: "integer", minimum: 1, maximum: 100 } } },
 		run: async (env, a) => {
 			const gate = await scopeGate(env, "contacts");
 			if (gate) return failWith("not_configured", gate);
 			try {
 				const limit = clamp(a?.limit, 1, 100, 25);
-				const filter = a?.text ? { text: String(a.text) } : {};
+				// `contact`'s own dispatcher doc (and every real caller) uses `query`; the
+				// schema only ever defined `text`, so `query` was silently dropped —
+				// no filter, no error, just an unfiltered listing. Accept both.
+				const q = a?.query ?? a?.text;
+				const filter = q ? { text: String(q) } : {};
 				const resp = await jmapCall(env, { calls: [["ContactCard/query", { filter, limit }, "q"], ["ContactCard/get", { "#ids": { resultOf: "q", name: "ContactCard/query", path: "/ids" } }, "g"]] });
 				const list = resultFor(resp, "ContactCard/get")?.list ?? [];
 				return ok({ count: list.length, contacts: list.map(shapeContact) });
