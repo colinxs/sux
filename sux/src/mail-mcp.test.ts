@@ -429,6 +429,12 @@ describe("mail_* ergonomic tools", () => {
 		const st = parse(await tool("contact_create").run(e, { firstName: "Grace", emails: ["grace@x.com"], stage: true }));
 		expect(st).toMatchObject({ staged: true, kind: "contact_create" });
 		expect(parse(await tool("contact_create").run(e, { firstName: "Grace", emails: ["grace@x.com"], commit_token: st.commit_token })).created).toMatchObject({ id: "c2" });
+		// `name` is the documented param (contact.ts's dispatcher: contact({action:'create',
+		// name, emails})) — the schema only ever had firstName/lastName, so `name` was
+		// silently dropped and created a nameless contact. Regression guard: `name` splits
+		// into given/surname the same way firstName/lastName would.
+		const stName = parse(await tool("contact_create").run(e, { name: "Ada Lovelace", emails: ["ada2@x.com"], stage: true }));
+		expect(stName.preview).toMatchObject({ name: { full: "Ada Lovelace" } });
 		expect(parse(await tool("contact_delete").run(e, { id: "c1", stage: true }))).toMatchObject({ staged: true, kind: "contact_delete" });
 	});
 

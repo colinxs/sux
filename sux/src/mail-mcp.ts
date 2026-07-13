@@ -211,8 +211,19 @@ async function calPatch(env: RtEnv, a: any, comp: "VEVENT" | "VTODO"): Promise<T
  *  @type/version are added at create time; an update patch carries just the changed fields. */
 function contactCard(a: any): Record<string, unknown> {
 	const card: Record<string, unknown> = {};
-	const given = a?.firstName !== undefined ? String(a.firstName) : undefined;
-	const surname = a?.lastName !== undefined ? String(a.lastName) : undefined;
+	// `name` is a fallback for callers who don't split first/last (this fn's own
+	// dispatcher doc examples use it: contact({action:'create', name, emails})) —
+	// the schema never had it, so a plain `name` silently vanished and created a
+	// nameless contact (likely why placeholder-named contacts like "Autosaved" /
+	// "Imported <date>" exist). Split on the first space; a single word becomes
+	// firstName only. Explicit firstName/lastName still win if both are given.
+	let given = a?.firstName !== undefined ? String(a.firstName) : undefined;
+	let surname = a?.lastName !== undefined ? String(a.lastName) : undefined;
+	if (given === undefined && surname === undefined && typeof a?.name === "string" && a.name.trim()) {
+		const parts = a.name.trim().split(/\s+/);
+		given = parts[0];
+		surname = parts.slice(1).join(" ") || undefined;
+	}
 	if (given !== undefined || surname !== undefined) {
 		const components = [...(given !== undefined ? [{ kind: "given", value: given }] : []), ...(surname !== undefined ? [{ kind: "surname", value: surname }] : [])];
 		const full = [given, surname].filter(Boolean).join(" ");
@@ -705,14 +716,14 @@ const TOOLS: MailTool[] = [
 	},
 	{
 		name: "contact_create",
-		description: "Create a contact. Provide firstName/lastName/company + emails[]/phones[] (plain strings). Applies directly (reversible); pass stage:true to preview first. Needs a FASTMAIL_TOKEN scoped for contacts.",
-		inputSchema: { type: "object", additionalProperties: false, properties: { firstName: { type: "string" }, lastName: { type: "string" }, company: { type: "string" }, emails: { type: "array", items: { type: "string" } }, phones: { type: "array", items: { type: "string" } }, stage: { type: "boolean" }, commit_token: { type: "string" }, force: { type: "boolean", description: "Skip staging and apply in one shot (the ! override). By default this verb stages a preview first." } } },
+		description: "Create a contact. Provide name (or firstName/lastName)/company + emails[]/phones[] (plain strings). Applies directly (reversible); pass stage:true to preview first. Needs a FASTMAIL_TOKEN scoped for contacts.",
+		inputSchema: { type: "object", additionalProperties: false, properties: { name: { type: "string", description: "Full name, split on the first space into firstName/lastName. Ignored if firstName/lastName are also given." }, firstName: { type: "string" }, lastName: { type: "string" }, company: { type: "string" }, emails: { type: "array", items: { type: "string" } }, phones: { type: "array", items: { type: "string" } }, stage: { type: "boolean" }, commit_token: { type: "string" }, force: { type: "boolean", description: "Skip staging and apply in one shot (the ! override). By default this verb stages a preview first." } } },
 		run: async (env, a) => {
 			const gate = await scopeGate(env, "contacts");
 			if (gate) return failWith("not_configured", gate);
 			try {
 				const card = contactCard(a);
-				if (!Object.keys(card).length) return failWith("bad_input", "contact_create needs at least one of firstName/lastName/company/emails/phones.");
+				if (!Object.keys(card).length) return failWith("bad_input", "contact_create needs at least one of name/firstName/lastName/company/emails/phones.");
 				const mutate = async () => {
 					const resp = await jmapCall(env, { calls: [["ContactCard/set", { create: { c: { "@type": "Card", version: "1.0", ...card } } }, "s"]] });
 					const created = resultFor(resp, "ContactCard/set")?.created?.c;
@@ -728,8 +739,8 @@ const TOOLS: MailTool[] = [
 	},
 	{
 		name: "contact_update",
-		description: "Update a contact by id — pass only the fields to change (firstName/lastName/company/emails[]/phones[]). Applies directly (reversible); pass stage:true to preview first. Needs a FASTMAIL_TOKEN scoped for contacts.",
-		inputSchema: { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string" }, firstName: { type: "string" }, lastName: { type: "string" }, company: { type: "string" }, emails: { type: "array", items: { type: "string" } }, phones: { type: "array", items: { type: "string" } }, stage: { type: "boolean" }, commit_token: { type: "string" }, force: { type: "boolean", description: "Skip staging and apply in one shot (the ! override). By default this verb stages a preview first." } } },
+		description: "Update a contact by id — pass only the fields to change (name (or firstName/lastName)/company/emails[]/phones[]). Applies directly (reversible); pass stage:true to preview first. Needs a FASTMAIL_TOKEN scoped for contacts.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string" }, name: { type: "string", description: "Full name, split on the first space into firstName/lastName. Ignored if firstName/lastName are also given." }, firstName: { type: "string" }, lastName: { type: "string" }, company: { type: "string" }, emails: { type: "array", items: { type: "string" } }, phones: { type: "array", items: { type: "string" } }, stage: { type: "boolean" }, commit_token: { type: "string" }, force: { type: "boolean", description: "Skip staging and apply in one shot (the ! override). By default this verb stages a preview first." } } },
 		run: async (env, a) => {
 			const gate = await scopeGate(env, "contacts");
 			if (gate) return failWith("not_configured", gate);
