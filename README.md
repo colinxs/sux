@@ -94,3 +94,4 @@ Deploy needs two **repo secrets** (Settings → Secrets and variables → Action
 The deploy pushes **code + `sux/wrangler.jsonc` vars only**. Worker *secrets* are
 managed out-of-band with `wrangler secret put --config sux/wrangler.jsonc` and are
 never in the repo or the pipeline.
+
