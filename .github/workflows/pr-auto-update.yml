@@ -14,7 +14,7 @@ on:
   push:
     branches: [main]
   schedule:
-    - cron: "17 */2 * * *"
+    - cron: "17 6 * * *" # daily backstop only — `push:main` above is the real self-drain trigger
   workflow_dispatch:
 
 permissions:
@@ -29,9 +29,23 @@ jobs:
   update-behind:
     runs-on: ubuntu-latest
     steps:
+      # Push the rebase with the SUX_BOT App identity, NOT GITHUB_TOKEN. GitHub suppresses
+      # workflow runs for GITHUB_TOKEN-attributed pushes (recursion prevention), so an
+      # update-branch done with github.token changes the PR head SHA but never re-fires the
+      # required checks — the PR goes up-to-date-but-missing-checks and auto-merge stalls
+      # forever. The App token looks like a normal user push, so ci.yml + security-review.yml
+      # fire on the rebased head and the queue actually drains. (Same fix as #164 for the
+      # autofix/mention bots; this was the missing third pusher.)
+      - name: Mint SUX_BOT app token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.SUX_BOT_APP_ID }}
+          private-key: ${{ secrets.SUX_BOT_PRIVATE_KEY }}
+
       - name: Update armed BEHIND PRs onto main
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -uo pipefail
