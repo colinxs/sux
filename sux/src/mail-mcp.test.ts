@@ -54,6 +54,17 @@ function answer([method, args]: any): any {
 		return [method, { created: args?.create ? { sub: { id: "sub-1" } } : undefined, updated: args?.update ? Object.fromEntries(Object.keys(args.update).map((k) => [k, null])) : undefined }, "x"];
 	if (method === "EmailSubmission/query") return [method, { ids: ["sub-1"] }, "x"];
 	if (method === "EmailSubmission/get") return [method, { list: [{ id: "sub-1", emailId: "e1", sendAt: "2026-07-11T09:00:00Z", undoStatus: "pending" }] }, "x"];
+	if (method === "Mailbox/set") {
+		const created = args?.create ? Object.fromEntries(Object.keys(args.create).map((k) => [k, { id: "mb-new", name: args.create[k]?.name, parentId: args.create[k]?.parentId ?? null }])) : undefined;
+		const notCreated = undefined;
+		const updateKeys = args?.update ? Object.keys(args.update) : [];
+		const updated = Object.fromEntries(updateKeys.filter((k) => !k.includes("bad")).map((k) => [k, null]));
+		const notUpdated = Object.fromEntries(updateKeys.filter((k) => k.includes("bad")).map((k) => [k, { type: "notFound" }]));
+		const destroyIds: string[] = args?.destroy ?? [];
+		const destroyed = destroyIds.filter((id: string) => !id.includes("nonempty"));
+		const notDestroyed = Object.fromEntries(destroyIds.filter((id: string) => id.includes("nonempty")).map((id: string) => [id, { type: "mailboxHasEmail" }]));
+		return [method, { created, notCreated, updated, notUpdated, destroyed, notDestroyed }, "x"];
+	}
 	if (method === "MaskedEmail/get") return [method, { list: [{ id: "m1", email: "x@fastmail.com", state: "enabled", forDomain: "shop.com" }] }, "x"];
 	if (method === "MaskedEmail/set") return [method, { created: args?.create ? { m: { id: "m2", email: "y@fastmail.com", forDomain: "new.com" } } : undefined, updated: args?.update ? Object.fromEntries(Object.keys(args.update).map((k) => [k, null])) : undefined }, "x"];
 	if (method === "VacationResponse/get") return [method, { list: [{ id: "singleton", isEnabled: false, subject: "Away", textBody: "OOO" }] }, "x"];
@@ -382,6 +393,48 @@ describe("mail_* ergonomic tools", () => {
 		expect(parse(await tool("mail_masked").run(env(), { action: "enable", id: "m1" }))).toMatchObject({ id: "m1", state: "enabled" });
 		const st = parse(await tool("mail_masked").run(env(), { action: "delete", id: "m1", stage: true }));
 		expect(st).toMatchObject({ staged: true, kind: "mail_masked_delete" }); // soft-delete previews, no write
+	});
+
+	it("mail_mailbox creates a folder, optionally nested under a parent (resolved role/name/id)", async () => {
+		installFetch();
+		const created = parse(await tool("mail_mailbox").run(env(), { action: "create", name: "Follow-up" }));
+		expect(created.created).toMatchObject({ id: "mb-new", name: "Follow-up", parentId: null });
+		const nested = parse(await tool("mail_mailbox").run(env(), { action: "create", name: "Sub", parent: "archive" }));
+		expect(nested.created).toMatchObject({ id: "mb-new", name: "Sub", parentId: "mb-arch" });
+	});
+
+	it("mail_mailbox create requires a name", async () => {
+		const r = await tool("mail_mailbox").run(env(), { action: "create" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/requires a `name`/);
+	});
+
+	it("mail_mailbox renames a mailbox resolved by role/name/id", async () => {
+		installFetch();
+		const r = parse(await tool("mail_mailbox").run(env(), { action: "rename", mailbox: "archive", name: "Old Mail" }));
+		expect(r).toMatchObject({ renamed: "mb-arch", name: "Old Mail" });
+	});
+
+	it("mail_mailbox rename surfaces a notUpdated failure", async () => {
+		installFetch();
+		const r = await tool("mail_mailbox").run(env(), { action: "rename", mailbox: "bad-id", name: "X" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/rename failed/);
+	});
+
+	it("mail_mailbox delete stages a preview by default, applies on force:true", async () => {
+		installFetch();
+		const staged = parse(await tool("mail_mailbox").run(env(), { action: "delete", mailbox: "archive" }));
+		expect(staged).toMatchObject({ staged: true, kind: "mail_mailbox_delete" });
+		const applied = parse(await tool("mail_mailbox").run(env(), { action: "delete", mailbox: "archive", force: true }));
+		expect(applied).toMatchObject({ deleted: "mb-arch" });
+	});
+
+	it("mail_mailbox delete surfaces a non-empty-folder rejection", async () => {
+		installFetch();
+		const r = await tool("mail_mailbox").run(env(), { action: "delete", mailbox: "mb-nonempty", force: true });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/move its mail out first with mail_move/);
 	});
 
 	it("mail_upload streams bytes to a reusable blobId (§1e)", async () => {

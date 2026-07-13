@@ -452,6 +452,71 @@ const TOOLS: MailTool[] = [
 		},
 	},
 	{
+		name: "mail_mailbox",
+		description:
+			"Create, rename, or delete a mailbox (folder) — mail_mailboxes only lists them. action:'create' (name, optional parent) makes a new folder; 'rename' (mailbox, name) renames one in place; 'delete' (mailbox) removes an EMPTY folder (JMAP refuses a non-empty one — move its mail out first with mail_move). `mailbox` accepts a role/display-name/raw id, same as mail_move. create/rename apply directly (reversible — rename back, or delete the new empty folder); delete stages a preview by default — commit_token or force:true to apply — and needs allow_destroy at the JMAP layer (handled internally).",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["action"],
+			properties: {
+				action: { type: "string", enum: ["create", "rename", "delete"] },
+				mailbox: { type: "string", description: "Target mailbox for rename/delete — role (inbox/archive/junk/trash), display name, or raw id." },
+				name: { type: "string", description: "create: the new folder's name. rename: its new name." },
+				parent: { type: "string", description: "create: parent mailbox (role/name/id) to nest under — omit for a top-level folder." },
+				stage: { type: "boolean", description: "delete: preview + commit_token, no write." },
+				commit_token: { type: "string" },
+				force: { type: "boolean", description: "delete: apply in one shot, skipping the default stage (the ! override)." },
+			},
+		},
+		run: async (env, a) => {
+			try {
+				const action = String(a?.action ?? "");
+				if (action === "create") {
+					if (!a?.name) return failWith("bad_input", "mail_mailbox create requires a `name`.");
+					let parentId: string | undefined;
+					if (a?.parent) {
+						const map = await mailboxMap(env);
+						parentId = resolveMailboxId(map, String(a.parent));
+					}
+					const resp = await jmapCall(env, { calls: [["Mailbox/set", { create: { m: { name: String(a.name), ...(parentId ? { parentId } : {}) } } }, "s"]] });
+					const setR = resultFor(resp, "Mailbox/set");
+					const created = setR?.created?.m;
+					if (!created) return fail(`Mailbox create failed: ${JSON.stringify(setR?.notCreated ?? {})}`);
+					return ok({ created: { id: created.id, name: created.name ?? a.name, parentId: created.parentId ?? parentId ?? null } });
+				}
+				if (action === "rename") {
+					if (!a?.mailbox) return failWith("bad_input", "mail_mailbox rename requires `mailbox`.");
+					if (!a?.name) return failWith("bad_input", "mail_mailbox rename requires the new `name`.");
+					const map = await mailboxMap(env);
+					const id = resolveMailboxId(map, String(a.mailbox));
+					if (!id) return failWith("not_found", `no mailbox matching '${a.mailbox}'.`);
+					const resp = await jmapCall(env, { calls: [["Mailbox/set", { update: { [id]: { name: String(a.name) } } }, "s"]] });
+					const setR = resultFor(resp, "Mailbox/set");
+					if (!Object.prototype.hasOwnProperty.call(setR?.updated ?? {}, id)) return fail(`Mailbox rename failed: ${JSON.stringify(setR?.notUpdated ?? {})}`);
+					return ok({ renamed: id, name: String(a.name) });
+				}
+				if (action === "delete") {
+					if (!a?.mailbox) return failWith("bad_input", "mail_mailbox delete requires `mailbox`.");
+					const map = await mailboxMap(env);
+					const id = resolveMailboxId(map, String(a.mailbox));
+					if (!id) return failWith("not_found", `no mailbox matching '${a.mailbox}'.`);
+					const mutate = async () => {
+						const resp = await jmapCall(env, { allow_destroy: true, calls: [["Mailbox/set", { destroy: [id] }, "s"]] });
+						const setR = resultFor(resp, "Mailbox/set");
+						if (!(setR?.destroyed ?? []).includes(id)) throw new Error(`Mailbox delete failed: ${JSON.stringify(setR?.notDestroyed ?? {})} (JMAP refuses a non-empty folder — move its mail out first with mail_move).`);
+						return { deleted: id };
+					};
+					const out = await staged(env, "mail_mailbox_delete", gateArgs(a), { id }, { action: "delete mailbox", id }, mutate);
+					return ok("stageResult" in out ? out.stageResult : out.result);
+				}
+				return failWith("bad_input", `mail_mailbox: unknown action '${action}'.`);
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
 		name: "mail_identities",
 		description: "List the addresses you can send from (id, name, email) — pick one for mail_send's `from`.",
 		inputSchema: { type: "object", additionalProperties: false, properties: {} },

@@ -25,6 +25,7 @@ export const STAGE_KINDS: Record<string, StageKind> = {
 	mail_send: { irreversible: true },
 	mail_masked_create: { irreversible: false },
 	mail_masked_delete: { irreversible: true },
+	mail_mailbox_delete: { irreversible: true },
 	mail_vacation: { irreversible: true },
 	contact_create: { irreversible: false },
 	contact_update: { irreversible: false },
