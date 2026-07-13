@@ -560,7 +560,7 @@ export function renderApprovalDialog(request: Request, options: ApprovalDialogOp
                 <div class="client-detail">
                   <div class="detail-label">Website:</div>
                   <div class="detail-value small">
-                    <a href="${clientUri}" target="_blank" rel="noopener noreferrer">
+                    <a href="${clientUri}" target="_blank" rel="noopener noreferrer" aria-label="${clientUri} (opens in a new tab)">
                       ${clientUri}
                     </a>
                   </div>
@@ -575,7 +575,7 @@ export function renderApprovalDialog(request: Request, options: ApprovalDialogOp
                 <div class="client-detail">
                   <div class="detail-label">Privacy Policy:</div>
                   <div class="detail-value">
-                    <a href="${policyUri}" target="_blank" rel="noopener noreferrer">
+                    <a href="${policyUri}" target="_blank" rel="noopener noreferrer" aria-label="${policyUri} (opens in a new tab)">
                       ${policyUri}
                     </a>
                   </div>
@@ -590,7 +590,7 @@ export function renderApprovalDialog(request: Request, options: ApprovalDialogOp
                 <div class="client-detail">
                   <div class="detail-label">Terms of Service:</div>
                   <div class="detail-value">
-                    <a href="${tosUri}" target="_blank" rel="noopener noreferrer">
+                    <a href="${tosUri}" target="_blank" rel="noopener noreferrer" aria-label="${tosUri} (opens in a new tab)">
                       ${tosUri}
                     </a>
                   </div>
