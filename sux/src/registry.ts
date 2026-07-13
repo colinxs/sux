@@ -468,7 +468,7 @@ export const FRONT_VERBS = new Set<string>([
 	"search", "scrape", "shop",
 	"ingest", "recall", "oracle",
 	"pipe", "batch",
-	"store", "preferences", "issue",
+	"store", "preferences", "issue", "proposals",
 	"vault", "mail", "files", "calendar", "contact",
 ]);
 
