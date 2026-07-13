@@ -10,9 +10,10 @@ import { errMsg } from "./_util";
 
 export type TriageAction = "acted" | "suggested";
 
-/** The reversible op an entry records — the auto-act allow-list, on the storage side. Move ops
- *  (archive/unarchive/undelete) carry `from_mailbox`/`to_mailbox`; `label` carries `keyword`. */
-export type TriageOpKind = "archive" | "unarchive" | "undelete" | "label";
+/** The op an entry records — the auto-act allow-list, on the storage side. Move ops
+ *  (archive/unarchive/undelete) carry `from_mailbox`/`to_mailbox`; `label` carries `keyword`;
+ *  `draft-reply` carries `draft_id` (the created draft) and is NOT reversed by bulkUndo. */
+export type TriageOpKind = "archive" | "unarchive" | "undelete" | "label" | "draft-reply";
 
 /** One logged decision. On an "acted" entry the op fields are the UNDO coordinates: a move
  *  records origin+target mailbox (undo moves back to origin), a label records the keyword (undo
@@ -29,6 +30,7 @@ export type TriageEntry = {
 	from_mailbox?: string;
 	to_mailbox?: string;
 	keyword?: string;
+	draft_id?: string; // draft-reply only: the id of the staged draft (recorded for audit, not undo)
 	at: number;
 	undone?: boolean;
 };
@@ -93,15 +95,19 @@ const defaultLabeler: Labeler = async (env, ids, keyword, add) => {
 
 /** Reverse every still-applied "acted" action in a cycle: move ops go back to their origin
  *  mailbox (archive→inbox = unarchive, a trashed message→inbox = undelete), label ops have the
- *  keyword removed (label-add→label-remove). Idempotent: an entry already marked `undone` is
- *  skipped, so a second call is a safe no-op. Batches by origin mailbox / keyword to minimize
- *  JMAP calls. Each op is reversed by its allow-listed inverse — never by delete. */
+ *  keyword removed (label-add→label-remove). `draft-reply` entries are deliberately NOT reversed —
+ *  a staged draft is Colin's to send or delete, and auto-deleting it would be attention-reducing +
+ *  destructive; they carry no `from_mailbox`/`keyword` so they fall through both filters below.
+ *  Idempotent: an entry already marked `undone` is skipped, so a second call is a safe no-op.
+ *  Batches by origin mailbox / keyword to minimize JMAP calls. Each op is reversed by its
+ *  allow-listed inverse — never by delete. */
 export async function bulkUndo(env: RtEnv, cycle: string, reversers: Reversers = {}): Promise<Record<string, unknown>> {
 	const move = reversers.move ?? defaultMover;
 	const label = reversers.label ?? defaultLabeler;
 	const items = await loadLog(env);
 	const acted = items.filter((i) => i.cycle === cycle && i.action === "acted" && !i.undone);
-	const moves = acted.filter((i) => i.op !== "label" && i.from_mailbox);
+	// A move has a from_mailbox; a label has a keyword. draft-reply has neither → skipped by both.
+	const moves = acted.filter((i) => i.op !== "label" && i.op !== "draft-reply" && i.from_mailbox);
 	const labels = acted.filter((i) => i.op === "label" && i.keyword);
 	if (!moves.length && !labels.length) return { cycle, undone: 0, note: "nothing to undo for this cycle (no applied actions, or already undone)." };
 	const reversed = new Set<string>();

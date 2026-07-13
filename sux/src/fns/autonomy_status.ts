@@ -45,9 +45,9 @@ export const autonomy_status: Fn = {
 			{
 				surface: "mail_triage",
 				armed: triageAct,
-				mode: !triageOn ? "dormant" : triageAct ? "auto-act (reversible ops only)" : "suggest-only",
+				mode: !triageOn ? "dormant" : triageAct ? "auto-act (reversible ops + reply drafts)" : "suggest-only",
 				reversible: true,
-				consequence: "labels / archives / unarchives / undeletes inbox mail — reversible ops only, confidence-gated, one-call bulk-undo. Never deletes or files into Junk.",
+				consequence: "labels / archives / unarchives / undeletes inbox mail and stages reply DRAFTS (never sent) — confidence-gated, one-call bulk-undo for moves/labels. Never deletes, sends, or files into Junk.",
 			},
 			{
 				surface: "dropbox_full_write",

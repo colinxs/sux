@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ACTION_FOR, ARCHIVE_CONFIDENCE_THRESHOLD, AUTO_ACT_OPS, CONFIDENCE_THRESHOLD, classifyMessage, hasMailTriage, hasMailTriageAct, isAutoActAllowed, resolveOp, runTriage, type TriageDeps, type TriageMsg, type TriageOp } from "./_mail_triage";
+import { ACTION_FOR, ARCHIVE_CONFIDENCE_THRESHOLD, AUTO_ACT_OPS, CONFIDENCE_THRESHOLD, DRAFT_REPLY_CONFIDENCE_THRESHOLD, classifyMessage, detectReplyDraft, hasMailTriage, hasMailTriageAct, isAutoActAllowed, resolveOp, runTriage, type TriageDeps, type TriageMsg, type TriageOp } from "./_mail_triage";
 import { appendTriageEntries, bulkUndo, readTriageEntries } from "./_mail_triage_log";
 
 // A single OAUTH_KV stub, TTL-aware only enough for the ledger (opts ignored). Mirrors the
@@ -107,12 +107,12 @@ const SAMPLE: TriageMsg[] = [
 	{ id: "u1", from: "someone@randomcorp.example", subject: "Quick question" }, // unknown → suggest-only
 ];
 
-describe("auto-act allow-list — attention-increasing ops + high-confidence archive", () => {
-	it("AUTO_ACT_OPS is EXACTLY label:add / archive / unarchive / undelete — no label-remove, no delete", () => {
-		expect([...AUTO_ACT_OPS].sort()).toEqual(["archive", "label:add", "unarchive", "undelete"].sort());
+describe("auto-act allow-list — attention-increasing ops + high-confidence archive + send-proof draft-reply", () => {
+	it("AUTO_ACT_OPS is EXACTLY label:add / archive / unarchive / undelete / draft-reply — no label-remove, no delete, no send", () => {
+		expect([...AUTO_ACT_OPS].sort()).toEqual(["archive", "draft-reply", "label:add", "unarchive", "undelete"].sort());
 	});
-	it("every allow-listed op passes the guard", () => {
-		const ops: TriageOp[] = [{ kind: "archive" }, { kind: "unarchive" }, { kind: "undelete" }, { kind: "label", label: "junk", add: true }];
+	it("every allow-listed op (incl. draft-reply) passes the guard", () => {
+		const ops: TriageOp[] = [{ kind: "archive" }, { kind: "unarchive" }, { kind: "undelete" }, { kind: "label", label: "junk", add: true }, { kind: "draft-reply" }];
 		for (const op of ops) expect(isAutoActAllowed(op)).toBe(true);
 	});
 	it("a label-REMOVE (attention-reducing) is rejected by the guard even though it's representable", () => {
@@ -241,6 +241,124 @@ describe("runTriage — gating + idempotency", () => {
 		const report = await runTriage(env, { cycle_id: "b1", budget_ms: 1000 }, { ...mkDeps(many), search: async () => many });
 		// budget_ms clamps to a 1000ms floor; with Date.now() already past deadline on entry it stops early.
 		expect(report.truncated === true || report.scanned! <= many.length).toBe(true);
+	});
+});
+
+describe("draft-reply — detector + confidence bar", () => {
+	it("detectReplyDraft fires for a PERSONAL sender with a reply cue (question or ask), attaching the create op", () => {
+		for (const msg of [
+			{ id: "a", from: "friend@gmail.com", subject: "lunch tomorrow?" },
+			{ id: "b", from: "sam@icloud.com", subject: "quick one", preview: "can you send me the deck?" },
+			{ id: "c", from: "jo@outlook.com", subject: "following up on our chat" },
+		] as TriageMsg[]) {
+			const c = detectReplyDraft(msg);
+			expect(c).not.toBeNull();
+			expect(c!.op).toEqual({ kind: "draft-reply" });
+			expect(c!.label).toBe("personal");
+			expect(c!.confidence).toBeGreaterThanOrEqual(DRAFT_REPLY_CONFIDENCE_THRESHOLD);
+		}
+	});
+	it("detectReplyDraft returns null for a personal sender with NO cue, and for a non-personal sender even with a cue", () => {
+		expect(detectReplyDraft({ id: "d", from: "friend@gmail.com", subject: "fyi — the photos" })).toBeNull();
+		expect(detectReplyDraft({ id: "e", from: "sales@vendor.example", subject: "can you renew your plan?" })).toBeNull();
+	});
+	it("the draft-reply bar is HIGHER than the normal confidence bar (a draft is more intrusive than a label)", () => {
+		expect(DRAFT_REPLY_CONFIDENCE_THRESHOLD).toBeGreaterThan(CONFIDENCE_THRESHOLD);
+	});
+});
+
+const mkDraftDeps = (msgs: TriageMsg[], reply = "Thanks — I'll get back to you shortly.") => {
+	const base = mkDeps(msgs);
+	const composeSpy = vi.fn(async () => reply);
+	const draftSpy = vi.fn(async (_env: any, _a: { reply_to: string; text: string }) => ({ id: `draft-${_a.reply_to}` }));
+	return { ...base, composeReply: composeSpy, draftReply: draftSpy, composeSpy, draftSpy };
+};
+
+const REPLY_MSG: TriageMsg[] = [{ id: "pr1", from: "friend@gmail.com", subject: "are you free thursday?" }];
+
+describe("draft-reply — the send-proof staging lane", () => {
+	it("ENABLED + ACT + draft deps → composes + STAGES a reply draft (never sends); the only mutating call is draftReply", async () => {
+		const deps = mkDraftDeps(REPLY_MSG);
+		const env = envWith({ MAIL_TRIAGE_ENABLED: "1", MAIL_TRIAGE_ACT: "1" });
+		const report = await runTriage(env, { cycle_id: "d1" }, deps);
+		expect(deps.composeSpy).toHaveBeenCalledTimes(1);
+		expect(deps.draftSpy).toHaveBeenCalledTimes(1);
+		expect(deps.draftSpy).toHaveBeenCalledWith(env, { reply_to: "pr1", text: "Thanks — I'll get back to you shortly." });
+		// No mailbox move/label ever happens for a draft-reply, and there is no send path at all.
+		expect(deps.actSpy).not.toHaveBeenCalled();
+		expect(report.acted).toEqual([{ id: "pr1", label: "personal", confidence: 0.85, op: "draft-reply", to: "draft:draft-pr1" }]);
+		// The log entry records the created draft id for audit (not for undo).
+		const logged = await readTriageEntries(env, { cycle: "d1" });
+		expect(logged[0]).toMatchObject({ id: "pr1", action: "acted", op: "draft-reply", draft_id: "draft-pr1" });
+	});
+
+	it("is INERT without the draft deps: a reply-worthy message is SUGGESTED, never drafted (feature is opt-in)", async () => {
+		const deps = mkDeps(REPLY_MSG); // no composeReply / draftReply
+		const env = envWith({ MAIL_TRIAGE_ENABLED: "1", MAIL_TRIAGE_ACT: "1" });
+		const report = await runTriage(env, { cycle_id: "d2" }, deps);
+		expect(report.acted).toHaveLength(0);
+		expect(report.suggested!.map((s) => s.id)).toEqual(["pr1"]);
+		expect(deps.actSpy).not.toHaveBeenCalled();
+	});
+
+	it("the tone/PII gate blocks an unsafe draft (money/PII) → suggest, never stage", async () => {
+		const deps = mkDraftDeps(REPLY_MSG, "Sure — please wire $500 to account 12345678.");
+		const env = envWith({ MAIL_TRIAGE_ENABLED: "1", MAIL_TRIAGE_ACT: "1" });
+		const report = await runTriage(env, { cycle_id: "d3" }, deps);
+		expect(deps.composeSpy).toHaveBeenCalledTimes(1);
+		expect(deps.draftSpy).not.toHaveBeenCalled(); // gate rejected the body — nothing staged
+		expect(report.acted).toHaveLength(0);
+		expect(report.suggested!.map((s) => s.id)).toEqual(["pr1"]);
+	});
+
+	it("an empty composed reply (no safe reply / no AI) → suggest, never stage", async () => {
+		const deps = mkDraftDeps(REPLY_MSG, "   ");
+		const env = envWith({ MAIL_TRIAGE_ENABLED: "1", MAIL_TRIAGE_ACT: "1" });
+		const report = await runTriage(env, { cycle_id: "d4" }, deps);
+		expect(deps.draftSpy).not.toHaveBeenCalled();
+		expect(report.suggested!.map((s) => s.id)).toEqual(["pr1"]);
+	});
+
+	it("a draft-SAVE failure is transient: it suggests and leaves the message UNSEEN so the next cycle retries", async () => {
+		const deps = mkDraftDeps(REPLY_MSG);
+		deps.draftReply = vi.fn(async () => {
+			throw new Error("Fastmail 503");
+		});
+		const env = envWith({ MAIL_TRIAGE_ENABLED: "1", MAIL_TRIAGE_ACT: "1" });
+		const r1 = await runTriage(env, { cycle_id: "d5a" }, deps);
+		expect(r1.acted).toHaveLength(0);
+		expect(r1.suggested!.map((s) => s.id)).toEqual(["pr1"]);
+		// Same env/ledger: because the save failed, pr1 is NOT marked seen — a retry re-attempts it.
+		const deps2 = mkDraftDeps(REPLY_MSG);
+		const r2 = await runTriage(env, { cycle_id: "d5b" }, deps2);
+		expect(deps2.draftSpy).toHaveBeenCalledTimes(1);
+		expect(r2.acted).toEqual([{ id: "pr1", label: "personal", confidence: 0.85, op: "draft-reply", to: "draft:draft-pr1" }]);
+	});
+
+	it("draft staging is idempotent: a successful draft marks the message seen so a re-run stages nothing", async () => {
+		const env = envWith({ MAIL_TRIAGE_ENABLED: "1", MAIL_TRIAGE_ACT: "1" });
+		const deps1 = mkDraftDeps(REPLY_MSG);
+		await runTriage(env, { cycle_id: "d6a" }, deps1);
+		expect(deps1.draftSpy).toHaveBeenCalledTimes(1);
+		const deps2 = mkDraftDeps(REPLY_MSG);
+		const r2 = await runTriage(env, { cycle_id: "d6b" }, deps2);
+		expect(deps2.draftSpy).not.toHaveBeenCalled();
+		expect(r2.new).toBe(0);
+	});
+
+	it("undo does NOT delete a staged draft: bulkUndo reverses moves/labels but leaves draft-reply entries", async () => {
+		const env = envWith();
+		await appendTriageEntries(env, [
+			{ cycle: "z", id: "m1", action: "acted", label: "receipt", confidence: 0.95, reason: "r", op: "archive", from_mailbox: "inbox", to_mailbox: "archive", at: 1 },
+			{ cycle: "z", id: "m2", action: "acted", label: "personal", confidence: 0.85, reason: "r", op: "draft-reply", draft_id: "draft-m2", at: 2 },
+		]);
+		const move = vi.fn(async () => {});
+		const label = vi.fn(async () => {});
+		const res: any = await bulkUndo(env, "z", { move, label });
+		// Only the archive is reversed; the draft-reply is intentionally left in place (Colin's to keep).
+		expect(res.undone).toBe(1);
+		expect(res.ids).toEqual(["m1"]);
+		expect(move).toHaveBeenCalledWith(env, ["m1"], "inbox");
 	});
 });
 
