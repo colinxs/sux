@@ -5,16 +5,17 @@ import { errMsg, oj } from "./_util";
 
 // mail_triage — the manual + cron entrypoint for the mail-triage bot. It orchestrates the
 // existing mail verbs (mail_search + moveMessages/labelMessages) through a classify →
-// confidence-gate → act(reversible-only) → log → digest loop. DORMANT unless MAIL_TRIAGE_ENABLED
-// is set, and suggest-only until MAIL_TRIAGE_ACT is ALSO set (see _mail_triage.ts). The auto-act
-// allow-list is exactly the reversible ops (label add/remove, archive, unarchive, undelete) —
-// never a junk-move, never a delete. The same run() is invoked once daily by the cron tick.
+// confidence-gate → act → log → digest loop. DORMANT unless MAIL_TRIAGE_ENABLED is set, and
+// suggest-only until MAIL_TRIAGE_ACT is ALSO set (see _mail_triage.ts). The auto-act allow-list
+// is exactly label:add / archive / unarchive / undelete — archive (the one attention-reducing op)
+// only above the high archive-confidence bar; never a junk-move, label-remove, or delete. The
+// same run() is invoked once daily by the cron tick.
 export const mail_triage: Fn = {
 	name: "mail_triage",
 	surface: "leaf",
 	annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
 	description:
-		"Autonomous mail triage: classify inbox messages and (when armed) act with REVERSIBLE ops ONLY — add a label, archive, unarchive, undelete — NEVER a junk-move or delete. action:'run' (default) processes new/unseen messages once (idempotent per message); 'undo' reverses a whole cycle by its cycle_id (the undo handle in the digest); 'log' reads the action log. DORMANT unless MAIL_TRIAGE_ENABLED is set; suggest-only (no actions) until MAIL_TRIAGE_ACT is also set. Pass dry_run:true to force suggest-only. Each cycle appends a did/suggests/undo digest to the vault Daily note.",
+		"Autonomous mail triage: classify inbox messages and (when armed) act with REVERSIBLE ops ONLY — add a label, archive, unarchive, undelete — NEVER a junk-move or delete. Archiving (the one op that hides mail) fires only when highly confident; below that bar a declutter guess is labeled in place instead. action:'run' (default) processes new/unseen messages once (idempotent per message); 'undo' reverses a whole cycle by its cycle_id (the undo handle in the digest); 'log' reads the action log. DORMANT unless MAIL_TRIAGE_ENABLED is set; suggest-only (no actions) until MAIL_TRIAGE_ACT is also set. Pass dry_run:true to force suggest-only. Each cycle appends a did/suggests/undo digest to the vault Daily note.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,

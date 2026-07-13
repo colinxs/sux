@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ACTION_FOR, AUTO_ACT_OPS, CONFIDENCE_THRESHOLD, classifyMessage, hasMailTriage, hasMailTriageAct, isAutoActAllowed, runTriage, type TriageDeps, type TriageMsg, type TriageOp } from "./_mail_triage";
+import { ACTION_FOR, ARCHIVE_CONFIDENCE_THRESHOLD, AUTO_ACT_OPS, CONFIDENCE_THRESHOLD, classifyMessage, hasMailTriage, hasMailTriageAct, isAutoActAllowed, resolveOp, runTriage, type TriageDeps, type TriageMsg, type TriageOp } from "./_mail_triage";
 import { appendTriageEntries, bulkUndo, readTriageEntries } from "./_mail_triage_log";
 
 // A single OAUTH_KV stub, TTL-aware only enough for the ledger (opts ignored). Mirrors the
@@ -102,29 +102,39 @@ const mkDeps = (msgs: TriageMsg[]): TriageDeps & { actSpy: ReturnType<typeof vi.
 
 const SAMPLE: TriageMsg[] = [
 	{ id: "j1", from: "x@sketchy.tld", subject: "You WON the lottery! Claim your prize now" }, // junk → LABEL (attention-increasing), not a junk-move
-	{ id: "r1", from: "receipts@amazon.com", subject: "Your receipt from Amazon" }, // receipt → LABEL (kept visible), never archived
+	{ id: "r1", from: "receipts@amazon.com", subject: "Your receipt from Amazon" }, // receipt → archive ideal, but 0.85 < archive bar → LABEL in place
 	{ id: "p1", from: "friend@gmail.com", subject: "lunch tomorrow?" }, // personal → suggest-only
 	{ id: "u1", from: "someone@randomcorp.example", subject: "Quick question" }, // unknown → suggest-only
 ];
 
-describe("auto-act allow-list — safe-direction (attention-increasing) ops only", () => {
-	it("AUTO_ACT_OPS is EXACTLY the three safe-direction ops — no archive, no label-remove, no delete", () => {
-		expect([...AUTO_ACT_OPS].sort()).toEqual(["label:add", "unarchive", "undelete"].sort());
+describe("auto-act allow-list — attention-increasing ops + high-confidence archive", () => {
+	it("AUTO_ACT_OPS is EXACTLY label:add / archive / unarchive / undelete — no label-remove, no delete", () => {
+		expect([...AUTO_ACT_OPS].sort()).toEqual(["archive", "label:add", "unarchive", "undelete"].sort());
 	});
 	it("every allow-listed op passes the guard", () => {
-		const ops: TriageOp[] = [{ kind: "unarchive" }, { kind: "undelete" }, { kind: "label", label: "junk", add: true }];
+		const ops: TriageOp[] = [{ kind: "archive" }, { kind: "unarchive" }, { kind: "undelete" }, { kind: "label", label: "junk", add: true }];
 		for (const op of ops) expect(isAutoActAllowed(op)).toBe(true);
 	});
 	it("a label-REMOVE (attention-reducing) is rejected by the guard even though it's representable", () => {
 		expect(isAutoActAllowed({ kind: "label", label: "junk", add: false })).toBe(false);
 	});
-	it("every actionable label ADDS a keyword in place (kept visible); personal/unknown never auto-act", () => {
+	it("declutter labels map to archive (junk labels in place); personal/unknown never auto-act", () => {
 		expect(ACTION_FOR.junk).toEqual({ kind: "label", label: "junk", add: true });
-		expect(ACTION_FOR.receipt).toEqual({ kind: "label", label: "receipt", add: true });
-		expect(ACTION_FOR.newsletter).toEqual({ kind: "label", label: "newsletter", add: true });
-		expect(ACTION_FOR.notification).toEqual({ kind: "label", label: "notification", add: true });
+		for (const l of ["receipt", "newsletter", "notification"] as const) expect(ACTION_FOR[l]).toEqual({ kind: "archive" });
 		expect(ACTION_FOR.personal).toBeNull();
 		expect(ACTION_FOR.unknown).toBeNull();
+	});
+	it("resolveOp gates archive on the HIGHER bar: below it de-escalates to a label in place, above it archives", () => {
+		expect(ARCHIVE_CONFIDENCE_THRESHOLD).toBeGreaterThan(CONFIDENCE_THRESHOLD);
+		// Below the archive bar → label the message where it is (kept visible), never hide it.
+		expect(resolveOp({ kind: "archive" }, "receipt", ARCHIVE_CONFIDENCE_THRESHOLD - 0.01)).toEqual({ kind: "label", label: "receipt", add: true });
+		expect(resolveOp({ kind: "archive" }, "newsletter", 0.85)).toEqual({ kind: "label", label: "newsletter", add: true });
+		// At/above the bar → archive survives.
+		expect(resolveOp({ kind: "archive" }, "receipt", ARCHIVE_CONFIDENCE_THRESHOLD)).toEqual({ kind: "archive" });
+		expect(resolveOp({ kind: "archive" }, "notification", 0.95)).toEqual({ kind: "archive" });
+		// Non-archive ops pass through untouched regardless of confidence.
+		expect(resolveOp({ kind: "label", label: "junk", add: true }, "junk", 0.1)).toEqual({ kind: "label", label: "junk", add: true });
+		expect(resolveOp({ kind: "unarchive" }, "receipt", 0.1)).toEqual({ kind: "unarchive" });
 	});
 });
 
@@ -175,6 +185,29 @@ describe("runTriage — gating + idempotency", () => {
 		]);
 		// personal (0.70, no action) + unknown (0.20, low confidence) → suggestions only, never acted.
 		expect(report.suggested!.map((s) => s.id).sort()).toEqual(["p1", "u1"]);
+	});
+
+	it("ENABLED + ACT → a HIGH-confidence declutter classification (≥ archive bar) actually archives", async () => {
+		// Drive the loop through the injected classify seam (the learning-classifier hook) with a
+		// receipt scored ABOVE the archive bar — the one path that reaches a real archive move.
+		const msgs: TriageMsg[] = [{ id: "hi", from: "receipts@shop.example", subject: "Your receipt" }];
+		const deps = mkDeps(msgs);
+		const env = envWith({ MAIL_TRIAGE_ENABLED: "1", MAIL_TRIAGE_ACT: "1" });
+		const report = await runTriage(env, { cycle_id: "arch" }, { ...deps, classify: () => ({ label: "receipt", confidence: 0.95, reason: "high-confidence receipt" }) });
+		expect(deps.actSpy).toHaveBeenCalledTimes(1);
+		expect(deps.actSpy).toHaveBeenCalledWith(env, ["hi"], { kind: "archive" });
+		expect(report.acted).toEqual([{ id: "hi", label: "receipt", confidence: 0.95, op: "archive", to: "archive" }]);
+	});
+
+	it("ENABLED + ACT → the SAME receipt just BELOW the archive bar de-escalates to a label in place, never archived", async () => {
+		const msgs: TriageMsg[] = [{ id: "lo", from: "receipts@shop.example", subject: "Your receipt" }];
+		const deps = mkDeps(msgs);
+		const env = envWith({ MAIL_TRIAGE_ENABLED: "1", MAIL_TRIAGE_ACT: "1" });
+		const below = ARCHIVE_CONFIDENCE_THRESHOLD - 0.05;
+		const report = await runTriage(env, { cycle_id: "lab" }, { ...deps, classify: () => ({ label: "receipt", confidence: below, reason: "receipt below archive bar" }) });
+		expect(deps.actSpy).toHaveBeenCalledWith(env, ["lo"], { kind: "label", label: "receipt", add: true });
+		for (const call of deps.actSpy.mock.calls) expect((call[2] as TriageOp).kind).toBe("label");
+		expect(report.acted).toEqual([{ id: "lo", label: "receipt", confidence: below, op: "label", to: "+label:receipt" }]);
 	});
 
 	it("ENABLED + ACT → a GitHub CI-failure gets a reversible TYPE label, never archived", async () => {
