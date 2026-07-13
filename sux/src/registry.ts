@@ -183,6 +183,9 @@ export type RtEnv = Env &
 		// cycle stages zero drafts by construction. It never sends, never deletes.
 		BRIEFING_ENABLED?: string;
 		BRIEFING_STAGE_DRAFTS?: string;
+		// Cap on reply drafts staged per briefing run (bounded autonomy). Parsed as an integer,
+		// clamped to [1, 20]; unset/invalid ⇒ default 5. Set via `wrangler secret`.
+		BRIEFING_MAX_DRAFTS?: string;
 
 		// Manual ops trigger for the daily cron ticks (POST /admin/tick?job=…), bearer-gated
 		// by this token. Unset ⇒ the endpoint 404s (feature off). Lets an operator run a
@@ -377,8 +380,9 @@ export function toolList(fns: Fn[]): Array<{ name: string; description: string; 
 //   store — blob storage        · preferences/issue — tell sux what you want / what broke
 //   vault/mail/files/cal/contact — the personal-data namespaces, dispatched into the
 //     existing VAULT_TOOLS/MAIL_TOOLS/FILES_TOOLS handlers so the whole digital-life
-//     spine is reachable on the ONE /mcp connector (every surface, incl. mobile),
-//     not only via the separate /<ns>/mcp connectors.
+//     spine is reachable on the ONE /mcp connector (every surface, incl. mobile). The
+//     old per-namespace /<ns>/mcp connectors are retired: front verbs are how you reach
+//     them now (their routes stay dormant for back-compat).
 export const FRONT_VERBS = new Set<string>([
 	"sux", "fn",
 	"search", "scrape", "shop",

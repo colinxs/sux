@@ -1,3 +1,13 @@
+---
+title: Router watchdog / self-heal daemon — owl-tegu
+status: designed
+cluster: infrastructure
+type: design
+summary: "Design for an owl-tegu self-heal daemon that reasserts known-good state in the safe/reversible direction and phones home — muscle not brain, never destructive or attention-reducing on its own. Design only; no router mutation."
+tags: [sux, infrastructure, router, watchdog]
+updated: 2026-07-12
+---
+
 # Router watchdog / self-heal daemon — owl-tegu
 
 **Status:** design only (no deploy, no flash, no router mutation)

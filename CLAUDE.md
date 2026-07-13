@@ -1,6 +1,6 @@
 # CLAUDE.md — working in sux-mcp
 
-sux is a Cloudflare Worker MCP server (~95 fns) + personal-data namespaces (vault/files/mail) on one Worker + N `/<domain>/mcp` connectors. Deep architecture lives in Claude memory (`sux-mcp-namespaces`, `knowledge-core-decisions`); this file is **how we work**, not what we're building.
+sux is a Cloudflare Worker MCP server behind one `/mcp` front door + personal-data namespaces (vault/mail/files) reached as front verbs (`vault_`/`mail_`/`files_`) on that same connector. The former per-domain `/<domain>/mcp` connectors are retired — their routes stay dormant for back-compat, dispatched by the front verbs. Deep architecture lives in Claude memory (`sux-mcp-namespaces`, `knowledge-core-decisions`); this file is **how we work**, not what we're building.
 
 Guiding principle: **git is the undo, CI is the gate, review is the net** — so we move fast and unblocked, and lean on those three instead of asking permission.
 

@@ -1,3 +1,13 @@
+---
+title: Architecture — shipped sux Worker topology
+status: living
+cluster: infrastructure
+type: reference
+summary: "Live topology of the sux Worker — every namespace, binding, and external dependency in one mermaid diagram, colour-coded by deployment status (live/dormant/blocked/planned)."
+tags: [sux, infrastructure, architecture]
+updated: 2026-07-11
+---
+
 # Architecture
 
 The shipped topology of the sux Worker — every namespace, binding, and external

@@ -1,3 +1,13 @@
+---
+title: owl-tegu observability → Grafana (logs + metrics)
+status: designed
+cluster: infrastructure
+type: design
+summary: "Design + light prototype for shipping owl-tegu logs and metrics to Grafana; KISS and gateway-SACRED, complementing the /health hub, the Worker /health, and the recovery dead-drop rather than duplicating them."
+tags: [sux, infrastructure, observability, grafana]
+updated: 2026-07-12
+---
+
 # owl-tegu observability → Grafana (logs + metrics)
 
 Design + light prototype. Opinionated, KISS, gateway-SACRED. Complements — does not

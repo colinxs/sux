@@ -37,12 +37,18 @@ Algebra substrate, un-parked verb program, uw directory, unused per-store scrape
 ## ▶ RESUME HERE (session handoff, 2026-07-12 — full branch/workflow reconciliation)
 **State:** `main` @ `650828c` (**#44 merged** — `surface` field + annotations + `sux` root verb, chunk-2 foundation). **1428 tests green**, type-check + docs/index in sync. Chunk-1 core LIVE (#44/#45/#46/#47). Verify #44's deploy went green.
 
+> **Chunk 00 (fanout-time-budget) SHIPPED — #148 (`f65ef07`).** The `operateFull`
+> apply loop below is no longer unbounded: `_dropbox-full.ts` now races each apply
+> against an injectable `deadline` (defaults to `FANOUT_BUDGET_MS`), returns
+> applied-so-far with `{truncated:true, reason:"time", skipped}`, and never abandons a
+> Mode-B mutation-set silently. **Next chunk: 01 front door** (below).
+
 > **Per-session chunk briefs live in [`chunks/`](chunks/README.md)** — one
 > self-contained file per branch/session, sized to load into a fresh context with
 > `CLAUDE.md` + memory. The ledger + forward plan below is the map; a chunk file is
 > the territory for one session. Start a chunk: checkout its branch, read its one file, go.
 
-**In flight this session:** branch `fix/fanout-time-budget` (uncommitted, green) — the C1/C2 fan-out time-budget fix, **3 of 4 sites done**: `pool()` takes a `deadline`, `batch`/`batch_fetch`/`pipe` stop dispatching at `FANOUT_BUDGET_MS` (50s < 60s hard deadline) and return `{truncated:true, reason:"time"}`. **GAP: `operateFull` (the scariest site — silent partial Mode-B mutations) still has an unbounded apply for-loop.** Finish that site, then commit + PR (this is chunk 00).
+**In flight this session:** none — chunk 00 landed. The C1/C2 fan-out time-budget fix is **complete and merged (#148)**: `pool()` takes a `deadline`, `batch`/`batch_fetch`/`pipe` stop dispatching at `FANOUT_BUDGET_MS` (50s < 60s hard deadline) and return `{truncated:true, reason:"time"}`, and the last/scariest site — `operateFull` (silent partial Mode-B mutations) — now races its apply loop against the same deadline and returns applied-so-far flagged `{truncated:true, reason:"time"}` instead of an unbounded for-loop.
 
 ### Branch ledger (reconciled against `main` @ 650828c)
 **Merged / dead — safe to delete (local + remote):** `fix/files-vault` `fix/infra-resilience` `fix/mail-caldav` `fix/registry-surface-selfdescribe` `fix/retail-render` `fix/parsing` `fix/resource` `fix/security2` `feat/digital-life-spine` `feat/fastmail-integration` `feat/int-sweep` `feat/mcp-gate` `feat/obsidian-store-ops` `feat/sux-vault-plugin` `docs/knowledge-core` `docs/unpark-verbs-plan` `claude/sux-mychart-*`; all `worktree-wf_*` (stale #32 workflow worktrees); local aliases `as33`(=ultra-sweep) `as38`(=files-operate) `as39`(=obsidian-search) `as40`(=amazon-cf) `pr31` `pr46` `alg37`(=algebra) `uw36`(=uw-dir).
@@ -64,7 +70,7 @@ Algebra substrate, un-parked verb program, uw directory, unused per-store scrape
 > **Note on the sins-of-omission list (line 28):** "bulk-work > 60s → Queues/Workflows" is deliberately **deferred**, not orphaned — the fanout-time-budget chunk ships the interim partial-return; the full Queues/Workflows primitive is built inside the learning-substrate chunk only *if* a real caller strains the 60s deadline.
 
 ### Forward plan (per-session chunks live in [`chunks/`](chunks/README.md); land green + deploy before the next)
-- **00 fanout-time-budget** (in flight): add the deadline check to `operateFull`'s apply loop (applied-so-far + `{truncated:true}`, never abandon a mutation-set silently). Finish, commit, PR, merge+deploy.
+- **00 fanout-time-budget** ✅ SHIPPED (#148): the deadline check is on `operateFull`'s apply loop (applied-so-far + `{truncated:true, reason:"time"}`, never abandons a mutation-set silently). Merged + deployed.
 - **01 front door** *(independent — can run in parallel)*: land `feat/front-door`; retire mail/vault/files namespace connectors (routes stay dormant). Establishes the `surface` field as load-bearing.
 - **02 smart-guards**: **generalize the EXISTING `stage.ts` `staged()`/`enforceGates` substrate** to default-on + annotation-driven across all irreversible/outward verbs; add agent-side conscience lint. (Not greenfield — the gate already exists.)
 - **03 learning-substrate**: learned-prefs KV + vault write-hooks + embeddings/kNN via Workers AI; extend `recall`. Owns the deferred Queues/Workflows decision.

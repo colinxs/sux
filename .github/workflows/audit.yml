@@ -7,7 +7,8 @@ name: Audit & SBOM
 # The audit FAILS the build on genuine high/critical advisories, but stays
 # advisory (does not fail) when npm cannot reach the registry — a network
 # blip must not turn CI red. The SBOM is uploaded as a build artifact for
-# supply-chain provenance.
+# supply-chain provenance. On a genuine audit failure, a tracking issue is
+# opened/updated so a Monday CVE trip isn't silently red with nobody watching.
 on:
   push:
   pull_request:
@@ -16,6 +17,7 @@ on:
 
 permissions:
   contents: read
+  issues: write # open/update a tracking issue when the audit trips a CVE
 
 concurrency:
   group: audit-${{ github.ref }}
@@ -41,6 +43,7 @@ jobs:
       # advisory (::warning::) so transient outages don't flake the build,
       # while a real high/critical count exits non-zero.
       - name: npm audit (fail on high/critical)
+        id: audit
         run: |
           npm audit --audit-level=high --json > audit-report.json || true
           node -e '
@@ -77,3 +80,99 @@ jobs:
           name: sbom-cyclonedx
           path: sbom.cyclonedx.json
           if-no-files-found: error
+
+      # A Monday CVE trip is otherwise silent: the scheduled run just goes red
+      # with nobody watching. When (and only when) the audit step failed on a
+      # genuine high/critical advisory, open a fresh tracking issue or update the
+      # existing open one — same upsert pattern as deploy.yml/health.yml, keyed on
+      # a stable title so re-runs never spam duplicates. Reads advisory details
+      # back from audit-report.json (persisted in the workspace by the audit step).
+      # Wrapped in try/catch so a GitHub API hiccup never masks the audit failure.
+      - name: Open or update audit-failure issue on failure
+        if: failure() && steps.audit.outcome == 'failure'
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const fs = require("fs");
+            const title = "npm audit: high/critical advisory";
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            // Pull the distinct advisories out of the audit report. npm's `via`
+            // entries are either a parent package name (string) or an advisory
+            // object; we want the objects, deduped by advisory URL/title.
+            let advisories = [];
+            let counts = "";
+            try {
+              const r = JSON.parse(fs.readFileSync("audit-report.json", "utf8"));
+              const v = (r.metadata && r.metadata.vulnerabilities) || {};
+              counts = `critical=${v.critical || 0} high=${v.high || 0} moderate=${v.moderate || 0} low=${v.low || 0}`;
+              const seen = new Set();
+              for (const pkg of Object.values(r.vulnerabilities || {})) {
+                for (const via of pkg.via || []) {
+                  if (typeof via !== "object") continue;
+                  if (!["high", "critical"].includes(via.severity)) continue;
+                  const key = via.url || via.title;
+                  if (seen.has(key)) continue;
+                  seen.add(key);
+                  advisories.push(via);
+                }
+              }
+            } catch (e) {
+              core.warning(`Could not parse audit-report.json: ${e.message}`);
+            }
+
+            const advisoryLines = advisories.length
+              ? advisories.map(
+                  (a) =>
+                    `- **${a.severity}** ${a.title || a.name}${a.url ? ` (${a.url})` : ""}` +
+                    `${a.name ? ` — pkg \`${a.name}\`` : ""}${a.range ? ` \`${a.range}\`` : ""}`,
+                )
+              : ["- (advisory details unavailable — see audit-report.json in the run logs)"];
+
+            const body = [
+              `The dependency audit tripped on a high/critical advisory on ${new Date().toISOString()}.`,
+              "",
+              `- Workflow run: ${runUrl}`,
+              `- Commit: ${context.sha}`,
+              counts ? `- Counts: ${counts}` : "",
+              "",
+              "### Advisories",
+              ...advisoryLines,
+              "",
+              "Run `npm audit` locally, then `npm audit fix` (or bump the offending",
+              "dependency) and open a PR. This issue is updated on each subsequent",
+              "failing run and can be closed once the audit is green.",
+            ]
+              .filter((l) => l !== "")
+              .join("\n");
+
+            try {
+              const existing = await github.rest.issues.listForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: "open",
+                per_page: 100,
+              });
+              const hit = existing.data.find(
+                (i) => !i.pull_request && i.title === title,
+              );
+              if (hit) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: hit.number,
+                  body,
+                });
+                core.info(`Updated existing issue #${hit.number}.`);
+              } else {
+                const created = await github.rest.issues.create({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  title,
+                  body,
+                });
+                core.info(`Opened issue #${created.data.number}.`);
+              }
+            } catch (e) {
+              core.warning(`Could not open/update audit issue: ${e.message}`);
+            }
