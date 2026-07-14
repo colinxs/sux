@@ -160,7 +160,11 @@ export async function mintAccessToken(env: RtEnv): Promise<string> {
 		client_id: String(env.EPIC_CLIENT_ID),
 	});
 	if (status >= 400 || !json?.access_token) {
-		throw new Error(`MyChart token refresh HTTP ${status}: ${json?.error_description ?? json?.error ?? "no access_token"}`);
+		// PHI-free: status + the OAuth error *code* only (a short enum like
+		// invalid_grant), never error_description free-text — this string surfaces as the
+		// call's `err` into Workers Logs / Loki / metrics.last_error (§5 invariant #4).
+		const code = typeof json?.error === "string" ? json.error.replace(/[^A-Za-z0-9_\-]/g, "").slice(0, 40) : "no_access_token";
+		throw new Error(`MyChart token refresh HTTP ${status} (${code})`);
 	}
 	// Epic MAY rotate the refresh token on use — persist the new one (plus any
 	// refreshed patient/scope) before the access token is used, or the next refresh
@@ -365,6 +369,12 @@ async function resolveBinaries(env: RtEnv, base: string, doc: any): Promise<Arra
 
 const PAGE_HEADERS = { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" };
 
+/** Escape a value for safe interpolation into a text/html response body (defeats
+ * reflected XSS via OAuth error params, upstream error_description, patient ids). */
+export function escapeHtml(s: unknown): string {
+	return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
 /** GET /mychart/connect + GET /mychart/callback. Served BEFORE the OAuthProvider
  * claims every path (same pre-gate trick as /health, /metrics). Returns null when
  * the path isn't ours. `/connect` is gated by the operator SUX_CRON_TOKEN in the
@@ -404,7 +414,7 @@ export async function handleMychartRoutes(url: URL, request: Request, env: RtEnv
 		const code = url.searchParams.get("code");
 		const state = url.searchParams.get("state") ?? "";
 		const err = url.searchParams.get("error");
-		if (err) return new Response(`MyChart authorization error: ${err}`, { status: 400, headers: PAGE_HEADERS });
+		if (err) return new Response(`MyChart authorization error: ${escapeHtml(err)}`, { status: 400, headers: PAGE_HEADERS });
 		if (!code || !state) return new Response("Missing code/state.", { status: 400, headers: PAGE_HEADERS });
 		const stored = await env.OAUTH_KV?.get(pkceKey(state));
 		if (!stored) return new Response("Invalid or expired state (CSRF check failed).", { status: 400, headers: PAGE_HEADERS });
@@ -424,7 +434,7 @@ export async function handleMychartRoutes(url: URL, request: Request, env: RtEnv
 				client_id: String(env.EPIC_CLIENT_ID),
 			});
 			if (status >= 400 || !json?.access_token) {
-				return new Response(`Token exchange failed: HTTP ${status} ${json?.error_description ?? json?.error ?? ""}`.trim(), { status: 502, headers: PAGE_HEADERS });
+				return new Response(`Token exchange failed: HTTP ${status} ${escapeHtml(json?.error_description ?? json?.error ?? "")}`.trim(), { status: 502, headers: PAGE_HEADERS });
 			}
 			if (typeof json.refresh_token === "string" && json.refresh_token) {
 				const grant: MychartGrant = { refresh_token: json.refresh_token, patient: json.patient, scope: json.scope, issued_at: Date.now() };
@@ -433,11 +443,11 @@ export async function handleMychartRoutes(url: URL, request: Request, env: RtEnv
 			await cacheAccessToken(env, String(json.access_token), json.expires_in);
 			const hasRefresh = Boolean(json.refresh_token);
 			return new Response(
-				`<!doctype html><meta charset=utf-8><title>MyChart connected</title><body style="font-family:system-ui;padding:2rem"><h1>MyChart connected</h1><p>Patient <code>${json.patient ?? "(unknown)"}</code> linked.${hasRefresh ? "" : " <strong>No refresh token was issued</strong> — pulls will need re-login (the org may not have provisioned offline_access)."}</p><p>You can close this tab. Run <code>mychart op:\"pull\"</code> to sync.</p></body>`,
+				`<!doctype html><meta charset=utf-8><title>MyChart connected</title><body style="font-family:system-ui;padding:2rem"><h1>MyChart connected</h1><p>Patient <code>${escapeHtml(json.patient ?? "(unknown)")}</code> linked.${hasRefresh ? "" : " <strong>No refresh token was issued</strong> — pulls will need re-login (the org may not have provisioned offline_access)."}</p><p>You can close this tab. Run <code>mychart op:\"pull\"</code> to sync.</p></body>`,
 				{ status: 200, headers: PAGE_HEADERS },
 			);
 		} catch (e) {
-			return new Response(`MyChart callback failed: ${String((e as Error)?.message ?? e)}`, { status: 502, headers: PAGE_HEADERS });
+			return new Response(`MyChart callback failed: ${escapeHtml((e as Error)?.message ?? e)}`, { status: 502, headers: PAGE_HEADERS });
 		}
 	}
 
@@ -445,6 +455,35 @@ export async function handleMychartRoutes(url: URL, request: Request, env: RtEnv
 }
 
 // ---------------- Apple Health ingest ----------------
+
+/** The batch's period-start date (YYYY-MM-DD) parsed from the HAE payload itself, so
+ * the storage key is stable regardless of when the (possibly midnight-crossing) retry
+ * arrives. Checks an explicit top-level period, then the earliest metric sample date.
+ * Returns null when the payload carries no usable date. */
+export function payloadPeriodDate(body: string): string | null {
+	let j: any;
+	try {
+		j = JSON.parse(body);
+	} catch {
+		return null;
+	}
+	const dateOf = (v: unknown): string | null => {
+		const m = typeof v === "string" ? /(\d{4}-\d{2}-\d{2})/.exec(v) : null;
+		return m ? m[1] : null;
+	};
+	const explicit = dateOf(j?.period?.start) ?? dateOf(j?.period) ?? dateOf(j?.data?.period?.start) ?? dateOf(j?.data?.period);
+	if (explicit) return explicit;
+	const metrics: any[] = Array.isArray(j?.data?.metrics) ? j.data.metrics : [];
+	let best: string | null = null;
+	for (const met of metrics) {
+		const rows: any[] = Array.isArray(met?.data) ? met.data : [];
+		for (const row of rows) {
+			const d = dateOf(row?.date);
+			if (d && (!best || d < best)) best = d;
+		}
+	}
+	return best;
+}
 
 /** POST /apple-health — Health Auto Export pushes its JSON here. Bearer-gated
  * (constant-time) against HEALTH_INGEST_TOKEN; unset ⇒ 404 (feature off). Writes
@@ -459,9 +498,15 @@ export async function handleAppleHealth(url: URL, request: Request, env: RtEnv):
 	const presented = auth.startsWith("Bearer ") ? auth.slice(7) : "";
 	if (!presented || !tokenEq(token, presented)) return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: { "content-type": "application/json" } });
 	if (!env.R2) return new Response(JSON.stringify({ error: "R2 not bound" }), { status: 503, headers: { "content-type": "application/json" } });
+	const MAX_BYTES = 8 * 1024 * 1024;
+	// Reject on the declared Content-Length BEFORE buffering the whole body into memory
+	// — a fabricated 100 MiB POST shouldn't get read in full just to be rejected.
+	const declared = Number(request.headers.get("content-length"));
+	if (Number.isFinite(declared) && declared > MAX_BYTES) return new Response(JSON.stringify({ error: "payload too large" }), { status: 413, headers: { "content-type": "application/json" } });
 	const body = await request.text();
 	if (!body) return new Response(JSON.stringify({ error: "empty body" }), { status: 400, headers: { "content-type": "application/json" } });
-	if (body.length > 8 * 1024 * 1024) return new Response(JSON.stringify({ error: "payload too large" }), { status: 413, headers: { "content-type": "application/json" } });
+	// Fallback post-read check (chunked / absent Content-Length can't be trusted above).
+	if (body.length > MAX_BYTES) return new Response(JSON.stringify({ error: "payload too large" }), { status: 413, headers: { "content-type": "application/json" } });
 	// Idempotent key: an automation-id + period header identifies a batch across the
 	// jittery Background-App-Refresh retries HAE makes; fall back to a content hash so
 	// identical bodies still collapse to one object. Header-driven so a retry lands on
@@ -470,9 +515,15 @@ export async function handleAppleHealth(url: URL, request: Request, env: RtEnv):
 	const period = request.headers.get("x-period") || request.headers.get("period") || "";
 	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body));
 	const hash = Array.from(new Uint8Array(digest)).slice(0, 8).map((b) => b.toString(16).padStart(2, "0")).join("");
-	const date = new Date().toISOString().slice(0, 10);
+	// The date directory MUST be derived from the PAYLOAD, never the server clock: a
+	// Background-App-Refresh retry that crosses UTC midnight would otherwise land under a
+	// new date dir and write a DUPLICATE instead of overwriting (§2c). Prefer the batch's
+	// own period start, then the x-period header, then the content hash — all stable
+	// across a retry, so the same batch always resolves to the same key.
+	const headerDate = /^\d{4}-\d{2}-\d{2}/.test(period) ? period.slice(0, 10) : "";
+	const datePart = payloadPeriodDate(body) || headerDate || hash;
 	const idPart = [automationId, period].filter(Boolean).map((s) => s.replace(/[^A-Za-z0-9_-]/g, "_")).join("-") || hash;
-	const key = `apple-health/${date}/${idPart}.json`;
+	const key = `apple-health/${datePart}/${idPart}.json`;
 	try {
 		const stored = await putPhi(env, key, body, "application/json");
 		return new Response(JSON.stringify({ ok: true, key: stored, bytes: body.length }), { status: 200, headers: { "content-type": "application/json" } });
@@ -487,5 +538,9 @@ export async function handleAppleHealth(url: URL, request: Request, env: RtEnv):
 export async function refreshMychartToken(env: RtEnv): Promise<void> {
 	if (!mychartConfigured(env)) return;
 	if (!(await readGrant(env))) return; // never connected — nothing to keep warm.
+	// Short-circuit when a cached access token is still valid: minting on every tick
+	// would force a needless refresh_token grant and risk a double-spend race with a
+	// concurrent pull rotating the refresh token. Only mint when the cache is empty/expired.
+	if (await env.OAUTH_KV?.get(ACCESS_TOKEN_KEY)) return;
 	await mintAccessToken(env);
 }

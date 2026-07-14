@@ -87,7 +87,19 @@ export const mychart: Fn = {
 				if (!(await readGrant(env))) return failWith("not_configured", "MyChart not connected — open /mychart/connect once.");
 				const resp = await mychartFetch(env, abs);
 				const text = await resp.text();
-				if (resp.status >= 400) return failWith(resp.status === 404 ? "not_found" : resp.status === 429 ? "rate_limited" : "upstream_error", `MyChart get HTTP ${resp.status}: ${text.slice(0, 300)}`);
+				if (resp.status >= 400) {
+					// PHI-free error surface: HTTP status + FHIR OperationOutcome
+					// resourceType/issue-code only. The raw body can carry patient identifiers
+					// or echoed values, which must never enter `err` → Logs/Loki/metrics (§5).
+					let detail = "";
+					try {
+						const j: any = JSON.parse(text);
+						if (j?.resourceType) detail = ` ${String(j.resourceType).replace(/[^A-Za-z0-9]/g, "").slice(0, 40)}`;
+						const code = Array.isArray(j?.issue) ? j.issue[0]?.code : undefined;
+						if (typeof code === "string") detail += `/${code.replace(/[^A-Za-z0-9\-]/g, "").slice(0, 40)}`;
+					} catch {}
+					return failWith(resp.status === 404 ? "not_found" : resp.status === 429 ? "rate_limited" : "upstream_error", `MyChart get HTTP ${resp.status}${detail}`);
+				}
 				return ok(text);
 			}
 
