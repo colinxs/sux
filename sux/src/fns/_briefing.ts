@@ -97,6 +97,10 @@ export type BriefingReport = {
 	digest_error?: string;
 	undo?: string;
 	note?: string;
+	// Set only when the digest vault-append throws (caught, not rethrown); runSubJob reads this
+	// to flip the heartbeat, since the digest is the job's visible output. Benign no-write cases
+	// (dry-run, already written this cycle) leave it unset.
+	error?: string;
 };
 
 const numClamp = (v: unknown, lo: number, hi: number, dflt: number): number => Math.min(hi, Math.max(lo, Math.floor(Number(v) || dflt)));
@@ -421,7 +425,8 @@ export async function runBriefing(env: RtEnv, opts: BriefingOpts, deps: Briefing
 				digestWritten = true;
 			} catch (e) {
 				// A vault-append failure must never fail the cycle — the digest text is already returned.
-				// But it must never vanish silently either: log it and surface it in the report so a
+				// But it must never vanish silently either: log it and surface it in the report (both
+				// as digest_error for observability and as error so runSubJob flips the heartbeat) so a
 				// persistent failure (bad token, git push rejected) is observable rather than a buried false.
 				digestError = errMsg(e);
 				console.warn(`briefing: vault digest-append failed for cycle ${cycle} — ${digestError}`);
@@ -446,6 +451,7 @@ export async function runBriefing(env: RtEnv, opts: BriefingOpts, deps: Briefing
 		digest_written: digestWritten,
 		...(digestError ? { digest_error: digestError } : {}),
 		undo: cycle,
+		...(digestError ? { error: digestError } : {}),
 	};
 }
 

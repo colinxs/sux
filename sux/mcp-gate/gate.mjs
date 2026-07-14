@@ -18,6 +18,12 @@ import { readFileSync } from 'node:fs';
 
 const TAILNET_PORT = Number(process.env.TAILNET_PORT || 27126);
 const PUBLIC_PORT = Number(process.env.PUBLIC_PORT || 27125);
+// Bound the wait for the upstream's FIRST response (status line + headers), not the
+// whole exchange: a hung upstream that accepts the TCP connection but never replies
+// would otherwise hang the client forever (up's response/error callbacks never fire,
+// server.requestTimeout is 0 for SSE). Cleared the moment headers arrive, so an SSE
+// route that responds promptly then streams indefinitely is unaffected.
+const UPSTREAM_TIMEOUT_MS = Number(process.env.UPSTREAM_TIMEOUT_MS || 30_000);
 const SECRET = (process.env.GATE_SECRET || '').trim();
 const ALLOW = (process.env.ALLOW_LOGINS || 'colinxs@github').split(',').map(s => s.trim());
 const DEFAULT_ROUTE = process.env.DEFAULT_ROUTE || 'obsidian';
@@ -63,18 +69,32 @@ function proxy(routeName, who, req, res, url) {
   if (key) headers.authorization = `Bearer ${key}`;
   headers.host = upstream.host;
 
+  let settled = false;
   const up = http.request({
     host: upstream.hostname, port: upstream.port,
     path: upstream.pathname + url.search,
     method: req.method, headers, agent,
   }, (upRes) => {
+    settled = true;
+    clearTimeout(firstByteTimer); // headers are in — streaming (incl. SSE) is now unbounded
     const out = {};
     for (const [k, v] of Object.entries(upRes.headers)) if (!HOP.has(k.toLowerCase())) out[k] = v;
     res.writeHead(upRes.statusCode, out);
     upRes.pipe(res);
     upRes.on('end', () => log(req.method, `${routeName}/mcp`, upRes.statusCode, who));
   });
+  const firstByteTimer = setTimeout(() => {
+    if (settled) return;
+    settled = true;
+    log(req.method, `${routeName}/mcp`, 504, who, 'upstream timeout');
+    up.destroy(new Error('upstream timeout'));
+    if (!res.headersSent) res.writeHead(504);
+    res.end('upstream timeout');
+  }, UPSTREAM_TIMEOUT_MS);
   up.on('error', (err) => {
+    clearTimeout(firstByteTimer);
+    if (settled) return; // timeout already responded (up.destroy re-emits as 'error')
+    settled = true;
     log(req.method, `${routeName}/mcp`, 502, who, err.code || err.message);
     if (!res.headersSent) res.writeHead(502);
     res.end('upstream error');

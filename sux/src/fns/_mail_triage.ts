@@ -317,6 +317,10 @@ type TriageReport = {
 	digest_error?: string;
 	undo?: string;
 	note?: string;
+	// Set only when the digest vault-append throws (caught, not rethrown); runSubJob reads this
+	// to flip the heartbeat, since the digest is the job's visible output. Benign no-write cases
+	// (nothing to act on, already written this cycle) leave it unset.
+	error?: string;
 };
 
 const numClamp = (v: unknown, lo: number, hi: number, dflt: number): number => Math.min(hi, Math.max(lo, Math.floor(Number(v) || dflt)));
@@ -486,14 +490,15 @@ export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps):
 			} catch (e) {
 				// A vault-append failure must never fail the cycle — the moves are already done + logged.
 				// But the human-visible record of what triage did must not vanish silently: log it and
-				// surface it in the report so a persistent failure is observable rather than a buried false.
+				// surface it in the report (digest_error for observability, error so runSubJob flips the
+				// heartbeat) so a persistent failure is observable rather than a buried false.
 				digestError = errMsg(e);
 				console.warn(`mail_triage: vault digest-append failed for cycle ${cycle} — ${digestError}`);
 			}
 		}
 	}
 
-	return { cycle, mailbox, act_enabled: actAllowed, scanned, new: acted.length + suggested.length, skipped_seen: skipped, acted, suggested, truncated, digest_written: digestWritten, ...(digestError ? { digest_error: digestError } : {}), undo: cycle };
+	return { cycle, mailbox, act_enabled: actAllowed, scanned, new: acted.length + suggested.length, skipped_seen: skipped, acted, suggested, truncated, digest_written: digestWritten, ...(digestError ? { digest_error: digestError } : {}), undo: cycle, ...(digestError ? { error: digestError } : {}) };
 }
 
 // The reply-draft system prompt: a SHORT holding reply, saved as a DRAFT for Colin's review (never

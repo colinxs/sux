@@ -33,13 +33,37 @@ export async function recordHeartbeat(env: RtEnv, name: CronJob, ok: boolean, er
 	}
 }
 
+/** A tick's soft-failure signal: the tick functions deliberately catch their own internal
+ * failures and RETURN a report instead of throwing (so one bad message/step doesn't sink the
+ * whole cycle), surfacing the failure as a top-level `error` string on that report (e.g.
+ * self-improve's tick, or a vault-append that threw). A thrown exception is the hard-failure
+ * path; this is the soft one — both must flip the heartbeat, or a job whose visible output has
+ * been silently broken for weeks still reports ok. Returns the error text if the resolved report
+ * carries one, else undefined. Benign no-op states (dormant/skipped/dry-run) use `note`, never
+ * `error`, so they stay healthy. */
+export function subJobError(report: unknown): string | undefined {
+	if (report && typeof report === "object") {
+		const err = (report as { error?: unknown }).error;
+		if (typeof err === "string" && err.length > 0) return err;
+	}
+	return undefined;
+}
+
 /** Run one named sub-job, record its heartbeat, and swallow failures so a single bad
  * sub-job neither throws nor blocks the rest of the tick (mirrors the prior per-job
- * try/catch, now with a persisted outcome instead of only a console.warn). */
+ * try/catch, now with a persisted outcome instead of only a console.warn). A thrown
+ * exception AND a soft failure the tick reports via `error` on its resolved report both
+ * stamp ok=false. */
 export async function runSubJob(env: RtEnv, name: CronJob, fn: () => Promise<unknown>): Promise<void> {
 	try {
-		await fn();
-		await recordHeartbeat(env, name, true);
+		const report = await fn();
+		const soft = subJobError(report);
+		if (soft) {
+			console.warn(`sux scheduled ${name} reported a failure: ${soft}`);
+			await recordHeartbeat(env, name, false, soft);
+		} else {
+			await recordHeartbeat(env, name, true);
+		}
 	} catch (e) {
 		const msg = String((e as Error)?.message ?? e);
 		console.warn(`sux scheduled ${name} skipped: ${msg}`);

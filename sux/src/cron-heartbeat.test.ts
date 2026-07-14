@@ -27,6 +27,22 @@ describe("recordHeartbeat / runSubJob (writer)", () => {
 		expect(beat.error).toBe("boom");
 	});
 
+	it("stamps ok=false when a sub-job resolves a report carrying an `error` (soft failure)", async () => {
+		const kv = fakeKV();
+		const env = { OAUTH_KV: kv } as any;
+		await runSubJob(env, "briefing", async () => ({ cycle: "d1", digest_written: false, error: "digest append failed: 503" }));
+		const beat = JSON.parse(kv.store.get(K("briefing"))!);
+		expect(beat.ok).toBe(false);
+		expect(beat.error).toBe("digest append failed: 503");
+	});
+
+	it("keeps ok=true for a benign no-op report (dormant/skipped carry `note`, not `error`)", async () => {
+		const kv = fakeKV();
+		const env = { OAUTH_KV: kv } as any;
+		await runSubJob(env, "weekly_recall", async () => ({ dormant: true, note: "weekly_recall is disabled" }));
+		expect(JSON.parse(kv.store.get(K("weekly_recall"))!)).toMatchObject({ ok: true });
+	});
+
 	it("truncates long error text to keep the heartbeat bounded", async () => {
 		const kv = fakeKV();
 		await recordHeartbeat({ OAUTH_KV: kv } as any, "adblock", false, "x".repeat(1000));

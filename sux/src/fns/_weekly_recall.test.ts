@@ -96,6 +96,8 @@ describe("runWeeklyRecall", () => {
 		});
 		const r1 = await runWeeklyRecall(env, { week: "2026-W30" }, failing);
 		expect(r1.digest_written).toBe(false);
+		// Soft failure surfaces as `error` (not `note`) so runSubJob flips the heartbeat.
+		expect(r1.error).toContain("vault append failed");
 		// Not marked → a retry actually re-runs and this time succeeds.
 		const ok = mkDeps();
 		const r2 = await runWeeklyRecall(env, { week: "2026-W30" }, ok);

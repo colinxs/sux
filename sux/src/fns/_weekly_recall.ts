@@ -78,6 +78,9 @@ export type WeeklyRecallReport = {
 	questions?: number;
 	digest_written?: boolean;
 	note?: string;
+	// Set only when the tick soft-fails (caught internally, not rethrown); runSubJob reads
+	// this to flip the heartbeat. Benign no-ops (dormant/skipped) use `note`, never `error`.
+	error?: string;
 };
 
 /** Build the markdown block appended to the Weekly note: one section per standing question,
@@ -129,7 +132,7 @@ export async function runWeeklyRecall(env: RtEnv, opts: WeeklyRecallOpts, deps: 
 		await led.mark(key); // mark AFTER a successful write so a failed append retries next tick
 		return { week, questions: questions.length, digest_written: true };
 	} catch (e) {
-		return { week, questions: questions.length, digest_written: false, note: `vault append failed: ${errMsg(e)}` };
+		return { week, questions: questions.length, digest_written: false, error: `vault append failed: ${errMsg(e)}` };
 	}
 }
 
