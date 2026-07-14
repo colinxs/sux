@@ -23,7 +23,7 @@ beforeEach(() => {
 	// unconfigured (the fail-closed production default).
 	macRenderMock.mockReset();
 	cfRenderMock.mockReset();
-	cfRenderMock.mockResolvedValue({ ok: false, error: "Browser Rendering is not configured (BROWSER binding)." });
+	cfRenderMock.mockResolvedValue({ ok: false, error: "Browser Run is not configured (BROWSER binding)." });
 	unlockerRenderMock.mockReset();
 	unlockerRenderMock.mockResolvedValue({ ok: false, error: "unlocker not configured" });
 });

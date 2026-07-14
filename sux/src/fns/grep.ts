@@ -50,7 +50,7 @@ export const grep: Fn = {
 		if (!text) return fail("Provide `text` or `url`.");
 
 		const context = Math.min(Number(args?.context) || 0, 20);
-		const max = Math.min(Number(args?.max) || 200, 5000);
+		const max = Math.min(5000, Math.max(1, Number(args?.max) || 200));
 		const lines = text.split(/\r?\n/);
 
 		const matches: Array<{ line: number; text: string; context?: string[] }> = [];

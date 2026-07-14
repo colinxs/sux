@@ -49,6 +49,14 @@ transforms, composition/storage/memory, infra/meta) live in
 task falls in (or need the full map). Kept out of this file so a routine trigger
 doesn't pull in categories the task doesn't touch.
 
+Leaf index (semantics + args in `references/capability-tables.md`; call any via
+`fn({name, args})`): `ace`, `advise`, `amazon`, `autonomy_status`, `batch_fetch`,
+`briefing`, `citation`, `costco`, `dropbox`, `feed`, `fontcase`, `homedepot`,
+`jmap`, `kv_get`, `kv_put`, `kv_list`, `kv_delete`, `learn`, `linkedin`, `lowes`,
+`mail_triage`, `monarch`, `obsidian`, `people_finder`, `put`, `redirects`,
+`robots`, `sitemap`, `suggest`, `todoist`, `uw`, `voice`, `walmart`, `watch`,
+`web_search`, `weekly_ad`.
+
 ## Conventions
 
 - Every result is MCP text; structured data is JSON, binary is base64 inside JSON

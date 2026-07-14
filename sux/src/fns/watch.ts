@@ -27,7 +27,7 @@ async function reduce(html: string, selector: string): Promise<string> {
 export const watch: Fn = {
 	name: "watch",
 	description:
-		"Detect whether a page's content changed since the last check. Fetches `url` through the residential proxy, optionally reduces to a CSS `selector` region, SHA-256 hashes it, and compares to the last-seen hash stored in KV (namespaced by url+selector+label). First check records the hash (first_seen:true, changed:false); later checks report changed = hash differs from the stored one and update it. Returns JSON {url, label?, changed, first_seen, hash, previous_hash?, checked_at}. Stateful — never cached.",
+		"Detect whether a page's content changed since the last check. Fetches `url` through the residential proxy, optionally reduces to a CSS `selector` region, SHA-256 hashes it, and compares to the last-seen hash stored in KV (namespaced by url+selector+label). First check records the hash (first_seen:true, changed:false); later checks report changed = hash differs from the stored one and update it. reset:true deletes the stored baseline for that url+selector+label (the only way to un-watch — the sux:watch: keys are outside kv_delete's reach) so the next check re-baselines. Returns JSON {url, label?, changed, first_seen, hash, previous_hash?, checked_at}. Stateful — never cached.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -36,6 +36,7 @@ export const watch: Fn = {
 			url: { type: "string", description: "Absolute http(s) URL to watch." },
 			selector: { type: "string", description: "Optional CSS selector — hash only this region instead of the whole page." },
 			label: { type: "string", description: "Optional namespacing string so the same url+selector can be tracked under distinct watches." },
+			reset: { type: "boolean", description: "Delete the stored baseline for this url+selector+label instead of checking — un-watches it so the next check re-baselines (first_seen:true). No fetch." },
 		},
 	},
 	cacheable: false,
@@ -44,17 +45,37 @@ export const watch: Fn = {
 			const url = String(args?.url ?? "");
 			const selector = args?.selector != null ? String(args.selector) : "";
 			const label = args?.label != null ? String(args.label) : "";
+			const reset = args?.reset === true;
 
 			if (!isHttpUrl(url)) return failWith("bad_input", "Provide an absolute http(s) url.");
+
+			const keyId = await sha256Text(`${url}\n${selector}\n${label}`);
+			const kvKey = `sux:watch:${keyId}`;
+
+			// reset un-watches: drop the baseline so the next check re-baselines. No fetch —
+			// this is the only user-facing removal, since sux:watch: keys are outside kv_delete's
+			// reach (it only touches the user kv: namespace).
+			if (reset) {
+				const existed = (await env.OAUTH_KV.get(kvKey)) !== null;
+				if (existed) await env.OAUTH_KV.delete(kvKey);
+				const result = ok(
+					oj({
+						url,
+						...(label ? { label } : {}),
+						reset: true,
+						existed,
+						checked_at: new Date().toISOString(),
+					}),
+				);
+				result.noCache = true;
+				return result;
+			}
 
 			const fetched = await fetchTextOk(env, url, {});
 			if ("error" in fetched) return failWith("upstream_error", fetched.error);
 
 			const content = selector ? await reduce(fetched.text, selector) : fetched.text;
 			const hash = await sha256Text(content);
-
-			const keyId = await sha256Text(`${url}\n${selector}\n${label}`);
-			const kvKey = `sux:watch:${keyId}`;
 
 			const previous = await env.OAUTH_KV.get(kvKey);
 			const firstSeen = previous === null;

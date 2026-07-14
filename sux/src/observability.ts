@@ -118,7 +118,10 @@ export async function handleObservability(url: URL, request: Request, env: RtEnv
 	if (url.pathname === "/logs") {
 		const m = await readMetrics(env);
 		const tool = url.searchParams.get("tool");
-		const limit = Math.min(Number(url.searchParams.get("limit")) || 50, m.recent.length);
+		// Clamp the lower bound: a negative ?limit is truthy and would make slice(0, -n)
+		// drop the last n entries instead of returning n — reject anything non-positive.
+		const n = Number(url.searchParams.get("limit"));
+		const limit = Math.min(Number.isFinite(n) && n > 0 ? n : 50, m.recent.length);
 		let recent = m.recent;
 		if (tool) recent = recent.filter((e) => e.tool === tool);
 		return json({

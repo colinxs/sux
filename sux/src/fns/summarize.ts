@@ -46,7 +46,7 @@ export const summarize: Fn = {
 	run: async (env, args) => {
 		const url = args?.url ? String(args.url) : undefined;
 		const style = String(args?.style ?? "bullets");
-		const maxWords = Number(args?.max_words) || 150;
+		const maxWords = Math.min(2000, Math.max(1, Number(args?.max_words) || 150));
 		const shape = style === "tldr" ? "a single TL;DR sentence" : style === "paragraph" ? "one tight paragraph" : "concise bullet points";
 		const sys = `You are a precise summarizer. Produce ${shape}. Stay under ${maxWords} words. No preamble.`;
 

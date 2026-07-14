@@ -24,7 +24,7 @@ const CAP_MASKEDEMAIL = "https://www.fastmail.com/dev/maskedemail";
 const CAP_FM_CONTACTS = "https://www.fastmail.com/dev/contacts";
 const CAP_QUOTA = "urn:ietf:params:jmap:quota";
 
-export const SESSION_KEY = "sux:fastmail:session";
+const SESSION_KEY = "sux:fastmail:session";
 const SESSION_TTL = 3600;
 const DEFAULT_SESSION_URL = "https://api.fastmail.com/jmap/session";
 
@@ -77,7 +77,7 @@ const num = (v: unknown, fallback: number): number => (Number.isFinite(Number(v)
 // ---------------------------------------------------------------------------
 
 /** GET the Session, validate it, cache the token-free body in KV (tight TTL). Throws JmapError. */
-export async function discoverSession(env: RtEnv): Promise<JmapSession> {
+async function discoverSession(env: RtEnv): Promise<JmapSession> {
 	const url = env.FASTMAIL_SESSION_URL || DEFAULT_SESSION_URL;
 	let resp: Response;
 	try {
@@ -100,7 +100,7 @@ export async function discoverSession(env: RtEnv): Promise<JmapSession> {
 }
 
 /** Session from KV if present (and valid), else discover. `forceRefresh` bypasses the cache (§4, session_refresh). */
-export async function getSession(env: RtEnv, forceRefresh = false): Promise<JmapSession> {
+async function getSession(env: RtEnv, forceRefresh = false): Promise<JmapSession> {
 	if (!forceRefresh) {
 		const cached = await env.OAUTH_KV.get(SESSION_KEY);
 		if (cached) {
@@ -125,6 +125,14 @@ export async function sessionDump(env: RtEnv, refresh = false): Promise<Record<s
 		accounts: Object.fromEntries(Object.entries(s.accounts ?? {}).map(([id, a]) => [id, { name: a?.name, isPersonal: a?.isPersonal, capabilities: Object.keys(a?.accountCapabilities ?? {}) }])),
 		state: s.state,
 	};
+}
+
+/** The account's submission.maxDelayedSend (seconds) — the furthest-out a FUTURERELEASE send may be
+ *  scheduled. 0 / absent = the capability isn't advertised, so callers must NOT clamp (let JMAP judge). */
+export async function submissionMaxDelayedSend(env: RtEnv, refresh = false): Promise<number> {
+	const s = await getSession(env, refresh);
+	const sub = (s.capabilities?.[CAP_SUBMISSION] ?? {}) as { maxDelayedSend?: unknown };
+	return num(sub.maxDelayedSend, 0);
 }
 
 /** Reachable-capability map on the CURRENT token (Phase 0c). Derived from the primary account's
@@ -210,7 +218,7 @@ export function accountIdFor(session: JmapSession, method: string, envOverride?:
 }
 
 /** Fill accountId into any Invocation args lacking it (never overwrite a caller's explicit id). */
-export function injectAccountIds(calls: Invocation[], session: JmapSession, envOverride?: string): Invocation[] {
+function injectAccountIds(calls: Invocation[], session: JmapSession, envOverride?: string): Invocation[] {
 	return calls.map(([method, args, id]) => {
 		if (args && typeof args === "object" && args.accountId === undefined) {
 			const acct = accountIdFor(session, method, envOverride);
@@ -224,7 +232,7 @@ export function injectAccountIds(calls: Invocation[], session: JmapSession, envO
 // Batch validation, gates (§10), limits (§6.0)
 // ---------------------------------------------------------------------------
 
-export function coreLimits(session: JmapSession): { maxCallsInRequest: number; maxObjectsInGet: number; maxObjectsInSet: number; maxSizeRequest: number; maxSizeUpload: number } {
+function coreLimits(session: JmapSession): { maxCallsInRequest: number; maxObjectsInGet: number; maxObjectsInSet: number; maxSizeRequest: number; maxSizeUpload: number } {
 	const core = session.capabilities?.[CAP_CORE] ?? {};
 	return {
 		maxCallsInRequest: num(core.maxCallsInRequest, 16),
@@ -412,7 +420,7 @@ function maybeInvalidateOnStateDrift(env: RtEnv, session: JmapSession, response:
 // Query pagination — anchor-based, dedup, queryState-validated (§6.3)
 // ---------------------------------------------------------------------------
 
-export type Cursor = { anchor: string | null; anchorOffset: number; queryState?: string; method: string; filterHash: string; ids?: string[] };
+type Cursor = { anchor: string | null; anchorOffset: number; queryState?: string; method: string; filterHash: string; ids?: string[] };
 
 async function filterHash(filter: unknown): Promise<string> {
 	const bytes = new TextEncoder().encode(JSON.stringify(filter ?? null));
@@ -510,7 +518,7 @@ export async function runPaginate(
 				reason = "anchor_lost";
 				break;
 			}
-			throw new JmapError("upstream_error", `JMAP query error: ${(mr[1] as { type?: string })?.type ?? "unknown"}`);
+			throw new JmapError("upstream_error", `JMAP query error: ${(mr[1] as { type?: string })?.type ?? "unknown"}${(mr[1] as { description?: string })?.description ? " — " + (mr[1] as { description?: string }).description : ""}`);
 		}
 		const page = mr[1] as { ids?: string[]; queryState?: string };
 		if (queryState && page.queryState && page.queryState !== queryState) {
@@ -649,7 +657,9 @@ export async function doUpload(env: RtEnv, data: string, type: string): Promise<
 	return (await resp.json()) as Record<string, unknown>;
 }
 
-export async function doDownload(env: RtEnv, args: { blobId: string; type?: string; name?: string; as?: string }): Promise<Record<string, unknown>> {
+/** Stream one blob down from the Session downloadUrl, bounded by DOWNLOAD_MAX_BYTES. Raw bytes — the
+ *  shared core behind doDownload (base64/store) and the batched mail_attachments export. */
+export async function downloadBlobBytes(env: RtEnv, args: { blobId: string; type?: string; name?: string }): Promise<{ bytes: Uint8Array; type: string }> {
 	const session = await getSession(env);
 	const acct = accountIdFor(session, "Email/get", env.FASTMAIL_ACCOUNT_ID);
 	if (!acct) throw new JmapError("upstream_error", "could not resolve an accountId for download.");
@@ -665,13 +675,16 @@ export async function doDownload(env: RtEnv, args: { blobId: string; type?: stri
 	if (!resp.ok) throw new JmapError("upstream_error", `blob download HTTP ${resp.status}.`);
 	// Bound the read (content-length pre-check + mid-stream abort) so a huge attachment errors
 	// clearly instead of buffering unbounded into the 128MB isolate. 50MB covers real attachments.
-	let bytes: Uint8Array;
 	try {
-		bytes = await readBodyBytes(resp, DOWNLOAD_MAX_BYTES);
+		return { bytes: await readBodyBytes(resp, DOWNLOAD_MAX_BYTES), type };
 	} catch (e) {
 		if (/too large|exceeds/i.test(String((e as Error)?.message ?? e))) throw new JmapError("bad_input", `blob '${args.blobId}' exceeds the ${DOWNLOAD_MAX_BYTES}-byte download cap.`);
 		throw e;
 	}
+}
+
+export async function doDownload(env: RtEnv, args: { blobId: string; type?: string; name?: string; as?: string }): Promise<Record<string, unknown>> {
+	const { bytes, type } = await downloadBlobBytes(env, args);
 	// as:"store" always spills to R2; as:"base64" spills too when it would blow the output ceiling (D18).
 	if (args.as === "store" || bytes.length * (4 / 3) > OUTPUT_CEILING_BYTES) {
 		const ref = await putBlob(env, bytes, type);

@@ -42,7 +42,7 @@ export async function putExample(env: RtEnv, ex: Example): Promise<void> {
 	await env.OAUTH_KV?.put(keyOf(ex.id), JSON.stringify(ex));
 }
 
-export async function getExample(env: RtEnv, id: string): Promise<Example | null> {
+async function getExample(env: RtEnv, id: string): Promise<Example | null> {
 	const raw = await env.OAUTH_KV?.get(keyOf(id));
 	if (!raw) return null;
 	try {
@@ -74,33 +74,34 @@ export async function listExamples(env: RtEnv): Promise<Example[]> {
 	return out;
 }
 
-export async function deleteExample(env: RtEnv, id: string): Promise<void> {
+async function deleteExample(env: RtEnv, id: string): Promise<void> {
 	await env.OAUTH_KV?.delete(keyOf(id));
+}
+
+/** Delete the given ids in GET_CONCURRENCY-sized parallel batches, mirroring listExamples'
+ *  read-side batching — a sequential delete-per-record risks FN_DEADLINE_MS on a large store. */
+async function deleteIds(env: RtEnv, ids: string[]): Promise<number> {
+	for (let i = 0; i < ids.length; i += GET_CONCURRENCY) {
+		await Promise.all(ids.slice(i, i + GET_CONCURRENCY).map((id) => deleteExample(env, id)));
+	}
+	return ids.length;
 }
 
 /** Delete exactly the records tagged `batch` — the bulk-undo. Returns how many were removed.
  *  Non-atomic (scan then delete), same acceptable race ledger.ts documents. */
 export async function deleteBatch(env: RtEnv, batch: string): Promise<number> {
 	const all = await listExamples(env);
-	let n = 0;
-	for (const ex of all) {
-		if (ex.batch === batch) {
-			await deleteExample(env, ex.id);
-			n++;
-		}
-	}
-	return n;
+	return deleteIds(env, all.filter((ex) => ex.batch === batch).map((ex) => ex.id));
 }
 
 /** Delete the whole learned set. Returns how many were removed. */
 export async function clearExamples(env: RtEnv): Promise<number> {
 	const all = await listExamples(env);
-	for (const ex of all) await deleteExample(env, ex.id);
-	return all.length;
+	return deleteIds(env, all.map((ex) => ex.id));
 }
 
-export type Neighbor = { id: string; label: string; input: string; score: number };
-export type Verdict = { label: string | null; confidence: number; neighbors: Neighbor[] };
+type Neighbor = { id: string; label: string; input: string; score: number };
+type Verdict = { label: string | null; confidence: number; neighbors: Neighbor[] };
 
 /** Brute-force kNN over the labeled set: cosine-rank against `queryVec`, take the top-k, and
  *  vote the label by summed similarity. confidence = the nearest neighbor's cosine. Empty set

@@ -1,0 +1,91 @@
+# op-backfill — salvage the GitHub-Actions-only secrets into 1Password.
+#
+# WHY: GitHub Actions secrets are write-only from outside (no `gh secret get`), but
+# a workflow CAN read its own secrets at runtime (they're injected as env). This is
+# the ONE safe way to seed op from the CI store. It writes each value into
+# op://Secrets/NAME/credential so 1Password becomes the readable source of truth.
+#
+# This does NOT (and can't) recover Cloudflare WORKER secrets — those are only
+# readable by the Worker at runtime, and exfiltrating them over an endpoint is a
+# security hole. Re-source those from origin. See docs/secrets.md.
+#
+# REQUIRES (repo secret): OP_SERVICE_ACCOUNT_TOKEN — a 1Password service account
+# with **write** access to the `Secrets` vault in the suxos account.
+#
+# SAFETY: manual-dispatch only; defaults to dry-run; values are GitHub-known
+# secrets so they are auto-masked in logs; op output is discarded and values are
+# never echoed. After a successful backfill, revert the SA to read-only.
+name: op backfill (GitHub secrets → 1Password)
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (list what would be written, write nothing)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: op-backfill
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install 1Password CLI (official signed apt repo)
+        run: |
+          set -euo pipefail
+          curl -sS https://downloads.1password.com/linux/keys/1password.asc \
+            | sudo gpg --dearmor --output /usr/share/keyrings/1password-archive-keyring.gpg
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/1password-archive-keyring.gpg] https://downloads.1password.com/linux/debian/amd64 stable main" \
+            | sudo tee /etc/apt/sources.list.d/1password.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq 1password-cli
+          op --version
+
+      - name: Backfill readable CI secrets into op://Secrets
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          VAULT: Secrets
+          # Map each candidate GitHub secret to V_<NAME>. Absent secret -> empty -> skipped.
+          # Only real credentials belong here; pure config (ACCOUNT_ID, *_URL) stays in [vars].
+          V_CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          V_ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          V_SUX_MCP_TOKEN: ${{ secrets.SUX_MCP_TOKEN }}
+          V_SUX_BOT_APP_ID: ${{ secrets.SUX_BOT_APP_ID }}
+          V_SUX_BOT_PRIVATE_KEY: ${{ secrets.SUX_BOT_PRIVATE_KEY }}
+        run: |
+          set -uo pipefail
+          exec </dev/null   # CI stdin is a non-TTY pipe; without this `op item create` reads it as a JSON template ("invalid JSON in piped input")
+          op whoami >/dev/null || { echo "✗ OP_SERVICE_ACCOUNT_TOKEN invalid"; exit 1; }
+          op vault get "$VAULT" >/dev/null 2>&1 || { echo "✗ SA cannot see vault '$VAULT' (needs write access)"; exit 1; }
+
+          NAMES="CLOUDFLARE_API_TOKEN ANTHROPIC_API_KEY SUX_MCP_TOKEN SUX_BOT_APP_ID SUX_BOT_PRIVATE_KEY"
+          wrote=0 skip_empty=0 skip_have=0 fail=0
+          for n in $NAMES; do
+            var="V_$n"; val="${!var:-}"   # safe indirection (handles newlines/special chars)
+            if [ -z "$val" ]; then
+              echo "  skip  $n (not set in this repo's Actions secrets)"; skip_empty=$((skip_empty+1)); continue
+            fi
+            if op read "op://$VAULT/$n/credential" >/dev/null 2>&1; then
+              echo "  have  $n (already in op — not overwriting)"; skip_have=$((skip_have+1)); continue
+            fi
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "  WOULD write  $n -> op://$VAULT/$n/credential"; wrote=$((wrote+1)); continue
+            fi
+            # Surface op's error (op does not echo the secret value; GH masks known secrets anyway).
+            if err="$(op item create --vault "$VAULT" --category "API Credential" --title "$n" "credential=$val" 2>&1 >/dev/null)"; then
+              echo "  wrote  $n"; wrote=$((wrote+1))
+            else
+              echo "  FAIL   $n :: ${err}"; fail=$((fail+1))
+            fi
+          done
+          echo
+          echo "summary: ${wrote} written/would-write · ${skip_have} already in op · ${skip_empty} not in repo · ${fail} failed"
+          [ "$DRY_RUN" = "true" ] && echo "(dry run — nothing written)"
+          exit $(( fail > 0 ? 1 : 0 ))

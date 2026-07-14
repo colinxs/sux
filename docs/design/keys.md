@@ -24,7 +24,7 @@ wrangler secret put <NAME> --config sux/wrangler.jsonc
 | Tier | What | How set |
 |---|---|---|
 | **Worker secrets** | every API token/key below | `wrangler secret put` — encrypted, never in repo/logs |
-| **`sux/wrangler.jsonc` `vars`** | non-secret config (`DEBUG_MCP`, `VAULT_TZ`, `OBSIDIAN_VAULT_REPO/BRANCH/DIR`) | committed |
+| **`sux/wrangler.jsonc` `vars`** | non-secret config (`VAULT_TZ`, `OBSIDIAN_VAULT_REPO/BRANCH/DIR`) | committed |
 | **KV (`OAUTH_KV`)** | minted **short-lived** tokens + OAuth state — self-healed, never set by hand (e.g. `sux:dropbox:token`) | runtime |
 | **Container image / env** | the headless-Obsidian container's Local REST key (`OBSIDIAN_REST_TOKEN`) | baked at image build |
 | **GitHub OAuth App** | the login gate | GitHub dev settings + secrets below |

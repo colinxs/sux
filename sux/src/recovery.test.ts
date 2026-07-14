@@ -116,6 +116,39 @@ describe("recovery dead-drop", () => {
 		expect((await (res2!.json() as any)).commands).toEqual([]);
 	});
 
+	it("two concurrent enqueues for one node both survive (no lost-update clobber)", async () => {
+		// A KV whose get/put yield to the event loop, so unserialized RMWs of the queue
+		// key would interleave and drop a command — issue #286's back-to-back enqueue race.
+		const store = new Map<string, string>();
+		const tick = () => new Promise<void>((r) => setTimeout(r, 0));
+		const racy: any = {
+			store,
+			OAUTH_KV: {
+				get: async (k: string) => {
+					await tick();
+					return store.get(k) ?? null;
+				},
+				put: async (k: string, v: string) => {
+					await tick();
+					store.set(k, v);
+				},
+				delete: async (k: string) => {
+					await tick();
+					store.delete(k);
+				},
+			},
+			RECOVERY_HMAC_SECRET: HMAC,
+			RECOVERY_ADMIN_SECRET: ADMIN,
+		};
+		const enqueue = (action: string) =>
+			call(racy, "/recovery/enqueue", { method: "POST", headers: { authorization: `Bearer ${ADMIN}` }, body: JSON.stringify({ node_id: "owl-tegu", action }) });
+		await Promise.all([enqueue("restart-tailscale"), enqueue("restart-dns")]);
+		const { body, sig } = await checkinBody(racy);
+		const res = await checkin(racy, body, sig);
+		const j = await (res!.json() as any);
+		expect(j.commands.map((c: SignedCommand) => c.action).sort()).toEqual(["restart-dns", "restart-tailscale"]);
+	});
+
 	it("a command signed under the wrong secret fails verification", async () => {
 		const forged: SignedCommand = { action: "reboot", args: {}, nonce: "x", expires: Date.now() / 1000 + 100, sig: "00" };
 		expect(await verifyCommand(env, forged)).toBe(false);

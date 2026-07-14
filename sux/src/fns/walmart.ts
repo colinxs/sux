@@ -57,7 +57,7 @@ export const walmart: Fn = {
 	name: "walmart",
 	cost: 5,
 	description:
-		"Walmart product search and detail via a rendered browser (Walmart runs an active PerimeterX JS challenge a plain fetch can't pass). Renders through Cloudflare Browser Rendering (residential + stealth) first, falling back to the mac render backend (a residential patched browser that solves Walmart's press-and-hold gesture) when cf can't clear the wall. " +
+		"Walmart product search and detail via a rendered browser (Walmart runs an active PerimeterX JS challenge a plain fetch can't pass). Renders through Cloudflare Browser Run (residential + stealth) first, falling back to the mac render backend (a residential patched browser that solves Walmart's press-and-hold gesture) when cf can't clear the wall. " +
 		"`action`: search (products for a `term`) or product (detail by `item_id`). Products come from Walmart's embedded __NEXT_DATA__ JSON, normalized to the shared retail shape (id/title/price/brand/image/url/in_stock). " +
 		"`limit` caps search results (default 15, max 40). Slower than an API — it renders the real page.",
 	inputSchema: {

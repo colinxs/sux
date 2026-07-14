@@ -16,8 +16,11 @@ describe("security-review workflow is a real, requireable gate", () => {
 		expect(sec).not.toMatch(/^\s{2}review:/m);
 		// explicit name pins the check-run context string
 		expect(sec).toMatch(/^\s{4}name:\s*security-review\s*$/m);
-		// the colliding job actually exists in claude.yml — prove we're not requiring it by accident
-		expect(wf("claude.yml")).toMatch(/^\s{2}review:/m);
+		// claude.yml is now a thin caller of the reusable claude workflow, so its `review`
+		// job lives in SuxOS/.github and surfaces as the check-run `claude / review` —
+		// namespaced under the caller job id, it structurally cannot collide with the
+		// `security-review` check-run name this gate pins above.
+		expect(wf("claude.yml")).toMatch(/uses:\s*SuxOS\/\.github\/\.github\/workflows\/claude\.yml@main/);
 	});
 
 	it("has a job-level timeout so a hung review can't run unbounded", () => {
@@ -53,9 +56,9 @@ describe("security-review workflow is a real, requireable gate", () => {
 		expect(missing.indexOf("exit 1")).toBeLessThan(missing.indexOf("exit 0"));
 	});
 
-	it("only skips the gate when genuinely disarmed (no ANTHROPIC_API_KEY)", () => {
-		// the gate step is guarded by the same preflight `go` that requires the key
+	it("only skips the gate when genuinely disarmed (no CLAUDE_CODE_OAUTH_TOKEN)", () => {
+		// the gate step is guarded by the same preflight `go` that requires the token
 		expect(sec).toMatch(/steps\.pre\.outputs\.go == 'true'/);
-		expect(sec).toMatch(/ANTHROPIC_API_KEY != ''/);
+		expect(sec).toMatch(/CLAUDE_CODE_OAUTH_TOKEN != ''/);
 	});
 });

@@ -94,6 +94,7 @@ export type BriefingReport = {
 	drafts?: Array<{ id: string; to?: string; subject?: string }>;
 	drafts_staged?: number;
 	digest_written?: boolean;
+	digest_error?: string;
 	undo?: string;
 	note?: string;
 };
@@ -297,7 +298,7 @@ function templateDigest(date: string, g: Gathered): string {
 
 /** The compose half: one llm() synthesis over the fenced material, falling back to a
  *  deterministic template on any synthesis failure. */
-export async function composeBriefing(env: RtEnv, date: string, g: Gathered, deps: BriefingDeps): Promise<string> {
+async function composeBriefing(env: RtEnv, date: string, g: Gathered, deps: BriefingDeps): Promise<string> {
 	const sections: string[] = [];
 	if (g.mailSummary) sections.push(`[mail]\n${g.mailSummary}`);
 	else if (g.mail.length) sections.push(`[mail]\n${g.mail.length} unread messages, ${g.flagged.length} flagged as possibly needing a reply.`);
@@ -403,6 +404,7 @@ export async function runBriefing(env: RtEnv, opts: BriefingOpts, deps: Briefing
 
 	let drafts: Array<{ id: string; to?: string; subject?: string }> = [];
 	let digestWritten = false;
+	let digestError: string | undefined;
 
 	if (!dryRun) {
 		if (stageEnabled && g.flagged.length) {
@@ -417,8 +419,12 @@ export async function runBriefing(env: RtEnv, opts: BriefingOpts, deps: Briefing
 				await deps.digestAppend(env, `Daily/${vaultToday(env.VAULT_TZ)}.md`, buildDigestBlock({ cycle, date, stageEnabled, digest, drafts }));
 				await dled.mark(digKey);
 				digestWritten = true;
-			} catch {
+			} catch (e) {
 				// A vault-append failure must never fail the cycle — the digest text is already returned.
+				// But it must never vanish silently either: log it and surface it in the report so a
+				// persistent failure (bad token, git push rejected) is observable rather than a buried false.
+				digestError = errMsg(e);
+				console.warn(`briefing: vault digest-append failed for cycle ${cycle} — ${digestError}`);
 			}
 		}
 	}
@@ -438,6 +444,7 @@ export async function runBriefing(env: RtEnv, opts: BriefingOpts, deps: Briefing
 		drafts,
 		drafts_staged: drafts.length,
 		digest_written: digestWritten,
+		...(digestError ? { digest_error: digestError } : {}),
 		undo: cycle,
 	};
 }

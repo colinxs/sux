@@ -206,6 +206,19 @@ describe("runTriage — gating + idempotency", () => {
 		expect(report.suggested!.length).toBe(4);
 	});
 
+	it("a vault digest-append failure never fails the cycle but is logged + surfaced as digest_error", async () => {
+		const deps = mkDeps(SAMPLE);
+		deps.digested.mockRejectedValueOnce(new Error("git push rejected"));
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const env = envWith({ MAIL_TRIAGE_ENABLED: "1" });
+		const report = await runTriage(env, { cycle_id: "cerr" }, deps);
+		expect(report.digest_written).toBe(false);
+		expect(report.digest_error).toMatch(/git push rejected/);
+		expect(warn).toHaveBeenCalledWith(expect.stringMatching(/mail_triage: vault digest-append failed.*git push rejected/));
+		expect(report.suggested!.length).toBe(4); // the cycle still completed normally
+		warn.mockRestore();
+	});
+
 	it("dry_run forces suggest-only even with ACT set", async () => {
 		const deps = mkDeps(SAMPLE);
 		const env = envWith({ MAIL_TRIAGE_ENABLED: "1", MAIL_TRIAGE_ACT: "1" });
@@ -549,6 +562,51 @@ describe("action log + bulk undo", () => {
 		expect(res2.undone).toBe(0);
 		expect(move).not.toHaveBeenCalled();
 		expect(label).not.toHaveBeenCalled();
+	});
+
+	// A KV whose get/put yield to the event loop so unserialized RMWs of the log key
+	// would interleave and lose entries — the exact webhook-burst race from issue #285.
+	const racyEnv = () => {
+		const store = new Map<string, string>();
+		const tick = () => new Promise<void>((r) => setTimeout(r, 0));
+		return {
+			store,
+			OAUTH_KV: {
+				get: async (k: string) => {
+					await tick();
+					return store.get(k) ?? null;
+				},
+				put: async (k: string, v: string) => {
+					await tick();
+					store.set(k, v);
+				},
+			},
+		} as any;
+	};
+
+	it("does not drop entries when appends race in one isolate (webhook burst)", async () => {
+		const env = racyEnv();
+		await Promise.all(
+			Array.from({ length: 6 }, (_, i) => appendTriageEntries(env, [{ cycle: "burst", id: `m${i}`, action: "suggested", label: "unknown", confidence: 0.2, reason: "r", at: i + 1 }])),
+		);
+		const all = await readTriageEntries(env, { cycle: "burst", limit: 100 });
+		expect(all).toHaveLength(6);
+		expect(new Set(all.map((e) => e.id)).size).toBe(6);
+	});
+
+	it("bulkUndo preserves entries appended by a concurrent path during its remote reversals", async () => {
+		const env = racyEnv();
+		await appendTriageEntries(env, [{ cycle: "u", id: "acted1", action: "acted", label: "junk", confidence: 0.9, reason: "r", op: "label", keyword: "junk", at: 1 }]);
+		// A reverser that, mid-flight, lets another cycle's entry land — modeling a tick
+		// appending while bulkUndo awaits Fastmail. The stale-snapshot bug would clobber it.
+		const label = async () => {
+			await appendTriageEntries(env, [{ cycle: "later", id: "appended", action: "suggested", label: "unknown", confidence: 0.2, reason: "r", at: 2 }]);
+		};
+		const res: any = await bulkUndo(env, "u", { label, move: async () => {} });
+		expect(res.undone).toBe(1);
+		const all = await readTriageEntries(env, { limit: 100 });
+		expect(all.map((e) => e.id).sort()).toEqual(["acted1", "appended"]);
+		expect(all.find((e) => e.id === "acted1")!.undone).toBe(true);
 	});
 
 	it("readTriageEntries filters by cycle, newest-first", async () => {

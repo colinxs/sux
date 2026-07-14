@@ -39,7 +39,7 @@ let lastEmailSet: any = null;
 function answer([method, args]: any): any {
 	if (method === "Mailbox/get") return [method, { list: MAILBOXES }, "x"];
 	if (method === "Identity/get") return [method, { list: [{ id: "id1", name: "Me", email: "me@fastmail.com" }, { id: "id2", name: "Domain", email: "*@colinxs.com" }] }, "x"];
-	if (method === "Email/query") return [method, { ids: ["e1"], queryState: "q1" }, "x"];
+	if (method === "Email/query") return [method, { ids: ["e1"], queryState: "q1", total: args?.calculateTotal ? 137 : undefined, position: args?.position ?? 0 }, "x"];
 	if (method === "Email/get") return [method, { list: [EMAIL] }, "x"];
 	if (method === "Thread/get") return [method, { list: [{ id: "t1", emailIds: ["e1"] }] }, "x"];
 	if (method === "Email/set") {
@@ -97,6 +97,7 @@ function installFetch(session: any = SESSION) {
 		const url = String(input?.url ?? input);
 		if (url.includes("/jmap/session")) return json(session);
 		if (url.includes("/jmap/upload/")) return json({ blobId: "blob-99", type: init?.headers?.["Content-Type"] ?? "application/octet-stream", size: 3 });
+		if (url.includes("/jmap/download/")) return new Response(new Uint8Array([104, 105, 33]).buffer, { status: 200, headers: { "content-type": "application/octet-stream" } });
 		if (url.includes("/jmap/api")) {
 			const body = init?.body ? JSON.parse(init.body) : {};
 			const methodResponses = (body.methodCalls ?? []).map((c: any) => {
@@ -150,6 +151,16 @@ describe("mail_* ergonomic tools", () => {
 		expect(out.count).toBe(1);
 		expect(out.emails[0]).toMatchObject({ id: "e1", subject: "Hello", from: "a@b.com" });
 		expect(out.emails[0].body).toBeUndefined(); // handle discipline: no body in search
+	});
+
+	it("mail_search pages with position + surfaces total, and sorts oldest-first on ascending (#257)", async () => {
+		const f = installFetch();
+		const out = parse(await tool("mail_search").run(env(), { query: "x", position: 50, ascending: true, limit: 10 }));
+		expect(out).toMatchObject({ position: 50, ascending: true, total: 137 });
+		// The Email/query call carried the position + ascending sort + calculateTotal.
+		const body = JSON.parse(f.mock.calls.find((c: any) => String(c[0]).includes("/jmap/api"))![1].body);
+		const q = body.methodCalls.find((c: any) => c[0] === "Email/query")[1];
+		expect(q).toMatchObject({ position: 50, calculateTotal: true, sort: [{ property: "receivedAt", isAscending: true }] });
 	});
 
 	it("mail_read returns the plain-text body", async () => {
@@ -339,10 +350,49 @@ describe("mail_* ergonomic tools", () => {
 		expect(r.content[0].text).toMatch(/future/);
 	});
 
-	it("mail_schedule schedules via FUTURERELEASE (sendAt → send_at)", async () => {
-		installFetch();
-		const out = parse(await tool("mail_schedule").run(env(), { to: ["x@y.com"], subject: "s", text: "t", sendAt: "2999-01-01T00:00:00Z", force: true }));
+	it("scheduled reply-all keeps the derived Cc in the FUTURERELEASE envelope (rcptTo matches the header set)", async () => {
+		// Regression: the explicit rcptTo must be built from the resolved cc/bcc (which reply-all
+		// augments in place), not the raw request args — else every derived Cc silently never delivers.
+		let sub: any = null;
+		global.fetch = vi.fn(async (input: any, init?: any) => {
+			const url = String(input?.url ?? input);
+			if (url.includes("/jmap/session")) return json(SESSION);
+			if (url.includes("/jmap/api")) {
+				const body = init?.body ? JSON.parse(init.body) : {};
+				const methodResponses = (body.methodCalls ?? []).map((c: any) => {
+					const [m, args] = c;
+					if (m === "Email/get") return [m, { list: [SRC] }, c[2]];
+					if (m === "Mailbox/get") return [m, { list: MAILBOXES }, c[2]];
+					if (m === "Identity/get") return [m, { list: [{ id: "id1", name: "Me", email: "me@fastmail.com" }] }, c[2]];
+					if (m === "Email/set") return [m, { created: { draft: { id: "new-1" } } }, c[2]];
+					if (m === "EmailSubmission/set") {
+						sub = args?.create?.sub ?? null;
+						return [m, { created: { sub: { id: "sub-1" } } }, c[2]];
+					}
+					return [m, {}, c[2]];
+				});
+				return json({ methodResponses, sessionState: "s1" });
+			}
+			return json({}, 404);
+		}) as any;
+		const out = parse(await tool("mail_send").run(env(), { mode: "reply-all", reply_to: "e1", text: "hi all", send_at: "2999-01-01T00:00:00Z", force: true }));
 		expect(out).toMatchObject({ scheduled: true, send_at: "2999-01-01T00:00:00Z" });
+		expect(sub.envelope.rcptTo).toEqual([{ email: "boss@corp.com" }, { email: "team@corp.com" }]);
+	});
+
+	it("mail_send rejects a send_at beyond submission.maxDelayedSend, naming the window (#245)", async () => {
+		const s = { ...SESSION, capabilities: { ...SESSION.capabilities, "urn:ietf:params:jmap:submission": { maxDelayedSend: 7 * 86400 } } };
+		installFetch(s);
+		const r = await tool("mail_send").run(env(), { to: ["x@y.com"], subject: "s", text: "t", send_at: "2999-01-01T00:00:00Z", force: true });
+		expect(r.isError).toBe(true);
+		expect(r.errorCode).toBe("bad_input");
+		expect(r.content[0].text).toMatch(/7 days|maxDelayedSend/);
+	});
+
+	it("mail_send still schedules when maxDelayedSend is unadvertised (no clamp) (#245)", async () => {
+		installFetch(); // base SESSION has no maxDelayedSend → 0 → don't clamp
+		const out = parse(await tool("mail_send").run(env(), { to: ["x@y.com"], subject: "s", text: "t", send_at: "2999-01-01T00:00:00Z", force: true }));
+		expect(out).toMatchObject({ scheduled: true });
 	});
 
 	it("mail_scheduled lists pending sends; mail_unschedule cancels one (idempotent)", async () => {
@@ -531,6 +581,29 @@ describe("mail_* ergonomic tools", () => {
 		installFetch();
 		const up = parse(await tool("mail_upload").run(env(), { data: btoa("abc"), type: "text/plain", name: "n.txt" }));
 		expect(up).toMatchObject({ blobId: "blob-99", type: "text/plain", size: 3, name: "n.txt" });
+	});
+
+	it("mail_attachments exports blobs to R2 (dest:store) and is idempotent per blobId (#265)", async () => {
+		installFetch();
+		const r2 = { put: vi.fn(async () => {}) };
+		const e = { FASTMAIL_TOKEN: "tok", OAUTH_KV: kvStub(), R2: r2 } as any;
+		const items = [{ blobId: "B1", messageId: "e1", type: "text/plain", name: "a.txt" }, { blobId: "B2" }];
+		const out = parse(await tool("mail_attachments").run(e, { items, dest: "store" }));
+		expect(out).toMatchObject({ dest: "store", count: 2 });
+		expect(out.exported[0]).toMatchObject({ blobId: "B1", messageId: "e1", dest: "store", size: 3 });
+		expect(out.exported[0].ref).toMatch(/\/s\//);
+		expect(r2.put).toHaveBeenCalledTimes(2);
+		// Re-run over the same ledger (shared KV) → both blobs are skipped, no new R2 writes.
+		const again = parse(await tool("mail_attachments").run(e, { items, dest: "store" }));
+		expect(again.exported.every((x: any) => String(x.skipped).includes("already exported"))).toBe(true);
+		expect(r2.put).toHaveBeenCalledTimes(2);
+	});
+
+	it("mail_attachments dest:dropbox is not_configured without a Dropbox credential (#265)", async () => {
+		installFetch();
+		const r = await tool("mail_attachments").run(env(), { items: [{ blobId: "B1" }], dest: "dropbox" });
+		expect(r.isError).toBe(true);
+		expect(r.errorCode).toBe("not_configured");
 	});
 
 	it("mail_send attachments: stage previews names WITHOUT uploading; commit builds multipart/mixed (§1e)", async () => {

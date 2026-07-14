@@ -35,7 +35,7 @@ export const reachedTools = (actions: Record<string, Dispatch>): Set<string> => 
  * `undefined` into the closure forever. Reading it through the thunk at call time always
  * sees the fully-evaluated live binding. The `.find` per call is cheap (arrays ≤~32).
  */
-export function namespaceFn(o: { name: string; description: string; tools: () => NsTool[]; actions: Record<string, Dispatch> }): Fn {
+export function namespaceFn(o: { name: string; description: string; tools: () => NsTool[]; actions: Record<string, Dispatch>; properties?: Record<string, unknown> }): Fn {
 	const keys = Object.keys(o.actions);
 	return {
 		name: o.name,
@@ -46,7 +46,11 @@ export function namespaceFn(o: { name: string; description: string; tools: () =>
 			type: "object",
 			additionalProperties: true, // the per-action fields ARE the target tool's own schema
 			required: ["action"],
-			properties: { action: { type: "string", enum: keys, description: `Which ${o.name} operation. Each action's remaining args are that namespace tool's own — see the namespace docs.` } },
+			// `action` plus any array-shaped per-action params the caller declares explicitly. A bare
+			// `additionalProperties:true` leaves array args (e.g. mail_move's `ids[]`) untyped at the
+			// front door, and several MCP clients drop/mis-serialize an untyped array before it reaches
+			// the Worker — so a declared `items:{type:string}` array is what makes ids[] arrive intact.
+			properties: { action: { type: "string", enum: keys, description: `Which ${o.name} operation. Each action's remaining args are that namespace tool's own — see the namespace docs.` }, ...(o.properties ?? {}) },
 		},
 		run: async (env, args) => {
 			const action = typeof args?.action === "string" ? args.action.trim() : "";

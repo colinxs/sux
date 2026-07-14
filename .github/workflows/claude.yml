@@ -1,12 +1,11 @@
 name: Claude
 
-# Two hands-off assists (both inert until CLAUDE_CODE_OAUTH_TOKEN is set (subscription, via claude setup-token)):
-#   1. @claude — mention the bot in any PR/issue comment or review and it responds
-#      (fix this, rebase, explain, address the review, etc.).
-#   2. Review on open — a `/code-review` pass on every non-draft PR, so assumptions
-#      get checked and obvious issues get flagged before it merges.
-# Cost-bounded: concurrency cancel-in-progress, --max-turns, a review only on
-# opened/ready (not every push). Features still merge only by a human's hand.
+# Two hands-off assists (both inert until CLAUDE_CODE_OAUTH_TOKEN is set (subscription, via
+# claude setup-token)):
+#   1. @claude — mention the bot in any PR/issue comment or review and it responds.
+#   2. Review on open — a review pass on every non-draft PR.
+# Cost-bounded: concurrency cancel-in-progress, --max-turns, review only on opened/ready.
+# Reusable workflow: SuxOS/.github/.github/workflows/claude.yml
 
 on:
   issue_comment:
@@ -18,96 +17,13 @@ on:
   pull_request:
     types: [opened, ready_for_review]
 
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
-  actions: read
-  id-token: write  # OIDC token-exchange for the Claude app
-
-concurrency:
-  group: claude-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  mention:
-    # Fire only when a TRUSTED human (@claude) asks — never on the bot's own comments,
-    # and never from an external user on this PUBLIC repo (else anyone could drive the
-    # write-scoped bot). author_association gates comment + review authors to the repo.
-    if: >
-      vars.ACTIONS_BUDGET_PAUSED != 'true' &&
-      github.event.sender.type != 'Bot' &&
-      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association || github.event.review.author_association) && (
-        (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
-        (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
-        (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude'))
-      )
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Preflight — need the key
-        id: pre
-        run: |
-          if [ "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}" != "true" ]; then
-            echo "CLAUDE_CODE_OAUTH_TOKEN not set → inert"; echo "go=false" >> "$GITHUB_OUTPUT"
-          else echo "go=true" >> "$GITHUB_OUTPUT"; fi
-      # The mention bot can push (when asked to "fix"/"rebase"). Push with the SUX_BOT App
-      # identity, not GITHUB_TOKEN — GitHub suppresses workflow runs for GITHUB_TOKEN pushes,
-      # so a GITHUB_TOKEN-pushed change would never re-fire CI and native auto-merge would
-      # stall. The App token pushes look like a normal user push, so ci.yml fires.
-      - name: Mint app token
-        if: steps.pre.outputs.go == 'true'
-        id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          app-id: ${{ secrets.SUX_BOT_APP_ID }}
-          private-key: ${{ secrets.SUX_BOT_PRIVATE_KEY }}
-      - name: Checkout
-        if: steps.pre.outputs.go == 'true'
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          token: ${{ steps.app-token.outputs.token }}
-      - name: Claude respond
-        if: steps.pre.outputs.go == 'true'
-        uses: anthropics/claude-code-action@e90deca47693f9457b72f2b53c17d7c445a87342 # v1
-        env:
-          ENABLE_PROMPT_CACHING_1H: "1" # 1h cache TTL — keeps the stable prefix warm across a back-and-forth @claude thread
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ steps.app-token.outputs.token }}
-          trigger_phrase: "@claude"
-          claude_args: "--max-turns 12 --model sonnet"
-
-  review:
-    # Trusted-author PRs only — an external/fork PR must not spin up the review bot.
-    if: >
-      vars.ACTIONS_BUDGET_PAUSED != 'true' &&
-      github.event_name == 'pull_request' &&
-      github.event.pull_request.draft == false &&
-      github.event.sender.type != 'Bot' &&
-      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - name: Preflight — need the key
-        id: pre
-        run: |
-          if [ "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}" != "true" ]; then
-            echo "CLAUDE_CODE_OAUTH_TOKEN not set → inert"; echo "go=false" >> "$GITHUB_OUTPUT"
-          else echo "go=true" >> "$GITHUB_OUTPUT"; fi
-      - name: Checkout
-        if: steps.pre.outputs.go == 'true'
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with: { fetch-depth: 0 }
-      - name: Claude review
-        if: steps.pre.outputs.go == 'true'
-        uses: anthropics/claude-code-action@e90deca47693f9457b72f2b53c17d7c445a87342 # v1
-        env:
-          ENABLE_PROMPT_CACHING_1H: "1" # 1h cache TTL — the review runs minutes after CI; keeps the stable prefix cached
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          prompt: |
-            Review this PR for correctness bugs and reuse/simplification/efficiency
-            issues (the repo has a /code-review skill — use it). Post concise, concrete
-            inline findings; don't rewrite the PR. If it looks clean, say so in one line.
-          claude_args: "--max-turns 12 --model sonnet"
+  claude:
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: read
+      id-token: write
+    uses: SuxOS/.github/.github/workflows/claude.yml@main
+    secrets: inherit

@@ -1,4 +1,4 @@
-import { type Fn, fail, ok } from "../registry";
+import { type Fn, fail, failWith, ok } from "../registry";
 import { oj } from "./_util";
 
 type ExaResult = { title?: string; url?: string; publishedDate?: string; author?: string; score?: number; id?: string };
@@ -23,7 +23,7 @@ export const find_similar: Fn = {
 	cacheable: true,
 	ttl: 900,
 	run: async (env, args) => {
-		if (!env.EXA_API_KEY) return fail("Exa not configured (EXA_API_KEY). Key at exa.ai.");
+		if (!env.EXA_API_KEY) return failWith("not_configured", "Exa not configured (EXA_API_KEY). Key at exa.ai.");
 
 		const url = String(args?.url ?? "").trim();
 		const query = String(args?.query ?? "").trim();

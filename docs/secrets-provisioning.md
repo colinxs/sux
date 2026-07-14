@@ -735,7 +735,7 @@ secrets to protect), though a durable copy in op is fine.
 # 18. Tier-2 settings (`sux/wrangler.jsonc` `[vars]`, committed — not secrets)
 
 Non-sensitive tuning, version-controlled and PR-gated. Currently:
-`DEBUG_MCP` (`"0"`), `MAIL_TRIAGE_ENABLED` (`"1"`, in vars), `VAULT_TZ` (IANA tz for
+`MAIL_TRIAGE_ENABLED` (`"1"`, in vars), `VAULT_TZ` (IANA tz for
 the vault owner's "today", default Pacific), and the `OBSIDIAN_VAULT_REPO/BRANCH/DIR`
 vault location. Change these in a reviewed diff, not via `wrangler secret`.
 

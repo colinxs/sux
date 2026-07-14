@@ -1,4 +1,4 @@
-import { type Fn, fail, ok } from "../registry";
+import { type Fn, fail, failWith, ok } from "../registry";
 import { errMsg, oj } from "./_util";
 
 // Tavily (api.tavily.com) — LLM-oriented search that returns a synthesized answer
@@ -34,7 +34,7 @@ export const tavily: Fn = {
 	cacheable: true,
 	ttl: 600,
 	run: async (env, args) => {
-		if (!env.TAVILY_API_KEY) return fail("Tavily not configured (TAVILY_API_KEY). Free 1k/mo at tavily.com.");
+		if (!env.TAVILY_API_KEY) return failWith("not_configured", "Tavily not configured (TAVILY_API_KEY). Free 1k/mo at tavily.com.");
 
 		const query = String(args?.query ?? "").trim();
 		if (!query) return fail("`query` is required.");

@@ -54,14 +54,14 @@ returns 401, and the cache tests stay green.
  (Claude, any    JSON-RPC │ • small fns / JSON-RPC dispatch             │
   MCP client)             │ • KV cache (per-fn TTL, CAS keys)           │
                           │ • R2 store  (sux-mcp bucket, /s/<uuid>)     │
-                          │ • Workers AI · CF Images · Browser Rendering│
+                          │ • Workers AI · CF Images · Browser Run│
                           │ • rate limiter (120/60s per user)           │
                           └──────────────┬──────────────────────────────┘
                                          │ cache miss
                        ┌─────────────────┼──────────────────────────────┐
                        ▼                 ▼                              ▼
               (rung 1) direct    (rung 2) scrape          (rung 3/4) render
-              Worker fetch()     Tailscale Funnel →        backend:cf  → CF Browser Rendering
+              Worker fetch()     Tailscale Funnel →        backend:cf  → CF Browser Run
               CF datacenter IP   OpenWRT node running      backend:mac → residential Mac running
                        │         curl-impersonate          patchright (+ CapSolver solver tier)
                        │         (residential IP,           (residential IP, real browser,
@@ -75,7 +75,7 @@ returns 401, and the cache tests stay green.
 
 - **Cloudflare Worker** (`sux/src/`) — the brain. OAuth, JSON-RPC dispatch, KV
   cache, R2 store (`sux-mcp` bucket), Workers AI, Cloudflare Images, per-user
-  rate limiter, and the CF Browser Rendering binding. Deployed to
+  rate limiter, and the CF Browser Run binding. Deployed to
   `https://suxos.net`.
 - **OpenWRT node** (`sux/node/openwrt/`) — the residential *fetch* proxy. x86_64
   musl box on the home network, reachable at
@@ -99,7 +99,7 @@ works** for a given host, and let sites that don't fight you stay on rung 1.
 |---|---|---|---|---|
 | 1. **direct** | Worker `fetch()` | CF datacenter | nothing hostile (APIs, friendly sites) | fast/free |
 | 2. **`scrape`** | `smartFetch` → OpenWRT `curl-impersonate` | **residential IP + coherent Chrome JA3/JA4/HTTP2** | datacenter blocks + **passive** TLS/fingerprint walls (most Akamai/CF, Costco) | +1 hop |
-| 3. **`render` backend:cf** | Cloudflare Browser Rendering | CF datacenter (subresources residential-routed) | client-rendered JS on **non-hostile** sites | slow |
+| 3. **`render` backend:cf** | Cloudflare Browser Run | CF datacenter (subresources residential-routed) | client-rendered JS on **non-hostile** sites | slow |
 | 4. **`render` backend:mac** | Mac patchright browser | **residential IP + real browser** | **active JS challenges** — Akamai `_abck` sensor, PerimeterX | slowest |
 | 4s. **solver tier** | headed patchright + CapSolver extension on the Mac | residential real browser + human-like gestures | **captchas + press-and-hold** — PerimeterX, DataDome, reCAPTCHA, hCaptcha, Turnstile | slowest |
 
@@ -145,7 +145,7 @@ same story, or you're flagged:
   cookie).
 - **curl-impersonate beats *passive* detection (403 → 200) but cannot solve
   active JS challenges** — those need a real browser executing the sensor JS.
-- **CF Browser Rendering can't beat active challenges either** (see rung 3
+- **CF Browser Run can't beat active challenges either** (see rung 3
   above).
 - **The Mac wins** because its public IP *is* a residential IP (it's on the home
   network), so a patched browser there is **real fingerprint + residential IP +
@@ -266,7 +266,7 @@ missing key degrades to a clear "not configured" message; the rest keep working.
   `OBSIDIAN_REMOTE_URL` + `OBSIDIAN_REMOTE_KEY`.
 
 **Bindings** (`sux/wrangler.jsonc`, not secrets): `OAUTH_KV` (KV), `AI`,
-`IMAGES`, `R2` (`sux-mcp` bucket), `BROWSER` (Browser Rendering),
+`IMAGES`, `R2` (`sux-mcp` bucket), `BROWSER` (Browser Run),
 `MCP_RATE_LIMITER` (120 req / 60 s per user), observability enabled, and a daily
 cron trigger `0 13 * * *`.
 

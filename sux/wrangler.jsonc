@@ -19,8 +19,11 @@
 	"images": { "binding": "IMAGES" },
 	// R2 object storage for `store` (content-addressed blobs; KV maps uuid→object).
 	"r2_buckets": [{ "binding": "R2", "bucket_name": "sux-mcp" }],
-	// Browser Rendering — headless Chromium for `render` (JS-rendered scraping).
-	// NOTE: egresses from the CF datacenter, not the residential proxy.
+	// Browser Run (Cloudflare renamed "Browser Rendering" -> "Browser Run" Apr 2026 —
+	// same `browser` binding shape and `@cloudflare/puppeteer` package, purely additive:
+	// CDP endpoint, WebMCP, session recordings, 30->120 concurrency) — headless Chromium
+	// for `render` (JS-rendered scraping). NOTE: egresses from the CF datacenter, not the
+	// residential proxy.
 	"browser": { "binding": "BROWSER" },
 	// QUIC/HTTP-3 is automatic at the edge; observability = persistent logs (both services).
 	"observability": { "enabled": true, "head_sampling_rate": 1 },
@@ -47,7 +50,7 @@
 	//
 	// BRIEFING_ENABLED is deliberately NOT set here — pending H1 (untrusted mail through the llm()
 	// fence); arm it once that fix lands.
-	"vars": { "DEBUG_MCP": "0", "MAIL_TRIAGE_ENABLED": "1", "WEEKLY_RECALL_ENABLED": "1", "SELF_IMPROVE_ENABLE": "1" },
+	"vars": { "MAIL_TRIAGE_ENABLED": "1", "WEEKLY_RECALL_ENABLED": "1", "SELF_IMPROVE_ENABLE": "1" },
 	// Per-user rate limit (same as core).
 	"unsafe": {
 		"bindings": [

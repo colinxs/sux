@@ -217,6 +217,38 @@ npm run secret:sux EBAY_CLIENT_SECRET
 
 ---
 
+## 9. Monarch Money — `MONARCH_TOKEN` (accounts / balances / transactions)
+
+**Read-only by construction** — the `monarch` fn has no mutation op; sux never moves
+money. The token is a personal API token used as `Authorization: Token <token>`.
+
+**There is no devtools shortcut.** The Monarch web app (`app.monarch.com`)
+authenticates GraphQL over an **httpOnly session cookie + CSRF** — no bearer token
+lives in localStorage or a readable cookie, so you cannot copy one from devtools.
+The **mobile/REST login is the only source**, and Monarch has no "create API token"
+UI. So we drive the login programmatically:
+
+1. Install the **maintained fork** (upstream `hammem/monarchmoney` 405s — it omits
+   headers Monarch now requires):
+   ```
+   pip3 install --user git+https://github.com/keithah/monarchmoney-enhanced
+   ```
+2. Mint + stash straight into 1Password (the token never prints):
+   ```
+   python3 scripts/mint-monarch-token.py     # prompts email / password / MFA
+   ```
+   It writes the token to op item **`Monarch sux`** field `token` (Private vault).
+3. Push it to the Worker like every other secret:
+   ```
+   ./scripts/set-secrets.sh MONARCH_TOKEN
+   ```
+
+> **429 on login?** Monarch rate-limits by IP and repeated tries *extend* the block.
+> Egress over **IPv6** (a separate bucket) to bypass a v4 throttle, or wait ~20 min,
+> then run the mint **once**.
+
+---
+
 ## Quick reference
 
 | Service | Secret(s) | Read-only? | Browser-generatable |
@@ -229,3 +261,4 @@ npm run secret:sux EBAY_CLIENT_SECRET
 | Facebook | `FACEBOOK_TOKEN` | read-only | ✅ |
 | Reddit | `REDDIT_CLIENT_ID` + `_SECRET` | read-only | ✅ |
 | eBay | `EBAY_CLIENT_ID` + `_SECRET` | read-only | ✅ |
+| Monarch | `MONARCH_TOKEN` | yes (no mutations) | ❌ login script → op |

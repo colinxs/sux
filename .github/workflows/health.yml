@@ -1,97 +1,21 @@
-# Daily health check — regression canary (tests) + live smoke check of the
-# deployed Worker. On failure it opens (or updates) a tracking issue so a broken
-# deploy or a drifted dependency is noticed even when no one pushed that day.
 name: Health check
+
+# Daily regression canary (tests) + live smoke check of the deployed Worker. On failure it
+# opens (or updates) a tracking issue so a broken deploy or a drifted dependency is noticed
+# even when no one pushed that day.
+# Reusable workflow: SuxOS/.github/.github/workflows/health.yml
 
 on:
   schedule:
     - cron: "17 9 * * *" # daily at 09:17 UTC
   workflow_dispatch: # allow manual "Run workflow" from the Actions tab
 
-permissions:
-  contents: read
-  issues: write
-
 jobs:
   health:
-    name: Regression canary + smoke check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      # Regression canary: the full suite must still pass against current deps.
-      - name: Test
-        run: npm test
-
-      # Lightweight smoke check: the MCP endpoint must reject an unauthenticated
-      # request with 401. A 401 is the healthy/expected response (the worker is up
-      # and the OAuth gate is enforcing). Any other status — or no response — is a
-      # failure. --max-time bounds a hung endpoint; -o /dev/null discards the body.
-      - name: Smoke check (public 401 on /mcp)
-        run: |
-          set -euo pipefail
-          code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 https://suxos.net/mcp || echo 000)"
-          echo "GET /mcp -> HTTP ${code}"
-          if [ "${code}" != "401" ]; then
-            echo "::error::Expected HTTP 401 from https://suxos.net/mcp, got ${code}"
-            exit 1
-          fi
-          echo "Worker is up (401 as expected)."
-
-      # On any failure above, open a fresh issue or update the existing open one.
-      # Resilient: wrapped in try/catch so a GitHub API hiccup never masks the
-      # underlying health failure (the job still ends red).
-      - name: Open or update health-check issue on failure
-        if: failure()
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        with:
-          script: |
-            const title = "sux health check failed";
-            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const body = [
-              `The scheduled health check failed on ${new Date().toISOString()}.`,
-              "",
-              `- Workflow run: ${runUrl}`,
-              `- Commit: ${context.sha}`,
-              "",
-              "This is either a regression in the test suite or the deployed Worker",
-              "not responding with the expected 401 on /mcp. See the run logs above.",
-            ].join("\n");
-            try {
-              const existing = await github.rest.issues.listForRepo({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                state: "open",
-                per_page: 100,
-              });
-              const hit = existing.data.find(
-                (i) => !i.pull_request && i.title === title,
-              );
-              if (hit) {
-                await github.rest.issues.createComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: hit.number,
-                  body,
-                });
-                core.info(`Updated existing issue #${hit.number}.`);
-              } else {
-                const created = await github.rest.issues.create({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  title,
-                  body,
-                });
-                core.info(`Opened issue #${created.data.number}.`);
-              }
-            } catch (e) {
-              core.warning(`Could not open/update health issue: ${e.message}`);
-            }
+    permissions:
+      contents: read
+      issues: write
+    uses: SuxOS/.github/.github/workflows/health.yml@main
+    with:
+      smoke-url: "https://suxos.net/mcp"
+    secrets: inherit

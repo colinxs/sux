@@ -5,7 +5,7 @@ import { dropbox } from "./fns/dropbox";
 import { deleteFull, hasDropboxFull, hasDropboxFullWrite, listFull, moveFull, operateFull, readFull, searchFull, transformFull, writeBytes, writeFull } from "./fns/_dropbox-full";
 import { fingerprint, ledger } from "./ledger";
 import { staged } from "./stage";
-import { errMsg } from "./fns/_util";
+import { errMsg, pool } from "./fns/_util";
 
 // The files MCP server — the personal blob workspace, reached through the `files_`
 // front verbs on the one /mcp connector, behind the same workers-oauth-provider flow
@@ -66,6 +66,10 @@ const rejectModeBFlags = (a: any): ToolResult | null =>
 
 type FileTool = { name: string; description: string; inputSchema: unknown; run: (env: RtEnv, args: any) => Promise<ToolResult> };
 const ok = (v: unknown): ToolResult => ({ content: [{ type: "text", text: JSON.stringify(v, null, 2) }] });
+
+// Bounded fan-out for files_batch_put's independent Dropbox uploads — a modest cap keeps a large
+// batch from opening one round trip per item serially without hammering Dropbox all at once.
+const FILES_PUT_CONCURRENCY = 8;
 
 /** The stage-guard arg triplet (mirrors mail-mcp). Threads stage/commit_token/force uniformly
  *  at every Mode-B staged() call site so the guard — not an ad-hoc dry_run/confirm pair — gates. */
@@ -208,32 +212,26 @@ const TOOLS: FileTool[] = [
 			if (!items.length) return failWith("bad_input", "files_batch_put requires a non-empty `items` [{path, text?|base64?}].");
 			const dryRun = a?.dry_run === true;
 			const led = ledger(env, "files_put");
-			const results: Array<Record<string, unknown>> = [];
-			for (const it of items) {
+			// Each item writes an independent Dropbox path with no ordering dependency, so fan the
+			// network round trips out through the shared pool() (as batch_fetch/crawl do) instead of
+			// awaiting one at a time. pool preserves input order; per-item try/catch keeps one
+			// failure from sinking the batch.
+			const results = await pool(items, FILES_PUT_CONCURRENCY, async (it: any): Promise<Record<string, unknown>> => {
 				const path = String(it?.path ?? "");
 				const hasBin = typeof it?.base64 === "string" && it.base64;
 				const hasText = typeof it?.text === "string";
-				if (!path || (!hasBin && !hasText)) {
-					results.push({ path, skipped: "missing path or content (text|base64)" });
-					continue;
-				}
+				if (!path || (!hasBin && !hasText)) return { path, skipped: "missing path or content (text|base64)" };
 				const id = `${path}::${await fingerprint(hasBin ? `b:${it.base64}` : `t:${String(it.text)}`)}`;
-				if (await led.seen(id)) {
-					results.push({ path, skipped: "already written (idempotent)" });
-					continue;
-				}
-				if (dryRun) {
-					results.push({ path, would_write: hasBin ? "binary" : "text" });
-					continue;
-				}
+				if (await led.seen(id)) return { path, skipped: "already written (idempotent)" };
+				if (dryRun) return { path, would_write: hasBin ? "binary" : "text" };
 				try {
 					const r = await dbx(env, { op: "put", path, ...(hasBin ? { base64: it.base64 } : { data: String(it.text) }) });
 					await led.mark(id);
-					results.push({ path: r?.path ?? path, url: r?.url });
+					return { path: r?.path ?? path, url: r?.url };
 				} catch (e) {
-					results.push({ path, error: errMsg(e).slice(0, 120) });
+					return { path, error: errMsg(e).slice(0, 120) };
 				}
-			}
+			});
 			return ok({ count: items.length, dry_run: dryRun, results });
 		},
 	},

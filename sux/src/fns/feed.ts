@@ -52,7 +52,7 @@ export const feed: Fn = {
 			xml = fetched.text;
 		}
 		if (!xml) return fail("Provide `xml` or `url`.");
-		const limit = Math.min(Number(args?.limit) || 50, 200);
+		const limit = Math.min(200, Math.max(1, Number(args?.limit) || 50));
 
 		const isAtom = /<feed[\s>]/i.test(xml) && !/<rss[\s>]/i.test(xml);
 		const blocks = isAtom ? [...xml.matchAll(/<entry\b[\s\S]*?<\/entry>/gi)] : [...xml.matchAll(/<item\b[\s\S]*?<\/item>/gi)];

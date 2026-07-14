@@ -167,7 +167,7 @@ export const select: Fn = {
 		if ("error" in loaded) return fail(loaded.error);
 		const html = loaded.html;
 
-		const limit = Math.min(Number(args?.limit) || 50, 1000);
+		const limit = Math.min(1000, Math.max(1, Number(args?.limit) || 50));
 		const attr = args?.attr != null ? String(args.attr) : null;
 
 		// Comma list = union of each group's matches, de-duplicated by outer HTML.

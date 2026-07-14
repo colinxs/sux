@@ -1,10 +1,18 @@
-// Shared client for the Cloudflare Browser Rendering backend (`render`'s default
-// `cf` engine): a headless Chromium (`@cloudflare/puppeteer`) that executes JS and
-// — with `residential` routing + `stealth` masking — egresses from a home IP past
+// Shared client for the Cloudflare Browser Run backend (`render`'s default `cf`
+// engine): a headless Chromium (`@cloudflare/puppeteer`) that executes JS and —
+// with `residential` routing + `stealth` masking — egresses from a home IP past
 // datacenter-IP bot detection. The `render` fn drives it for arbitrary pages; the
 // retailer fns reach it (via retail-render's mac→cf fallback) only when the mac
 // backend is down. Extracted from render.ts so both callers share ONE puppeteer
 // driver instead of duplicating the launch/stealth/interception/goto dance.
+//
+// Cloudflare renamed this product "Browser Rendering" -> "Browser Run" (Apr 2026).
+// The rename is additive only — same `@cloudflare/puppeteer` package, same `browser`
+// wrangler binding, same `puppeteer.launch(env.BROWSER)` call shape — so nothing
+// here needed to change for the rename itself. The new capabilities it shipped
+// alongside (CDP endpoint, WebMCP, higher 30->120 concurrency) don't apply to this
+// server-side Puppeteer path; `debug_recording` below opts into the one that does
+// (session recordings), for post-mortem debugging of bot-wall failures.
 //
 // Mirrors macRender's never-throw envelope: a launch/nav failure or a missing
 // BROWSER binding resolves to `{ ok:false, error }`. HTML/text return a string
@@ -144,6 +152,11 @@ export type CfRenderSpec = {
 	format?: string;
 	landscape?: boolean;
 	print_background?: boolean;
+	// Opt into a Browser Run session recording (viewable in the CF dashboard under
+	// Browser Run > Runs after the session closes) — for debugging a render that
+	// came back blocked/wrong without adding server-side screenshot noise. Off by
+	// default: recordings cost a bit of overhead and aren't needed on the hot path.
+	debug_recording?: boolean;
 };
 
 // For html/text the payload is the string `body`; for screenshot/pdf it is the raw
@@ -154,15 +167,16 @@ export type CfRenderResult =
 	| { ok: false; error: string };
 
 /**
- * Drive Cloudflare Browser Rendering for one page and return the result. Never
- * throws: a missing BROWSER binding or any launch/navigation error resolves to
+ * Drive Cloudflare Browser Run for one page and return the result. Never throws:
+ * a missing BROWSER binding or any launch/navigation error resolves to
  * `{ ok:false, error }`, and the browser is always closed. `residential` routes
  * every subresource through the Tailscale residential proxy (home-IP egress);
  * `stealth` masks the headless fingerprint; `block_resources` aborts heavy assets
- * (ignored for screenshot/pdf so they render correctly).
+ * (ignored for screenshot/pdf so they render correctly); `debug_recording` opts
+ * the session into Browser Run's session-recording feature for post-mortem replay.
  */
 export async function cfRender(env: RtEnv, spec: CfRenderSpec): Promise<CfRenderResult> {
-	if (!env.BROWSER) return { ok: false, error: "Browser Rendering is not configured (BROWSER binding)." };
+	if (!env.BROWSER) return { ok: false, error: "Browser Run is not configured (BROWSER binding)." };
 
 	const as = spec.as === "text" ? "text" : spec.as === "screenshot" ? "screenshot" : spec.as === "pdf" ? "pdf" : "html";
 	const waitUntil = spec.wait_until ?? "networkidle0";
@@ -175,10 +189,15 @@ export async function cfRender(env: RtEnv, spec: CfRenderSpec): Promise<CfRender
 	const blockResources = spec.block_resources === true && as !== "screenshot" && as !== "pdf";
 	const residential = spec.residential !== false;
 	const stealth = spec.stealth !== false;
+	const debugRecording = spec.debug_recording === true;
 
 	let browser: Awaited<ReturnType<typeof puppeteer.launch>> | undefined;
 	try {
-		browser = await puppeteer.launch(env.BROWSER);
+		// `recording` is a Browser Run launch option (session recordings, replayable
+		// in the CF dashboard); omit the key entirely when off rather than passing
+		// `recording:false` so older `@cloudflare/puppeteer` builds that predate the
+		// option see a plain launch call.
+		browser = debugRecording ? await puppeteer.launch(env.BROWSER, { recording: true }) : await puppeteer.launch(env.BROWSER);
 		const page = await browser.newPage();
 
 		if (stealth) await applyStealth(page as unknown as PageForStealth, stealthUa(env.STEALTH_CHROME_MAJOR || DEFAULT_STEALTH_CHROME_MAJOR));

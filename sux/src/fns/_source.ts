@@ -189,7 +189,7 @@ export async function loadProfile(env: RtEnv, domain: string): Promise<Profile |
 	}
 }
 
-export async function saveProfile(env: RtEnv, p: Profile): Promise<void> {
+async function saveProfile(env: RtEnv, p: Profile): Promise<void> {
 	await env.OAUTH_KV?.put(profileKey(p.domain), JSON.stringify(p));
 }
 

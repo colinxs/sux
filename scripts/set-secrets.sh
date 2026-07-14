@@ -49,10 +49,11 @@ EBAY_CLIENT_SECRET           op://Private/eBay sux keyset/cert_id
 FACEBOOK_TOKEN               op://Private/Facebook sux token/token
 EPIC_FHIR_CLIENT_ID          op://Private/Epic FHIR sux/client_id
 APPLE_HEALTH_TOKEN           op://Private/Apple Health sux/token
+MONARCH_TOKEN                op://Private/Monarch sux/token
 EOF
 
-command -v op >/dev/null 2>&1 || { echo "1Password CLI not found — 'brew install 1password-cli'"; exit 1; }
-op vault list >/dev/null 2>&1 || { echo "op not authorized — unlock the 1Password app and enable Settings > Developer > Integrate with 1Password CLI"; exit 1; }
+. "$(dirname "$0")/op-auth.sh"
+op_preflight || exit 1
 
 MODE="set"; ONLY=()
 for a in "$@"; do
@@ -82,7 +83,7 @@ while IFS= read -r line; do
 	ref="$(echo "${line#"$name"}" | sed 's/^[[:space:]]*//')"
 	wanted "$name" || continue
 	# Read once into a local var (in YOUR shell, never printed); empty = not in 1Password.
-	val="$(op read "$ref" 2>/dev/null)" || true
+	val="$(op_read "$ref" 2>/dev/null)" || true
 	if [ -z "$val" ]; then
 		printf '  skip  %-24s (not in 1Password: %s)\n' "$name" "$ref"
 		skip_n=$((skip_n + 1)); continue
