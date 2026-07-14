@@ -79,6 +79,17 @@ function proxy(routeName, who, req, res, url) {
     if (!res.headersSent) res.writeHead(502);
     res.end('upstream error');
   });
+  // Client aborts (TCP RST mid-body, navigate-away mid-SSE-response) emit
+  // 'error' on these streams; with zero listeners that throws asynchronously
+  // and crashes the whole process, taking down every route on both listeners.
+  req.on('error', (err) => {
+    log(req.method, `${routeName}/mcp`, 499, who, err.code || err.message);
+    up.destroy();
+  });
+  res.on('error', (err) => {
+    log(req.method, `${routeName}/mcp`, 499, who, err.code || err.message);
+    up.destroy();
+  });
   req.pipe(up);
 }
 
