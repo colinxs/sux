@@ -2,12 +2,18 @@ name: Stuck-PR watcher
 
 # Read-only visibility net for the autonomy pipeline. Every 6h (and on demand) it
 # lists open PRs and flags the ones that are silently stalled:
-#   - a failing required check, or
-#   - green + mergeable but auto-merge was never armed and it's been idle >STALE_HOURS.
-# NOTE: BEHIND-main is intentionally NOT flagged anymore. Under the GitHub merge queue a PR
-# no longer needs to be up-to-date with main to merge — the queue rebases it onto the queue
-# head as part of forming the merge group — so "behind main" is expected, not stuck. (This is
-# also why pr-auto-update.yml was retired.)
+#   - a failing required check,
+#   - green + mergeable but auto-merge was never armed and it's been idle >STALE_HOURS, or
+#   - armed + BEHIND main and still behind after STALE_HOURS.
+# The BEHIND case would be a false positive IF the GitHub-native merge queue were enabled (a
+# PR no longer needs to be up to date with main to merge — the queue rebases it as part of
+# forming the merge group). But the queue is BUILT, NOT YET ENABLED
+# (docs/design/merge-queue.md), so today an armed PR that falls BEHIND relies entirely on
+# pr-auto-update.yml (push:main + daily backstop) to get un-stuck. Flagging it here catches
+# the case where that workflow hasn't run yet, failed, or hit a real conflict (DIRTY) that
+# needs a human — this is exactly the gap that let 25+ PRs silently pile up BEHIND with no
+# visibility on 2026-07-14. Re-mute this once the queue is verified enabled (see the design
+# doc's "Enabling the queue" section).
 # It NEVER merges or mutates a PR. It only maintains a single rolling "Stuck PRs"
 # tracking issue — opened when stalls appear, refreshed while they persist, and
 # auto-closed when all clear — so a stuck PR can't rot unnoticed. gh CLI + jq only.
@@ -55,8 +61,7 @@ jobs:
           stale=$(( STALE_HOURS * 3600 ))
 
           # Classify. Skip drafts and intentionally-paused (`hold`) PRs. Priority:
-          # failing check > idle-green-no-automerge. One row per stuck PR. (BEHIND is not
-          # stuck under the merge queue — see the header note.)
+          # failing check > idle-green-no-automerge > idle-behind-armed. One row per stuck PR.
           stuck=$(echo "$prs" | jq -c --argjson now "$now" --argjson stale "$stale" '
             [ .[]
               | select(.isDraft | not)
@@ -66,6 +71,7 @@ jobs:
               | (($now - (.updatedAt | fromdateiso8601)) >= $stale) as $isStale
               | ( if $failing then "failing required check"
                   elif (.mergeStateStatus == "CLEAN" and (.autoMergeRequest == null) and $isStale) then "green + mergeable but auto-merge not armed"
+                  elif (.mergeStateStatus == "BEHIND" and (.autoMergeRequest != null) and $isStale) then "armed but BEHIND main and not auto-updating"
                   else null end ) as $reason
               | select($reason != null)
               | { number, title, url, reason: $reason, state: .mergeStateStatus }
@@ -103,7 +109,8 @@ jobs:
             "$rows" \
             "" \
             "- **failing required check** → fix CI (or the autofix bot handles it, if eligible)." \
-            "- **auto-merge not armed** → add an eligible label / conventional title, or enable auto-merge.")
+            "- **auto-merge not armed** → add an eligible label / conventional title, or enable auto-merge." \
+            "- **armed but BEHIND, not updating** → pr-auto-update.yml should catch this on the next push to main (or its daily backstop); run it manually (workflow_dispatch) for immediate relief, or check for a real conflict (DIRTY).")
 
           if [ -n "$existing" ]; then
             gh issue edit "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"

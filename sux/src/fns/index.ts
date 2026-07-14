@@ -80,6 +80,7 @@ import { learn } from "./learn";
 import { linkedin } from "./linkedin";
 import { lowes } from "./lowes";
 import { mail } from "./mail";
+import { mail_sieve } from "./mail_sieve";
 import { mail_triage } from "./mail_triage";
 import { markdown } from "./markdown";
 import { monarch } from "./monarch";
@@ -195,6 +196,7 @@ export const FUNCTIONS: Fn[] = [
 	linkedin,
 	lowes,
 	mail,
+	mail_sieve,
 	mail_triage,
 	markdown,
 	monarch,

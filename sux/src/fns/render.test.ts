@@ -3,10 +3,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // A shared, resettable set of stubs the mocked puppeteer.launch() yields, so
 // each test can assert what goto received and that close() ran. Declared via
 // vi.hoisted so they exist when the (hoisted) vi.mock factory runs.
+// WebMCP fast-path stubs: `evaluate` is the ONE puppeteer hook both the
+// existing as:"text" innerText extraction and the new detectWebMcp/
+// callWebMcpTool helpers call through, so the shared mock below routes by
+// the passed function's source (it references "modelContext") rather than
+// call order — same trick as capturedRequestHandler's arg-based matching.
+const webmcp = vi.hoisted(() => ({
+	detection: { detected: false, tools: [] as string[] },
+	call: { ok: false } as { ok: false } | { ok: true; result: unknown },
+}));
+
 const stubs = vi.hoisted(() => ({
 	goto: vi.fn(async (_url: string, _opts: any) => {}),
 	content: vi.fn(async () => "<html>rendered</html>"),
-	evaluate: vi.fn(async (_fn: any) => "rendered text"),
+	evaluate: vi.fn(async (fn: any, ...args: any[]): Promise<string | typeof webmcp.detection | typeof webmcp.call> => {
+		const src = fn.toString();
+		if (src.includes("modelContext")) return args.length > 0 ? webmcp.call : webmcp.detection;
+		return "rendered text";
+	}),
 	screenshot: vi.fn(async (_opts: any) => new Uint8Array([0x89, 0x50, 0x4e, 0x47])),
 	pdf: vi.fn(async (_opts: any) => new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d])),
 	setRequestInterception: vi.fn(async (_on: boolean) => {}),
@@ -96,7 +110,13 @@ describe("render", () => {
 	beforeEach(() => {
 		stubs.goto.mockClear().mockResolvedValue(undefined as any);
 		stubs.content.mockClear().mockResolvedValue("<html>rendered</html>");
-		stubs.evaluate.mockClear().mockResolvedValue("rendered text");
+		stubs.evaluate.mockClear().mockImplementation(async (fn: any, ...args: any[]) => {
+			const src = fn.toString();
+			if (src.includes("modelContext")) return args.length > 0 ? webmcp.call : webmcp.detection;
+			return "rendered text";
+		});
+		webmcp.detection = { detected: false, tools: [] };
+		webmcp.call = { ok: false };
 		stubs.screenshot.mockClear().mockResolvedValue(new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
 		stubs.pdf.mockClear().mockResolvedValue(new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]));
 		stubs.setRequestInterception.mockClear().mockResolvedValue(undefined as any);
@@ -422,8 +442,8 @@ describe("render", () => {
 			expect(payload).toMatchObject({
 				url: "https://homedepot.com/p/123",
 				as: "html",
-				// patchright's page.goto rejects Puppeteer's networkidle0 (→ 502), so the
-				// default is normalized to Playwright's "networkidle" before it's forwarded.
+				// The shared mac client normalizes Puppeteer's networkidle0 to Playwright's
+				// networkidle (patchright's page.goto rejects networkidle0 → 502).
 				wait_until: "networkidle",
 				wait_ms: 500,
 				block_resources: false,
@@ -493,7 +513,7 @@ describe("render", () => {
 		it("fails when MAC_RENDER_URL/MAC_RENDER_SECRET are absent (no fetch attempted)", async () => {
 			const r = await render.run(CAS_ENV, { url: "https://example.com", backend: "mac" });
 			expect(r.isError).toBe(true);
-			expect(r.content[0].text).toMatch(/MAC_RENDER_URL\/MAC_RENDER_SECRET/);
+			expect(r.content[0].text).toMatch(/Mac render backend not configured/);
 			expect(fetchSpy).not.toHaveBeenCalled();
 		});
 
@@ -536,6 +556,81 @@ describe("render", () => {
 			const r = await render.run(MAC_ENV, { url: "https://homedepot.com/p/1", backend: "mac" });
 			expect(r.isError).toBeFalsy();
 			expect(r.content[0].text).toBe("<html>real product page</html>");
+		});
+	});
+
+	// --- WebMCP fast-path (experimental, backend:cf only) ---
+	//
+	// The detection/call step only runs at all when the caller names a
+	// webmcp_tool — it must be a complete no-op (not even one extra
+	// page.evaluate call) for every render that doesn't ask for it, which is
+	// the vast majority of sux's traffic today.
+	describe("webmcp fast-path", () => {
+		it("is never attempted when webmcp_tool is not given (today's default behavior, unchanged)", async () => {
+			const r = await render.run(BROWSER_ENV, { url: "https://example.com" });
+			expect(r.isError).toBeFalsy();
+			expect(r.content[0].text).toBe("<html>rendered</html>");
+			// content() (not evaluate()) served this — no modelContext probe ran at all.
+			expect(stubs.evaluate).not.toHaveBeenCalled();
+			expect(stubs.content).toHaveBeenCalled();
+		});
+
+		it("page doesn't support WebMCP (not detected) — falls back to normal html extraction", async () => {
+			webmcp.detection = { detected: false, tools: [] };
+			const r = await render.run(BROWSER_ENV, { url: "https://example.com", webmcp_tool: "get_price" });
+			expect(r.isError).toBeFalsy();
+			expect(r.content[0].text).toBe("<html>rendered</html>");
+			expect(stubs.content).toHaveBeenCalled();
+		});
+
+		it("detected + declared tool call succeeds — returns the tool's result as JSON, skipping DOM extraction", async () => {
+			webmcp.detection = { detected: true, tools: ["get_price"] };
+			webmcp.call = { ok: true, result: { price: 9.99, currency: "USD" } };
+			const r = await render.run(BROWSER_ENV, { url: "https://shop.example.com", webmcp_tool: "get_price", webmcp_args: { sku: "abc" } });
+			expect(r.isError).toBeFalsy();
+			expect(JSON.parse(r.content[0].text)).toEqual({ webmcp: true, tool: "get_price", result: { price: 9.99, currency: "USD" } });
+			// The fast path short-circuited before the normal content() scrape ran.
+			expect(stubs.content).not.toHaveBeenCalled();
+			expect(stubs.close).toHaveBeenCalled();
+		});
+
+		it("detected but the tool call fails — falls back to normal html extraction, never surfaces an error", async () => {
+			webmcp.detection = { detected: true, tools: ["get_price"] };
+			webmcp.call = { ok: false };
+			const r = await render.run(BROWSER_ENV, { url: "https://shop.example.com", webmcp_tool: "get_price" });
+			expect(r.isError).toBeFalsy();
+			expect(r.content[0].text).toBe("<html>rendered</html>");
+			expect(stubs.content).toHaveBeenCalled();
+		});
+
+		it("detected but the requested tool call throws — degrades to normal extraction (page.evaluate rejects)", async () => {
+			webmcp.detection = { detected: true, tools: ["get_price"] };
+			stubs.evaluate.mockImplementation(async (fn: any, ...args: any[]) => {
+				const src = fn.toString();
+				if (src.includes("modelContext") && args.length > 0) throw new Error("tool threw");
+				if (src.includes("modelContext")) return webmcp.detection;
+				return "rendered text";
+			});
+			const r = await render.run(BROWSER_ENV, { url: "https://shop.example.com", webmcp_tool: "get_price" });
+			expect(r.isError).toBeFalsy();
+			expect(r.content[0].text).toBe("<html>rendered</html>");
+		});
+
+		it("works with as:text too — a successful tool call skips the innerText evaluate", async () => {
+			webmcp.detection = { detected: true, tools: ["get_price"] };
+			webmcp.call = { ok: true, result: "42" };
+			const r = await render.run(BROWSER_ENV, { url: "https://shop.example.com", as: "text", webmcp_tool: "get_price" });
+			expect(r.isError).toBeFalsy();
+			expect(JSON.parse(r.content[0].text)).toEqual({ webmcp: true, tool: "get_price", result: "42" });
+		});
+
+		it("is skipped for screenshot/pdf (webmcp_tool ignored, DOM never probed)", async () => {
+			webmcp.detection = { detected: true, tools: ["get_price"] };
+			webmcp.call = { ok: true, result: "42" };
+			const r = await render.run(CAS_ENV, { url: "https://shop.example.com", as: "screenshot", webmcp_tool: "get_price" });
+			expect(r.isError).toBeFalsy();
+			expect(stubs.screenshot).toHaveBeenCalled();
+			expect(stubs.evaluate).not.toHaveBeenCalled();
 		});
 	});
 });

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, json, hmac, hashlib, base64, asyncio, time
+import os, json, hmac, hashlib, base64, asyncio, time, signal
 from aiohttp import web
 from patchright.async_api import async_playwright
 
@@ -163,6 +163,18 @@ async def h_render(req):
         return web.json_response({"error": str(e)[:300]}, status=502)
 
 async def h_health(req):
+    # Liveness, not just process-up: if Chromium crashed or the persistent context
+    # became unusable after startup, every /render 502s while a static "ok" would
+    # keep any monitoring blind. Cheaply prove ctx still responds by opening and
+    # immediately closing a blank page; a throw means the backend is down (503).
+    try:
+        page = await ctx.new_page()
+        await page.close()
+    except Exception as e:
+        return web.json_response(
+            {"status": "error", "concurrency": CONC, "solver": solver_ctx is not None, "error": str(e)[:200]},
+            status=503,
+        )
     return web.json_response({"status": "ok", "concurrency": CONC, "solver": solver_ctx is not None})
 
 async def start_solver():
@@ -194,7 +206,31 @@ async def main():
     runner = web.AppRunner(app); await runner.setup()
     await web.TCPSite(runner, "127.0.0.1", PORT).start()
     print(f"async render service on 127.0.0.1:{PORT} conc={CONC} solver={solver_ctx is not None}")
-    await asyncio.Event().wait()
+    # launchd's KeepAlive means the only way we ever stop is a signal. Python's
+    # default SIGTERM kills the process without running cleanup, so the two
+    # persistent-context user_data_dirs (~/.sux-render-profile, ~/.sux-solver-profile)
+    # never get released — a Chromium left holding its SingletonLock can then block
+    # the next launch_persistent_context and take the whole backend down. Trap the
+    # signals and shut down in order instead.
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for s in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(s, stop.set)
+        except NotImplementedError:
+            pass
+    try:
+        await stop.wait()
+    finally:
+        await runner.cleanup()
+        for c in (ctx, solver_ctx):
+            if c is not None:
+                try:
+                    await c.close()
+                except Exception:
+                    pass
+        if pw is not None:
+            await pw.stop()
 
 if __name__ == "__main__":
     if len(SECRET) < 16:

@@ -253,10 +253,19 @@ rules in disguise. Compile them once, push them to the server, and mail is sorte
 backlog to clean because it never forms.** This is the single highest-leverage
 cheap move on the board, and sux does **none** of it today (it pulls mail via a
 5-min cron and runs the rules in the Worker instead).
-  > **Mechanism UNVERIFIED — spike before building.** Standard JMAP has no `Filter`
-  > type; `scope_probe` confirms Fastmail doesn't expose one there. The real path is
-  > **ManageSieve** (the standard sieve-management protocol) or Fastmail's own rules
-  > API. A short spike confirms which; the design holds regardless.
+  > **Mechanism resolved — generate-and-paste, not a dynamic write.** Standard JMAP has
+  > no `Filter` type (`scope_probe` confirms Fastmail doesn't expose one there), and any
+  > Sieve/rule/forwarding method Fastmail's JMAP *does* advertise is gated under
+  > `allow_destroy` (docs/proposals/jmap.md D5) because installing one is a LASTING
+  > server-side effect sux can't audit after the fact — so the decided floor
+  > (docs/knowledge/product-vision-and-roadmap.md) is generate-and-paste, never a live
+  > write via token. `mail_sieve` (sux/src/fns/mail_sieve.ts + `_mail_sieve.ts`) ships
+  > the generator: it compiles a curated, objective subset of `classifyMessage`'s rules
+  > (junk-subject cues, List-Unsubscribe + bulk-sender mailing-list cues, known dev/CI
+  > service senders, generic automated-sender notifications) into a Sieve script that
+  > only ever `addflag`s — never `fileinto`/`discard`/`reject` — so a false positive
+  > costs a stray keyword, not a hidden or bounced message. Paste the output into
+  > Fastmail Settings → Rules → Custom rule (Sieve) by hand.
 
 **Rung 1 — Cheap edge compute, event-triggered.** *Near-free.* For what needs sux's
 context but no model: run rules/kNN in the Worker, triggered by a **push event**
@@ -302,9 +311,11 @@ Cheap signal beats expensive completeness — the same instinct as kNN over a ve
 ## What the ladder re-sequences
 
 Elevated to the top of Phase 1 (cheapest × highest leverage):
-- **NEW · W9 — Sieve/rules compilation (rung 0).** Compile the deterministic
-  `classifyMessage` rules into server-side Fastmail filters. **Spike the mechanism
-  first** (ManageSieve vs. rules API). Highest leverage / lowest cost on the board.
+- **W9 — Sieve/rules compilation (rung 0). Generator SHIPPED, install stays manual.**
+  `mail_sieve` compiles a curated `classifyMessage` subset into a Sieve script (see
+  above). Pushing it live is intentionally NOT automated — Sieve/rule JMAP methods are
+  a gated, lasting-effect capability class, so the floor is copy-paste, not a token
+  write. Highest leverage / lowest cost on the board.
 - **NEW · W10 — Event-driven triage (rung 1).** Wire mail-triage to the
   PushSubscription surface shipped tonight (#223), replacing the 5-min cron poll.
 

@@ -7,7 +7,7 @@ name: Fixer
 
 on:
   schedule:
-    - cron: "17 8 * * *" # daily, off-minute; scans on a cadence
+    - cron: "17 8,16,0 * * *" # every 8h, off-minute; scans on a cadence
   workflow_dispatch:
 
 jobs:
@@ -19,4 +19,9 @@ jobs:
       issues: write
       id-token: write
     uses: SuxOS/.github/.github/workflows/fixer.yml@main
+    with:
+      # Default (25) is tuned for a quick scan; a full-repo sweep across this many fns/docs
+      # routinely needs more turns to read broadly before it can propose anything (observed:
+      # 2026-07-14 dispatch hit the cap with zero issues filed).
+      max-turns: 40
     secrets: inherit

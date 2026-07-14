@@ -28,4 +28,9 @@ jobs:
         npm run type-check · npm test · npm run check:node ·
         npm run gen:index (commit the regenerated index.ts) ·
         npx wrangler deploy --dry-run --config sux/wrangler.jsonc
+      # Default (20) is too tight for this repo's clusters — every cluster in the 2026-07-14
+      # batch dispatch (gate-firstbytetimer, consolidate-heartbeat-error-field,
+      # mail-attachments-partial-failure, mychart-phi-xss-followup, monarch-graphql-errors)
+      # hit the cap before producing a PR.
+      build-max-turns: 40
     secrets: inherit
