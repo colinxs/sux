@@ -102,6 +102,7 @@ call `json` with CSV or YAML in, `csv` with JSON in.
 | Teach / persist a preferred writing voice | `preferences` (`action: learn` appends an exemplar and re-distills a style spec in KV; `voice` folds it back) |
 | "What do I know about X?" — recall from YOUR life, cited | `recall` (`question`; `sources`: vault\|mail\|web, default all → fans out across your Obsidian notes + Fastmail + the web and synthesizes ONE answer with each claim tagged [vault:…]/[mail:…]/[web]; READ-only, grounded-not-invented, graceful per-source degrade) |
 | Teach a knowledge base, then answer from it | `oracle` (`knowledge`: text/URL/book → distilled + saved to KV under `topic`; `problem` alone answers using Claude's own knowledge + the learned KB; `action: get\|list\|forget`) |
+| Learn WHITELISTED material you own, weighted above the model + web | `study` (`source` + `kind`: text\|url\|pdf → distills a document you own/have the right to use into a whitelisted `oracle` topic; `oracle`/`recall` then rank it above the model's own knowledge and [web], cited [whitelisted:topic]; a compressed index, never a verbatim copy; `action: learn\|list\|forget`) |
 | Personal advice GATED by a source you trust, not free-floating LLM opinion | `advise` (grounds each recommendation in an authoritative source you `ingest` first, and cites what it leaned on) |
 | Case/unicode-font conversion | `fontcase` |
 | base64/hex/url, hashes, compression, zip/gzip | `encode`, `hash`, `compress`, `archive` |

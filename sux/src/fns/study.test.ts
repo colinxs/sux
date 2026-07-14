@@ -1,0 +1,204 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+// The vault mirror (appendOnOracle + appendOnWhitelist) rides obsidian.run — mock it (its own
+// suite covers it) so we test study's distillation, whitelist provenance, the pdf-text path, and
+// the copyright invariant (only the compressed index is stored) without a configured vault.
+vi.mock("./obsidian", () => ({ obsidian: { run: vi.fn(async () => ({ content: [{ type: "text", text: "{}" }] })) } }));
+
+import { DATA_CLOSE, DATA_OPEN } from "../ai";
+import { maybeDecompressString } from "./_gzip";
+import { study } from "./study";
+
+const parse = (r: any) => JSON.parse(r.content[0].text);
+
+const fetchMock = vi.fn();
+vi.stubGlobal("fetch", fetchMock);
+
+/** A minimal Map-backed OAUTH_KV (get/put/delete/list) matching the CF KV surface. */
+function makeKv() {
+	const store = new Map<string, string>();
+	return {
+		store,
+		get: vi.fn(async (k: string) => (store.has(k) ? store.get(k)! : null)),
+		put: vi.fn(async (k: string, v: string) => void store.set(k, v)),
+		delete: vi.fn(async (k: string) => void store.delete(k)),
+		list: vi.fn(async ({ prefix }: { prefix?: string } = {}) => ({
+			keys: [...store.keys()].filter((k) => !prefix || k.startsWith(prefix)).map((name) => ({ name })),
+			list_complete: true as const,
+		})),
+	};
+}
+
+/** env with the REAL guarded llm() driving a stubbed AI.run that answers by ROLE (the oracle-suite
+ *  idiom), plus an optional toMarkdown stub for the pdf/document-extraction path. */
+function makeEnv(opts: { toMarkdown?: (docs: any[]) => Promise<any>; distill?: string } = {}) {
+	const kv = makeKv();
+	const run = vi.fn(async (_model: string, inputs: any) => {
+		const system: string = inputs.messages.find((m: any) => m.role === "system").content;
+		if (/^Consolidate/.test(system)) return { response: "CONSOLIDATED-KB" };
+		return { response: opts.distill ?? "DISTILLED-CHUNK" };
+	});
+	const AI: any = { run };
+	if (opts.toMarkdown) AI.toMarkdown = vi.fn(opts.toMarkdown);
+	return { env: { AI, OAUTH_KV: kv } as any, kv, run, toMarkdown: AI.toMarkdown };
+}
+
+const kbFor = async (kv: ReturnType<typeof makeKv>, topic: string) => JSON.parse(await maybeDecompressString(kv.store.get(`sux:oracle:${topic}`)!));
+
+afterEach(() => vi.clearAllMocks());
+
+describe("study — learn (text)", () => {
+	it("distills caller-supplied text into a WHITELISTED oracle topic and reports how to query it", async () => {
+		const { env, kv, run } = makeEnv();
+		const r = await study.run(env, { source: "Opposite action means acting opposite to an unjustified emotion's urge.", kind: "text", topic: "dbt", title: "DBT Skills Manual" });
+		expect(r.isError).toBeFalsy();
+
+		const j = parse(r);
+		expect(j).toMatchObject({ action: "learn", topic: "dbt", kind: "text", title: "DBT Skills Manual", whitelisted: true, segments: 1, chunk_count: 1 });
+		expect(j.query_hint).toMatch(/oracle\(.*topic: "dbt"/);
+		expect(j.undo_hint).toBe('study({ action: "forget", topic: "dbt" })');
+
+		// The raw material rode the guarded llm() — fenced as untrusted data, instruction in system.
+		const { messages } = run.mock.calls[0][1] as any;
+		const user = messages.find((m: any) => m.role === "user").content;
+		expect(user).toContain(DATA_OPEN);
+		expect(user).toContain(DATA_CLOSE);
+		expect(user).toContain("Opposite action means acting opposite");
+
+		// Stored under the oracle key space, marked whitelisted with provenance.
+		const stored = await kbFor(kv, "dbt");
+		expect(stored.whitelist).toMatchObject({ kind: "text", via: "study", title: "DBT Skills Manual" });
+		expect(stored.whitelist.source).toMatch(/^inline text \(\d+ chars\)$/);
+		expect(typeof stored.whitelist.learned_at).toBe("number");
+	});
+
+	it("copyright: stores only the compressed distillation, never a verbatim reproduction", async () => {
+		const { env, kv } = makeEnv();
+		const verbatim = "The exact sentence from the book that must NEVER be stored verbatim in the KB.";
+		await study.run(env, { source: verbatim, kind: "text", topic: "book" });
+
+		const stored = await kbFor(kv, "book");
+		// The KB holds the distilled note, not the source text; there is no full-text field.
+		expect(stored.distilled).toBe("DISTILLED-CHUNK");
+		expect(stored.chunks).toEqual(["DISTILLED-CHUNK"]);
+		expect(stored.text).toBeUndefined();
+		expect(stored.fulltext).toBeUndefined();
+		expect(JSON.stringify(stored)).not.toContain(verbatim);
+	});
+
+	it("a book-sized source is split into bounded segments → a multi-note KB (not just its first pages)", async () => {
+		const { env, kv, run } = makeEnv();
+		const para = `${"knowledge ".repeat(200)}\n\n`; // ~2.2k chars/paragraph
+		const big = para.repeat(20); // ~44k chars → several 18k segments
+		run.mockImplementation(async (_m: string, inputs: any) => {
+			const system: string = inputs.messages.find((m: any) => m.role === "system").content;
+			return { response: /^Consolidate/.test(system) ? "CONSOLIDATED-KB" : "SEG-NOTE" };
+		});
+
+		const j = parse(await study.run(env, { source: big, kind: "text", topic: "manual" }));
+		expect(j.segments).toBeGreaterThan(1);
+		expect(j.chunk_count).toBeGreaterThan(1);
+		const stored = await kbFor(kv, "manual");
+		expect(stored.chunks.length).toBe(j.segments);
+		expect(stored.whitelist.kind).toBe("text");
+	});
+});
+
+describe("study — learn (url / pdf)", () => {
+	it("auto-detects a plain URL, hands it to oracle to fetch + distill, and whitelists it", async () => {
+		const { env, kv } = makeEnv();
+		fetchMock.mockImplementation(async () => new Response("A whitelisted article the user has the right to use.", { status: 200, headers: { "content-type": "text/plain" } }));
+
+		const j = parse(await study.run(env, { source: "https://example.com/my-article", topic: "art" }));
+		expect(j).toMatchObject({ kind: "url", whitelisted: true, source: "https://example.com/my-article" });
+		expect(fetchMock.mock.calls[0][0]).toBe("https://example.com/my-article");
+		const stored = await kbFor(kv, "art");
+		expect(stored.whitelist.kind).toBe("url");
+		expect(stored.sources).toEqual(["https://example.com/my-article"]);
+	});
+
+	it("auto-detects a .pdf URL, transcribes it via Workers-AI toMarkdown, then distills", async () => {
+		const { env, kv, toMarkdown } = makeEnv({ toMarkdown: async () => [{ data: "# Chapter 1\n\nExtracted PDF prose about distress tolerance." }] });
+		fetchMock.mockImplementation(async () => new Response(new Uint8Array([0x25, 0x50, 0x44, 0x46]), { status: 200 }));
+
+		const j = parse(await study.run(env, { source: "https://example.com/dbt.pdf", topic: "dbt" }));
+		expect(j).toMatchObject({ kind: "pdf", whitelisted: true, title: "dbt.pdf" });
+		expect(toMarkdown).toHaveBeenCalledTimes(1);
+
+		// The distill saw the TRANSCRIBED text, fenced as data.
+		const distillUser = (env.AI.run.mock.calls[0][1].messages.find((m: any) => m.role === "user").content) as string;
+		expect(distillUser).toContain("Extracted PDF prose about distress tolerance");
+		const stored = await kbFor(kv, "dbt");
+		expect(stored.whitelist).toMatchObject({ kind: "pdf", via: "study" });
+	});
+
+	it("a pdf source with no toMarkdown binding fails cleanly, telling the caller to pass extracted text", async () => {
+		const { env } = makeEnv(); // no toMarkdown
+		fetchMock.mockImplementation(async () => new Response(new Uint8Array([0x25, 0x50, 0x44, 0x46]), { status: 200 }));
+		const r = await study.run(env, { source: "https://example.com/scan.pdf", topic: "x" });
+		expect(r.isError).toBe(true);
+		expect(r.errorCode).toBe("upstream_error");
+		expect(r.content[0].text).toMatch(/toMarkdown|extract the text yourself/i);
+	});
+});
+
+describe("study — list / forget (the copyright audit + reversibility)", () => {
+	it("list surfaces only the whitelisted topics with provenance", async () => {
+		const { env, kv } = makeEnv();
+		// One whitelisted (studied) topic and one plain oracle topic sharing the key space.
+		kv.store.set("sux:oracle:dbt", JSON.stringify({ distilled: "d", chunks: ["c"], sources: ["s"], updated_at: 5, whitelist: { source: "book.pdf", kind: "pdf", via: "study", learned_at: 5, title: "DBT" } }));
+		kv.store.set("sux:oracle:trivia", JSON.stringify({ distilled: "d", chunks: ["c"], sources: ["s"], updated_at: 6 }));
+
+		const j = parse(await study.run(env, { action: "list" }));
+		expect(j.count).toBe(1);
+		expect(j.topics).toHaveLength(1);
+		expect(j.topics[0]).toMatchObject({ topic: "dbt", chunk_count: 1 });
+		expect(j.topics[0].whitelist).toMatchObject({ kind: "pdf", title: "DBT" });
+	});
+
+	it("forget deletes the whitelisted KB (reversible: the git-versioned vault mirror stays)", async () => {
+		const { env, kv } = makeEnv();
+		await study.run(env, { source: "some owned material", kind: "text", topic: "dbt" });
+		expect(kv.store.has("sux:oracle:dbt")).toBe(true);
+
+		const j = parse(await study.run(env, { action: "forget", topic: "dbt" }));
+		expect(j).toMatchObject({ action: "forget", topic: "dbt", forgotten: true });
+		expect(kv.store.has("sux:oracle:dbt")).toBe(false);
+		expect(j.note).toMatch(/git is the vault undo/);
+	});
+});
+
+describe("study — guards", () => {
+	it("bad_input without a source", async () => {
+		const { env } = makeEnv();
+		const r = await study.run(env, { topic: "t" });
+		expect(r.isError).toBe(true);
+		expect(r.errorCode).toBe("bad_input");
+	});
+
+	it("bad_input without a topic", async () => {
+		const { env } = makeEnv();
+		const r = await study.run(env, { source: "hi" });
+		expect(r.isError).toBe(true);
+		expect(r.errorCode).toBe("bad_input");
+	});
+
+	it("not_configured without the AI binding", async () => {
+		const r = await study.run({ OAUTH_KV: makeKv() } as any, { source: "hi", kind: "text", topic: "t" });
+		expect(r.isError).toBe(true);
+		expect(r.errorCode).toBe("not_configured");
+	});
+
+	it("bad_input on an unknown action", async () => {
+		const { env } = makeEnv();
+		const r = await study.run(env, { action: "obliterate", topic: "t" });
+		expect(r.isError).toBe(true);
+		expect(r.errorCode).toBe("bad_input");
+	});
+
+	it("is stateful — never cached, and marked non-read-only", () => {
+		expect(study.cacheable).toBe(false);
+		expect(study.raw).toBe(true);
+		expect(study.annotations?.readOnlyHint).toBe(false);
+	});
+});

@@ -54,7 +54,7 @@ Leaf index (semantics + args in `references/capability-tables.md`; call any via
 `briefing`, `citation`, `costco`, `dropbox`, `feed`, `fontcase`, `homedepot`,
 `jmap`, `kv_get`, `kv_put`, `kv_list`, `kv_delete`, `learn`, `linkedin`, `lowes`,
 `mail_triage`, `monarch`, `mychart`, `obsidian`, `people_finder`, `put`, `redirects`,
-`robots`, `sitemap`, `suggest`, `todoist`, `uw`, `voice`, `walmart`, `watch`,
+`robots`, `sitemap`, `study`, `suggest`, `todoist`, `uw`, `voice`, `walmart`, `watch`,
 `watch_pipeline`, `web_search`, `weekly_ad`.
 
 ## Conventions

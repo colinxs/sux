@@ -254,6 +254,14 @@ export const advise: Fn = {
 				const passages = topKPassages(vec, chunks, k);
 				const profile: Profile | null = await loadProfile(env, domain);
 
+				// TODO(learn-weighting): also fold a WHITELISTED oracle KB for this domain (learned via
+				// the `study` verb, stored at sux:oracle:<topic> with a `whitelist` marker — see
+				// oracle.ts loadKb/Whitelist) into tier 1 here, so a document the user studied governs
+				// advice the same way an ingested authoritative source does. The retrieval + gate would
+				// need to merge the oracle KB's distilled prose alongside `passages`/`profile` and cite
+				// it as [whitelisted:topic]. Left as a seam: `study` + oracle-answer + recall weighting
+				// ship in this PR; advise's tier-1 merge is the follow-up.
+
 				// tier 2 — live personal context (best-effort).
 				const ctx = await contextual(env, question);
 

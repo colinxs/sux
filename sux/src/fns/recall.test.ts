@@ -278,4 +278,40 @@ describe("recall", () => {
 		expect(out.sources.contacts).toContain("unavailable");
 		expect(out.sources.vault).toBe("1 hit(s)");
 	});
+
+	// WHITELISTED weighting — the `oracle` source surfaces studied (whitelisted) KBs, tags them
+	// [whitelisted:topic], leads the synthesis input with them, and the prompt states the precedence.
+	describe("whitelisted (study) material outranks web + model", () => {
+		function kvWith(entries: Record<string, unknown>) {
+			const store = new Map<string, string>(Object.entries(entries).map(([k, v]) => [k, JSON.stringify(v)]));
+			return {
+				get: vi.fn(async (k: string) => store.get(k) ?? null),
+				list: vi.fn(async ({ prefix }: { prefix?: string } = {}) => ({ keys: [...store.keys()].filter((k) => !prefix || k.startsWith(prefix)).map((name) => ({ name })), list_complete: true as const })),
+			};
+		}
+		const kvEnv = (kv: any) => ({ AI: { run: aiRun }, OAUTH_KV: kv }) as any;
+
+		it("tags a studied KB [whitelisted:topic] and leads the material with it (ahead of [web])", async () => {
+			const kv = kvWith({
+				"sux:oracle:dbt": { distilled: "DBT-FACT: opposite action for unjustified emotions.", chunks: ["c"], sources: ["book.pdf"], updated_at: 1, whitelist: { source: "book.pdf", kind: "pdf", via: "study", learned_at: 1 } },
+				"sux:oracle:trivia": { distilled: "TRIVIA-FACT: plain oracle note.", chunks: ["c"], sources: ["x"], updated_at: 1 },
+			});
+			const out = parse(await recall.run(kvEnv(kv), { question: "how do I handle an unjustified urge?", sources: ["web", "oracle"] }));
+
+			// Cited by tier: whitelisted vs plain oracle.
+			expect(out.citations).toEqual(expect.arrayContaining(["whitelisted:dbt", "oracle:trivia"]));
+
+			// The synthesis input leads with the whitelisted block — ahead of the plain oracle KB AND the web.
+			const user = aiRun.mock.calls[0][1].messages[1].content as string;
+			expect(user.indexOf("[whitelisted:dbt]")).toBeGreaterThanOrEqual(0);
+			expect(user.indexOf("[whitelisted:dbt]")).toBeLessThan(user.indexOf("[web results]"));
+			expect(user.indexOf("[whitelisted:dbt]")).toBeLessThan(user.indexOf("[oracle:trivia]"));
+
+			// The system prompt states the precedence: whitelisted OUTRANKS own knowledge OUTRANKS web.
+			const system = aiRun.mock.calls[0][1].messages[0].content as string;
+			expect(system).toContain("SOURCE PRECEDENCE");
+			expect(system).toContain("[whitelisted:*]");
+			expect(system).toMatch(/OUTRANKS your own general knowledge/);
+		});
+	});
 });
