@@ -47,9 +47,17 @@ REDDIT_CLIENT_SECRET         op://Private/Reddit sux app/client_secret
 EBAY_CLIENT_ID               op://Private/eBay sux keyset/app_id
 EBAY_CLIENT_SECRET           op://Private/eBay sux keyset/cert_id
 FACEBOOK_TOKEN               op://Private/Facebook sux token/token
-EPIC_FHIR_CLIENT_ID          op://Private/Epic FHIR sux/client_id
-APPLE_HEALTH_TOKEN           op://Private/Apple Health sux/token
+EPIC_CLIENT_ID               op://Secrets/Epic FHIR sux/client_id_sandbox
+EPIC_CLIENT_SECRET           op://Secrets/Epic FHIR sux/client_secret_sandbox
+EPIC_FHIR_BASE               op://Secrets/Epic FHIR sux/fhir_base_sandbox
+EPIC_JWT_PRIVATE_KEY         op://Secrets/Epic FHIR sux/jwt_private_key
+HEALTH_INGEST_TOKEN          op://Secrets/Epic FHIR sux/health_ingest_token
 EOF
+# NOTE: the three env-specific EPIC refs point at *_sandbox by default (we validate
+# against Epic's public sandbox first). To go live, flip the _sandbox suffix to _prod
+# on EPIC_CLIENT_ID / EPIC_CLIENT_SECRET / EPIC_FHIR_BASE above and re-run this script.
+# EPIC_JWT_PRIVATE_KEY is optional — set it ONLY to use the jwt-bearer/DCR auth mode
+# (a client secret is not needed then). See docs/design/token-setup.md §5.
 
 command -v op >/dev/null 2>&1 || { echo "1Password CLI not found — 'brew install 1password-cli'"; exit 1; }
 op vault list >/dev/null 2>&1 || { echo "op not authorized — unlock the 1Password app and enable Settings > Developer > Integrate with 1Password CLI"; exit 1; }

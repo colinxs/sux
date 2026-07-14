@@ -1,10 +1,47 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { handleAppleHealth, handleMychartRoutes, isUnderFhirBase, mintAccessToken, mychartFetch, readGrant, resolveFhirPath } from "./mychart";
+import {
+	handleAppleHealth,
+	handleMychartRoutes,
+	isUnderFhirBase,
+	jwtMode,
+	makeClientAssertion,
+	mintAccessToken,
+	mychartConfigured,
+	mychartConnected,
+	mychartFetch,
+	publicJwk,
+	readDcrGrant,
+	readGrant,
+	resolveFhirPath,
+} from "./mychart";
 import { handleObservability } from "./observability";
 
 const BASE = "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4";
 const AUTHZ = "https://fhir.epic.com/interconnect-fhir-oauth/oauth2/authorize";
 const TOKEN = "https://fhir.epic.com/interconnect-fhir-oauth/oauth2/token";
+const REGISTER = "https://fhir.epic.com/interconnect-fhir-oauth/oauth2/register";
+
+// Generate a throwaway RSA keypair and return its private key as a PKCS#8 PEM — the
+// same shape EPIC_JWT_PRIVATE_KEY takes. No key material is hardcoded in the repo.
+async function genPrivateKeyPem(): Promise<string> {
+	const kp = (await crypto.subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-384" }, true, ["sign", "verify"])) as CryptoKeyPair;
+	const der = new Uint8Array((await crypto.subtle.exportKey("pkcs8", kp.privateKey)) as ArrayBuffer);
+	let bin = "";
+	for (let i = 0; i < der.length; i++) bin += String.fromCharCode(der[i]);
+	const b64 = btoa(bin).replace(/(.{64})/g, "$1\n");
+	return `-----BEGIN PRIVATE KEY-----\n${b64}\n-----END PRIVATE KEY-----\n`;
+}
+
+const b64urlToBytes = (s: string): Uint8Array => {
+	const b64 = s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4);
+	const bin = atob(b64);
+	const out = new Uint8Array(bin.length);
+	for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+	return out;
+};
+const decodeJwtPart = (part: string): any => JSON.parse(new TextDecoder().decode(b64urlToBytes(part)));
+
+const smartCfgWithRegister = () => new Response(JSON.stringify({ authorization_endpoint: AUTHZ, token_endpoint: TOKEN, registration_endpoint: REGISTER }), { status: 200 });
 
 function kvStub() {
 	const map = new Map<string, string>();
@@ -222,5 +259,132 @@ describe("PHI gate: /s/ handler refuses phi/ keys", () => {
 		const env = { OAUTH_KV: kv, R2: r2 } as any;
 		const resp = await handleObservability(new URL("https://suxos.net/s/11111111-1111-1111-1111-111111111111"), new Request("https://suxos.net/s/11111111-1111-1111-1111-111111111111"), env);
 		expect(resp?.status).toBe(404);
+	});
+});
+
+describe("mychart auth-mode selection", () => {
+	it("jwtMode + configured reflect which secrets are present", async () => {
+		const pem = await genPrivateKeyPem();
+		// refresh mode: secret present, no private key
+		expect(jwtMode(baseEnv())).toBe(false);
+		expect(mychartConfigured(baseEnv())).toBe(true);
+		// jwt mode: private key present (no client secret needed)
+		const jwtEnv = baseEnv({ EPIC_CLIENT_SECRET: undefined, EPIC_JWT_PRIVATE_KEY: pem });
+		expect(jwtMode(jwtEnv)).toBe(true);
+		expect(mychartConfigured(jwtEnv)).toBe(true);
+		// unconfigured: no auth method at all
+		expect(mychartConfigured(baseEnv({ EPIC_CLIENT_SECRET: undefined }))).toBe(false);
+	});
+});
+
+describe("mychart jwt-bearer client assertion", () => {
+	it("builds a well-formed, correctly-signed RS384 assertion (WebCrypto)", async () => {
+		const pem = await genPrivateKeyPem();
+		const env = baseEnv({ EPIC_CLIENT_SECRET: undefined, EPIC_JWT_PRIVATE_KEY: pem });
+		const jwt = await makeClientAssertion(env, "the-client-id", TOKEN);
+		const [h, c, s] = jwt.split(".");
+		const header = decodeJwtPart(h);
+		const claims = decodeJwtPart(c);
+		expect(header).toMatchObject({ alg: "RS384", typ: "JWT" });
+		expect(typeof header.kid).toBe("string");
+		expect(header.kid.length).toBeGreaterThan(0);
+		expect(claims.iss).toBe("the-client-id");
+		expect(claims.sub).toBe("the-client-id");
+		expect(claims.aud).toBe(TOKEN);
+		expect(typeof claims.jti).toBe("string");
+		const now = Math.floor(Date.now() / 1000);
+		expect(claims.exp).toBeGreaterThan(now);
+		expect(claims.exp - now).toBeLessThanOrEqual(300); // ≤5 min per SMART
+		// Signature verifies against the derived public JWK.
+		const pub = await publicJwk(env);
+		const verifyKey = await crypto.subtle.importKey("jwk", { kty: pub.kty, n: pub.n, e: pub.e, alg: "RS384" } as any, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-384" }, false, ["verify"]);
+		const ok = await crypto.subtle.verify({ name: "RSASSA-PKCS1-v1_5" }, verifyKey, b64urlToBytes(s), new TextEncoder().encode(`${h}.${c}`));
+		expect(ok).toBe(true);
+	});
+});
+
+describe("mychart DCR registration on callback", () => {
+	it("exchanges the code (no Basic auth), registers the public key, persists a DCR grant", async () => {
+		const pem = await genPrivateKeyPem();
+		const env = baseEnv({ EPIC_CLIENT_SECRET: undefined, EPIC_JWT_PRIVATE_KEY: pem });
+		await env.OAUTH_KV.put("sux:mychart:pkce:ST", JSON.stringify({ verifier: "VER", created: Date.now() }));
+		const seen: any = {};
+		vi.stubGlobal("fetch", vi.fn(async (u: any, init?: any) => {
+			const url = String(u);
+			if (url.includes(".well-known/smart-configuration")) return smartCfgWithRegister();
+			if (url === TOKEN) {
+				seen.tokenAuth = init.headers.Authorization;
+				return new Response(JSON.stringify({ access_token: "AT_INIT", patient: "PatB", scope: "patient/*.rs", expires_in: 3600 }), { status: 200 });
+			}
+			if (url === REGISTER) {
+				seen.regAuth = init.headers.Authorization;
+				seen.regBody = JSON.parse(init.body);
+				return new Response(JSON.stringify({ client_id: "DYN-CLIENT-1" }), { status: 201 });
+			}
+			throw new Error(`unexpected fetch ${url}`);
+		}));
+		const resp = await handleMychartRoutes(new URL("https://suxos.net/mychart/callback?code=C&state=ST"), new Request("https://suxos.net/mychart/callback?code=C&state=ST"), env);
+		expect(resp?.status).toBe(200);
+		expect(await resp!.text()).toContain("DYN-CLIENT-1");
+		// jwt mode ⇒ code exchange carries NO Basic auth header
+		expect(seen.tokenAuth).toBeUndefined();
+		// registration authed with the interactive access token + our JWKS
+		expect(seen.regAuth).toBe("Bearer AT_INIT");
+		expect(seen.regBody.jwks.keys[0].kty).toBe("RSA");
+		const dcr = await readDcrGrant(env);
+		expect(dcr).toMatchObject({ client_id: "DYN-CLIENT-1", patient: "PatB", scope: "patient/*.rs" });
+		expect(await mychartConnected(env)).toBe(true);
+		expect(await readGrant(env)).toBeNull(); // no refresh grant in jwt mode
+	});
+});
+
+describe("mychart jwt-bearer token mint + 401 self-heal", () => {
+	it("mints via client_credentials + client_assertion using the DCR client id, caches AT", async () => {
+		const pem = await genPrivateKeyPem();
+		const env = baseEnv({ EPIC_CLIENT_SECRET: undefined, EPIC_JWT_PRIVATE_KEY: pem });
+		await env.OAUTH_KV.put("sux:mychart:dcr", JSON.stringify({ client_id: "DYN-1", patient: "P", scope: "patient/*.rs", issued_at: 1 }));
+		const seen: any = {};
+		vi.stubGlobal("fetch", vi.fn(async (u: any, init?: any) => {
+			const url = String(u);
+			if (url.includes(".well-known/smart-configuration")) return smartCfgWithRegister();
+			if (url === TOKEN) {
+				seen.body = String(init.body);
+				seen.auth = init.headers.Authorization;
+				return new Response(JSON.stringify({ access_token: "JWT_AT", expires_in: 3600 }), { status: 200 });
+			}
+			throw new Error(`unexpected ${url}`);
+		}));
+		const tok = await mintAccessToken(env);
+		expect(tok).toBe("JWT_AT");
+		expect(seen.auth).toBeUndefined(); // no Basic auth in jwt mode
+		expect(seen.body).toContain("grant_type=client_credentials");
+		expect(seen.body).toContain("client_assertion_type=urn%3Aietf%3Aparams%3Aoauth%3Aclient-assertion-type%3Ajwt-bearer");
+		expect(seen.body).toContain("client_assertion=");
+		// the signed assertion's iss/sub is the DCR client id, not EPIC_CLIENT_ID
+		const params = new URLSearchParams(seen.body);
+		const claims = decodeJwtPart(params.get("client_assertion")!.split(".")[1]);
+		expect(claims.iss).toBe("DYN-1");
+		expect(env.OAUTH_KV.map.get("sux:mychart:token")).toBe("JWT_AT");
+	});
+
+	it("mychartFetch drops the cached token and re-mints once on a 401 (jwt mode)", async () => {
+		const pem = await genPrivateKeyPem();
+		const env = baseEnv({ EPIC_CLIENT_SECRET: undefined, EPIC_JWT_PRIVATE_KEY: pem });
+		await env.OAUTH_KV.put("sux:mychart:dcr", JSON.stringify({ client_id: "DYN-1", patient: "P", issued_at: 1 }));
+		await env.OAUTH_KV.put("sux:mychart:token", "STALE");
+		let minted = 0;
+		vi.stubGlobal("fetch", vi.fn(async (u: any, init?: any) => {
+			const url = String(u);
+			if (url.includes(".well-known/smart-configuration")) return smartCfgWithRegister();
+			if (url === TOKEN) {
+				minted++;
+				return new Response(JSON.stringify({ access_token: "FRESH", expires_in: 3600 }), { status: 200 });
+			}
+			return init.headers.Authorization === "Bearer STALE" ? new Response("unauthorized", { status: 401 }) : new Response(JSON.stringify({ resourceType: "Patient" }), { status: 200 });
+		}));
+		const resp = await mychartFetch(env, `${BASE}/Patient/P`);
+		expect(resp.status).toBe(200);
+		expect(minted).toBe(1);
+		expect(env.OAUTH_KV.map.get("sux:mychart:token")).toBe("FRESH");
 	});
 });

@@ -26,7 +26,7 @@ const connectedEnv = () =>
 		EPIC_CLIENT_ID: "cid",
 		EPIC_CLIENT_SECRET: "csec",
 		EPIC_FHIR_BASE: BASE,
-		OAUTH_KV: kvStub({ "sux:mychart:grant": JSON.stringify({ refresh_token: "RT", patient: "PatientA", scope: "patient/*.read", issued_at: Date.now() - 5000 }), "sux:mychart:token": "AT" }),
+		OAUTH_KV: kvStub({ "sux:mychart:grant": JSON.stringify({ refresh_token: "RT", patient: "PatientA", scope: "patient/*.rs", issued_at: Date.now() - 5000 }), "sux:mychart:token": "AT" }),
 		R2: r2Stub(),
 	}) as any;
 
@@ -38,8 +38,8 @@ describe("mychart fn", () => {
 		expect(out).toMatchObject({ configured: false, connected: false });
 		const env = connectedEnv();
 		const s = parse(await mychart.run(env, { op: "status" }));
-		expect(s).toMatchObject({ configured: true, connected: true, patient: "PatientA", fhirBase: BASE, scopes: "patient/*.read" });
-		expect(typeof s.refreshTokenAgeSeconds).toBe("number");
+		expect(s).toMatchObject({ configured: true, connected: true, patient: "PatientA", fhirBase: BASE, scopes: "patient/*.rs", authMode: "refresh-token" });
+		expect(typeof s.grantAgeSeconds).toBe("number");
 		// no refresh/access token value leaks
 		expect(JSON.stringify(s)).not.toContain("RT");
 		expect(JSON.stringify(s)).not.toContain("AT");

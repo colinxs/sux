@@ -147,24 +147,68 @@ npm run secret:sux OBSIDIAN_REST_TOKEN
 
 ---
 
-## 5. Health — `APPLE_HEALTH_TOKEN` and/or `EPIC_FHIR_CLIENT_ID`
+## 5. Health — Apple Health and/or Epic MyChart
 
 Two independent sources; both are **read-only** by nature.
 
-- **Apple Health** (`APPLE_HEALTH_TOKEN`): the **Health Auto Export** iOS app (Premium)
-  → add a **REST API automation** → *you choose* the bearer token (a shared secret you
-  invent), and it POSTs your vitals to sux's `/apple-health` route. Set the same value:
-  ```
-  npm run secret:sux APPLE_HEALTH_TOKEN
-  ```
-  Generated on the **phone**, not a browser.
-- **Epic / MyChart** (`EPIC_FHIR_CLIENT_ID`): register a **patient-facing app** at
-  [fhir.epic.com](https://fhir.epic.com) → get a **client id** → SMART-on-FHIR OAuth with
-  **read-only USCDI** scopes (patient FHIR access is read-only). Per-health-system client
-  secret as needed.
-  ```
-  npm run secret:sux EPIC_FHIR_CLIENT_ID
-  ```
+### Apple Health — `HEALTH_INGEST_TOKEN`
+
+The **Health Auto Export** iOS app (Premium) → add a **REST API automation** → *you
+choose* the bearer token (a shared secret you invent), and it POSTs your vitals to
+sux's `/apple-health` route. Set the same value:
+```
+npm run secret:sux HEALTH_INGEST_TOKEN
+```
+Generated on the **phone**, not a browser.
+
+### Epic / MyChart — `EPIC_CLIENT_ID` + `EPIC_FHIR_BASE` + one auth method
+
+Register a **patient-facing app** at [fhir.epic.com](https://fhir.epic.com) with
+**read-only USCDI** SMART-on-FHIR scopes (SMART v2, R4). Epic issues **separate
+Non-Production (sandbox) and Production client IDs** — the `set-secrets.sh` MAP keys
+the Worker secrets at the `*_sandbox` 1Password fields by default; to go live, flip
+the `_sandbox` suffix to `_prod` on `EPIC_CLIENT_ID` / `EPIC_CLIENT_SECRET` /
+`EPIC_FHIR_BASE` in the MAP and re-run `set-secrets.sh`.
+
+`EPIC_FHIR_BASE` is the org's FHIR **R4** base URL (the OAuth `aud`); the public
+sandbox base is `https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4`.
+
+The mychart fn picks its **auth mode at runtime** from which secrets are present:
+
+**Mode A — refresh-token (confidential client, the default).** Needs a per-app
+**client secret**. HTTP Basic authentication; the interactive `/mychart/connect`
+login mints a durable refresh token (held in KV, not a secret).
+```
+npm run secret:sux EPIC_CLIENT_ID
+npm run secret:sux EPIC_CLIENT_SECRET
+npm run secret:sux EPIC_FHIR_BASE
+```
+
+**Mode B — jwt-bearer / Dynamic Client Registration (asymmetric).** Set
+`EPIC_JWT_PRIVATE_KEY` (a PKCS#8 PEM) **instead of** a client secret — its presence
+switches the fn to this mode. The `/mychart/callback` login additionally registers
+the derived **public key** with Epic (DCR), binding your patient context to a durable
+client id; thereafter access tokens are minted by signing a client assertion (RS384)
+with `grant_type=client_credentials` — **no refresh token, no re-login**. This
+requires the app to have **"Can Register Dynamic Clients"** ticked at fhir.epic.com
+and the corresponding **public key (JWKS)** registered there.
+
+Generate the keypair (private key stays a secret; the public JWKS is registered at
+fhir.epic.com):
+```
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out epic-jwt-priv.pem
+openssl rsa -in epic-jwt-priv.pem -pubout -out epic-jwt-pub.pem
+```
+Register `epic-jwt-pub.pem` at fhir.epic.com (Epic accepts a PEM public key or a JWKS
+URL). Store `epic-jwt-priv.pem` in 1Password as the `jwt_private_key` field, then:
+```
+npm run secret:sux EPIC_CLIENT_ID
+npm run secret:sux EPIC_FHIR_BASE
+npm run secret:sux EPIC_JWT_PRIVATE_KEY
+```
+Optional overrides: `EPIC_JWT_ALG` (default `RS384`; Epic also supports `RS256`) and
+`EPIC_JWT_KID` (default = the RFC 7638 thumbprint of the public key). Delete
+`epic-jwt-priv.pem` from disk once it's in 1Password.
 
 ---
 
@@ -225,7 +269,8 @@ npm run secret:sux EBAY_CLIENT_SECRET
 | Dropbox | `DROPBOX_REFRESH_TOKEN` + `_APP_KEY` + `_APP_SECRET` | yes (permissions tab) | ✅ (+ 1 curl) |
 | Todoist | `TODOIST_TOKEN` | no (full only) | ✅ |
 | Obsidian | `OBSIDIAN_REST_TOKEN` | no (full) | ❌ desktop app |
-| Health | `APPLE_HEALTH_TOKEN` / `EPIC_FHIR_CLIENT_ID` | read-only | phone / ✅ |
+| Health (Apple) | `HEALTH_INGEST_TOKEN` | read-only | phone |
+| Health (Epic) | `EPIC_CLIENT_ID` + `EPIC_FHIR_BASE` + (`EPIC_CLIENT_SECRET` \| `EPIC_JWT_PRIVATE_KEY`) | read-only | ✅ |
 | Facebook | `FACEBOOK_TOKEN` | read-only | ✅ |
 | Reddit | `REDDIT_CLIENT_ID` + `_SECRET` | read-only | ✅ |
 | eBay | `EBAY_CLIENT_ID` + `_SECRET` | read-only | ✅ |

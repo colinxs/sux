@@ -124,6 +124,15 @@ export type RtEnv = Env &
 		EPIC_CLIENT_ID?: string;
 		EPIC_CLIENT_SECRET?: string;
 		EPIC_FHIR_BASE?: string;
+		// jwt-bearer / Dynamic Client Registration mode (RFC 7523, SMART v2 asymmetric).
+		// When EPIC_JWT_PRIVATE_KEY (a PKCS#8 PEM) is set, the fn signs a client
+		// assertion (RS384 by default) instead of using EPIC_CLIENT_SECRET, and the
+		// /mychart/callback registers the derived public key so tokens mint via
+		// client_credentials with NO refresh token / no re-login. EPIC_JWT_KID overrides
+		// the auto RFC-7638 thumbprint kid; EPIC_JWT_ALG overrides RS384 (RS256/RS512).
+		EPIC_JWT_PRIVATE_KEY?: string;
+		EPIC_JWT_KID?: string;
+		EPIC_JWT_ALG?: string;
 
 		// Apple Health ingest (/apple-health) — the bearer secret Health Auto Export
 		// presents in `Authorization: Bearer`. Constant-time checked; unset ⇒ the route

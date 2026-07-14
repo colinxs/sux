@@ -2,13 +2,17 @@
 // the two public routes (/mychart/connect, /mychart/callback) plus the Apple Health
 // ingest endpoint (/apple-health). Design + rationale: docs/proposals/mychart.md.
 //
-// Token lifecycle is a straight port of the fns/_dropbox-core pattern: a long-lived
-// REFRESH token minted at /mychart/callback is held in KV (NOT a wrangler secret —
-// Epic rotates it on use and the org sets its lifetime, so it must be writable at
-// runtime), short-lived access tokens are minted on demand and KV-cached with
-// TTL = expires_in - 60, and a 401 self-heals by dropping the cache and re-minting
-// once. Unlike Dropbox, a rotated refresh_token in the refresh response is persisted
-// back to the grant before the fresh access token is used.
+// Two auth modes, selected at runtime by whether EPIC_JWT_PRIVATE_KEY is set:
+//   • refresh-token (default): confidential client, HTTP Basic client_id:secret, a
+//     long-lived REFRESH token minted at /mychart/callback held in KV (NOT a secret —
+//     Epic rotates it on use), rotated refresh persisted back to the grant.
+//   • jwt-bearer / DCR (EPIC_JWT_PRIVATE_KEY set): SMART v2 asymmetric-confidential.
+//     The interactive /callback additionally registers our public key via Dynamic
+//     Client Registration, binding the login's patient context to a durable client_id;
+//     thereafter access tokens mint via grant_type=client_credentials + a signed
+//     client_assertion (RS384) — no refresh token, no re-login.
+// Both cache short-lived access tokens in KV (TTL = expires_in - 60) and 401 self-
+// heals by dropping the cache and re-minting once.
 //
 // PHI invariants (§5): raw FHIR/HealthKit blobs land under the private R2 `phi/`
 // prefix which the /s/<uuid> handler refuses to serve, never route through dropbox,
@@ -19,13 +23,22 @@ import type { RtEnv } from "./registry";
 export const PHI_PREFIX = "phi/";
 
 const GRANT_KEY = "sux:mychart:grant";
+const DCR_GRANT_KEY = "sux:mychart:dcr";
 const ACCESS_TOKEN_KEY = "sux:mychart:token";
 const SMART_CFG_KEY = "sux:mychart:smartcfg";
 const pkceKey = (state: string): string => `sux:mychart:pkce:${state}`;
 
+// jwt-bearer client-assertion (RFC 7523 / SMART v2 asymmetric-confidential). Epic
+// supports RS256 + RS384 and PREFERS RS384; verify against a live org's smart-
+// configuration `token_endpoint_auth_signing_alg_values_supported` if in doubt.
+const DEFAULT_JWT_ALG = "RS384";
+const JWT_ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
+const JWT_ASSERTION_TTL_S = 240; // ≤5 min per SMART; 4 min leaves clock-skew room.
+
 // USCDI-only patient read scopes preserve Epic's Automatic Client ID Distribution
-// (§1 / D4). offline_access is what mints the durable refresh token.
-const DEFAULT_SCOPES = "openid fhirUser offline_access patient/*.read";
+// (§1 / D4). offline_access is what mints the durable refresh token. SMART v2
+// granular syntax (`.rs` = read+search); Epic down-scopes to the registered APIs.
+const DEFAULT_SCOPES = "openid fhirUser offline_access patient/*.rs";
 const PKCE_TTL_S = 600; // 10 min — the interactive login must complete inside this.
 const SMART_CFG_TTL_S = 12 * 60 * 60; // config changes propagate in ~12h (§1).
 
@@ -36,15 +49,36 @@ export interface MychartGrant {
 	issued_at: number;
 }
 
+// The durable jwt-bearer/DCR grant: Epic's Dynamic Client Registration binds the
+// interactive login's patient+scope context to a NEW client_id tied to our public
+// key, so subsequent access tokens mint via client_credentials + a signed client
+// assertion WITHOUT re-login. `client_id` is that registered id (iss=sub on the
+// assertion); patient is carried here because a client_credentials response has no
+// patient claim — the context lives on the registered client.
+export interface MychartDcrGrant {
+	client_id: string;
+	patient?: string;
+	scope?: string;
+	issued_at: number;
+}
+
 interface SmartConfig {
 	authorization_endpoint: string;
 	token_endpoint: string;
+	registration_endpoint?: string;
 }
 
-/** All three of EPIC_CLIENT_ID / EPIC_CLIENT_SECRET / EPIC_FHIR_BASE set. Absent →
- * the fn and routes stay inert (not_configured), exactly like monarch/dropbox. */
+/** JWT/DCR mode is active when a private key is present; else the confidential
+ * refresh-token path. The single toggle for auth-mode selection. */
+export function jwtMode(env: RtEnv): boolean {
+	return Boolean(env.EPIC_JWT_PRIVATE_KEY);
+}
+
+/** Configured when the client id + FHIR base are set AND at least one auth method is
+ * available: a client secret (refresh path) OR a private key (jwt-bearer path).
+ * Absent → the fn and routes stay inert (not_configured), like monarch/dropbox. */
 export function mychartConfigured(env: RtEnv): boolean {
-	return Boolean(env.EPIC_CLIENT_ID && env.EPIC_CLIENT_SECRET && env.EPIC_FHIR_BASE);
+	return Boolean(env.EPIC_CLIENT_ID && env.EPIC_FHIR_BASE && (env.EPIC_CLIENT_SECRET || env.EPIC_JWT_PRIVATE_KEY));
 }
 
 /** The org's FHIR R4 base URL (no trailing slash), the `aud` for the OAuth dance. */
@@ -105,7 +139,11 @@ export async function smartConfig(env: RtEnv): Promise<SmartConfig> {
 	if (!resp.ok || !j?.authorization_endpoint || !j?.token_endpoint) {
 		throw new Error(`SMART configuration discovery failed: HTTP ${resp.status}`);
 	}
-	const cfg: SmartConfig = { authorization_endpoint: String(j.authorization_endpoint), token_endpoint: String(j.token_endpoint) };
+	const cfg: SmartConfig = {
+		authorization_endpoint: String(j.authorization_endpoint),
+		token_endpoint: String(j.token_endpoint),
+		...(j.registration_endpoint ? { registration_endpoint: String(j.registration_endpoint) } : {}),
+	};
 	await env.OAUTH_KV?.put(SMART_CFG_KEY, JSON.stringify(cfg), { expirationTtl: SMART_CFG_TTL_S });
 	return cfg;
 }
@@ -120,13 +158,35 @@ export async function readGrant(env: RtEnv): Promise<MychartGrant | null> {
 	}
 }
 
-// Confidential client → the token endpoint is authed with HTTP Basic client_id:secret.
+export async function readDcrGrant(env: RtEnv): Promise<MychartDcrGrant | null> {
+	const raw = await env.OAUTH_KV?.get(DCR_GRANT_KEY);
+	if (!raw) return null;
+	try {
+		return JSON.parse(raw) as MychartDcrGrant;
+	} catch {
+		return null;
+	}
+}
+
+/** A link exists in EITHER mode: a refresh grant (confidential path) or a DCR grant
+ * (jwt-bearer path). The unified "is MyChart connected?" probe. */
+export async function mychartConnected(env: RtEnv): Promise<boolean> {
+	return Boolean((await readGrant(env)) || (await readDcrGrant(env)));
+}
+
+/** The patient id from whichever grant exists (the token's opaque `patient` claim —
+ * NEVER an MRN/identifier, which Epic may mask and which isn't stable across orgs). */
+export async function mychartPatient(env: RtEnv): Promise<string | undefined> {
+	return (await readGrant(env))?.patient ?? (await readDcrGrant(env))?.patient;
+}
+
+// Token-endpoint headers. The confidential refresh path authenticates with HTTP
+// Basic client_id:secret; the jwt-bearer path carries a signed client_assertion in
+// the body instead, so it sends NO Authorization header (and works with no secret).
 function tokenAuthHeaders(env: RtEnv): Record<string, string> {
-	return {
-		"Content-Type": "application/x-www-form-urlencoded",
-		Accept: "application/json",
-		Authorization: `Basic ${btoa(`${env.EPIC_CLIENT_ID}:${env.EPIC_CLIENT_SECRET}`)}`,
-	};
+	const h: Record<string, string> = { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" };
+	if (!jwtMode(env) && env.EPIC_CLIENT_SECRET) h.Authorization = `Basic ${btoa(`${env.EPIC_CLIENT_ID}:${env.EPIC_CLIENT_SECRET}`)}`;
+	return h;
 }
 
 /** POST the token endpoint with a URL-encoded body; returns the parsed JSON + status. */
@@ -146,11 +206,137 @@ async function cacheAccessToken(env: RtEnv, accessToken: string, expiresIn: unkn
 	await env.OAUTH_KV?.put(ACCESS_TOKEN_KEY, accessToken, { expirationTtl: ttl });
 }
 
+// ---------------- jwt-bearer / DCR (asymmetric) auth ----------------
+
+/** Map EPIC_JWT_ALG → the WebCrypto RSASSA-PKCS1-v1_5 hash. Epic supports RS256 +
+ * RS384 (prefers RS384). Anything unrecognized falls back to the RS384 default. */
+function algHash(env: RtEnv): { alg: string; hash: string } {
+	const alg = String(env.EPIC_JWT_ALG || DEFAULT_JWT_ALG).toUpperCase();
+	const hash = alg === "RS256" ? "SHA-256" : alg === "RS512" ? "SHA-512" : "SHA-384";
+	const canonical = hash === "SHA-256" ? "RS256" : hash === "SHA-512" ? "RS512" : "RS384";
+	return { alg: canonical, hash };
+}
+
+/** PEM (PKCS#8, `-----BEGIN PRIVATE KEY-----`) → raw DER bytes. */
+function pemToDer(pem: string): Uint8Array {
+	const b64 = pem
+		.replace(/-----BEGIN [^-]+-----/g, "")
+		.replace(/-----END [^-]+-----/g, "")
+		.replace(/\s+/g, "");
+	const bin = atob(b64);
+	const out = new Uint8Array(bin.length);
+	for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+	return out;
+}
+
+/** Import EPIC_JWT_PRIVATE_KEY (PKCS#8 PEM) as an RSASSA-PKCS1-v1_5 signing key
+ * (extractable so we can derive the public JWK for registration). */
+async function importSigningKey(env: RtEnv): Promise<CryptoKey> {
+	const pem = String(env.EPIC_JWT_PRIVATE_KEY ?? "");
+	if (!pem.trim()) throw new Error("EPIC_JWT_PRIVATE_KEY is not set.");
+	const { hash } = algHash(env);
+	return crypto.subtle.importKey("pkcs8", pemToDer(pem).buffer as ArrayBuffer, { name: "RSASSA-PKCS1-v1_5", hash }, true, ["sign"]);
+}
+
+/** RFC 7638 JWK thumbprint (base64url SHA-256 over the canonical {e,kty,n}) — the
+ * stable default `kid` when EPIC_JWT_KID is unset, shared by the assertion header
+ * and the registered JWKS so Epic can match them. */
+async function jwkThumbprint(jwk: JsonWebKey): Promise<string> {
+	const canonical = JSON.stringify({ e: jwk.e, kty: jwk.kty, n: jwk.n });
+	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
+	return b64url(new Uint8Array(digest));
+}
+
+/** The PUBLIC RSA JWK derived from the private key (WebCrypto's private-key JWK
+ * export carries the public n/e). Includes alg/use and a kid (EPIC_JWT_KID or the
+ * RFC 7638 thumbprint). This is what gets registered at Epic as our JWKS. */
+export async function publicJwk(env: RtEnv): Promise<JsonWebKey & { kid: string }> {
+	const key = await importSigningKey(env);
+	const full = (await crypto.subtle.exportKey("jwk", key)) as JsonWebKey;
+	const { alg } = algHash(env);
+	const pub: JsonWebKey = { kty: full.kty, n: full.n, e: full.e, alg, use: "sig" };
+	const kid = String(env.EPIC_JWT_KID || (await jwkThumbprint(pub)));
+	return { ...pub, kid };
+}
+
+/** Build + sign a client-assertion JWT (RFC 7523 / SMART v2). iss=sub=clientId,
+ * aud=token endpoint, jti a nonce, exp ≤5 min. Header carries alg + typ:JWT + kid. */
+export async function makeClientAssertion(env: RtEnv, clientId: string, tokenEndpoint: string): Promise<string> {
+	const { alg } = algHash(env);
+	const kid = String(env.EPIC_JWT_KID || (await publicJwk(env)).kid);
+	const now = Math.floor(Date.now() / 1000);
+	const header = { alg, typ: "JWT", kid };
+	const claims = {
+		iss: clientId,
+		sub: clientId,
+		aud: tokenEndpoint,
+		jti: b64url(crypto.getRandomValues(new Uint8Array(16))),
+		iat: now,
+		nbf: now,
+		exp: now + JWT_ASSERTION_TTL_S,
+	};
+	const encode = (o: unknown): string => b64url(new TextEncoder().encode(JSON.stringify(o)));
+	const signingInput = `${encode(header)}.${encode(claims)}`;
+	const key = await importSigningKey(env);
+	const sig = await crypto.subtle.sign({ name: "RSASSA-PKCS1-v1_5" }, key, new TextEncoder().encode(signingInput));
+	return `${signingInput}.${b64url(new Uint8Array(sig))}`;
+}
+
+/** The client_id that signs assertions: the DCR-registered id (durable, patient-
+ * bound) when we have one, else the statically-registered EPIC_CLIENT_ID (a
+ * pre-registered backend key). */
+async function assertionClientId(env: RtEnv): Promise<string> {
+	return (await readDcrGrant(env))?.client_id ?? String(env.EPIC_CLIENT_ID);
+}
+
+/** Dynamic Client Registration: POST our public JWKS to the registration endpoint
+ * authenticated with the interactive login's access token. Epic binds the login's
+ * patient+scope context to the returned client_id, which we persist as the durable
+ * DCR grant. After this, mints need no re-login. Returns the registered client_id. */
+export async function registerDynamicClient(env: RtEnv, cfg: SmartConfig, accessToken: string, patient?: string, scope?: string): Promise<string> {
+	if (!cfg.registration_endpoint) throw new Error("SMART configuration has no registration_endpoint — the org may not support Dynamic Client Registration.");
+	const jwk = await publicJwk(env);
+	const resp = await fetch(cfg.registration_endpoint, {
+		method: "POST",
+		headers: { "Content-Type": "application/json", Accept: "application/json", Authorization: `Bearer ${accessToken}` },
+		body: JSON.stringify({ software_id: String(env.EPIC_CLIENT_ID), jwks: { keys: [jwk] }, token_endpoint_auth_method: "private_key_jwt", grant_types: ["client_credentials"] }),
+		signal: AbortSignal.timeout(20_000),
+	});
+	const json: any = await resp.json().catch(() => null);
+	if (resp.status >= 400 || !json?.client_id) {
+		throw new Error(`MyChart dynamic registration HTTP ${resp.status}: ${json?.error_description ?? json?.error ?? "no client_id returned"}`);
+	}
+	const grant: MychartDcrGrant = { client_id: String(json.client_id), patient, scope, issued_at: Date.now() };
+	await env.OAUTH_KV?.put(DCR_GRANT_KEY, JSON.stringify(grant));
+	return grant.client_id;
+}
+
+/** Mint an access token via jwt-bearer: sign a client assertion with our private key
+ * and exchange it (grant_type=client_credentials) at the token endpoint. Needs a DCR
+ * grant (or a pre-registered EPIC_CLIENT_ID key). Access token cached like refresh. */
+export async function mintAccessTokenJwt(env: RtEnv): Promise<string> {
+	const cfg = await smartConfig(env);
+	const clientId = await assertionClientId(env);
+	if (!clientId) throw new Error("MyChart jwt-bearer needs a client id (EPIC_CLIENT_ID or a DCR grant).");
+	const assertion = await makeClientAssertion(env, clientId, cfg.token_endpoint);
+	const scope = (await readDcrGrant(env))?.scope;
+	const { status, json } = await tokenPost(env, cfg, {
+		grant_type: "client_credentials",
+		client_assertion_type: JWT_ASSERTION_TYPE,
+		client_assertion: assertion,
+		...(scope ? { scope } : {}),
+	});
+	if (status >= 400 || !json?.access_token) {
+		throw new Error(`MyChart jwt-bearer token HTTP ${status}: ${json?.error_description ?? json?.error ?? "no access_token"}`);
+	}
+	await cacheAccessToken(env, String(json.access_token), json.expires_in);
+	return String(json.access_token);
+}
+
 /** Mint an access token from the stored refresh grant, PERSISTING any rotated
  * refresh_token back to the grant before returning. Throws not-configured / no-grant
  * with a caller-friendly message. */
-export async function mintAccessToken(env: RtEnv): Promise<string> {
-	if (!mychartConfigured(env)) throw new Error("MyChart not configured (EPIC_CLIENT_ID / EPIC_CLIENT_SECRET / EPIC_FHIR_BASE).");
+export async function mintAccessTokenRefresh(env: RtEnv): Promise<string> {
 	const grant = await readGrant(env);
 	if (!grant?.refresh_token) throw new Error("MyChart not connected — no grant in KV. Open /mychart/connect once to link the account.");
 	const cfg = await smartConfig(env);
@@ -171,6 +357,13 @@ export async function mintAccessToken(env: RtEnv): Promise<string> {
 	}
 	await cacheAccessToken(env, String(json.access_token), json.expires_in);
 	return String(json.access_token);
+}
+
+/** Auth-mode dispatcher: jwt-bearer when EPIC_JWT_PRIVATE_KEY is set, else the
+ * confidential refresh-token path. Both cache the access token identically. */
+export async function mintAccessToken(env: RtEnv): Promise<string> {
+	if (!mychartConfigured(env)) throw new Error("MyChart not configured (EPIC_CLIENT_ID + EPIC_FHIR_BASE + EPIC_CLIENT_SECRET or EPIC_JWT_PRIVATE_KEY).");
+	return jwtMode(env) ? mintAccessTokenJwt(env) : mintAccessTokenRefresh(env);
 }
 
 /** Resolve a bearer: KV-cached access token, else a fresh mint from the refresh grant. */
@@ -290,8 +483,7 @@ const MAX_PAGES_PER_TYPE = 50;
  * DocumentReference → Binary attachments, and write every raw page + Binary under
  * `phi/`. Returns a per-label count summary — never resource values. */
 export async function pull(env: RtEnv, opts?: { types?: string[]; since?: string }): Promise<PullResult> {
-	const grant = await readGrant(env);
-	const patient = grant?.patient;
+	const patient = await mychartPatient(env);
 	if (!patient) throw new Error("MyChart pull needs a patient id — reconnect via /mychart/connect (the grant carries it).");
 	const base = fhirBase(env);
 	const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -426,6 +618,22 @@ export async function handleMychartRoutes(url: URL, request: Request, env: RtEnv
 			if (status >= 400 || !json?.access_token) {
 				return new Response(`Token exchange failed: HTTP ${status} ${json?.error_description ?? json?.error ?? ""}`.trim(), { status: 502, headers: PAGE_HEADERS });
 			}
+			// jwt-bearer/DCR mode: register our public key against the login's context so
+			// future tokens mint via client_credentials WITHOUT a refresh token or re-login.
+			if (jwtMode(env)) {
+				let dcrNote = "";
+				try {
+					const cid = await registerDynamicClient(env, cfg, String(json.access_token), json.patient, json.scope);
+					dcrNote = ` Registered durable client <code>${cid}</code> (jwt-bearer) — no re-login needed.`;
+				} catch (e) {
+					dcrNote = ` <strong>Dynamic registration failed</strong> (${String((e as Error)?.message ?? e)}). Subsequent pulls will fail until it succeeds.`;
+				}
+				await cacheAccessToken(env, String(json.access_token), json.expires_in);
+				return new Response(
+					`<!doctype html><meta charset=utf-8><title>MyChart connected</title><body style="font-family:system-ui;padding:2rem"><h1>MyChart connected</h1><p>Patient <code>${json.patient ?? "(unknown)"}</code> linked.${dcrNote}</p><p>You can close this tab. Run <code>mychart op:\"pull\"</code> to sync.</p></body>`,
+					{ status: 200, headers: PAGE_HEADERS },
+				);
+			}
 			if (typeof json.refresh_token === "string" && json.refresh_token) {
 				const grant: MychartGrant = { refresh_token: json.refresh_token, patient: json.patient, scope: json.scope, issued_at: Date.now() };
 				await env.OAUTH_KV?.put(GRANT_KEY, JSON.stringify(grant));
@@ -486,6 +694,6 @@ export async function handleAppleHealth(url: URL, request: Request, env: RtEnv):
  * (throws are swallowed by the runSubJob wrapper). */
 export async function refreshMychartToken(env: RtEnv): Promise<void> {
 	if (!mychartConfigured(env)) return;
-	if (!(await readGrant(env))) return; // never connected — nothing to keep warm.
+	if (!(await mychartConnected(env))) return; // never connected — nothing to keep warm.
 	await mintAccessToken(env);
 }

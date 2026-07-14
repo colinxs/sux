@@ -1,6 +1,6 @@
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { errMsg, oj } from "./_util";
-import { fhirBase, mychartConfigured, mychartFetch, pull, readGrant, redirectUri, resolveFhirPath } from "../mychart";
+import { fhirBase, jwtMode, mychartConfigured, mychartConnected, mychartFetch, pull, readDcrGrant, readGrant, redirectUri, resolveFhirPath } from "../mychart";
 
 // MyChart — Epic SMART-on-FHIR clinical records, read-only. The interactive OAuth
 // dance lives on the public /mychart/connect + /mychart/callback routes (src/mychart.ts);
@@ -11,12 +11,14 @@ import { fhirBase, mychartConfigured, mychartFetch, pull, readGrant, redirectUri
 // (lab results, notes, conditions), which must NEVER enter the shared KV result cache.
 // The only cached token is the opaque, short-lived access token in OAUTH_KV.
 //
-// Inert until EPIC_CLIENT_ID / EPIC_CLIENT_SECRET / EPIC_FHIR_BASE are set (like
-// monarch/dropbox); `status` still answers so an operator can see it's unconfigured.
+// Inert until EPIC_CLIENT_ID + EPIC_FHIR_BASE + one auth method (EPIC_CLIENT_SECRET
+// for the refresh path, or EPIC_JWT_PRIVATE_KEY for the jwt-bearer/DCR path) are set
+// (like monarch/dropbox); `status` still answers so an operator can see the mode.
 
 const NOT_CONFIGURED =
-	"MyChart not configured. Set EPIC_CLIENT_ID, EPIC_CLIENT_SECRET, and EPIC_FHIR_BASE " +
-	"(the org's FHIR R4 base URL). Then open /mychart/connect once to link the account. Read-only.";
+	"MyChart not configured. Set EPIC_CLIENT_ID, EPIC_FHIR_BASE (the org's FHIR R4 base URL), and " +
+	"EITHER EPIC_CLIENT_SECRET (refresh-token mode) OR EPIC_JWT_PRIVATE_KEY (jwt-bearer/DCR mode). " +
+	"Then open /mychart/connect once to link the account. Read-only.";
 
 export const mychart: Fn = {
 	name: "mychart",
@@ -49,15 +51,20 @@ export const mychart: Fn = {
 		// status answers even when unconfigured (it's the "why isn't this working" probe).
 		if (op === "status") {
 			const configured = mychartConfigured(env);
+			const mode = jwtMode(env) ? "jwt-bearer" : "refresh-token";
 			const grant = configured ? await readGrant(env) : null;
+			const dcr = configured && jwtMode(env) ? await readDcrGrant(env) : null;
+			const active = grant ?? dcr;
 			return ok(
 				oj({
 					configured,
-					connected: Boolean(grant),
+					authMode: mode,
+					connected: configured ? await mychartConnected(env) : false,
 					fhirBase: configured ? fhirBase(env) : undefined,
-					patient: grant?.patient,
-					scopes: grant?.scope,
-					refreshTokenAgeSeconds: grant?.issued_at ? Math.max(0, Math.floor((Date.now() - grant.issued_at) / 1000)) : undefined,
+					dcrClientId: dcr?.client_id,
+					patient: active?.patient,
+					scopes: active?.scope,
+					grantAgeSeconds: active?.issued_at ? Math.max(0, Math.floor((Date.now() - active.issued_at) / 1000)) : undefined,
 				}),
 			);
 		}
@@ -84,7 +91,7 @@ export const mychart: Fn = {
 				if (!path.trim()) return failWith("bad_input", "op=get requires a `path` (e.g. `Observation?category=vital-signs`).");
 				const abs = resolveFhirPath(env, path);
 				if (!abs) return failWith("bad_input", `op=get: path escapes the configured FHIR base — refused. (${path})`);
-				if (!(await readGrant(env))) return failWith("not_configured", "MyChart not connected — open /mychart/connect once.");
+				if (!(await mychartConnected(env))) return failWith("not_configured", "MyChart not connected — open /mychart/connect once.");
 				const resp = await mychartFetch(env, abs);
 				const text = await resp.text();
 				if (resp.status >= 400) return failWith(resp.status === 404 ? "not_found" : resp.status === 429 ? "rate_limited" : "upstream_error", `MyChart get HTTP ${resp.status}: ${text.slice(0, 300)}`);
@@ -92,7 +99,7 @@ export const mychart: Fn = {
 			}
 
 			if (op === "pull") {
-				if (!(await readGrant(env))) return failWith("not_configured", "MyChart not connected — open /mychart/connect once.");
+				if (!(await mychartConnected(env))) return failWith("not_configured", "MyChart not connected — open /mychart/connect once.");
 				if (!env.R2) return failWith("not_configured", "op=pull needs the R2 bucket bound (raw FHIR is written to the private phi/ prefix).");
 				const types = Array.isArray(a?.types) ? a.types.map(String).filter(Boolean) : undefined;
 				const since = typeof a?.since === "string" && a.since.trim() ? a.since.trim() : undefined;
