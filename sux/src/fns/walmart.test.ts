@@ -18,7 +18,7 @@ beforeEach(() => {
 	// history each test (call-count assertions rely on a clean slate).
 	macRenderMock.mockReset();
 	cfRenderMock.mockReset();
-	cfRenderMock.mockResolvedValue({ ok: false, error: "Browser Rendering is not configured (BROWSER binding)." });
+	cfRenderMock.mockResolvedValue({ ok: false, error: "Browser Run is not configured (BROWSER binding)." });
 });
 
 // Wrap a __NEXT_DATA__ JSON object in a minimal page, as the mac render backend

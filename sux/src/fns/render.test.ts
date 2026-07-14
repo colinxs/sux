@@ -132,6 +132,18 @@ describe("render", () => {
 		expect(stubs.goto).toHaveBeenCalledWith("https://example.com", { waitUntil: "domcontentloaded", timeout: 5000 });
 	});
 
+	it("debug_recording:true forwards { recording: true } to puppeteer.launch (Browser Run session recording)", async () => {
+		stubs.launch.mockClear();
+		await render.run(BROWSER_ENV, { url: "https://example.com", debug_recording: true });
+		expect(stubs.launch).toHaveBeenCalledWith(BROWSER_ENV.BROWSER, { recording: true });
+	});
+
+	it("debug_recording defaults to false (no recording option passed)", async () => {
+		stubs.launch.mockClear();
+		await render.run(BROWSER_ENV, { url: "https://example.com" });
+		expect(stubs.launch).toHaveBeenCalledWith(BROWSER_ENV.BROWSER);
+	});
+
 	it("fails when the BROWSER binding is absent", async () => {
 		const r = await render.run({} as any, { url: "https://example.com" });
 		expect(r.isError).toBe(true);
@@ -364,7 +376,7 @@ describe("render", () => {
 	});
 
 	it("an unsupported/throwing stealth API degrades gracefully — the render still returns content", async () => {
-		// Simulate a CF Browser Rendering build where setUserAgent isn't supported.
+		// Simulate a CF Browser Run build where setUserAgent isn't supported.
 		stubs.setUserAgent.mockRejectedValueOnce(new Error("setUserAgent unsupported"));
 		const r = await render.run(BROWSER_ENV, { url: "https://example.com" });
 		expect(r.isError).toBeFalsy();

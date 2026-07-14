@@ -4,7 +4,7 @@ import { isTailscaleConfigured, smartFetch } from "../proxy";
 import { macRender } from "../mac-render";
 
 // Live probe of the fetch ladder — the three egress pillars (direct → residential
-// scrape → mac render) plus the CF Browser Rendering binding. Each rung is probed
+// scrape → mac render) plus the CF Browser Run binding. Each rung is probed
 // independently, guarded, and hard time-bounded so a hung node (the exact failure
 // this fn exists to detect) can never hang selftest itself: a probe that throws or
 // exceeds the deadline is reported `ok:false`, never propagated. `configured`

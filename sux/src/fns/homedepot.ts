@@ -6,7 +6,7 @@ import { decodeEntities, normalizeMoney, type RetailProduct } from "./_retail";
 
 // Home Depot sits behind an ACTIVE Akamai `_abck` JS challenge a plain fetch can't
 // pass, so this fn renders HD's search page and lifts products out of the rendered
-// HTML. Rendering goes through `retailRender`: Cloudflare Browser Rendering
+// HTML. Rendering goes through `retailRender`: Cloudflare Browser Run
 // (residential + stealth) is the default backend, with the mac render backend (a
 // residential patched browser that warms the Akamai sensor and owns the captcha
 // solver tier) as the dormant fallback. When BOTH clear neither — HD's Akamai wall
@@ -108,7 +108,7 @@ export const homedepot: Fn = {
 	name: "homedepot",
 	cost: 5,
 	description:
-		"Home Depot product search via a rendered browser (Home Depot runs an active Akamai `_abck` JS challenge a plain fetch can't pass). Renders through Cloudflare Browser Rendering (residential + stealth) by default, falling back to the mac render backend (a residential patched browser that warms the Akamai sensor) when cf can't clear the wall, and finally to a paid residential unlocker when configured. " +
+		"Home Depot product search via a rendered browser (Home Depot runs an active Akamai `_abck` JS challenge a plain fetch can't pass). Renders through Cloudflare Browser Run (residential + stealth) by default, falling back to the mac render backend (a residential patched browser that warms the Akamai sensor) when cf can't clear the wall, and finally to a paid residential unlocker when configured. " +
 		"`action`: search (products for a `term`). Extraction is best-effort from the rendered page (embedded state blob when present, else product-pod tiles), normalized to the shared retail shape (id/title/price/image/url). " +
 		"`zip` optionally localizes the store; `limit` caps results (default 15, max 40). Slower than an API.",
 	inputSchema: {

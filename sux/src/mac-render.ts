@@ -2,7 +2,7 @@
 // residential, patched-Chromium node exposed via Tailscale Funnel that solves the
 // active JS bot challenges (Akamai `_abck`, PerimeterX press-and-hold) whose
 // solver tiers — the real mouse-hold gesture and the CapSolver captcha pass — live
-// only here and have no CF Browser Rendering equivalent. The `render` fn drives it
+// only here and have no CF Browser Run equivalent. The `render` fn drives it
 // for arbitrary pages; the retailer fns drive it (mostly via retail-render's
 // mac→cf fallback) for their search pages and extract structured products from the
 // rendered HTML. cf-residential is a viable fallback for some walls (e.g. Amazon's

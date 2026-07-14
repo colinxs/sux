@@ -303,7 +303,7 @@ function renderHealthHtml(h: any): string {
  <div class="row"><span class="k">R2 (sux-mcp)</span><span class="v">${dot(Boolean(bx.r2?.ok))} ${bx.r2?.ok ? bx.r2.ms + " ms" : esc(bx.r2?.reason ?? "down")}</span></div>
  <div class="row"><span class="k">Workers AI</span><span class="v">${dot(Boolean(bx.ai?.bound))}</span></div>
  <div class="row"><span class="k">Images</span><span class="v">${dot(Boolean(bx.images?.bound))}</span></div>
- <div class="row"><span class="k">Browser Rendering</span><span class="v">${dot(Boolean(bx.browser?.bound))}</span></div>
+ <div class="row"><span class="k">Browser Run</span><span class="v">${dot(Boolean(bx.browser?.bound))}</span></div>
 </div>
 
 <div class="card"><h2>tailscale · routing pipeline</h2>

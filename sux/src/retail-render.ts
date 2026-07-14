@@ -1,4 +1,4 @@
-// Resilient render for the retailer fns: try Cloudflare Browser Rendering
+// Resilient render for the retailer fns: try Cloudflare Browser Run
 // (residential + stealth) FIRST, fall back to the Mac patched-browser backend only
 // when cf can't clear a given wall.
 //
