@@ -101,6 +101,7 @@ import { semantic_scholar } from "./semantic_scholar";
 import { shop } from "./shop";
 import { stackexchange } from "./stackexchange";
 import { store } from "./store";
+import { study } from "./study";
 import { obsidian } from "./obsidian";
 import { sux } from "./sux";
 import { tailscale } from "./tailscale";
@@ -214,6 +215,7 @@ export const FUNCTIONS: Fn[] = [
 	shop,
 	stackexchange,
 	store,
+	study,
 	obsidian,
 	sux,
 	tailscale,
