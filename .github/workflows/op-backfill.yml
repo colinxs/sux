@@ -67,7 +67,7 @@ jobs:
           NAMES="CLOUDFLARE_API_TOKEN ANTHROPIC_API_KEY SUX_MCP_TOKEN SUX_BOT_APP_ID SUX_BOT_PRIVATE_KEY"
           wrote=0 skip_empty=0 skip_have=0 fail=0
           for n in $NAMES; do
-            eval "val=\${V_${n}:-}"
+            var="V_$n"; val="${!var:-}"   # safe indirection (handles newlines/special chars)
             if [ -z "$val" ]; then
               echo "  skip  $n (not set in this repo's Actions secrets)"; skip_empty=$((skip_empty+1)); continue
             fi
@@ -77,10 +77,11 @@ jobs:
             if [ "$DRY_RUN" = "true" ]; then
               echo "  WOULD write  $n -> op://$VAULT/$n/credential"; wrote=$((wrote+1)); continue
             fi
-            if op item create --vault "$VAULT" --category "API Credential" --title "$n" "credential=$val" >/dev/null 2>&1; then
+            # Surface op's error (op does not echo the secret value; GH masks known secrets anyway).
+            if err="$(op item create --vault "$VAULT" --category "API Credential" --title "$n" "credential=$val" 2>&1 >/dev/null)"; then
               echo "  wrote  $n"; wrote=$((wrote+1))
             else
-              echo "  FAIL   $n"; fail=$((fail+1))
+              echo "  FAIL   $n :: ${err}"; fail=$((fail+1))
             fi
           done
           echo
