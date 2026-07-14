@@ -14,7 +14,7 @@ Guiding principle: **git is the undo, CI is the gate, review is the net** — so
 - **Integrate via PR, merge-commit** with a curated title (`Merge #NN: <what + why>`) to preserve the reviewed step-by-step history. Squash only a trivial single-change PR. PR bodies end with:
   `🤖 Generated with [Claude Code](https://claude.com/claude-code)`
 - **Before merging anything substantial: run `/code-review ultra`** (the multi-agent branch/PR review). Findings-fix rounds before merge are the norm here, not the exception.
-- Push when SSH/1Password is locked: `git -c credential.helper='!gh auth git-credential' push https://github.com/colinxs/sux.git HEAD:<branch>`.
+- Push when SSH/1Password is locked: `git -c credential.helper='!gh auth git-credential' push https://github.com/SuxOS/sux.git HEAD:<branch>`.
 - **Sweep the branch/worktree backlog** with `npm run branches` (report-only) — parallel runs pile up merged branches and stale worktrees. Add `--prune` (`bash scripts/branch-sweep.sh --prune`) to delete the fully-merged ones and their worktrees; it uses `git branch -d`, so unmerged/superseded branches are always kept for you to judge.
 
 ## CI gates — don't break these (`.github/workflows/ci.yml`)
