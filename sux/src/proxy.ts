@@ -6,7 +6,7 @@
 // residential IP. Use it as a fetch-ladder rung for those hosts only; normal
 // fetch is fine everywhere else.
 
-import { githubAuthHeaders } from "./github-auth";
+import { githubAuthHeaders, isGithubHost } from "./github-auth";
 import { type EgressEvent, shipEgress } from "./grafana";
 
 // Per-tools/call egress-audit context. handleRpc (index.ts) hangs it off a
@@ -86,7 +86,15 @@ const DIRECT_HOST_RE = /(^|\.)(?:kagi\.com|cloudflare-dns\.com|dns\.google|ipwho
 
 export function isDirectHost(url: string): boolean {
 	try {
-		return DIRECT_HOST_RE.test(new URL(url).hostname);
+		const { hostname } = new URL(url);
+		// GitHub is a token-authed structured-JSON API (git store + raw blobs), not a
+		// bot-walled retailer needing a residential IP — it works fine from datacenter
+		// egress and MUST bypass the proxy. Laundering it through the residential node
+		// let a home-node interstitial (a 200 HTML block page) reach ghJson as an
+		// unparseable body, which every vault op then read as an EMPTY vault (list→0,
+		// read→"", head→null). Direct-route exactly the hosts we trust with the token.
+		if (isGithubHost(hostname)) return true;
+		return DIRECT_HOST_RE.test(hostname);
 	} catch {
 		return false;
 	}

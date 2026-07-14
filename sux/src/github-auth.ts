@@ -7,7 +7,7 @@
 
 /** Hosts we trust to receive the token: github.com, api.github.com,
  * raw.githubusercontent.com, and any subdomain of githubusercontent.com. */
-function isGithubHost(hostname: string): boolean {
+export function isGithubHost(hostname: string): boolean {
 	const h = hostname.toLowerCase();
 	return h === "github.com" || h === "api.github.com" || h === "githubusercontent.com" || h.endsWith(".githubusercontent.com");
 }

@@ -26,6 +26,17 @@ describe("smart routing", () => {
 		expect(isDirectHost("not a url")).toBe(false);
 	});
 
+	it("routes GitHub (token-authed JSON API) direct, never through the residential proxy", () => {
+		// A home-node interstitial reaching ghJson as an unparseable 200 body made the
+		// vault MCP read a healthy repo as empty — GitHub must bypass the proxy entirely.
+		expect(isDirectHost("https://api.github.com/repos/o/r/git/trees/main")).toBe(true);
+		expect(isDirectHost("https://github.com/o/r")).toBe(true);
+		expect(isDirectHost("https://raw.githubusercontent.com/o/r/main/x.md")).toBe(true);
+		expect(willProxy(ON, "https://api.github.com/repos/o/r")).toBe(false);
+		// A lookalike is NOT a GitHub host — it must still route through the proxy.
+		expect(isDirectHost("https://api.github.com.evil.example/x")).toBe(false);
+	});
+
 	it("auto-routes web pages through the proxy but direct hosts direct", () => {
 		expect(willProxy(ON, "https://example.com")).toBe(true);
 		expect(willProxy(ON, "https://mcp.kagi.com/mcp")).toBe(false); // Kagi: authed API, no residential benefit

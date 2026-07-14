@@ -16,6 +16,19 @@ const ghHeaders = { Accept: "application/vnd.github+json", "User-Agent": "sux-ob
 async function ghJson(env: any, url: string, init?: { method?: string; body?: string }): Promise<{ status: number; json: any }> {
 	const resp = await smartFetch(env, url, { method: init?.method, headers: { ...ghHeaders, ...(init?.body ? { "Content-Type": "application/json" } : {}) }, body: init?.body });
 	const json = await resp.json().catch(() => null);
+	// A 2xx whose body isn't JSON is a corrupted/intercepted response (a proxy
+	// interstitial, an HTML block page), NOT an empty result — every GitHub JSON
+	// endpoint we call returns an object. Surface it as a bad-gateway error so
+	// list/read/head fail LOUDLY instead of decoding null into an empty vault
+	// (list→0 notes, read→"", vaultHead→null on a perfectly healthy repo).
+	// Null-body statuses (204/205/304) legitimately have no JSON — leave them be.
+	if (resp.ok && json === null && ![204, 205, 304].includes(resp.status)) {
+		let pathname = url;
+		try {
+			pathname = new URL(url).pathname;
+		} catch {}
+		return { status: 502, json: { message: `GitHub returned an unparseable non-JSON body (HTTP ${resp.status}) for ${pathname} — a proxy interstitial or corrupted upstream, not an empty result` } };
+	}
 	return { status: resp.status, json };
 }
 

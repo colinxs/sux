@@ -39,6 +39,15 @@ describe("obsidian (git backend)", () => {
 		expect(JSON.parse(r.content[0].text).notes).toEqual(["a.md", "dir/b.md"]);
 	});
 
+	it("fails loudly on a 200 with a non-JSON body instead of reporting an empty vault", async () => {
+		// A residential-proxy interstitial / HTML block page returns 200 but no JSON;
+		// decoding null → `tree ?? []` would silently report 0 notes for a healthy repo.
+		routes.handler = () => new Response("<html>proxy interstitial</html>", { status: 200, headers: { "content-type": "text/html" } });
+		const r = await obsidian.run(ENV, { action: "list" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/unparseable non-JSON/);
+	});
+
 	it("reads a note and base64-decodes its content", async () => {
 		routes.handler = (url) => {
 			expect(url).toContain("/contents/note.md?ref=main");
