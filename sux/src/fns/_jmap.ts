@@ -127,6 +127,14 @@ export async function sessionDump(env: RtEnv, refresh = false): Promise<Record<s
 	};
 }
 
+/** The account's submission.maxDelayedSend (seconds) — the furthest-out a FUTURERELEASE send may be
+ *  scheduled. 0 / absent = the capability isn't advertised, so callers must NOT clamp (let JMAP judge). */
+export async function submissionMaxDelayedSend(env: RtEnv, refresh = false): Promise<number> {
+	const s = await getSession(env, refresh);
+	const sub = (s.capabilities?.[CAP_SUBMISSION] ?? {}) as { maxDelayedSend?: unknown };
+	return num(sub.maxDelayedSend, 0);
+}
+
 /** Reachable-capability map on the CURRENT token (Phase 0c). Derived from the primary account's
  *  accountCapabilities (unioned with session capabilities) — which reflect the token's scope.
  *  calendars is always false: Fastmail exposes no jmap:calendars (calendar is CalDAV-only). */
@@ -649,7 +657,9 @@ export async function doUpload(env: RtEnv, data: string, type: string): Promise<
 	return (await resp.json()) as Record<string, unknown>;
 }
 
-export async function doDownload(env: RtEnv, args: { blobId: string; type?: string; name?: string; as?: string }): Promise<Record<string, unknown>> {
+/** Stream one blob down from the Session downloadUrl, bounded by DOWNLOAD_MAX_BYTES. Raw bytes — the
+ *  shared core behind doDownload (base64/store) and the batched mail_attachments export. */
+export async function downloadBlobBytes(env: RtEnv, args: { blobId: string; type?: string; name?: string }): Promise<{ bytes: Uint8Array; type: string }> {
 	const session = await getSession(env);
 	const acct = accountIdFor(session, "Email/get", env.FASTMAIL_ACCOUNT_ID);
 	if (!acct) throw new JmapError("upstream_error", "could not resolve an accountId for download.");
@@ -665,13 +675,16 @@ export async function doDownload(env: RtEnv, args: { blobId: string; type?: stri
 	if (!resp.ok) throw new JmapError("upstream_error", `blob download HTTP ${resp.status}.`);
 	// Bound the read (content-length pre-check + mid-stream abort) so a huge attachment errors
 	// clearly instead of buffering unbounded into the 128MB isolate. 50MB covers real attachments.
-	let bytes: Uint8Array;
 	try {
-		bytes = await readBodyBytes(resp, DOWNLOAD_MAX_BYTES);
+		return { bytes: await readBodyBytes(resp, DOWNLOAD_MAX_BYTES), type };
 	} catch (e) {
 		if (/too large|exceeds/i.test(String((e as Error)?.message ?? e))) throw new JmapError("bad_input", `blob '${args.blobId}' exceeds the ${DOWNLOAD_MAX_BYTES}-byte download cap.`);
 		throw e;
 	}
+}
+
+export async function doDownload(env: RtEnv, args: { blobId: string; type?: string; name?: string; as?: string }): Promise<Record<string, unknown>> {
+	const { bytes, type } = await downloadBlobBytes(env, args);
 	// as:"store" always spills to R2; as:"base64" spills too when it would blow the output ceiling (D18).
 	if (args.as === "store" || bytes.length * (4 / 3) > OUTPUT_CEILING_BYTES) {
 		const ref = await putBlob(env, bytes, type);

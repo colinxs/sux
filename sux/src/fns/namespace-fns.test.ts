@@ -74,6 +74,14 @@ describe("namespaceFn dispatcher", () => {
 			expect((v.inputSchema as any).required).toContain("action");
 		}
 	});
+
+	it("explicitly types array-shaped params in the outer schema so clients don't drop them (#225)", () => {
+		// A bare additionalProperties:true left mail_move/archive `ids[]` untyped at the front
+		// door and some MCP clients dropped it. `ids` is now a declared string-array.
+		const ids = (mail.inputSchema as any).properties?.ids;
+		expect(ids).toMatchObject({ type: "array", items: { type: "string" } });
+		expect((mail.inputSchema as any).additionalProperties).toBe(true); // other per-action fields still ride through
+	});
 });
 
 // ── Completeness: every namespace tool is reachable through exactly one verb ──────
