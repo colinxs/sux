@@ -29,6 +29,7 @@
 | Redirect chain, robots.txt, sitemap, RSS/Atom | `redirects`, `robots`, `sitemap`, `feed` |
 | Historical snapshot / change history | `wayback` |
 | Detect whether a page changed since last check | `watch` |
+| Detect GitHub pipeline activity (merge queues, PRs, issues, Actions) | `watch_pipeline` |
 
 ### Fetch routing modes (keep all three)
 
