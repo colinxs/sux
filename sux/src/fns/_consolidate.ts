@@ -55,6 +55,7 @@ export type ConsolidateReport = {
 	week?: string;
 	dormant?: boolean;
 	skipped?: boolean;
+	error?: boolean;
 	scanned?: number;
 	truncated?: boolean;
 	stale?: StaleNote[];
@@ -104,7 +105,9 @@ function buildDigest(week: string, staleDaysUsed: number, stale: StaleNote[], du
  *  Idempotent per ISO week (mirrors _weekly_recall's ledger) — the daily cron re-fires this
  *  every day, but the real scan+append runs at most once per week, `opts.force` bypasses the
  *  gate for an on-demand call. The ledger is marked only after a successful append, so a
- *  failed write leaves the week unmarked and the next tick retries. */
+ *  failed write leaves the week unmarked and the next tick retries. Same fail-closed guard
+ *  applies if every note read fails (expired token, GitHub outage): that's reported as an
+ *  error, not a false "0 stale, 0 dupes" digest, and the week stays unmarked. */
 export async function runConsolidate(env: RtEnv, opts: { week?: string; force?: boolean }, deps: ConsolidateDeps): Promise<ConsolidateReport> {
 	if (!hasConsolidate(env)) {
 		return { dormant: true, note: "consolidate is disabled — set CONSOLIDATE_ENABLED to scan the vault for stale (unverified) and likely-duplicate notes, and append a report to the vault. Detection only: nothing is merged, deleted, or patched. Fail-closed: nothing runs until the flag is set." };
@@ -147,6 +150,13 @@ export async function runConsolidate(env: RtEnv, opts: { week?: string; force?: 
 		list.push(path);
 		keyToPaths.set(dk, list);
 		void extractWikilinks; // reserved for a future duplicate-scoring pass (link overlap) — not used in V1
+	}
+
+	// Every read failing (vs. an empty vault) means the sweep saw nothing real — report it as a
+	// failure rather than a false "0 stale, 0 dupes" digest, and leave the week unmarked so the
+	// next tick retries instead of waiting a full week.
+	if (scanPaths.length > 0 && scanned === 0) {
+		return { week, scanned, truncated, error: true, note: `all ${scanPaths.length} note read(s) failed — nothing scanned, skipping digest and ledger mark` };
 	}
 
 	const duplicate_candidates: DuplicateCandidate[] = [];

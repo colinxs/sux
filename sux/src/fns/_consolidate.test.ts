@@ -127,6 +127,21 @@ describe("runConsolidate", () => {
 		expect(report.scanned).toBe(1);
 	});
 
+	it("every note read failing is a total failure — no digest, no ledger mark, error surfaced", async () => {
+		const env = envWith({ CONSOLIDATE_ENABLED: "1" });
+		const deps = mkDeps({});
+		deps.listNotes = async () => ["Missing1.md", "Missing2.md"];
+		const report = await runConsolidate(env, { week: "2026-W60" }, deps);
+		expect(report.scanned).toBe(0);
+		expect(report.error).toBe(true);
+		expect(report.digest_written).toBeUndefined();
+		expect(deps.digested).not.toHaveBeenCalled();
+
+		const retry = await runConsolidate(env, { week: "2026-W60" }, mkDeps({ "A.md": fm("title: A") }));
+		expect(retry.skipped).toBeUndefined();
+		expect(retry.digest_written).toBe(true);
+	});
+
 	it("writes the digest to Consolidation/<week>.md", async () => {
 		const env = envWith({ CONSOLIDATE_ENABLED: "1" });
 		const deps = mkDeps({ "A.md": fm("title: A") });
