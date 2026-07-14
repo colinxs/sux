@@ -77,6 +77,14 @@ jobs:
       - name: Claude security review
         id: claude
         if: steps.pre.outputs.go == 'true'
+        # The action can hard-fail (exit 1) even when the model ran fine but didn't emit
+        # --json-schema structured_output (flaky/refusing model, mid-review API error, etc).
+        # Without continue-on-error, that failure aborts the job before the Gate step below
+        # ever runs — skipping its deliberate no-verdict fail-closed/advisory policy entirely
+        # and just hard-failing the check with no comment, no hold, no explanation. Let the
+        # step fail visibly in the log but keep going so Gate's existing logic decides the
+        # outcome from the (here, empty) verdict, same as any other no-verdict case.
+        continue-on-error: true
         uses: anthropics/claude-code-action@e90deca47693f9457b72f2b53c17d7c445a87342 # v1
         env:
           # 1-hour prompt-cache TTL (default is 5 min). The autofix→CI→re-review loop and
