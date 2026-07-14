@@ -38,6 +38,12 @@ export type RtEnv = Env &
 		// Facebook Graph API access token (facebook fn). (linkedin fn now scrapes via
 		// the render mac backend — Proxycurl shut down July 2025 — so it needs no key.)
 		FACEBOOK_TOKEN?: string;
+		// Cloudflare Access self-hosted application fronting /dashboard (dashboard.ts).
+		// Team domain e.g. 'https://your-team.cloudflareaccess.com'; AUD is the
+		// application's Audience tag from the Access dashboard. Both unset = the
+		// dashboard route fails closed (401 on everything under /dashboard).
+		CF_ACCESS_TEAM_DOMAIN?: string;
+		CF_ACCESS_AUD?: string;
 		// Git-backed Obsidian vault (obsidian fn): 'owner/repo', branch, optional subfolder.
 		OBSIDIAN_VAULT_REPO?: string;
 		OBSIDIAN_VAULT_BRANCH?: string;

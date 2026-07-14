@@ -1,12 +1,15 @@
-// Public, unauthenticated observability endpoints for the sux engine:
+// Public, unauthenticated (at the app level) observability endpoints for the sux
+// engine:
 //   GET /metrics  — usage metrics as JSON (?format=prometheus for scraping)
 //   GET /logs     — rolling call log with metric fields (JSON; ?tool= / ?limit= )
 //   GET /feedback — server-side issue/suggest backlog (JSON; ?type= / ?tool= / ?limit= )
 //   GET /llms.txt — the capability map as markdown (CDN-cacheable, no secrets)
-// No dashboard UI by design — logging + metrics only. `/health` is intentionally
-// NOT handled here: it falls through to the richer browsable page in
-// github-handler.ts (residential-egress stats). Returns null when the path isn't
-// ours so index.ts can fall through to OAuth.
+// The browsable WAN dashboard (metrics snapshot + recent notes) lives in
+// dashboard.ts, gated by Cloudflare Access at the edge rather than app code — see
+// that file's header. `/health` is intentionally NOT handled here: it falls
+// through to the richer browsable page in github-handler.ts (residential-egress
+// stats). Returns null when the path isn't ours so index.ts can fall through to
+// the dashboard route, then OAuth.
 
 import { type FeedbackKind, readFeedback } from "./fns/_feedback";
 import { maybeDecompress } from "./fns/_gzip";
@@ -29,7 +32,9 @@ function isMeteredObsPath(pathname: string): boolean {
 	return pathname.startsWith("/s/") || pathname === "/metrics" || pathname === "/logs" || pathname === "/feedback";
 }
 
-async function obsRateLimited(request: Request, env: RtEnv): Promise<boolean> {
+// Exported so other pre-OAuth public routes (dashboard.ts) can reuse the same
+// coarse per-IP backpressure instead of standing up a second limiter.
+export async function obsRateLimited(request: Request, env: RtEnv): Promise<boolean> {
 	if (!env.OBS_RATE_LIMITER) return false;
 	// Fail OPEN if the limiter throws — an unavailable limiter must never itself
 	// become an outage (matches the not-configured branch above).
