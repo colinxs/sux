@@ -19,13 +19,16 @@ function resolveKey(raw: unknown): { key: string } | { error: string } {
 
 export const kv_delete: Fn = {
 	name: "kv_delete",
-	description: "Delete a key from the KV store. Params: key (required). Keys are namespaced under 'kv:'; internal cache:/sux:/oauth keys are refused. Returns a confirmation.",
+	description:
+		"Delete a key from the KV store. Params: key (required), confirm (required — must be true), dry_run (optional). Unlike the vault/Dropbox stores, KV has NO git history or trash, so a delete is genuinely irreversible — it requires confirm:true (a deliberate two-step, mirroring vault_delete). Pass dry_run:true to preview whether the key exists (nothing is deleted) before committing. Keys are namespaced under 'kv:'; internal cache:/sux:/oauth keys are refused.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
 		required: ["key"],
 		properties: {
 			key: { type: "string", description: "The key to delete (without the internal 'kv:' prefix)." },
+			confirm: { type: "boolean", description: "Must be true — KV deletes are irreversible (no history, no trash)." },
+			dry_run: { type: "boolean", description: "Preview whether the key exists without deleting it." },
 		},
 	},
 	cacheable: false,
@@ -33,7 +36,13 @@ export const kv_delete: Fn = {
 	run: async (env, args) => {
 		const r = resolveKey(args?.key);
 		if ("error" in r) return fail(r.error);
+		const shown = String(args.key).trim();
+		if (args?.dry_run === true) {
+			const exists = (await env.OAUTH_KV.get(r.key)) !== null;
+			return ok(`DRY RUN — nothing deleted. '${shown}' ${exists ? "exists and would be deleted" : "does not exist (delete would be a no-op)"}. Re-call with confirm:true to apply. KV deletes are irreversible.`);
+		}
+		if (args?.confirm !== true) return fail("kv_delete requires confirm:true (KV deletes are irreversible — no history, no trash). Pass dry_run:true first to preview.");
 		await env.OAUTH_KV.delete(r.key);
-		return ok(`Deleted '${String(args.key).trim()}'.`);
+		return ok(`Deleted '${shown}'.`);
 	},
 };
