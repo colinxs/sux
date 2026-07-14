@@ -1,0 +1,44 @@
+name: E2E MCP dispatch (non-required)
+
+# Drives a REAL locally-spun-up Worker (wrangler dev / workerd) over real HTTP
+# tools/list + tools/call JSON-RPC — see sux/test/e2e/harness.ts. Deliberately a
+# SEPARATE workflow from ci.yml, not a job within it: it needs to boot a live
+# Worker (slower, and its "unconfigured vault" tier hits real (failing) network
+# calls), which doesn't belong in the fast required check. This repo has no
+# GitHub branch-protection rule configured (`gh api repos/.../branches/main/
+# protection` → 404), so nothing here is "required" by construction — this
+# workflow is intentionally never added to one. Treat a red run here as a signal
+# to investigate, not a merge blocker.
+#
+# The opt-in real-GitHub-vault tier (TEST_OBSIDIAN_VAULT_REPO/TEST_GITHUB_TOKEN)
+# is NOT wired here — it needs a maintainer-owned fixture repo + token as repo
+# secrets, which is a deliberate follow-up, not this seed. Locally:
+#   TEST_OBSIDIAN_VAULT_REPO=<owner/fixture-repo> TEST_GITHUB_TOKEN=$(gh auth token) npm run test:e2e
+
+on:
+  push:
+    branches-ignore:
+      - "gh-readonly-queue/**"
+  pull_request:
+
+concurrency:
+  group: e2e-mcp-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: E2E MCP dispatch (vault + ingest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: E2E MCP dispatch tests
+        run: npm run test:e2e
