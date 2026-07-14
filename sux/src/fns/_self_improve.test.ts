@@ -373,6 +373,30 @@ describe("selfImproveTick gating matrix", () => {
 		expect(store.get(`sux:selfimprove:count:${day}`)).toBe("3");
 	});
 
+	it("single-flight lease: a tick already in flight ⇒ the overlapping tick no-ops (no counter race)", async () => {
+		const { env, store } = baseEnv(ENABLED_PR);
+		// A fresh lease is held (an overlapping tick is mid-run) — expiry far in the future.
+		store.set("sux:selfimprove:lock", String(Date.now() + 60_000));
+		seedFeedback(store, [{ kind: "issue", text: "auth token leak", at: 100 }]);
+		const gh = fakeGithub();
+		const r = await selfImproveTick(env, { github: gh });
+		expect(r.dormant).toBe(true);
+		expect(r.reason).toBe("locked");
+		expect(gh.openPr).not.toHaveBeenCalled();
+		expect(gh.openSelfImprovePrCount).not.toHaveBeenCalled();
+		expect(store.get("sux:selfimprove:cursor")).toBeUndefined(); // no work done, cursor untouched
+	});
+
+	it("single-flight lease: a stale/expired lease is reclaimed, and the tick releases it on exit", async () => {
+		const { env, store } = baseEnv(ENABLED_PR);
+		store.set("sux:selfimprove:lock", String(Date.now() - 60_000)); // expired lease
+		seedFeedback(store, [{ kind: "suggest", text: "add a whois tool", at: 100 }]);
+		const gh = fakeGithub();
+		const r = await selfImproveTick(env, { github: gh });
+		expect(r.prs).toBe(1);
+		expect(Number(store.get("sux:selfimprove:lock"))).toBeLessThanOrEqual(Date.now()); // released
+	});
+
 	it("idempotency: a second tick over the same feedback opens 0 new PRs", async () => {
 		const { env, store } = baseEnv(ENABLED_PR);
 		seedFeedback(store, [{ kind: "suggest", text: "add a whois tool", at: 100 }]);
