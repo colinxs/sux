@@ -14,6 +14,10 @@ updated: 2026-07-09
 
 The verb collapses four fan-out surfaces into one: `web_search` (4 engines + consensus merge), `product_search` (7 retailers + isolation), the `shop` single-store *router*, and the Kagi-only `search`. It emits the algebra's `{records, meta}` envelope so `map`/`filter`/`reduce`/`augment` compose over its output, and it owns the filter DSL (`_filter.ts`) that the algebra's standalone `filter` fn imports.
 
+## Reality check — 2026-07-14 (external-research pass)
+
+This proposal is parked; costs/auth below have since moved and affect fan-out fallback ordering when this is revived. **Brave dropped its free tier in Feb 2026** — metered ~$5/1k requests, $5/mo credit (~1k queries) only, card charged with no default spending cap ([brave.com/search/api](https://brave.com/search/api/), [implicator.ai writeup](https://www.implicator.ai/brave-drops-free-search-api-tier-puts-all-developers-on-metered-billing/)) — no longer a free fallback. **Exa** is $7/1k standard searches but has a genuine 20k req/month free tier ([exa.ai/pricing](https://exa.ai/pricing)) — now the strongest free web fallback (re-verify the exact free allocation at integration time; one source says 1,000). **Kagi** Search API auth is a static bearer token, header `Authorization: Bot $TOKEN` ([help.kagi.com](https://help.kagi.com/kagi/api/search.html)) — trivial sux secret, not OAuth/per-user. So-what: prefer Exa's free tier over Brave in the fallback order, and cap Brave spend hard.
+
 ## Resolved decisions
 
 | # | Decision |

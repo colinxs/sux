@@ -14,6 +14,8 @@ updated: 2026-07-09
 
 Companion to [domains.md](domains.md) and [architecture.md](architecture.md). Answers the three "figure out" questions: (1) self-host the vault at home on a spare Linux box, (2) an always-on cloud host with an Electron web app, (3) how Cloudflare Zero Trust (`cloudflared`) maps onto Tailscale (`tailscaled`). Research-verified 2026-07-08; Colin's decisions locked inline.
 
+> **Reality check — 2026-07-14:** Workers VPC Services is **open beta, not GA** ([announcement](https://blog.cloudflare.com/workers-vpc-open-beta/), [changelog](https://developers.cloudflare.com/changelog/2025-09-25-workers-vpc/)) — free during beta, but Cloudflare states features/APIs may change before GA. Every part of this doc that routes the Worker→vault transport over Workers VPC (§1, Tier 2) is built on **pre-GA, shifting ground**: treat it as beta-risk, not a stable dependency, and prefer the non-VPC tiers until it reaches GA — re-check GA status before building.
+
 ## The problem this actually solves
 
 Half the store code written this session is degrade logic for **"the Mac is asleep"** — the KV read-through cache, the remote→git fallback, the 5xx fallback. That whole problem class exists because the live vault lives on a **laptop**. Move it onto an **always-on box** and the live surface is just… always there; the fallbacks become rare-event insurance, not the common path. Second win: today the Local REST API is on a **public** Tailscale Funnel (`:8443`) where the bearer key is the only lock, and **all three** Funnel public ports (443/8443/10000) are consumed. Cloudflare Workers VPC removes both problems at once.
