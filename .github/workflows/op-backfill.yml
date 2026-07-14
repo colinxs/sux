@@ -61,6 +61,7 @@ jobs:
           V_SUX_BOT_PRIVATE_KEY: ${{ secrets.SUX_BOT_PRIVATE_KEY }}
         run: |
           set -uo pipefail
+          exec </dev/null   # CI stdin is a non-TTY pipe; without this `op item create` reads it as a JSON template ("invalid JSON in piped input")
           op whoami >/dev/null || { echo "✗ OP_SERVICE_ACCOUNT_TOKEN invalid"; exit 1; }
           op vault get "$VAULT" >/dev/null 2>&1 || { echo "✗ SA cannot see vault '$VAULT' (needs write access)"; exit 1; }
 
