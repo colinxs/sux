@@ -1,0 +1,15 @@
+{
+	"$schema": "../../../node_modules/wrangler/config-schema.json",
+	"name": "sux-e2e",
+	"main": "./e2e-worker.ts",
+	"compatibility_date": "2025-06-01",
+	"compatibility_flags": ["nodejs_compat"],
+	// Local-only simulated storage (wrangler dev defaults to local mode — no real
+	// Cloudflare account/credentials needed, no cloud KV/R2 touched). The vault/ingest
+	// paths under test read/write these; AI + browser + rate-limit bindings from the
+	// production config are deliberately omitted — nothing in scope here calls them,
+	// and browser/AI would otherwise need real remote access to spin up.
+	"kv_namespaces": [{ "binding": "OAUTH_KV", "id": "d0dadc11fdd64598992f4a84a958bafb" }],
+	"r2_buckets": [{ "binding": "R2", "bucket_name": "sux-mcp-e2e" }],
+	"dev": { "port": 18790, "local_protocol": "http" }
+}
