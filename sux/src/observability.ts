@@ -63,6 +63,11 @@ export async function handleObservability(url: URL, request: Request, env: RtEnv
 			return new Response("bad handle", { status: 500 });
 		}
 		// Expired handle → not-found; best-effort reap any handle KV hasn't evicted.
+		// PHI never leaves through this public, unauthenticated door (5): a handle
+		// that resolves to the private `phi/` prefix is refused outright, so even a
+		// mistakenly-minted store handle over health data cannot be served. FHIR/
+		// HealthKit retrieval goes through the OAuth-gated MCP boundary only.
+		if (ref.key.startsWith("phi/")) return new Response("not found", { status: 404 });
 		if (isExpired(ref)) {
 			await env.OAUTH_KV.delete(`store:${uuid}`).catch(() => {});
 			return new Response("not found", { status: 404 });

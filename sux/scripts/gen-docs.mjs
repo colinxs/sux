@@ -30,6 +30,7 @@ const CATEGORIES = [
 	["Mail (JMAP)", ["jmap", "mail_triage", "briefing"]],
 	["Personal namespaces (one /mcp)", ["vault", "mail", "files", "calendar", "contact"]],
 	["Personal finance", ["monarch"]],
+	["Personal health", ["mychart"]],
 	["Feedback / meta", ["issue", "suggest"]],
 	["Infra / meta", ["selftest", "autonomy_status", "controld", "tailscale", "sux", "fn", "todoist"]],
 ];
