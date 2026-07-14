@@ -13,6 +13,8 @@ const keyOf = (ns: string, id: string) => `${PREFIX}${ns}:${id}`;
 export type Ledger = {
 	/** Has this id been recorded in this namespace? */
 	seen: (id: string) => Promise<boolean>;
+	/** The recorded value for this id, or null if never marked (or no KV binding). */
+	get: (id: string) => Promise<string | null>;
 	/** Record this id (TTL'd). */
 	mark: (id: string, value?: string) => Promise<void>;
 	/** Record iff new — returns true the first time (and records), false if already seen. */
@@ -26,6 +28,9 @@ export function ledger(env: RtEnv, ns: string, ttlSeconds = 30 * 24 * 3600): Led
 	return {
 		async seen(id) {
 			return Boolean(await kv?.get(keyOf(ns, id)));
+		},
+		async get(id) {
+			return (await kv?.get(keyOf(ns, id))) ?? null;
 		},
 		async mark(id, value = "1") {
 			await kv?.put(keyOf(ns, id), value, ttl);

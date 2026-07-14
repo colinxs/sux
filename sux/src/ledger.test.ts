@@ -18,6 +18,14 @@ describe("ledger (idempotency over KV)", () => {
 		expect(await ledger(env, "other").seen("a")).toBe(false); // namespaces are independent
 	});
 
+	it("get returns the marked value, or null when never marked", async () => {
+		const env = { OAUTH_KV: fakeKV() } as any;
+		const l = ledger(env, "cursor");
+		expect(await l.get("offset")).toBe(null);
+		await l.mark("offset", "42");
+		expect(await l.get("offset")).toBe("42");
+	});
+
 	it("markIfNew is true once, then false (the idempotent gate)", async () => {
 		const env = { OAUTH_KV: fakeKV() } as any;
 		const l = ledger(env, "attach");

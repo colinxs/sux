@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { DEFAULT_STALE_DAYS, hasConsolidate, runConsolidate, staleDays, type ConsolidateDeps } from "./_consolidate";
+import { DEFAULT_STALE_DAYS, hasConsolidate, MAX_NOTES_PER_SWEEP, runConsolidate, staleDays, type ConsolidateDeps } from "./_consolidate";
 
 // A single OAUTH_KV stub for the ledger — mirrors _weekly_recall.test.ts's fakeKV. The whole
 // feature is exercised through injected deps: no real vault, no real obsidian fn.
@@ -140,6 +140,64 @@ describe("runConsolidate", () => {
 		const retry = await runConsolidate(env, { week: "2026-W60" }, mkDeps({ "A.md": fm("title: A") }));
 		expect(retry.skipped).toBeUndefined();
 		expect(retry.digest_written).toBe(true);
+	});
+
+	it("rotates the sweep window across weeks instead of always taking the same leading slice", async () => {
+		const env = envWith({ CONSOLIDATE_ENABLED: "1" });
+		const total = Math.round(MAX_NOTES_PER_SWEEP * 1.5); // 750 — bigger than one sweep's cap
+		const recent = new Date().toISOString().slice(0, 10);
+		const notes: Record<string, string> = {};
+		for (let i = 0; i < total; i++) notes[`Note${String(i).padStart(4, "0")}.md`] = fm(`last_verified: ${recent}`);
+
+		const week1 = await runConsolidate(env, { week: "2026-W01" }, mkDeps(notes));
+		expect(week1.scanned).toBe(MAX_NOTES_PER_SWEEP);
+		expect(week1.truncated).toBe(true);
+		expect(week1.window_offset).toBe(0);
+		expect(week1.next_offset).toBe(MAX_NOTES_PER_SWEEP);
+
+		const week2 = await runConsolidate(env, { week: "2026-W02" }, mkDeps(notes));
+		expect(week2.window_offset).toBe(MAX_NOTES_PER_SWEEP);
+
+		// window_offset advancing proves a different slice; spot-check via the paths that were
+		// actually read each sweep (captured through readNote calls, since every note here is fresh
+		// and so produces no stale/duplicate entries to diff against).
+		const readNames = (deps: ConsolidateDeps) => {
+			const seen: string[] = [];
+			const orig = deps.readNote;
+			deps.readNote = async (env, path) => {
+				seen.push(path);
+				return orig(env, path);
+			};
+			return seen;
+		};
+		const d1 = mkDeps(notes);
+		const seen1 = readNames(d1);
+		await runConsolidate(env, { week: "2026-W03" }, d1);
+		const d2 = mkDeps(notes);
+		const seen2 = readNames(d2);
+		await runConsolidate(env, { week: "2026-W04" }, d2);
+		expect(seen1).not.toEqual(seen2);
+		expect(seen2.some((p) => !seen1.includes(p))).toBe(true);
+	});
+
+	it("advances the cursor so every note is eventually covered across enough sweeps", async () => {
+		const env = envWith({ CONSOLIDATE_ENABLED: "1" });
+		const total = Math.round(MAX_NOTES_PER_SWEEP * 1.5);
+		const recent = new Date().toISOString().slice(0, 10);
+		const notes: Record<string, string> = {};
+		for (let i = 0; i < total; i++) notes[`Note${String(i).padStart(4, "0")}.md`] = fm(`last_verified: ${recent}`);
+
+		const covered = new Set<string>();
+		for (let w = 0; w < 5; w++) {
+			const deps = mkDeps(notes);
+			const orig = deps.readNote;
+			deps.readNote = async (e, path) => {
+				covered.add(path);
+				return orig(e, path);
+			};
+			await runConsolidate(env, { week: `2026-W1${w}` }, deps);
+		}
+		expect(covered.size).toBe(total);
 	});
 
 	it("writes the digest to Consolidation/<week>.md", async () => {

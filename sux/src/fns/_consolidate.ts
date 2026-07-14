@@ -42,6 +42,24 @@ export function staleDays(env: RtEnv): number {
 /** Bounds the per-cycle scan so a huge vault can't blow the cron's wall-clock budget. */
 export const MAX_NOTES_PER_SWEEP = 500;
 
+/** The ledger key holding the rotating sweep cursor (an index into `listNotes`' order) — kept
+ *  under the same "consolidate" namespace as the per-week gate, but not itself week-scoped, so
+ *  it survives across weeks and keeps advancing. */
+const CURSOR_KEY = "sweep-offset";
+
+/** Takes up to `size` items starting at `offset`, wrapping around the end of `items` — so a
+ *  vault bigger than one sweep's cap gets covered in full over several sweeps instead of the
+ *  same leading slice forever. Returns the window plus the offset the *next* sweep should
+ *  start from. */
+function sweepWindow<T>(items: readonly T[], offset: number, size: number): { window: T[]; nextOffset: number } {
+	if (items.length === 0) return { window: [], nextOffset: 0 };
+	const start = ((offset % items.length) + items.length) % items.length;
+	const take = Math.min(size, items.length);
+	const window: T[] = [];
+	for (let i = 0; i < take; i++) window.push(items[(start + i) % items.length]);
+	return { window, nextOffset: (start + take) % items.length };
+}
+
 export type ConsolidateDeps = {
 	listNotes: (env: RtEnv) => Promise<string[]>;
 	readNote: (env: RtEnv, path: string) => Promise<string>;
@@ -58,6 +76,8 @@ export type ConsolidateReport = {
 	error?: boolean;
 	scanned?: number;
 	truncated?: boolean;
+	window_offset?: number;
+	next_offset?: number;
 	stale?: StaleNote[];
 	duplicate_candidates?: DuplicateCandidate[];
 	digest_written?: boolean;
@@ -83,9 +103,9 @@ function duplicateKey(path: string): string {
 		.trim();
 }
 
-function buildDigest(week: string, staleDaysUsed: number, stale: StaleNote[], dupes: DuplicateCandidate[], scanned: number, truncated: boolean): string {
+function buildDigest(week: string, staleDaysUsed: number, stale: StaleNote[], dupes: DuplicateCandidate[], scanned: number, truncated: boolean, windowOffset: number, totalNotes: number): string {
 	const lines: string[] = [`\n## Consolidation sweep — ${week} (${new Date().toISOString()})`];
-	lines.push(`_${scanned} note(s) scanned${truncated ? " (capped — vault has more than the per-sweep limit)" : ""}, staleness threshold ${staleDaysUsed}d. Detection only — nothing was changed._`);
+	lines.push(`_${scanned} note(s) scanned${truncated ? ` (capped — window started at offset ${windowOffset} of ${totalNotes}, rotates each sweep so the whole vault is eventually covered)` : ""}, staleness threshold ${staleDaysUsed}d. Detection only — nothing was changed._`);
 	if (stale.length) {
 		lines.push(`\n### Stale (${stale.length}) — no \`last_verified\` or older than ${staleDaysUsed}d`);
 		for (const s of stale) lines.push(`- \`${s.path}\`${s.last_verified ? ` — last verified ${s.last_verified}` : " — never verified"}`);
@@ -127,7 +147,9 @@ export async function runConsolidate(env: RtEnv, opts: { week?: string; force?: 
 		return { week, note: `vault list failed: ${errMsg(e)}` };
 	}
 	const truncated = paths.length > MAX_NOTES_PER_SWEEP;
-	const scanPaths = paths.slice(0, MAX_NOTES_PER_SWEEP);
+	const storedOffset = Number(await led.get(CURSOR_KEY));
+	const windowOffset = Number.isFinite(storedOffset) && storedOffset >= 0 ? storedOffset : 0;
+	const { window: scanPaths, nextOffset } = sweepWindow(paths, windowOffset, MAX_NOTES_PER_SWEEP);
 
 	const stale: StaleNote[] = [];
 	const keyToPaths = new Map<string, string[]>();
@@ -156,7 +178,7 @@ export async function runConsolidate(env: RtEnv, opts: { week?: string; force?: 
 	// failure rather than a false "0 stale, 0 dupes" digest, and leave the week unmarked so the
 	// next tick retries instead of waiting a full week.
 	if (scanPaths.length > 0 && scanned === 0) {
-		return { week, scanned, truncated, error: true, note: `all ${scanPaths.length} note read(s) failed — nothing scanned, skipping digest and ledger mark` };
+		return { week, scanned, truncated, window_offset: windowOffset, error: true, note: `all ${scanPaths.length} note read(s) failed — nothing scanned, skipping digest and ledger mark` };
 	}
 
 	const duplicate_candidates: DuplicateCandidate[] = [];
@@ -166,11 +188,12 @@ export async function runConsolidate(env: RtEnv, opts: { week?: string; force?: 
 	}
 
 	try {
-		await deps.digestAppend(env, `Consolidation/${week}.md`, buildDigest(week, days, stale, duplicate_candidates, scanned, truncated));
+		await deps.digestAppend(env, `Consolidation/${week}.md`, buildDigest(week, days, stale, duplicate_candidates, scanned, truncated, windowOffset, paths.length));
 		await led.mark(key);
-		return { week, scanned, truncated, stale, duplicate_candidates, digest_written: true };
+		await led.mark(CURSOR_KEY, String(nextOffset));
+		return { week, scanned, truncated, window_offset: windowOffset, next_offset: nextOffset, stale, duplicate_candidates, digest_written: true };
 	} catch (e) {
-		return { week, scanned, truncated, stale, duplicate_candidates, digest_written: false, note: `vault append failed: ${errMsg(e)}` };
+		return { week, scanned, truncated, window_offset: windowOffset, stale, duplicate_candidates, digest_written: false, note: `vault append failed: ${errMsg(e)}` };
 	}
 }
 
