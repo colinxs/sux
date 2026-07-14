@@ -24,17 +24,12 @@
 - **Limits/gotchas**: `mcp.kagi.com` is a DIRECT host (egresses direct under `route: "auto"`; pass `proxy: true` to originate from the residential Tailscale exit, with direct fallback if the node is down). The Search API is **metered ~$25/1k queries and still invite-only in 2026** — no subscription tier includes API credits. Lens IDs: Academic=2, Forums=1, Programming=15, News360=29, Recipes=120, Small Web=107.
 - **Refs**: https://help.kagi.com/kagi/api/search.html · MCP: https://help.kagi.com/kagi/api/mcp.html
 
-### Kagi (Session-Link scrape — free/unmetered, NOT yet shipped in code)
-- **Purpose**: Drive Colin's paid Kagi **subscription** programmatically (free/unmetered on Professional/Ultimate) instead of the metered Search API. Staged design; **not wired into `web_search.ts` yet** (blocked on the secret for live parser verification).
+### Kagi (Session-Link scrape — free/unmetered, SHIPPED, default engine)
+- **Purpose**: Drive Colin's paid Kagi **subscription** programmatically (free/unmetered on Professional/Ultimate) instead of the metered Search API. Shipped as the `kagi_session` engine in `web_search.ts`, and the **default** engine whenever `KAGI_SESSION` is set (falls back to `ddg` otherwise).
 - **Auth**: `KAGI_SESSION` = the token from Kagi Settings → **Session Link** (`https://kagi.com/search?token=<THIS>`). Sent as `Cookie: kagi_session=<KAGI_SESSION>`. Full-account credential — Colin sets it as a Worker secret himself. Rotatable (regenerating the Session Link rotates it).
 - **Base URL**: `https://kagi.com/html/search?q=<urlencoded>` (no-JS server-rendered variant). Summarizer at `https://kagi.com/mother/summary_labs`.
-- **Endpoints/methods sux calls**: none yet — planned `kagi_session` engine in `web_search.ts` (ENGINES/available/schema ~L130–208), made the dynamic default when `KAGI_SESSION` is set. Fetch via **residential proxy** + Safari-like UA (dodges datacenter-IP heuristics). Parse HTML with kagi-ken's cheerio selectors into `{t,url,title,snippet}` (t:0 web, t:1 related).
-- **Code pattern** (planned):
-  ```ts
-  const resp = await smartFetch(env, `https://kagi.com/html/search?q=${encodeURIComponent(q)}`,
-    { headers: { Cookie: `kagi_session=${env.KAGI_SESSION}`, "User-Agent": SAFARI_UA } }, "proxy");
-  ```
-- **Limits/gotchas**: Draws down normal (unlimited on paid) account search allowance; does NOT touch API balance. **ToS-GRAY** (unofficial automated `/html` access), markup-fragile, session can expire. Do NOT ship the parser unverified — fetch a live sample once the secret is set and confirm selectors.
+- **Endpoints/methods sux calls**: `kagi_session` engine in `web_search.ts` (`ENGINES.kagi_session`). Fetch via **residential proxy**, HTML parsed into `{t,url,title,snippet}` (t:0 web, t:1 related).
+- **Limits/gotchas**: Draws down normal (unlimited on paid) account search allowance; does NOT touch API balance. **ToS-GRAY** (unofficial automated `/html` access), markup-fragile, session can expire.
 - **Refs**: community tooling `kagi-ken` (selectors to port). Memory: `kagi-session-token-search`.
 
 ### Brave (Search API)

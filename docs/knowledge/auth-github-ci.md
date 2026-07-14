@@ -154,9 +154,11 @@ context that doesn't report on the queue's speculative `gh-readonly-queue/...` r
 the queue forever. security-review passes through (green no-op) on `merge_group` because it's
 a PR-stage gate.
 
-`strict=true` means a PR must be **up-to-date with `main`** to merge — which historically
-required the auto-update limb (`pr-auto-update.yml`, now **retired**: the merge queue rebases
-each PR onto the queue head itself, so PRs no longer need to be up-to-date before queueing).
+`strict=true` means a PR must be **up-to-date with `main`** to merge — the auto-update limb
+(`pr-auto-update.yml`) handles this: it was removed in #195 on the assumption the native
+merge queue would replace it, caused a real stuck-queue failure (25+ armed PRs stalled
+BEHIND with no path to merge, 2026-07-14), and was restored the same day (#388). **It is
+active**, not retired — every armed PR gets rebased onto main's HEAD when main moves.
 Branch protection also requires the
 `security-review` check. Losing branch protection (e.g. going private without Pro, #4)
 silently disarms the whole "green gates the merge" safety — re-verify after any visibility
