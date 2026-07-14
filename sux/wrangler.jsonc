@@ -62,10 +62,10 @@
 	// Per-user rate limit (same as core).
 	"unsafe": {
 		"bindings": [
-			{ "name": "MCP_RATE_LIMITER", "type": "ratelimit", "namespace_id": "2001", "simple": { "limit": 120, "period": 60 } },
+			{ "name": "MCP_RATE_LIMITER", "type": "ratelimit", "namespace_id": "2001", "simple": { "limit": 600, "period": 60 } },
 			// Coarse per-IP ceiling for the anonymous observability/content routes (/metrics, /logs,
 			// /feedback, /s/*) — the MCP gate never sees these, so this is their only backpressure.
-			{ "name": "OBS_RATE_LIMITER", "type": "ratelimit", "namespace_id": "2002", "simple": { "limit": 60, "period": 60 } }
+			{ "name": "OBS_RATE_LIMITER", "type": "ratelimit", "namespace_id": "2002", "simple": { "limit": 300, "period": 60 } }
 		]
 	},
 	"dev": { "port": 8789 },
