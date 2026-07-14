@@ -138,4 +138,18 @@ describe("observability", () => {
 		expect(dnsIssues.count).toBe(1);
 		expect(dnsIssues.items[0]).toMatchObject({ kind: "issue", text: "dns broke", tool: "dns" });
 	});
+
+	it("emits only allowlisted fields from /feedback (future FeedbackEntry fields cannot leak)", async () => {
+		const env = fakeEnv();
+		await appendFeedback(env, "issue", "dns broke", "dns");
+		// Simulate a future FeedbackEntry gaining a sensitive field: inject it into the stored blob.
+		const raw = JSON.parse(env.store.get("sux:feedback"));
+		raw[0].secret = "sk-should-never-leak";
+		env.store.set("sux:feedback", JSON.stringify(raw));
+		const body = await getJson(env, "/feedback");
+		expect(body.items).toHaveLength(1);
+		const allowed = ["kind", "text", "at", "tool"];
+		expect(Object.keys(body.items[0]).every((k) => allowed.includes(k))).toBe(true);
+		expect(JSON.stringify(body)).not.toContain("should-never-leak");
+	});
 });
