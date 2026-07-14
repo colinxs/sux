@@ -12,7 +12,7 @@ describe("autonomy_status — read-only gate mirror", () => {
 		const j = await run();
 		expect(j.armed_count).toBe(0);
 		expect(j.armed).toEqual([]);
-		expect(j.surfaces.map((s: any) => s.surface)).toEqual(["mail_triage", "dropbox_full_write", "self_improve", "cron_trigger", "briefing", "weekly_recall"]);
+		expect(j.surfaces.map((s: any) => s.surface)).toEqual(["mail_triage", "dropbox_full_write", "self_improve", "cron_trigger", "briefing", "weekly_recall", "consolidate"]);
 		for (const s of j.surfaces) expect(s.armed).toBe(false);
 	});
 
@@ -28,6 +28,12 @@ describe("autonomy_status — read-only gate mirror", () => {
 		const j = await run({ WEEKLY_RECALL_ENABLED: "1" });
 		expect(j.surfaces.find((s: any) => s.surface === "weekly_recall")).toMatchObject({ armed: true });
 		expect(j.armed).toContain("weekly_recall");
+	});
+
+	it("consolidate arms on its own enable flag", async () => {
+		const j = await run({ CONSOLIDATE_ENABLED: "1" });
+		expect(j.surfaces.find((s: any) => s.surface === "consolidate")).toMatchObject({ armed: true, mode: "armed (detection-only, appends a weekly digest note)" });
+		expect(j.armed).toContain("consolidate");
 	});
 
 	it("mail_triage is armed only when BOTH ENABLED and ACT are truthy; suggest-only otherwise", async () => {

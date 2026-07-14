@@ -56,6 +56,7 @@ import { briefing } from "./briefing";
 import { calendar } from "./calendar";
 import { citation } from "./citation";
 import { coingecko } from "./coingecko";
+import { consolidate } from "./consolidate";
 import { contact } from "./contact";
 import { controld } from "./controld";
 import { costco } from "./costco";
@@ -170,6 +171,7 @@ export const FUNCTIONS: Fn[] = [
 	calendar,
 	citation,
 	coingecko,
+	consolidate,
 	contact,
 	controld,
 	costco,

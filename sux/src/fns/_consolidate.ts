@@ -1,0 +1,189 @@
+// Memory decay/consolidation — the vault knowledge-graph's staleness pass (master-plan
+// Track B, the "one bet" from docs/design/personal-ai-landscape-2026.md). 2026's real shift
+// in agent memory is structured cognition that decays and consolidates, not an
+// undifferentiated blob that only ever grows. recall already separates vault/mail/files as
+// namespaces; the gap this fills is a staleness/duplicate-detection pass over the vault.
+//
+// V1 SCOPE (deliberately narrow): DETECTION ONLY. Scans notes for a `last_verified`
+// frontmatter marker and flags anything missing/older than STALE_DAYS as stale, and flags
+// same-topic-looking notes as duplicate CANDIDATES. Nothing is merged, deleted, or even
+// frontmatter-patched — the only vault write is a single digest append (same privilege class
+// as _weekly_recall), reporting what was found so Colin can act on it by hand. Automated
+// merging/re-tagging is explicitly deferred to a later pass once detection quality is proven.
+//
+// SAFETY (fail-closed): CONSOLIDATE_ENABLED unset ⇒ total no-op (dormant). Read-only against
+// every note's content; the vault append is idempotent per ISO week (mirrors weekly_recall's
+// once-per-week ledger gate) so the daily cron does real scanning work at most once a week.
+import type { RtEnv } from "../registry";
+import { ledger } from "../ledger";
+import { errMsg } from "./_util";
+import { extractWikilinks, noteBasename, parseFrontmatter } from "../vault-graph";
+import { isoWeek } from "./_weekly_recall";
+
+// A truthy toggle ("0"/"false"/"off"/empty ⇒ off) — mirrors _weekly_recall/_mail_triage's
+// flagOn, so an explicit CONSOLIDATE_ENABLED=0 stays off rather than arming on mere presence.
+const flagOn = (v: string | undefined): boolean => {
+	const s = String(v ?? "").trim().toLowerCase();
+	return s !== "" && s !== "0" && s !== "false" && s !== "no" && s !== "off";
+};
+
+/** The consolidation sweep may run at all. Unset ⇒ the feature is dormant (no-op). */
+export const hasConsolidate = (env: RtEnv): boolean => flagOn(env.CONSOLIDATE_ENABLED);
+
+/** A note with no `last_verified`, or one older than this many days, is flagged stale.
+ *  Overridable via CONSOLIDATE_STALE_DAYS; falls back to this default on an invalid value. */
+export const DEFAULT_STALE_DAYS = 90;
+
+export function staleDays(env: RtEnv): number {
+	const n = Number(env.CONSOLIDATE_STALE_DAYS);
+	return Number.isFinite(n) && n > 0 ? n : DEFAULT_STALE_DAYS;
+}
+
+/** Bounds the per-cycle scan so a huge vault can't blow the cron's wall-clock budget. */
+export const MAX_NOTES_PER_SWEEP = 500;
+
+export type ConsolidateDeps = {
+	listNotes: (env: RtEnv) => Promise<string[]>;
+	readNote: (env: RtEnv, path: string) => Promise<string>;
+	digestAppend: (env: RtEnv, path: string, content: string) => Promise<void>;
+};
+
+export type StaleNote = { path: string; last_verified?: string; reason: string };
+export type DuplicateCandidate = { a: string; b: string; key: string };
+
+export type ConsolidateReport = {
+	week?: string;
+	dormant?: boolean;
+	skipped?: boolean;
+	scanned?: number;
+	truncated?: boolean;
+	stale?: StaleNote[];
+	duplicate_candidates?: DuplicateCandidate[];
+	digest_written?: boolean;
+	note?: string;
+};
+
+/** ISO date `staleDays` days before `now` — same-day boundary as the cutoff (a note verified
+ *  exactly on the cutoff date counts as still-fresh, matching `<` not `<=` at the caller). */
+function cutoffIso(days: number, now: Date): string {
+	const cutoff = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+	return cutoff.toISOString().slice(0, 10);
+}
+
+/** A crude but cheap duplicate-candidate key: the note's basename, lowercased, punctuation/
+ *  numbering stripped ("Project Alpha (2)" and "project-alpha" collapse to the same key).
+ *  False positives are just candidates for a human to glance at, never auto-merged — so this
+ *  favors recall over precision. */
+function duplicateKey(path: string): string {
+	return noteBasename(path)
+		.toLowerCase()
+		.replace(/\(\d+\)$/, "")
+		.replace(/[\s_-]+/g, " ")
+		.trim();
+}
+
+function buildDigest(week: string, staleDaysUsed: number, stale: StaleNote[], dupes: DuplicateCandidate[], scanned: number, truncated: boolean): string {
+	const lines: string[] = [`\n## Consolidation sweep — ${week} (${new Date().toISOString()})`];
+	lines.push(`_${scanned} note(s) scanned${truncated ? " (capped — vault has more than the per-sweep limit)" : ""}, staleness threshold ${staleDaysUsed}d. Detection only — nothing was changed._`);
+	if (stale.length) {
+		lines.push(`\n### Stale (${stale.length}) — no \`last_verified\` or older than ${staleDaysUsed}d`);
+		for (const s of stale) lines.push(`- \`${s.path}\`${s.last_verified ? ` — last verified ${s.last_verified}` : " — never verified"}`);
+	} else {
+		lines.push("\n### Stale — none found");
+	}
+	if (dupes.length) {
+		lines.push(`\n### Possible duplicates (${dupes.length}) — same-looking title, review by hand`);
+		for (const d of dupes) lines.push(`- \`${d.a}\` ↔ \`${d.b}\``);
+	} else {
+		lines.push("\n### Possible duplicates — none found");
+	}
+	return `${lines.join("\n")}\n`;
+}
+
+/** Run one consolidation cycle. Fail-closed: a dormant no-op unless CONSOLIDATE_ENABLED.
+ *  Idempotent per ISO week (mirrors _weekly_recall's ledger) — the daily cron re-fires this
+ *  every day, but the real scan+append runs at most once per week, `opts.force` bypasses the
+ *  gate for an on-demand call. The ledger is marked only after a successful append, so a
+ *  failed write leaves the week unmarked and the next tick retries. */
+export async function runConsolidate(env: RtEnv, opts: { week?: string; force?: boolean }, deps: ConsolidateDeps): Promise<ConsolidateReport> {
+	if (!hasConsolidate(env)) {
+		return { dormant: true, note: "consolidate is disabled — set CONSOLIDATE_ENABLED to scan the vault for stale (unverified) and likely-duplicate notes, and append a report to the vault. Detection only: nothing is merged, deleted, or patched. Fail-closed: nothing runs until the flag is set." };
+	}
+	const week = String(opts.week ?? isoWeek(env.VAULT_TZ));
+	const led = ledger(env, "consolidate");
+	const key = `week::${week}`;
+	if (!opts.force && (await led.seen(key))) return { week, skipped: true, note: "already ran this ISO week" };
+
+	const days = staleDays(env);
+	const cutoff = cutoffIso(days, new Date());
+
+	let paths: string[];
+	try {
+		paths = await deps.listNotes(env);
+	} catch (e) {
+		return { week, note: `vault list failed: ${errMsg(e)}` };
+	}
+	const truncated = paths.length > MAX_NOTES_PER_SWEEP;
+	const scanPaths = paths.slice(0, MAX_NOTES_PER_SWEEP);
+
+	const stale: StaleNote[] = [];
+	const keyToPaths = new Map<string, string[]>();
+	let scanned = 0;
+	for (const path of scanPaths) {
+		let content: string;
+		try {
+			content = await deps.readNote(env, path);
+		} catch {
+			continue; // one unreadable note must not sink the whole sweep
+		}
+		scanned++;
+		const fm = parseFrontmatter(content);
+		const lv = typeof fm?.last_verified === "string" ? fm.last_verified : undefined;
+		if (!lv) stale.push({ path, reason: "no last_verified marker" });
+		else if (lv < cutoff) stale.push({ path, last_verified: lv, reason: `older than ${days}d` });
+
+		const dk = duplicateKey(path);
+		const list = keyToPaths.get(dk) ?? [];
+		list.push(path);
+		keyToPaths.set(dk, list);
+		void extractWikilinks; // reserved for a future duplicate-scoring pass (link overlap) — not used in V1
+	}
+
+	const duplicate_candidates: DuplicateCandidate[] = [];
+	for (const [dk, group] of keyToPaths) {
+		if (group.length < 2) continue;
+		for (let i = 0; i < group.length; i++) for (let j = i + 1; j < group.length; j++) duplicate_candidates.push({ a: group[i], b: group[j], key: dk });
+	}
+
+	try {
+		await deps.digestAppend(env, `Consolidation/${week}.md`, buildDigest(week, days, stale, duplicate_candidates, scanned, truncated));
+		await led.mark(key);
+		return { week, scanned, truncated, stale, duplicate_candidates, digest_written: true };
+	} catch (e) {
+		return { week, scanned, truncated, stale, duplicate_candidates, digest_written: false, note: `vault append failed: ${errMsg(e)}` };
+	}
+}
+
+/** The real deps: vault list/read/append via the obsidian fn (git-backed). Dynamically
+ *  imported by the caller to keep the cron path from pulling in the vault surface when the
+ *  feature is dormant, mirroring _weekly_recall.defaultDeps. Tests inject fakes instead. */
+export async function defaultDeps(): Promise<ConsolidateDeps> {
+	const { obsidian } = await import("./obsidian");
+	return {
+		listNotes: async (env) => {
+			const r = await obsidian.run(env, { action: "list", backend: "git" });
+			if (r.isError) throw new Error(r.content?.[0]?.text ?? "vault list failed");
+			const parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
+			return Array.isArray(parsed?.notes) ? parsed.notes.map(String) : [];
+		},
+		readNote: async (env, path) => {
+			const r = await obsidian.run(env, { action: "read", path, backend: "git" });
+			if (r.isError) throw new Error(r.content?.[0]?.text ?? "vault read failed");
+			return String(r.content?.[0]?.text ?? "");
+		},
+		digestAppend: async (env, path, content) => {
+			const r = await obsidian.run(env, { action: "append", path, content, backend: "git" });
+			if (r.isError) throw new Error(r.content?.[0]?.text ?? "vault append failed");
+		},
+	};
+}

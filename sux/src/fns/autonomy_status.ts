@@ -5,6 +5,7 @@ import { hasDropboxFull, hasDropboxFullWrite } from "./_dropbox-full";
 import { canAutoMerge, canOpenPr, hasSelfImprove, isKilled } from "./_self_improve";
 import { hasBriefing, hasBriefingStageDrafts } from "./_briefing";
 import { hasWeeklyRecall } from "./_weekly_recall";
+import { hasConsolidate } from "./_consolidate";
 
 // "What can act on my behalf right now" — a single read-only mirror of the Worker-side
 // autonomy gates. Several consequential surfaces (mail-triage, Mode-B Dropbox writes,
@@ -24,7 +25,7 @@ type Surface = { surface: string; armed: boolean; mode: string; reversible: bool
 export const autonomy_status: Fn = {
 	name: "autonomy_status",
 	description:
-		"Read-only mirror of which autonomous, act-on-your-behalf surfaces are ARMED right now — one call instead of grepping GitHub secrets + wrangler vars + 1Password. Reports the Worker-side consequential gates as booleans (never their secret VALUES, never any upstream call): the mail-triage bot (dormant / suggest-only / reversible auto-act), Mode-B whole-Dropbox writes (dormant / read-only / armed behind the dry-run-by-default firewall — write needs a separate arm flag atop the read credential), the self-improve loop (killed / dormant / suggest-only / may-open-PR / may-arm-auto-merge), the manual cron trigger endpoint, the morning briefing (dormant / digest-only / stages reply drafts), and the weekly-recall digest (read-only, vault-append only). Each surface carries its consequence + whether its acts are reversible. Returns JSON { armed_count, armed:[names], surfaces:[{surface, armed, mode, reversible, consequence}], note }. GitHub-side gates (branch auto-merge rule, CI GATE_SECRET tier) live in the repo not the Worker, so they're deliberately out of scope. Never cached.",
+		"Read-only mirror of which autonomous, act-on-your-behalf surfaces are ARMED right now — one call instead of grepping GitHub secrets + wrangler vars + 1Password. Reports the Worker-side consequential gates as booleans (never their secret VALUES, never any upstream call): the mail-triage bot (dormant / suggest-only / reversible auto-act), Mode-B whole-Dropbox writes (dormant / read-only / armed behind the dry-run-by-default firewall — write needs a separate arm flag atop the read credential), the self-improve loop (killed / dormant / suggest-only / may-open-PR / may-arm-auto-merge), the manual cron trigger endpoint, the morning briefing (dormant / digest-only / stages reply drafts), the weekly-recall digest (read-only, vault-append only), and the vault consolidation sweep (dormant / detection-only, vault-append only). Each surface carries its consequence + whether its acts are reversible. Returns JSON { armed_count, armed:[names], surfaces:[{surface, armed, mode, reversible, consequence}], note }. GitHub-side gates (branch auto-merge rule, CI GATE_SECRET tier) live in the repo not the Worker, so they're deliberately out of scope. Never cached.",
 	inputSchema: { type: "object", additionalProperties: false, required: [], properties: {} },
 	cacheable: false,
 	annotations: { readOnlyHint: true, openWorldHint: false },
@@ -41,6 +42,7 @@ export const autonomy_status: Fn = {
 		const briefingOn = hasBriefing(env);
 		const briefingDrafts = hasBriefingStageDrafts(env);
 		const weeklyRecall = hasWeeklyRecall(env);
+		const consolidateOn = hasConsolidate(env);
 
 		const surfaces: Surface[] = [
 			{
@@ -84,6 +86,13 @@ export const autonomy_status: Fn = {
 				mode: weeklyRecall ? "armed (read-only, appends a weekly digest note)" : "dormant",
 				reversible: true,
 				consequence: "reads your vault/mail/web once a week and appends a recall digest note — read-only + vault-append only, git-reversible. Never sends or deletes.",
+			},
+			{
+				surface: "consolidate",
+				armed: consolidateOn,
+				mode: consolidateOn ? "armed (detection-only, appends a weekly digest note)" : "dormant",
+				reversible: true,
+				consequence: "scans the vault once a week for stale/duplicate-candidate notes and appends a findings digest — detection only, never merges, deletes, or patches a note. git-reversible like any vault append.",
 			},
 		];
 

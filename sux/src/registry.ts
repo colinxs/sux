@@ -109,6 +109,16 @@ export type RtEnv = Env &
 		WEEKLY_RECALL_ENABLED?: string;
 		WEEKLY_RECALL_QUESTIONS?: string;
 
+		// Vault memory-consolidation sweep (fns/_consolidate.ts, rides the daily cron; runs
+		// at most once per ISO week). Fail-closed, default OFF, set via `wrangler secret`
+		// (NOT declared in wrangler.jsonc — like WEEKLY_RECALL_*). Unset ⇒ dormant no-op.
+		//   CONSOLIDATE_ENABLED     — master enable (toggle); unset/"0"/"false"/"off" ⇒ inert.
+		//   CONSOLIDATE_STALE_DAYS  — override the staleness threshold (default 90). Detection
+		//                             only: flags stale/duplicate-candidate notes in a vault
+		//                             digest append, never merges/deletes/patches anything.
+		CONSOLIDATE_ENABLED?: string;
+		CONSOLIDATE_STALE_DAYS?: string;
+
 		EXA_API_KEY?: string;
 
 		KROGER_CLIENT_ID?: string;

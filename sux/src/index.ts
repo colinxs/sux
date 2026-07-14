@@ -589,6 +589,18 @@ async function weeklyRecallTick(env: RtEnv): Promise<unknown> {
 	return mod.runWeeklyRecall(env, {}, deps);
 }
 
+// One weekly vault-consolidation sweep, riding the SAME daily cron. FAIL-CLOSED: no-ops
+// entirely unless CONSOLIDATE_ENABLED is set, and a once-per-ISO-week ledger gate (mirrors
+// weeklyRecallTick) means it does real work (vault scan + digest append) at most once every
+// seven days. Detection only — flags stale/duplicate-candidate notes, never merges or deletes
+// anything. Dynamically imported so the cron path pulls in the vault surface only when armed.
+async function consolidateTick(env: RtEnv): Promise<unknown> {
+	const mod = await import("./fns/_consolidate");
+	if (!mod.hasConsolidate(env)) return { dormant: true };
+	const deps = await mod.defaultDeps();
+	return mod.runConsolidate(env, {}, deps);
+}
+
 // One daily morning-briefing cycle, driven by the same Cron Trigger. FAIL-CLOSED: early-returns
 // doing nothing unless BRIEFING_ENABLED is set — and even then it only STAGES reply drafts (to
 // Drafts, never sent) when BRIEFING_STAGE_DRAFTS is also set; otherwise it composes a
@@ -624,6 +636,7 @@ async function maintenanceTick(env: RtEnv, ctx: ExecutionContext): Promise<void>
 	// no-op unless MyChart is configured AND a grant exists (§2b). Never throws.
 	await runSubJob(env, "mychart_token", () => refreshMychartToken(env));
 	await runSubJob(env, "weekly_recall", () => weeklyRecallTick(env));
+	await runSubJob(env, "consolidate", () => consolidateTick(env));
 	await runSubJob(env, "briefing", () => briefingTick(env));
 	// Rebuild the cosmetic-adblock engine blob in R2 — staleness-gated, so the
 	// daily cron only does network work ≈ weekly (see _adblock.refreshAdblockEngine).

@@ -35,6 +35,7 @@ The top-level prioritized roadmap. Detailed execution lives in `org-structure-an
 - Recall: free Kagi (`kagi_session`, needs `KAGI_SESSION`) + web-default-when-free; the fn→fn cache + `listExamples` cheap wins from the spend audit.
 - `learn`/`study` (whitelisted-knowledge verb) — the learn→research→advise atom.
 - Deepen the digital-life spine: Mode B write (gated), the knowledge-graph over the vault.
+  - Memory decay/consolidation pass (the Track D "one bet") — **shipped, gated-dormant**: `consolidate` fn + weekly cron sweep flags stale (`last_verified`-unset/expired) and duplicate-candidate vault notes, appends a findings digest. Detection only — nothing merged/deleted/patched. Dormant unless `CONSOLIDATE_ENABLED` is set.
 
 ### C · Generalize (organic)
 - The reusable pipeline as "bot-in-a-box" via `SuxOS/.github` — any repo inherits the autonomy.
