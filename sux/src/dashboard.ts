@@ -28,7 +28,7 @@
 // rate-limiting regardless of who's asking.
 
 import { verifyAccessJwt } from "./access-jwt";
-import { compileSieve } from "./fns/_mail_sieve";
+import { ALL_SIEVE_CATEGORIES, compileSieve } from "./fns/_mail_sieve";
 import { obsidian } from "./fns/obsidian";
 import { deriveMetrics, readMetrics, sloReport } from "./metrics";
 import { obsRateLimited } from "./observability";
@@ -135,9 +135,14 @@ const DASHBOARD_HTML = `<!doctype html>
   .breach { color: #ff6b6b; }
   .loading { color: #666; font-style: italic; }
   pre#sieve-script { background: #15181d; border: 1px solid #262b33; border-radius: 8px; padding: 14px; overflow-x: auto; font-size: 12px; line-height: 1.5; white-space: pre; margin: 0 0 10px; }
-  button#sieve-copy { background: #1f242b; border: 1px solid #262b33; color: #e6e6e6; border-radius: 6px; padding: 6px 12px; font-size: 12px; cursor: pointer; }
-  button#sieve-copy:hover:not(:disabled) { background: #262b33; }
-  button#sieve-copy:disabled { opacity: 0.5; cursor: default; }
+  .btn { background: #1f242b; border: 1px solid #262b33; color: #e6e6e6; border-radius: 6px; padding: 6px 12px; font-size: 12px; cursor: pointer; }
+  .btn:hover:not(:disabled) { background: #262b33; }
+  .btn:disabled { opacity: 0.5; cursor: default; }
+  .cat-toggles { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; font-size: 12px; color: #ccc; }
+  .cat-toggles label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+  .actions { display: flex; gap: 8px; align-items: center; }
+  .footer-actions { margin-top: 32px; padding-top: 16px; border-top: 1px solid #1f242b; }
+  input#issue-note { background: #15181d; border: 1px solid #262b33; color: #e6e6e6; border-radius: 6px; padding: 6px 10px; font-size: 12px; width: 320px; max-width: 100%; }
 </style>
 </head>
 <body>
@@ -162,8 +167,20 @@ const DASHBOARD_HTML = `<!doctype html>
 <section>
   <h2>Mail pre-filter (Sieve)</h2>
   <div class="sub" id="sieve-sub">Coarse rung-0 tags applied at Fastmail delivery time. Text only — paste into Fastmail Settings → Rules → Custom rule (Sieve) yourself; nothing here installs it for you.</div>
+  <div class="cat-toggles" id="sieve-categories"></div>
   <pre id="sieve-script" class="loading">Loading script…</pre>
-  <button id="sieve-copy" type="button" disabled>Copy script</button>
+  <div class="actions">
+    <button id="sieve-copy" class="btn" type="button" disabled>Copy script</button>
+  </div>
+</section>
+
+<section class="footer-actions">
+  <h2>Report a problem</h2>
+  <div class="sub">Opens a pre-filled GitHub issue in a new tab — nothing is filed until you review and submit it there.</div>
+  <div class="actions">
+    <input id="issue-note" type="text" placeholder="What's wrong or missing?">
+    <button id="issue-file" class="btn" type="button">Open GitHub issue</button>
+  </div>
 </section>
 
 <script>
@@ -214,34 +231,88 @@ async function loadNotes() {
   }
 }
 
-async function loadSieve() {
+const SIEVE_CATEGORIES = ${JSON.stringify(ALL_SIEVE_CATEGORIES)};
+let currentSieveScript = '';
+
+function selectedSieveCategories() {
+  return SIEVE_CATEGORIES.filter((c) => document.getElementById('cat-' + c).checked);
+}
+
+function renderSieveToggles() {
+  const el = document.getElementById('sieve-categories');
+  el.innerHTML = SIEVE_CATEGORIES
+    .map((c) => '<label><input type="checkbox" id="cat-' + c + '" checked> ' + esc(c.replace(/_/g, ' ')) + '</label>')
+    .join('');
+  for (const c of SIEVE_CATEGORIES) {
+    document.getElementById('cat-' + c).addEventListener('change', () => fetchSieve());
+  }
+}
+
+async function fetchSieve() {
   const scriptEl = document.getElementById('sieve-script');
   const copyBtn = document.getElementById('sieve-copy');
+  const cats = selectedSieveCategories();
+  if (!cats.length) {
+    currentSieveScript = '';
+    scriptEl.textContent = '(select at least one category)';
+    scriptEl.classList.add('loading');
+    copyBtn.disabled = true;
+    return;
+  }
+  scriptEl.classList.add('loading');
   try {
-    const res = await fetch('/dashboard/api/mail-sieve');
+    const res = await fetch('/dashboard/api/mail-sieve?categories=' + encodeURIComponent(cats.join(',')));
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const { script } = await res.json();
+    currentSieveScript = script;
     scriptEl.textContent = script;
-    scriptEl.classList.remove('loading');
+    scriptEl.classList.remove('loading', 'err');
     copyBtn.disabled = false;
-    copyBtn.onclick = async () => {
-      try {
-        await navigator.clipboard.writeText(script);
-        copyBtn.textContent = 'Copied!';
-      } catch (e) {
-        copyBtn.textContent = 'Copy failed';
-      }
-      setTimeout(() => { copyBtn.textContent = 'Copy script'; }, 1500);
-    };
   } catch (e) {
     scriptEl.textContent = 'Failed to load script: ' + (e.message || e);
+    scriptEl.classList.remove('loading');
     scriptEl.classList.add('err');
+    copyBtn.disabled = true;
   }
+}
+
+function initSieve() {
+  renderSieveToggles();
+  document.getElementById('sieve-copy').addEventListener('click', async () => {
+    const copyBtn = document.getElementById('sieve-copy');
+    try {
+      await navigator.clipboard.writeText(currentSieveScript);
+      copyBtn.textContent = 'Copied!';
+    } catch (e) {
+      copyBtn.textContent = 'Copy failed';
+    }
+    setTimeout(() => { copyBtn.textContent = 'Copy script'; }, 1500);
+  });
+  fetchSieve();
+}
+
+function initIssueButton() {
+  document.getElementById('issue-file').addEventListener('click', () => {
+    const note = document.getElementById('issue-note').value.trim();
+    const title = note ? note.slice(0, 80) : 'Dashboard feedback';
+    const bodyLines = [
+      note || '(describe the problem)',
+      '',
+      '---',
+      'Filed from the sux dashboard.',
+      'Page: ' + location.href,
+      'Mail-sieve categories selected: ' + (selectedSieveCategories().join(', ') || '(none)'),
+      'Time: ' + new Date().toISOString(),
+    ];
+    const url = 'https://github.com/SuxOS/sux/issues/new?title=' + encodeURIComponent(title) + '&body=' + encodeURIComponent(bodyLines.join('\\n'));
+    window.open(url, '_blank', 'noopener');
+  });
 }
 
 loadMetrics();
 loadNotes();
-loadSieve();
+initSieve();
+initIssueButton();
 </script>
 </body>
 </html>
@@ -283,10 +354,12 @@ export async function handleDashboardRoutes(url: URL, request: Request, env: RtE
 	}
 
 	if (url.pathname === "/dashboard/api/mail-sieve") {
+		const raw = url.searchParams.get("categories");
+		const categories = raw ? raw.split(",").map((c) => c.trim()).filter(Boolean) : undefined;
 		try {
-			return json(compileSieve());
+			return json(compileSieve(categories));
 		} catch (e) {
-			return json({ error: String((e as Error)?.message ?? e) }, 500);
+			return json({ error: String((e as Error)?.message ?? e) }, 400);
 		}
 	}
 

@@ -136,10 +136,28 @@ describe("dashboard", () => {
 		expect(body.rule_count).toBeGreaterThan(0);
 	});
 
-	it("the HTML shell references the mail-sieve panel and its copy button", async () => {
+	it("the HTML shell references the mail-sieve panel, its copy button, category toggles, and the issue button", async () => {
 		const env = fakeEnv();
 		const body = await (await get(env, "/dashboard"))!.text();
 		expect(body).toContain("/dashboard/api/mail-sieve");
 		expect(body).toContain('id="sieve-copy"');
+		expect(body).toContain('id="sieve-categories"');
+		expect(body).toContain('id="issue-file"');
+		expect(body).toContain("github.com/SuxOS/sux/issues/new");
+	});
+
+	it("narrows the generated script to a requested `categories` query param", async () => {
+		const env = fakeEnv();
+		const all = await getJson(env, "/dashboard/api/mail-sieve");
+		const junkOnly = await getJson(env, "/dashboard/api/mail-sieve?categories=junk");
+		expect(junkOnly.categories).toEqual(["junk"]);
+		expect(junkOnly.rule_count).toBeLessThan(all.rule_count);
+		expect(junkOnly.script).not.toContain('addflag "mailing-list"');
+	});
+
+	it("400s on an unknown category in the query param instead of silently compiling all/none", async () => {
+		const env = fakeEnv();
+		const res = await get(env, "/dashboard/api/mail-sieve?categories=bogus");
+		expect(res!.status).toBe(400);
 	});
 });
