@@ -422,8 +422,8 @@ describe("render", () => {
 			expect(payload).toMatchObject({
 				url: "https://homedepot.com/p/123",
 				as: "html",
-				// patchright's page.goto rejects Puppeteer's networkidle0 (→ 502), so the
-				// default is normalized to Playwright's "networkidle" before it's forwarded.
+				// The shared mac client normalizes Puppeteer's networkidle0 to Playwright's
+				// networkidle (patchright's page.goto rejects networkidle0 → 502).
 				wait_until: "networkidle",
 				wait_ms: 500,
 				block_resources: false,
@@ -493,7 +493,7 @@ describe("render", () => {
 		it("fails when MAC_RENDER_URL/MAC_RENDER_SECRET are absent (no fetch attempted)", async () => {
 			const r = await render.run(CAS_ENV, { url: "https://example.com", backend: "mac" });
 			expect(r.isError).toBe(true);
-			expect(r.content[0].text).toMatch(/MAC_RENDER_URL\/MAC_RENDER_SECRET/);
+			expect(r.content[0].text).toMatch(/Mac render backend not configured/);
 			expect(fetchSpy).not.toHaveBeenCalled();
 		});
 

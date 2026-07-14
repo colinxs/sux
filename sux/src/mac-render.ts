@@ -24,6 +24,8 @@ export type MacRenderSpec = {
 	wait_until?: string;
 	wait_ms?: number;
 	block_resources?: boolean;
+	// Screenshot only: capture the full scroll height, not just the viewport.
+	full_page?: boolean;
 	timeout_ms?: number;
 	// Force the CapSolver-equipped headed solver tier (captchas/press-and-hold).
 	// The service auto-escalates when a page looks blocked; set for always-walled

@@ -1,6 +1,6 @@
 import { cfRender } from "../cf-render";
-import { normalizeMacWaitUntil } from "../mac-render";
-import { hmacHex, isBlockedTarget } from "../proxy";
+import { type MacRenderSpec, macRender } from "../mac-render";
+import { isBlockedTarget } from "../proxy";
 import { looksBlocked } from "../retail-render";
 import { type Fn, type RtEnv, type ToolResult, failWith, ok } from "../registry";
 import { clamp, deliverBytes, fromB64, inlineB64, isHttpUrl } from "./_util";
@@ -11,81 +11,28 @@ const PDF_FORMATS = ["A4", "Letter", "Legal", "A3"] as const;
 
 const MAX_OUTPUT_BYTES = 2_000_000;
 
-const MAC_TIMEOUT_MARGIN_MS = 10_000;
-const MAC_TIMEOUT_CAP_MS = 70_000;
-
-type MacRenderPayload = {
-	url: string;
-	as: string;
-	wait_until: string;
-	wait_ms: number;
-	block_resources: boolean;
-	full_page: boolean;
-	timeout_ms: number;
-	solve?: boolean;
-};
-
-type MacRenderResponse = {
-	status?: number;
-	content_type?: string;
-	body?: string;
-	bodyEncoding?: "base64";
-	error?: string;
-	// The headed CapSolver tier threw while solving a challenge — the node returned
-	// the unsolved (likely still-blocked) page instead of erroring. Surfaced below so
-	// a CapSolver breakage isn't swallowed and mistaken for a plain wall.
-	solver_error?: string;
-};
-
-async function renderViaMac(env: RtEnv, payload: MacRenderPayload, delivery: string | undefined): Promise<ToolResult> {
-	if (!env.MAC_RENDER_URL || !env.MAC_RENDER_SECRET) {
-		return failWith("not_configured", "Mac render backend not configured (MAC_RENDER_URL/MAC_RENDER_SECRET).");
-	}
-	// patchright's page.goto rejects Puppeteer's networkidle0/2 — normalize to its
-	// vocabulary (the shared mac boundary) so a default backend:mac render doesn't 502.
-	const body = JSON.stringify({ ...payload, wait_until: normalizeMacWaitUntil(payload.wait_until) });
-	const ts = String(Date.now());
-	const sig = await hmacHex(env.MAC_RENDER_SECRET, `${ts}\n${body}`);
-
-	const endpoint = new URL("/render", env.MAC_RENDER_URL).href;
-	const signedEndpoint = `${endpoint}?ts=${ts}&sig=${sig}`;
-	const timeout = Math.min(payload.timeout_ms + MAC_TIMEOUT_MARGIN_MS, MAC_TIMEOUT_CAP_MS);
-	let resp: Response;
-	try {
-		resp = await fetch(signedEndpoint, {
-			method: "POST",
-			headers: { "content-type": "application/json", "x-timestamp": ts, "x-signature": sig },
-			body,
-			signal: AbortSignal.timeout(timeout),
-		});
-	} catch (e) {
-		return failWith("upstream_error", `mac render failed: ${String((e as Error).message ?? e)}`);
-	}
-	let data: MacRenderResponse;
-	try {
-		data = (await resp.json()) as MacRenderResponse;
-	} catch {
-		return failWith("upstream_error", `mac render failed: unreadable response (HTTP ${resp.status}).`);
-	}
-	if (!resp.ok || data.error) {
-		return failWith("upstream_error", `mac render failed: ${data.error ?? `HTTP ${resp.status}`}`);
-	}
-	const text = typeof data.body === "string" ? data.body : "";
-	if (payload.as === "screenshot" || payload.as === "pdf") {
-
-		const bytes = fromB64(text);
-		const contentType = data.content_type ?? (payload.as === "pdf" ? "application/pdf" : "image/png");
+// Route the mac backend through the shared, circuit-breaker-aware client so the
+// plain `render` verb and the retailer mac→cf fallback share one breaker (a
+// down/hung node tripped by either fast-fails the other) and one set of timeout/
+// wait_until conventions — no drift between two hand-rolled mac clients.
+async function renderViaMac(env: RtEnv, spec: MacRenderSpec, as: string, delivery: string | undefined): Promise<ToolResult> {
+	const result = await macRender(env, spec);
+	if (!result.ok) return failWith("upstream_error", result.error);
+	if (as === "screenshot" || as === "pdf") {
+		const bytes = fromB64(result.body);
+		// macRender defaults content_type to text/html only when the node omitted it;
+		// for bytes that means fall back to the type implied by `as`.
+		const contentType = result.contentType === "text/html" ? (as === "pdf" ? "application/pdf" : "image/png") : result.contentType;
 		return deliverBytes(env, bytes, contentType, delivery ?? "url", () => inlineB64(bytes, contentType));
 	}
-
 	// The mac node can answer a bot wall as a 200 (a block/challenge page IS valid
 	// HTML) — mirror retail-render's guard so a detected wall surfaces as an error
 	// envelope instead of being returned as content. If the CapSolver tier also
 	// errored, name it: an invisible solver breakage is exactly what this must expose.
-	if (looksBlocked(text)) {
-		return failWith("upstream_error", data.solver_error ? `mac render blocked (bot wall); solver errored: ${data.solver_error}` : "mac render blocked (bot wall)");
+	if (looksBlocked(result.body)) {
+		return failWith("upstream_error", result.solverError ? `mac render blocked (bot wall); solver errored: ${result.solverError}` : "mac render blocked (bot wall)");
 	}
-	return ok(clamp(text, MAX_OUTPUT_BYTES));
+	return ok(clamp(result.body, MAX_OUTPUT_BYTES));
 }
 
 export const render: Fn = {
@@ -183,6 +130,7 @@ export const render: Fn = {
 			return renderViaMac(
 				env,
 				{ url, as, wait_until: waitUntil, wait_ms: waitMs, block_resources: blockResources, full_page: fullPage, timeout_ms: timeout, solve: args?.solve === true },
+				as,
 				args?.delivery,
 			);
 		}
