@@ -19,6 +19,7 @@ import { recordCall } from "./metrics";
 import { shipMetricsSnapshot, shipToLoki } from "./grafana";
 import { handleObservability } from "./observability";
 import { handleRecovery } from "./recovery";
+import { handleAppleHealth, handleMychartRoutes, refreshMychartToken } from "./mychart";
 import { normalizeArgs, normalizeText } from "./normalize";
 import { cancelTask, createTask, getTask, isTerminal, listTasks, toPublicTask, toTaskResult, waitForTerminal } from "./tasks";
 
@@ -619,6 +620,9 @@ const METRICS_CRON = "*/5 * * * *";
 // last-success + staleness for the unattended cron parts on the public status page.
 async function maintenanceTick(env: RtEnv, ctx: ExecutionContext): Promise<void> {
 	await runSubJob(env, "kroger_token", () => refreshKrogerToken(env));
+	// Keep the Epic refresh grant alive (some orgs expire it on inactivity) — a pure
+	// no-op unless MyChart is configured AND a grant exists (§2b). Never throws.
+	await runSubJob(env, "mychart_token", () => refreshMychartToken(env));
 	await runSubJob(env, "weekly_recall", () => weeklyRecallTick(env));
 	await runSubJob(env, "briefing", () => briefingTick(env));
 	// Rebuild the cosmetic-adblock engine blob in R2 — staleness-gated, so the
@@ -692,6 +696,15 @@ export default {
 		// executes nothing (the box pulls, verifies, and acts). See src/recovery.ts.
 		const recovery = await handleRecovery(new URL(request.url), request, env);
 		if (recovery) return recovery;
+
+		// MyChart SMART-on-FHIR OAuth dance (/mychart/connect -> 302, /mychart/callback)
+		// and the Apple Health ingest (/apple-health). Served BEFORE the OAuthProvider
+		// claims every path (same pre-gate trick as /health, /metrics). Each is
+		// self-gated (operator token / bearer secret) and 404s when its feature is unset.
+		const mychartRoute = await handleMychartRoutes(new URL(request.url), request, env);
+		if (mychartRoute) return mychartRoute;
+		const appleHealth = await handleAppleHealth(new URL(request.url), request, env);
+		if (appleHealth) return appleHealth;
 
 		// Manual ops trigger for the daily cron ticks — POST /admin/tick?job=mail-triage|
 		// self-improve|maintenance, bearer-gated by SUX_CRON_TOKEN (unset ⇒ 404, feature off).

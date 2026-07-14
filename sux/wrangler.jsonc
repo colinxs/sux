@@ -50,7 +50,15 @@
 	//
 	// BRIEFING_ENABLED is deliberately NOT set here — pending H1 (untrusted mail through the llm()
 	// fence); arm it once that fix lands.
-	"vars": { "MAIL_TRIAGE_ENABLED": "1", "WEEKLY_RECALL_ENABLED": "1", "SELF_IMPROVE_ENABLE": "1" },
+	//
+	// MyChart (Epic SMART-on-FHIR) + Apple Health ingest are configured entirely by
+	// out-of-band secrets, NOT declared here (like MONARCH_TOKEN / KROGER_* / the
+	// SELF_IMPROVE_* secrets): EPIC_CLIENT_ID, EPIC_CLIENT_SECRET, EPIC_FHIR_BASE
+	// (`wrangler secret put …`) arm the mychart fn + /mychart/connect|callback routes;
+	// HEALTH_INGEST_TOKEN arms POST /apple-health. All absent ⇒ inert (not_configured),
+	// the routes 404. The durable Epic REFRESH token is NOT a secret — it's minted at
+	// /mychart/callback and held in OAUTH_KV (sux:mychart:grant). See src/mychart.ts.
+	"vars": { "DEBUG_MCP": "0", "MAIL_TRIAGE_ENABLED": "1", "WEEKLY_RECALL_ENABLED": "1", "SELF_IMPROVE_ENABLE": "1" },
 	// Per-user rate limit (same as core).
 	"unsafe": {
 		"bindings": [

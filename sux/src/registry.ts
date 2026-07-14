@@ -114,6 +114,23 @@ export type RtEnv = Env &
 		KROGER_CLIENT_ID?: string;
 		KROGER_CLIENT_SECRET?: string;
 
+		// Epic SMART-on-FHIR clinical records (mychart fn + /mychart/connect|callback
+		// routes, src/mychart.ts). Confidential client: EPIC_CLIENT_ID + EPIC_CLIENT_SECRET
+		// provisioned per health system at fhir.epic.com, EPIC_FHIR_BASE = the org's FHIR
+		// R4 base URL (the OAuth `aud`). The durable REFRESH token is NOT here — it's
+		// minted at /mychart/callback and held in OAUTH_KV (sux:mychart:grant) because
+		// Epic rotates it at runtime and the org sets its lifetime. All absent → the fn
+		// and routes are inert (not_configured), like monarch/dropbox.
+		EPIC_CLIENT_ID?: string;
+		EPIC_CLIENT_SECRET?: string;
+		EPIC_FHIR_BASE?: string;
+
+		// Apple Health ingest (/apple-health) — the bearer secret Health Auto Export
+		// presents in `Authorization: Bearer`. Constant-time checked; unset ⇒ the route
+		// 404s (feature off). Set via `wrangler secret`. Raw payloads land under the
+		// private R2 phi/ prefix (§5), never dropbox, never a /s/ link.
+		HEALTH_INGEST_TOKEN?: string;
+
 		BESTBUY_API_KEY?: string;
 
 		// Reddit app-only OAuth (reddit fn) — client_credentials; read-only API.
