@@ -82,6 +82,7 @@ import { mail } from "./mail";
 import { mail_triage } from "./mail_triage";
 import { markdown } from "./markdown";
 import { monarch } from "./monarch";
+import { mychart } from "./mychart";
 import { uw } from "./uw";
 import { openalex } from "./openalex";
 import { oracle } from "./oracle";
@@ -194,6 +195,7 @@ export const FUNCTIONS: Fn[] = [
 	mail_triage,
 	markdown,
 	monarch,
+	mychart,
 	uw,
 	openalex,
 	oracle,

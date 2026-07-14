@@ -53,7 +53,7 @@ Leaf index (semantics + args in `references/capability-tables.md`; call any via
 `fn({name, args})`): `ace`, `advise`, `amazon`, `autonomy_status`, `batch_fetch`,
 `briefing`, `citation`, `costco`, `dropbox`, `feed`, `fontcase`, `homedepot`,
 `jmap`, `kv_get`, `kv_put`, `kv_list`, `kv_delete`, `learn`, `linkedin`, `lowes`,
-`mail_triage`, `monarch`, `obsidian`, `people_finder`, `put`, `redirects`,
+`mail_triage`, `monarch`, `mychart`, `obsidian`, `people_finder`, `put`, `redirects`,
 `robots`, `sitemap`, `suggest`, `todoist`, `uw`, `voice`, `walmart`, `watch`,
 `watch_pipeline`, `web_search`, `weekly_ad`.
 
