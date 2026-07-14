@@ -48,6 +48,27 @@ describe("obsidian (git backend)", () => {
 		expect(r.content[0].text).toBe("# Hello\nbody");
 	});
 
+	it("reads a genuinely-empty note as an empty body (not an error)", async () => {
+		routes.handler = () => new Response(JSON.stringify({ type: "file", content: "", size: 0, sha: "s0" }), { status: 200 });
+		const r = await obsidian.run(ENV, { action: "read", path: "empty.md" });
+		expect(r.isError).toBeFalsy();
+		expect(r.content[0].text).toBe("");
+	});
+
+	it("reads a folder path as a clear error instead of silently empty (§203)", async () => {
+		routes.handler = () => new Response(JSON.stringify([{ name: "a.md", type: "file" }, { name: "b.md", type: "file" }]), { status: 200 });
+		const r = await obsidian.run(ENV, { action: "read", path: "Areas" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/is a folder, not a note/);
+	});
+
+	it("surfaces a non-file 200 (e.g. symlink/submodule) rather than an empty body", async () => {
+		routes.handler = () => new Response(JSON.stringify({ type: "submodule", sha: "s1" }), { status: 200 });
+		const r = await obsidian.run(ENV, { action: "read", path: "mod" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/not a readable note/);
+	});
+
 	it("appends to an existing note (reads sha, PUTs merged content)", async () => {
 		let putBody: any;
 		routes.handler = (url, init) => {

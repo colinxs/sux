@@ -154,6 +154,13 @@ export async function readGitContents(env: any, cfg: VaultCfg, full: string): Pr
 	const cur = await ghJson(env, `${GH}/repos/${cfg.repo}/contents/${encodeURIComponent(full)}?ref=${encodeURIComponent(cfg.branch)}`);
 	if (cur.status === 404) return { status: 404, body: "" };
 	if (cur.status >= 400) return { status: cur.status, body: "", error: `GitHub error reading note: ${cur.json?.message ?? `HTTP ${cur.status}`}` };
+	// A 200 that isn't a single file object is NOT an empty note — decoding it as one
+	// would return a silent empty body (a folder → JSON array; a submodule/symlink →
+	// type≠"file"; a broken repo/token pairing → some other shape). Surface it instead
+	// of masking a real problem as "" (issue #203). A genuinely-empty note is a
+	// `type:"file"` object and still decodes to "" below.
+	if (Array.isArray(cur.json)) return { status: cur.status, body: "", error: `'${full}' is a folder, not a note — use action=list to see what's inside it.` };
+	if (cur.json?.type && cur.json.type !== "file") return { status: cur.status, body: "", error: `'${full}' is a ${cur.json.type}, not a readable note.` };
 	let body = cur.json?.content ? new TextDecoder().decode(fromB64(String(cur.json.content).replace(/\n/g, ""))) : "";
 	if (!body && Number(cur.json?.size ?? 0) > 0) {
 		const raw = await smartFetch(env, `${GH}/repos/${cfg.repo}/contents/${encodeURIComponent(full)}?ref=${encodeURIComponent(cfg.branch)}`, { headers: { ...ghHeaders, Accept: "application/vnd.github.raw+json" } });
