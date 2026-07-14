@@ -199,6 +199,32 @@ re-fetch is expensive and the answer is stable; leave live/mutating/cheap fns un
 
 ---
 
+## 5b. MCP Tasks — async long-running tool calls (KV-backed, first cut)
+
+**What.** The MCP Tasks primitive (spec 2025-11-25+, experimental) lets a `tools/call` be
+task-augmented (`params.task: {ttl?}`) instead of blocking one request/response for the whole run:
+the server returns a `CreateTaskResult` immediately, then the caller polls `tasks/get` /
+`tasks/result`, or `tasks/cancel`s it. `src/tasks.ts` is the KV-backed store + lifecycle
+(`sux:task:<uuid>` keys, prefix-partitioned like everything else in `OAUTH_KV`); `index.ts`
+wires it into `handleRpc` alongside the existing cache/single-flight dispatch — see
+`TASK_CAPABLE_TOOLS` there (currently `pipe`/`batch`/`render`/`crawl`/`batch_fetch`/`shop`, the
+fns that already run close to `FN_DEADLINE_MS`/`FANOUT_BUDGET_MS` in one request). This is the
+first real primitive-level replacement for the ad-hoc "fire off a cron sub-job and forget"
+pattern (`runSubJob`, `cron-heartbeat.ts`) that pipe/batch/render otherwise rely on being fast
+enough to finish inside one request.
+
+**Deliberate first-cut simplifications** (see the PR that introduced this + `tasks.ts`'s module
+doc): single-tenant (no per-caller task ownership beyond the existing `ALLOWED_GITHUB_LOGIN`
+gate — spec's context-binding requirement is moot here), task-augmented calls skip the KV
+response cache/single-flight coalescing entirely (a task's own KV record IS its durable result),
+`tasks/result` blocks via a bounded poll (`TASK_RESULT_MAX_WAIT_MS`, not a true indefinite block —
+Workers requests aren't a good fit for that), and `tasks/cancel` is best-effort (flips the stored
+status; cannot abort an in-flight `fn.run` already mid-execution in its isolate). Extend
+`TASK_CAPABLE_TOOLS` as more fns want task augmentation — no dispatch change needed beyond that
+one set.
+
+---
+
 ## 6. Compression / transform — gzip default, token-pack for LLMs
 
 **Storage compression** (`fns/_gzip.ts`). Every persistent store (R2 CAS, user KV, Dropbox
