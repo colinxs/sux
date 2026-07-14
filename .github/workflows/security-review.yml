@@ -4,7 +4,7 @@ name: Security review (no-dumb-shit bot)
 # exactly the class of mistake that shipped a fork-PR-to-prod hole once. Author-gated
 # (public repo: never run for fork/external PRs), and it HARD-BLOCKS the merge on a
 # high/critical finding by applying `hold` (which automerge.yml refuses) and failing.
-# Inert until ANTHROPIC_API_KEY is set.
+# Inert until CLAUDE_CODE_OAUTH_TOKEN is set.
 
 # Also runs on merge_group: branch protection requires the "security-review" context, so
 # it MUST report on the merge queue's speculative ref or the queue freezes forever. The
@@ -67,8 +67,8 @@ jobs:
         id: pre
         if: github.event_name == 'pull_request'
         run: |
-          if [ "${{ secrets.ANTHROPIC_API_KEY != '' }}" != "true" ]; then
-            echo "ANTHROPIC_API_KEY not set → security review inert"; echo "go=false" >> "$GITHUB_OUTPUT"
+          if [ "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}" != "true" ]; then
+            echo "CLAUDE_CODE_OAUTH_TOKEN not set → security review inert (run 'claude setup-token')"; echo "go=false" >> "$GITHUB_OUTPUT"
           else echo "go=true" >> "$GITHUB_OUTPUT"; fi
       - name: Checkout
         if: steps.pre.outputs.go == 'true'
@@ -84,7 +84,7 @@ jobs:
           # + CLAUDE.md) cache-hits at 0.1x instead of expiring. Caching itself is on by default.
           ENABLE_PROMPT_CACHING_1H: "1"
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
             Do a SECURITY review of this PR's diff vs the base branch. This repo is a PUBLIC
             Cloudflare Worker + a live autonomous CI/CD pipeline, so weigh: secret handling/

@@ -56,9 +56,9 @@ describe("security-review workflow is a real, requireable gate", () => {
 		expect(missing.indexOf("exit 1")).toBeLessThan(missing.indexOf("exit 0"));
 	});
 
-	it("only skips the gate when genuinely disarmed (no ANTHROPIC_API_KEY)", () => {
-		// the gate step is guarded by the same preflight `go` that requires the key
+	it("only skips the gate when genuinely disarmed (no CLAUDE_CODE_OAUTH_TOKEN)", () => {
+		// the gate step is guarded by the same preflight `go` that requires the token
 		expect(sec).toMatch(/steps\.pre\.outputs\.go == 'true'/);
-		expect(sec).toMatch(/ANTHROPIC_API_KEY != ''/);
+		expect(sec).toMatch(/CLAUDE_CODE_OAUTH_TOKEN != ''/);
 	});
 });
