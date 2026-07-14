@@ -1,0 +1,27 @@
+name: PR auto-update (self-drain)
+
+# The missing "auto-update-behind" limb: branch protection is strict=true (a PR must be
+# up-to-date with main to merge), but nothing re-bases open PRs when main moves. So when
+# one PR merges, every other armed-auto-merge PR flips BEHIND and stalls until a human
+# clicks "Update branch" — the exact stuck-merge-queue failure mode diagnosed on
+# 2026-07-14 (25+ automerge PRs green + armed + BEHIND with no path to merge). This repo
+# had a caller stub for this reusable workflow until #195 removed it, on the assumption
+# that the native GitHub merge queue would replace it — that queue is still only BUILT,
+# not enabled (docs/design/merge-queue.md), so the gap was real. The reusable workflow
+# itself was never deleted; this restores the caller.
+# Reusable workflow: SuxOS/.github/.github/workflows/pr-auto-update.yml
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 6 * * *" # daily backstop only — push:main above is the real self-drain trigger
+  workflow_dispatch:
+
+jobs:
+  update-behind:
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: SuxOS/.github/.github/workflows/pr-auto-update.yml@main
+    secrets: inherit
