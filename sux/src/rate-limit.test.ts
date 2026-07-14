@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extraCost, weightedRateLimit } from "./rate-limit";
+import { extraCost, requestCost, weightedRateLimit } from "./rate-limit";
 
 describe("extraCost", () => {
 	it("charges cost-1 extra tokens for weighted fns, 0 for default/unknown", () => {
@@ -8,6 +8,42 @@ describe("extraCost", () => {
 		expect(extraCost("summarize")).toBe(1); // cost 2
 		expect(extraCost("hash")).toBe(0); // default cost 1
 		expect(extraCost("does_not_exist")).toBe(0);
+	});
+});
+
+describe("requestCost", () => {
+	it("falls back to extraCost for a plain (non-fan-out) tool", () => {
+		expect(requestCost("render", {})).toBe(4);
+		expect(requestCost("hash", { any: 1 })).toBe(0);
+	});
+
+	it("sums the mapped leaf's weight across a batch's width (the evasion hole)", () => {
+		// batch({tool:"render", over:[…3]}) = 3 real renders → 3 × 4 extra, NOT batch's 0.
+		expect(requestCost("batch", { tool: "render", over: ["a", "b", "c"], args: {} })).toBe(12);
+		// `calls` form counts the same way.
+		expect(requestCost("batch", { tool: "render", calls: [{}, {}] })).toBe(8);
+		// A cheap leaf still sums to 0 — no false backpressure.
+		expect(requestCost("batch", { tool: "hash", over: [1, 2, 3] })).toBe(0);
+	});
+
+	it("clamps a batch's width to MAX_BATCH_CALLS so a hostile width can't overcharge", () => {
+		const over = Array.from({ length: 500 }, (_, i) => i);
+		expect(requestCost("batch", { tool: "render", over })).toBe(100 * 4); // clamped at 100
+	});
+
+	it("adds the reduce_with reducer's weight to a batch", () => {
+		expect(requestCost("batch", { tool: "hash", over: [1, 2], reduce_with: { tool: "summarize" } })).toBe(1);
+	});
+
+	it("charges only the wrapper for an invalid/recursive batch target", () => {
+		expect(requestCost("batch", { over: [1, 2, 3] })).toBe(0); // no tool
+		expect(requestCost("batch", { tool: "batch", over: [1, 2] })).toBe(0); // recursive
+	});
+
+	it("sums each step's leaf weight for a pipe, clamped to MAX_PIPE_STEPS", () => {
+		expect(requestCost("pipe", { steps: [{ tool: "render" }, { tool: "search" }, { tool: "hash" }] })).toBe(6); // 4 + 2 + 0
+		const steps = Array.from({ length: 40 }, () => ({ tool: "render" }));
+		expect(requestCost("pipe", { steps })).toBe(25 * 4); // clamped at 25 steps
 	});
 });
 
@@ -68,6 +104,50 @@ describe("weightedRateLimit", () => {
 	// A Unicode-obfuscated inner name must NOT dodge the weighted cost: the limiter
 	// resolves it through the same normalization the dispatcher will, so a fullwidth or
 	// zero-width-spaced leaf is charged exactly as its plain form.
+	// A wide batch of an expensive leaf must be charged for every real run, not for
+	// batch's own cost-1 weight — otherwise the limiter is trivially evaded.
+	it("charges the full fan-out weight for a batch of renders", async () => {
+		const rl = limiter(100);
+		const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, "u", {
+			jsonrpc: "2.0",
+			id: 1,
+			method: "tools/call",
+			params: { name: "batch", arguments: { tool: "render", over: ["a", "b", "c"] } },
+		} as any);
+		expect(r).toBeNull();
+		expect(rl.calls()).toBe(12); // 3 renders × 4 extra each
+	});
+
+	it("denies mid-way when a wide batch exhausts the budget", async () => {
+		const rl = limiter(5); // 3 renders need 12 extra
+		const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, "u", {
+			jsonrpc: "2.0",
+			id: 1,
+			method: "tools/call",
+			params: { name: "batch", arguments: { tool: "render", over: ["a", "b", "c"] } },
+		} as any);
+		expect(r!.status).toBe(429);
+	});
+
+	it("sums a pipe's step weights so a pipeline of renders can't slip the limiter", async () => {
+		const rl = limiter(100);
+		const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, "u", {
+			jsonrpc: "2.0",
+			id: 1,
+			method: "tools/call",
+			params: { name: "pipe", arguments: { steps: [{ tool: "render" }, { tool: "render" }] } },
+		} as any);
+		expect(r).toBeNull();
+		expect(rl.calls()).toBe(8); // 2 render steps × 4 extra
+	});
+
+	it("charges the full fan-out weight even when a batch is reached via the `fn` escape", async () => {
+		const rl = limiter(100);
+		const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, "u", fnCall("batch", { tool: "render", over: ["a", "b"] }));
+		expect(r).toBeNull();
+		expect(rl.calls()).toBe(8); // 2 renders × 4 extra, same as a direct batch call
+	});
+
 	it("charges the real leaf's weight even when the `fn` inner name is Unicode-obfuscated", async () => {
 		const fullwidthRender = "ｒｅｎｄｅｒ"; // ｒｅｎｄｅｒ
 		const zeroWidthRender = "ren​der";

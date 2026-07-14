@@ -23,6 +23,10 @@ permissions:
   issues: write
   checks: read
   statuses: read
+  # `gh pr list --json statusCheckRollup` expands each check's checkSuite.workflowRun
+  # under the hood, which 403s ("Resource not accessible by integration") without this —
+  # every run then fails outright instead of just posting a thinner tracking issue.
+  actions: read
 
 concurrency:
   group: pr-watch

@@ -83,6 +83,45 @@ describe("todoist (REST v2 adapter)", () => {
 		expect(out.completedIds).toEqual(["1", "3"]);
 	});
 
+	it("update_many edits an array, needs id + a field per item, surfaces partial failures", async () => {
+		expect((await todoist.run(ENV, { action: "update_many", items: [] })).isError).toBe(true);
+		expect((await todoist.run(ENV, { action: "update_many", items: [{ content: "x" }] })).isError).toBe(true); // no id
+		expect((await todoist.run(ENV, { action: "update_many", items: [{ id: "1" }] })).isError).toBe(true); // no fields
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
+			expect(init.method).toBe("POST");
+			const tid = String(u).split("/tasks/")[1];
+			if (tid === "bad") return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+			return new Response(JSON.stringify({ id: tid, content: JSON.parse(init.body).content }), { status: 200 });
+		}));
+		const out = parse(await todoist.run(ENV, { action: "update_many", items: [{ id: "1", content: "A" }, { id: "bad", priority: 2 }] }));
+		expect(out).toMatchObject({ requested: 2, updated: 1, failed: 1 });
+		expect(out.tasks[0]).toMatchObject({ id: "1", content: "A" });
+	});
+
+	it("reopen_many reopens an array of ids, surfacing partial failures", async () => {
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL) => {
+			expect(String(u)).toContain("/reopen");
+			const good = !String(u).includes("/bad/");
+			return new Response(good ? null : JSON.stringify({ error: "not found" }), { status: good ? 204 : 404 });
+		}));
+		const out = parse(await todoist.run(ENV, { action: "reopen_many", ids: ["1", "bad", "3"] }));
+		expect(out).toMatchObject({ requested: 3, reopened: 2, failed: 1 });
+		expect(out.reopenedIds).toEqual(["1", "3"]);
+	});
+
+	it("delete_many requires confirm:true, then DELETEs each id", async () => {
+		const blocked = await todoist.run(ENV, { action: "delete_many", ids: ["1", "2"] });
+		expect(blocked.isError).toBe(true);
+		expect(blocked.content[0].text).toMatch(/confirm:true/);
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
+			expect(init.method).toBe("DELETE");
+			return new Response(null, { status: 204 });
+		}));
+		const out = parse(await todoist.run(ENV, { action: "delete_many", ids: ["1", "2"], confirm: true }));
+		expect(out).toMatchObject({ requested: 2, deleted: 2, failed: 0 });
+		expect(out.deletedIds).toEqual(["1", "2"]);
+	});
+
 	it("update needs an id and at least one field", async () => {
 		expect((await todoist.run(ENV, { action: "update", content: "x" })).isError).toBe(true); // no id
 		expect((await todoist.run(ENV, { action: "update", id: "9" })).isError).toBe(true); // no fields

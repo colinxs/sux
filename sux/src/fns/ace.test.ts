@@ -17,7 +17,7 @@ beforeEach(() => {
 	// vi.mock factory mocks aren't reset by restoreAllMocks, so clear cf's call
 	// history each test; default the cf leg to unavailable (no BROWSER binding).
 	cfRenderMock.mockReset();
-	cfRenderMock.mockResolvedValue({ ok: false, error: "Browser Rendering is not configured (BROWSER binding)." });
+	cfRenderMock.mockResolvedValue({ ok: false, error: "Browser Run is not configured (BROWSER binding)." });
 });
 
 // A rendered Ace Hardware search page with two `mz-productlisting` tiles (the

@@ -37,7 +37,7 @@ Two artifacts teach Claude to pick the right sux tool for a query:
   desktop app, IDE extensions). This repo is its marketplace
   (`.claude-plugin/marketplace.json` → `plugins/sux/`):
   ```
-  /plugin marketplace add colinxs/sux
+  /plugin marketplace add SuxOS/sux
   /plugin install sux@sux
   ```
   Installing it registers the `/mcp` connector and loads both skills; OAuth runs
@@ -69,7 +69,7 @@ npm run docs        # regenerate sux/FUNCTIONS.md
 ## CI/CD (GitHub Actions)
 
 - **`.github/workflows/ci.yml`** — on every push/PR: `npm ci`, `type-check`,
-  `npm test`, the node deploy-blob sync check, docs/index sync checks, and
+  `npm test`, the node deploy-blob sync check, the fn-index sync check, and
   `wrangler deploy --dry-run --config sux/wrangler.jsonc` (validates the bundle
   & config without deploying).
 - **`.github/workflows/deploy.yml`** — on push to `main` (or manual dispatch):

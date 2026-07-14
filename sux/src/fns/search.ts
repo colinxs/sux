@@ -36,7 +36,7 @@ export const search: Fn = {
 
 		const kagiArgs: Record<string, unknown> = {
 			query,
-			limit: Number(args?.limit) || 10,
+			limit: Math.min(50, Math.max(1, Number(args?.limit) || 10)),
 			workflow: args?.workflow ?? "search",
 		};
 		for (const k of SCOPE_ARGS) if (args?.[k] != null) kagiArgs[k] = args[k];

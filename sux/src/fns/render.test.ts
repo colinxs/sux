@@ -132,6 +132,18 @@ describe("render", () => {
 		expect(stubs.goto).toHaveBeenCalledWith("https://example.com", { waitUntil: "domcontentloaded", timeout: 5000 });
 	});
 
+	it("debug_recording:true forwards { recording: true } to puppeteer.launch (Browser Run session recording)", async () => {
+		stubs.launch.mockClear();
+		await render.run(BROWSER_ENV, { url: "https://example.com", debug_recording: true });
+		expect(stubs.launch).toHaveBeenCalledWith(BROWSER_ENV.BROWSER, { recording: true });
+	});
+
+	it("debug_recording defaults to false (no recording option passed)", async () => {
+		stubs.launch.mockClear();
+		await render.run(BROWSER_ENV, { url: "https://example.com" });
+		expect(stubs.launch).toHaveBeenCalledWith(BROWSER_ENV.BROWSER);
+	});
+
 	it("fails when the BROWSER binding is absent", async () => {
 		const r = await render.run({} as any, { url: "https://example.com" });
 		expect(r.isError).toBe(true);
@@ -364,7 +376,7 @@ describe("render", () => {
 	});
 
 	it("an unsupported/throwing stealth API degrades gracefully — the render still returns content", async () => {
-		// Simulate a CF Browser Rendering build where setUserAgent isn't supported.
+		// Simulate a CF Browser Run build where setUserAgent isn't supported.
 		stubs.setUserAgent.mockRejectedValueOnce(new Error("setUserAgent unsupported"));
 		const r = await render.run(BROWSER_ENV, { url: "https://example.com" });
 		expect(r.isError).toBeFalsy();
@@ -410,12 +422,29 @@ describe("render", () => {
 			expect(payload).toMatchObject({
 				url: "https://homedepot.com/p/123",
 				as: "html",
-				wait_until: "networkidle0",
+				// patchright's page.goto rejects Puppeteer's networkidle0 (→ 502), so the
+				// default is normalized to Playwright's "networkidle" before it's forwarded.
+				wait_until: "networkidle",
 				wait_ms: 500,
 				block_resources: false,
 				full_page: false,
 				timeout_ms: 30000,
 			});
+		});
+
+		it("normalizes networkidle0/2 to patchright's networkidle before forwarding (default would 502 otherwise)", async () => {
+			fetchSpy.mockResolvedValue(macJson({ status: 200, content_type: "text/html", body: "<html>ok</html>" }));
+			for (const [input, expected] of [
+				["networkidle0", "networkidle"],
+				["networkidle2", "networkidle"],
+				["load", "load"],
+				["domcontentloaded", "domcontentloaded"],
+			] as const) {
+				fetchSpy.mockClear();
+				await render.run(MAC_ENV, { url: "https://homedepot.com/p/1", backend: "mac", wait_until: input });
+				const payload = JSON.parse((fetchSpy.mock.calls[0] as any)[1].body);
+				expect(payload.wait_until, input).toBe(expected);
+			}
 		});
 
 		it("text: returns the body text", async () => {

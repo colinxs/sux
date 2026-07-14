@@ -62,11 +62,11 @@ describe("selftest", () => {
 		vi.clearAllMocks();
 	});
 
-	it("returns the { rungs, configured } shape with all four rungs and never errors", async () => {
+	it("returns the { rungs, grafana, configured } shape with all four rungs and never errors", async () => {
 		const r = await selftest.run(FULL_ENV, {});
 		expect(r.isError).toBeFalsy();
 		const out = parse(r);
-		expect(Object.keys(out)).toEqual(["rungs", "configured"]);
+		expect(Object.keys(out)).toEqual(["rungs", "grafana", "configured"]);
 		expect(Object.keys(out.rungs)).toEqual(["direct", "scrape", "render_mac", "render_cf"]);
 	});
 
@@ -95,8 +95,9 @@ describe("selftest", () => {
 
 	it("does not call the API-keyed upstreams — configured is pure presence", async () => {
 		await selftest.run(FULL_ENV, {});
-		// Only the three ladder rungs may fetch; nothing keyed (kagi/brave/exa/etc.).
-		expect(fetchSpy).toHaveBeenCalledTimes(1); // direct only
+		// Only live probes may fetch (direct + the grafana push); nothing keyed
+		// (kagi/brave/exa/etc.) is ever contacted for `configured`.
+		expect(fetchSpy).toHaveBeenCalledTimes(2); // direct + grafana push probe
 		expect(smartFetchMock).toHaveBeenCalledTimes(1); // scrape only
 		expect(macRenderMock).toHaveBeenCalledTimes(1); // render_mac only
 	});
@@ -150,5 +151,32 @@ describe("selftest", () => {
 
 		const present = parse(await selftest.run(FULL_ENV, {}));
 		expect(present.rungs.render_cf).toMatchObject({ ok: true });
+	});
+
+	it("actively probes the Grafana Loki push endpoint and reports the HTTP status", async () => {
+		fetchSpy.mockImplementation(async (input: any) => {
+			if (String(input) === "u") return new Response(null, { status: 204 });
+			return new Response("<html>ok</html>", { status: 200 });
+		});
+		const out = parse(await selftest.run(FULL_ENV, {}));
+		expect(out.grafana).toMatchObject({ ok: true, status: 204 });
+	});
+
+	it("reports the grafana probe DOWN (not skipped) when the push is rejected — the #226 silent-failure surfaced", async () => {
+		fetchSpy.mockImplementation(async (input: any) => {
+			if (String(input) === "u") return new Response("unauthorized", { status: 401 });
+			return new Response("<html>ok</html>", { status: 200 });
+		});
+		const out = parse(await selftest.run(FULL_ENV, {}));
+		expect(out.grafana).toMatchObject({ ok: false, status: 401 });
+		expect(out.grafana.skipped).toBeUndefined();
+	});
+
+	it("skips (does not fail) the grafana probe when the Loki secrets are unset", async () => {
+		const out = parse(await selftest.run({ ...FULL_ENV, GRAFANA_LOKI_TOKEN: undefined }, {}));
+		expect(out.grafana).toMatchObject({ ok: false, skipped: true });
+		expect(out.grafana.reason).toMatch(/GRAFANA_LOKI/);
+		// Skipped means no push was attempted — only the direct rung fetched.
+		expect(fetchSpy).toHaveBeenCalledTimes(1);
 	});
 });

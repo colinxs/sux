@@ -1,6 +1,6 @@
 ---
 name: life
-description: The digital-life memory system over the sux vault + mail connectors — capture a thought in seconds, remember durable facts/people/decisions, recall across notes + mail + files + the web with citations, organize the inbox into a linked knowledge graph, and consolidate over time. Use whenever the user wants to save something to remember ("note this", "remember that…", "capture this"), asks what they know / what they decided / when something happened ("what do I know about X", "remind me…", "did I ever…"), wants to organize/triage their notes or mail, or wants their life/knowledge tied together. Git is the undo, so writes are unblocked.
+description: The digital-life memory system over the sux vault + mail + calendar + contact connectors — capture a thought in seconds, remember durable facts/people/decisions, recall across notes + mail + files + calendar + contacts + the web with citations, organize the inbox into a linked knowledge graph, and consolidate over time. Use whenever the user wants to save something to remember ("note this", "remember that…", "capture this"), asks what they know / what they decided / when something happened ("what do I know about X", "remind me…", "did I ever…"), wants to organize/triage their notes or mail, or wants their life/knowledge tied together. Git is the undo, so writes are unblocked.
 ---
 
 # life — your memory, organized

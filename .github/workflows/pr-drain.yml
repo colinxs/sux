@@ -1,106 +1,22 @@
 name: PR drain (close-stale + reconcile)
 
-# The two drain gaps the pipeline was missing. The rebase-behind limb is now handled by the
-# GitHub MERGE QUEUE itself — it rebases each PR onto the queue head to form the merge group —
-# so the old pr-auto-update.yml was retired and this workflow does NOT re-add that. It adds only:
-#   CLOSE-STALE — bot PRs (`self-improve`) and human-punted ones (`needs-human`) that have gone
-#     untouched for STALE_DAYS get a heads-up comment and are closed, so abandoned PRs stop
-#     accreting (the "merge treadmill" failure mode). Opt out per-PR with `hold` or `keep`.
-#   RECONCILE — a green, mergeable PR that is eligible under the SAME predicate automerge.yml
-#     uses but never got auto-merge armed (e.g. opened before its label existed) gets
-#     `gh pr merge --auto --squash`, turning pr-watch.yml's read-only "green but not armed"
-#     detection into a bounded action. Native auto-merge still gates the actual merge on CI +
-#     branch protection — this only ARMS it, never force-merges.
-# Daily (offset minute) + on demand. gh CLI + jq only, no checkout (mirrors pr-watch.yml).
-# App token so its actions carry the SUX_BOT identity (not GITHUB_TOKEN). Every mutation is
-# per-PR `|| true` so one failure can't wedge the sweep.
+# CLOSE-STALE: bot PRs (`self-improve`) and human-punted ones (`needs-human`) idle past
+# STALE_DAYS get a heads-up comment and are closed (opt out with `hold`/`keep`).
+# RECONCILE: a green, mergeable PR eligible under the same predicate automerge.yml uses but
+# never armed gets `gh pr merge --auto --squash` — arms it, never force-merges. gh CLI + jq
+# only, no checkout. App token so mutations carry the SUX_BOT identity.
+# Reusable workflow: SuxOS/.github/.github/workflows/pr-drain.yml
 
 on:
   schedule:
     - cron: "37 6 * * *" # daily, offset minute to dodge the top-of-hour rush
   workflow_dispatch:
 
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
-
-concurrency:
-  group: pr-drain
-  cancel-in-progress: false
-
-env:
-  STALE_DAYS: "14" # a self-improve / needs-human PR idle longer than this is closed as stale
-
 jobs:
   drain:
-    name: Close stale PRs and reconcile unarmed green ones
-    runs-on: ubuntu-latest
-    steps:
-      - name: Mint app token
-        id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          app-id: ${{ secrets.SUX_BOT_APP_ID }}
-          private-key: ${{ secrets.SUX_BOT_PRIVATE_KEY }}
-
-      - name: Drain the open-PR queue
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          set -uo pipefail
-
-          prs=$(gh pr list --state open --limit 100 \
-            --json number,title,isDraft,labels,mergeStateStatus,autoMergeRequest,authorAssociation,updatedAt)
-
-          now=$(date -u +%s)
-          stale=$(( STALE_DAYS * 86400 ))
-
-          # ── CLOSE-STALE ──────────────────────────────────────────────────────────────
-          # A self-improve/needs-human PR, not held/kept, untouched past STALE_DAYS.
-          to_close=$(echo "$prs" | jq -r --argjson now "$now" --argjson stale "$stale" '
-            .[]
-            | select(.isDraft | not)
-            | ([.labels[].name]) as $l
-            | select(($l | index("self-improve")) or ($l | index("needs-human")))
-            | select(($l | index("hold")) | not)
-            | select(($l | index("keep")) | not)
-            | select(($now - (.updatedAt | fromdateiso8601)) >= $stale)
-            | .number')
-          for n in $to_close; do
-            echo "::group::close-stale PR #$n"
-            gh pr comment "$n" --body "🧹 Closing as stale — no activity in ${STALE_DAYS}+ days. This was a bot/needs-human PR; reopen it, or add \`keep\`/\`hold\` to retain it next time." 2>/dev/null || true
-            gh pr close "$n" 2>/dev/null && echo "closed #$n" || echo "::warning::could not close #$n (skipping)"
-            echo "::endgroup::"
-            sleep 2
-          done
-
-          # ── RECONCILE ────────────────────────────────────────────────────────────────
-          # Green + mergeable + eligible (automerge.yml's predicate) but auto-merge never armed.
-          # Arm it — under the merge queue this ENQUEUES the PR (adds it to the queue) rather than
-          # merging directly. Same eligibility: trusted author, not draft/hold/feature, not a
-          # breaking `!` title, and (an eligible label OR a safe-type conventional title).
-          to_arm=$(echo "$prs" | jq -r '
-            .[]
-            | select(.isDraft | not)
-            | select(.mergeStateStatus == "CLEAN")
-            | select(.autoMergeRequest == null)
-            | select(["OWNER","MEMBER","COLLABORATOR"] | index(.authorAssociation))
-            | ([.labels[].name]) as $l
-            | select(($l | index("hold")) | not)
-            | select(($l | index("feature")) | not)
-            | select((.title | test("^[a-z]+(\\([^)]*\\))?!:"; "i")) | not)
-            | select(
-                (($l | index("automerge")) or ($l | index("bug")) or ($l | index("security")) or ($l | index("chore-safe")))
-                or (.title | test("^(fix|security|perf|refactor|chore|docs|test|build|ci|revert)(\\([^)]*\\))?:"; "i"))
-              )
-            | .number')
-          for n in $to_arm; do
-            echo "::group::reconcile PR #$n (arm auto-merge)"
-            gh pr merge --auto --squash "$n" 2>/dev/null && echo "armed auto-merge on #$n" || echo "::warning::could not arm auto-merge on #$n (branch protection unmet / already merging)"
-            echo "::endgroup::"
-            sleep 2
-          done
-
-          echo "drain complete"
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    uses: SuxOS/.github/.github/workflows/pr-drain.yml@main
+    secrets: inherit

@@ -1,4 +1,4 @@
-import { type Fn, fail, ok } from "../registry";
+import { type Fn, fail, failWith, ok } from "../registry";
 import { errMsg, oj } from "./_util";
 
 // YouTube Data API v3 (googleapis.com) — official, free-quota key rides the
@@ -52,7 +52,7 @@ export const youtube: Fn = {
 	cacheable: true,
 	ttl: 600,
 	run: async (env, args) => {
-		if (!env.YOUTUBE_API_KEY) return fail("YouTube API not configured (YOUTUBE_API_KEY). Free key at console.cloud.google.com (enable YouTube Data API v3).");
+		if (!env.YOUTUBE_API_KEY) return failWith("not_configured", "YouTube API not configured (YOUTUBE_API_KEY). Free key at console.cloud.google.com (enable YouTube Data API v3).");
 
 		const term = String(args?.term ?? "").trim();
 		if (!term) return fail("youtube requires a `term`.");

@@ -59,7 +59,7 @@ satisfies the challenge. CapSolver is reserved for the captcha families that
 The render-based retailers no longer call the Mac backend directly — they go
 through `retailRender` (`sux/src/retail-render.ts`), which tries `macRender`
 first and, when it fails (node down/502, circuit-open), retries via Cloudflare
-Browser Rendering (`cfRender`, `sux/src/cf-render.ts`) with `residential:true`
+Browser Run (`cfRender`, `sux/src/cf-render.ts`) with `residential:true`
 + `stealth:true`. Whichever backend answers, the SAME extractor runs on its HTML.
 
 - **Amazon** is the proven case: a live test confirmed cf-residential+stealth

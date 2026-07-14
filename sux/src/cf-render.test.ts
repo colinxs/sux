@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// cfRender is the Cloudflare Browser Rendering client extracted from the render
+// cfRender is the Cloudflare Browser Run client extracted from the render
 // fn — the `cf` half of the retailer fns' mac→cf fallback. render.test.ts exercises
 // it through `render`; these pin its OWN never-throw envelope and the html/text vs
 // screenshot(bytes) result shapes the retail fallback and render both rely on.
@@ -96,6 +96,19 @@ describe("cfRender", () => {
 		expect(r).toEqual({ ok: true, contentType: "text/html", body: "<html>rendered</html>" });
 		expect(stubs.content).toHaveBeenCalled();
 		expect(stubs.close).toHaveBeenCalled();
+	});
+
+	it("debug_recording:true passes { recording: true } to puppeteer.launch (Browser Run session recording)", async () => {
+		await cfRender(BROWSER_ENV, { url: "https://example.com", debug_recording: true });
+		expect(stubs.launch).toHaveBeenCalledWith(BROWSER_ENV.BROWSER, { recording: true });
+	});
+
+	it("debug_recording omitted/false launches with no extra options (older @cloudflare/puppeteer builds unaffected)", async () => {
+		await cfRender(BROWSER_ENV, { url: "https://example.com" });
+		expect(stubs.launch).toHaveBeenCalledWith(BROWSER_ENV.BROWSER);
+		stubs.launch.mockClear();
+		await cfRender(BROWSER_ENV, { url: "https://example.com", debug_recording: false });
+		expect(stubs.launch).toHaveBeenCalledWith(BROWSER_ENV.BROWSER);
 	});
 
 	it("stealth UA advertises a current Chrome major, not the stale pinned 124", async () => {

@@ -4,7 +4,7 @@ name: Security review (no-dumb-shit bot)
 # exactly the class of mistake that shipped a fork-PR-to-prod hole once. Author-gated
 # (public repo: never run for fork/external PRs), and it HARD-BLOCKS the merge on a
 # high/critical finding by applying `hold` (which automerge.yml refuses) and failing.
-# Inert until ANTHROPIC_API_KEY is set.
+# Inert until CLAUDE_CODE_OAUTH_TOKEN is set.
 
 # Also runs on merge_group: branch protection requires the "security-review" context, so
 # it MUST report on the merge queue's speculative ref or the queue freezes forever. The
@@ -34,22 +34,22 @@ jobs:
     # "review" that claude.yml's review job produces — branch protection can then require
     # this gate without also requiring (or being unable to disambiguate) that one.
     name: security-review
-    # Trusted authors only (public repo). Draft PRs skipped. ARMING PREREQUISITE for
-    # self-improve auto-merge: a HIGH-confidence self-improve PR is opened by the SUX_BOT App
-    # (sender.type == 'Bot'), so the plain sender!=Bot gate would skip it and an armed bot PR
-    # would auto-merge UNREVIEWED. So ALSO run for any PR carrying the `self-improve` label —
-    # that label is addable only by trusted write access, and self-improve branches are same-repo
-    # (never a fork), so there's no untrusted-checkout surface. Inert in practice until Colin arms
-    # SELF_IMPROVE_AUTOMERGE; harmless before then (self-improve PRs simply also get reviewed).
+    # Trusted authors only (public repo). Draft PRs skipped. Matches automerge.yml's own
+    # eligibility condition exactly — NOT restricted to non-bot senders. A bot-authored PR
+    # (e.g. from issue-build.yml, via the SUX_BOT App) can carry a trusted author_association
+    # and be automerge-eligible without ever carrying `self-improve`; excluding bot senders
+    # from the trusted-author branch (as this condition previously did) let exactly those
+    # PRs skip this required check — GitHub treats a skipped required check as passing,
+    # so an unreviewed autonomous PR could merge on CI alone. ALSO run for any PR carrying
+    # the `self-improve` label regardless of author_association — that label is addable only
+    # by trusted write access, and self-improve branches are same-repo (never a fork), so
+    # there's no untrusted-checkout surface.
     if: >
       github.event_name == 'merge_group' ||
       (
         github.event.pull_request.draft == false &&
         (
-          (
-            github.event.sender.type != 'Bot' &&
-            contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
-          ) ||
+          contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) ||
           contains(github.event.pull_request.labels.*.name, 'self-improve')
         )
       )
@@ -67,8 +67,8 @@ jobs:
         id: pre
         if: github.event_name == 'pull_request'
         run: |
-          if [ "${{ secrets.ANTHROPIC_API_KEY != '' }}" != "true" ]; then
-            echo "ANTHROPIC_API_KEY not set → security review inert"; echo "go=false" >> "$GITHUB_OUTPUT"
+          if [ "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}" != "true" ]; then
+            echo "CLAUDE_CODE_OAUTH_TOKEN not set → security review inert (run 'claude setup-token')"; echo "go=false" >> "$GITHUB_OUTPUT"
           else echo "go=true" >> "$GITHUB_OUTPUT"; fi
       - name: Checkout
         if: steps.pre.outputs.go == 'true'
@@ -77,6 +77,14 @@ jobs:
       - name: Claude security review
         id: claude
         if: steps.pre.outputs.go == 'true'
+        # The action can hard-fail (exit 1) even when the model ran fine but didn't emit
+        # --json-schema structured_output (flaky/refusing model, mid-review API error, etc).
+        # Without continue-on-error, that failure aborts the job before the Gate step below
+        # ever runs — skipping its deliberate no-verdict fail-closed/advisory policy entirely
+        # and just hard-failing the check with no comment, no hold, no explanation. Let the
+        # step fail visibly in the log but keep going so Gate's existing logic decides the
+        # outcome from the (here, empty) verdict, same as any other no-verdict case.
+        continue-on-error: true
         uses: anthropics/claude-code-action@e90deca47693f9457b72f2b53c17d7c445a87342 # v1
         env:
           # 1-hour prompt-cache TTL (default is 5 min). The autofix→CI→re-review loop and
@@ -84,7 +92,7 @@ jobs:
           # + CLAUDE.md) cache-hits at 0.1x instead of expiring. Caching itself is on by default.
           ENABLE_PROMPT_CACHING_1H: "1"
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
             Do a SECURITY review of this PR's diff vs the base branch. This repo is a PUBLIC
             Cloudflare Worker + a live autonomous CI/CD pipeline, so weigh: secret handling/

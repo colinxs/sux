@@ -178,6 +178,88 @@ describe("preferences", () => {
 		expect(JSON.parse(r.content[0].text).profile).toBe("default");
 	});
 
+	it("get with examples:true returns the raw exemplars so a caller can pick one to forget", async () => {
+		const { env } = makeEnv("Spec.");
+		await preferences.run(env, { action: "learn", profile: "colin", sample: "first" });
+		await preferences.run(env, { action: "learn", profile: "colin", sample: "second" });
+		const r = await preferences.run(env, { action: "get", profile: "colin", examples: true });
+		const j = JSON.parse(r.content[0].text);
+		expect(j.example_count).toBe(2);
+		expect(j.examples).toEqual(["first", "second"]);
+		// Default get omits the raw exemplars.
+		const bare = JSON.parse((await preferences.run(env, { action: "get", profile: "colin" })).content[0].text);
+		expect(bare.examples).toBeUndefined();
+	});
+
+	it("forget drops the most recent exemplar and re-distills from the rest", async () => {
+		const { env, kv, run } = makeEnv();
+		await preferences.run(env, { action: "learn", profile: "colin", sample: "keep me" });
+		await preferences.run(env, { action: "learn", profile: "colin", sample: "bad sample" });
+		run.mockResolvedValueOnce({ response: "Re-distilled without the bad one." });
+		const r = await preferences.run(env, { action: "forget", profile: "colin" });
+		const j = JSON.parse(r.content[0].text);
+		expect(j.removed_index).toBe(2);
+		expect(j.example_count).toBe(1);
+		expect(j.distilled_spec).toBe("Re-distilled without the bad one.");
+		const stored = JSON.parse(await maybeDecompressString(kv.store.get("sux:prefs:colin")!));
+		expect(stored.examples).toEqual(["keep me"]);
+	});
+
+	it("forget honors a 1-based index and re-distills from the survivors", async () => {
+		const { env, kv, run } = makeEnv();
+		for (const s of ["a", "b", "c"]) await preferences.run(env, { action: "learn", profile: "colin", sample: s });
+		run.mockResolvedValueOnce({ response: "From a and c." });
+		const r = await preferences.run(env, { action: "forget", profile: "colin", index: 2 });
+		expect(JSON.parse(r.content[0].text).removed_index).toBe(2);
+		const stored = JSON.parse(await maybeDecompressString(kv.store.get("sux:prefs:colin")!));
+		expect(stored.examples).toEqual(["a", "c"]);
+	});
+
+	it("forget rejects an out-of-range index without touching the store", async () => {
+		const { env, run } = makeEnv();
+		await preferences.run(env, { action: "learn", profile: "colin", sample: "only" });
+		run.mockClear();
+		const r = await preferences.run(env, { action: "forget", profile: "colin", index: 5 });
+		expect(r.isError).toBe(true);
+		expect(r.errorCode).toBe("bad_input");
+		expect(run).not.toHaveBeenCalled();
+	});
+
+	it("forgetting the last exemplar removes the profile (no voice left to distill)", async () => {
+		const { env, kv } = makeEnv();
+		await preferences.run(env, { action: "learn", profile: "colin", sample: "only" });
+		const r = await preferences.run(env, { action: "forget", profile: "colin" });
+		const j = JSON.parse(r.content[0].text);
+		expect(j.deleted).toBe(true);
+		expect(j.example_count).toBe(0);
+		expect(kv.store.has("sux:prefs:colin")).toBe(false);
+	});
+
+	it("forget on a missing profile reports nothing to forget", async () => {
+		const { env } = makeEnv();
+		const r = await preferences.run(env, { action: "forget", profile: "ghost" });
+		expect(JSON.parse(r.content[0].text).found).toBe(false);
+	});
+
+	it("learn refuses to overwrite a profile updated concurrently mid-distill (#288)", async () => {
+		const { env, kv, run } = makeEnv();
+		await preferences.run(env, { action: "learn", profile: "colin", sample: "first" });
+		// Simulate a concurrent writer landing during our distill: the re-read after llm()
+		// must see the bumped version and refuse to clobber the interleaving contribution.
+		run.mockImplementationOnce(async () => {
+			const cur = JSON.parse(await maybeDecompressString(kv.store.get("sux:prefs:colin")!));
+			kv.store.set("sux:prefs:colin", JSON.stringify({ ...cur, version: cur.version + 1, examples: [...cur.examples, "raced-in"] }));
+			return { response: "would-be-lost spec" };
+		});
+		const r = await preferences.run(env, { action: "learn", profile: "colin", sample: "second" });
+		expect(r.isError).toBe(true);
+		expect(r.errorCode).toBe("upstream_error");
+		expect(r.content[0].text).toMatch(/concurrently|retry/i);
+		// The concurrent writer's contribution survived — nothing was clobbered.
+		const stored = JSON.parse(kv.store.get("sux:prefs:colin")!);
+		expect(stored.examples).toContain("raced-in");
+	});
+
 	// Cross-check: what preferences(learn) stores is exactly what voice(profile) reads.
 	it("integration: voice(profile:X) picks up what preferences(learn, profile:X) taught", async () => {
 		const { env, run } = makeEnv("VOICE-SPEC: lowercase, terse, no hedging.");

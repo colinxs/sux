@@ -20,6 +20,7 @@ import { shipMetricsSnapshot, shipToLoki } from "./grafana";
 import { handleObservability } from "./observability";
 import { handleRecovery } from "./recovery";
 import { normalizeArgs, normalizeText } from "./normalize";
+import { cancelTask, createTask, getTask, isTerminal, listTasks, toPublicTask, toTaskResult, waitForTerminal } from "./tasks";
 
 type Props = { login: string; name: string; email: string; accessToken: string };
 
@@ -56,6 +57,15 @@ export const FN_DEADLINE_MS = 60_000;
 const MAX_OUTPUT_CHARS = 1_000_000;
 const MAX_ARG_BYTES = 256_000;
 const MAX_ARG_DEPTH = 64;
+
+// MCP Tasks primitive (see src/tasks.ts) — the tools genuinely long-running or
+// fan-out-shaped enough to be worth polling instead of holding a request open:
+// pipe/batch compose many leaf calls server-side, render/crawl/batch_fetch/shop
+// can run close to FN_DEADLINE_MS today. Everything else stays request/response
+// only (execution.taskSupport omitted ⇒ "forbidden", the spec default) — most
+// of sux's ~95 fns are fast enough that task augmentation would just add a
+// round-trip. Extend this set as more fns want it; no dispatch change needed.
+const TASK_CAPABLE_TOOLS = new Set(["pipe", "batch", "render", "crawl", "batch_fetch", "shop"]);
 
 // Race a fn.run against a hard deadline so no fn can hang the isolate. On timeout
 // we RESOLVE (not reject) with a clean isError ToolResult and abandon the run
@@ -150,7 +160,15 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 			id,
 			result: {
 				protocolVersion: "2025-06-18",
-				capabilities: { tools: { listChanged: false }, prompts: { listChanged: false } },
+				capabilities: {
+					tools: { listChanged: false },
+					prompts: { listChanged: false },
+					// MCP Tasks (2025-11-25+, experimental): this server can task-augment
+					// tools/call for the tools listed in TASK_CAPABLE_TOOLS (advertised
+					// per-tool via tools/list's execution.taskSupport), and supports
+					// tasks/list + tasks/cancel for any task it created. See src/tasks.ts.
+					tasks: { list: {}, cancel: {}, requests: { tools: { call: {} } } },
+				},
 				serverInfo: { name: "research-tools", version: "0.1.0" },
 			},
 		});
@@ -160,7 +178,45 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 		// Front-door: advertise only the front verbs (registry FRONT_VERBS). Leaves stay
 		// dispatchable (by name or via the `fn` escape) and discoverable (`sux` map) — the
 		// list is just legible instead of the full leaf surface.
-		return sseResponse({ jsonrpc: "2.0", id, result: { tools: frontToolList(FUNCTIONS) } });
+		// Tool-level task negotiation (spec §Tool-Level Negotiation): a tool in
+		// TASK_CAPABLE_TOOLS gets `execution.taskSupport:"optional"` so a client MAY
+		// (never must) invoke it as a task; everything else is silently "forbidden"
+		// (the field is just omitted) — the spec's own default for that value.
+		const tools = frontToolList(FUNCTIONS).map((t) => (TASK_CAPABLE_TOOLS.has(t.name) ? { ...t, execution: { taskSupport: "optional" as const } } : t));
+		return sseResponse({ jsonrpc: "2.0", id, result: { tools } });
+	}
+	if (method === "tasks/list") {
+		const cursor = typeof rpc?.params?.cursor === "string" ? rpc.params.cursor : undefined;
+		const limit = Number(rpc?.params?.limit);
+		const page = await listTasks(env, cursor, Number.isFinite(limit) ? limit : undefined);
+		return sseResponse({ jsonrpc: "2.0", id, result: { tasks: page.tasks, ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}) } });
+	}
+	if (method === "tasks/get" || method === "tasks/cancel" || method === "tasks/result") {
+		const taskId = typeof rpc?.params?.taskId === "string" ? rpc.params.taskId : "";
+		if (!taskId) return sseResponse({ jsonrpc: "2.0", id, error: { code: -32602, message: "taskId is required." } });
+
+		if (method === "tasks/cancel") {
+			const r = await cancelTask(env, taskId);
+			if (!r.ok && r.error === "not_found") return sseResponse({ jsonrpc: "2.0", id, error: { code: -32602, message: "Failed to cancel task: Task not found" } });
+			if (!r.ok) return sseResponse({ jsonrpc: "2.0", id, error: { code: -32602, message: `Cannot cancel task: already in terminal status '${r.status}'` } });
+			return sseResponse({ jsonrpc: "2.0", id, result: toPublicTask(r.rec) });
+		}
+
+		if (method === "tasks/get") {
+			const rec = await getTask(env, taskId);
+			if (!rec) return sseResponse({ jsonrpc: "2.0", id, error: { code: -32602, message: "Failed to retrieve task: Task not found" } });
+			return sseResponse({ jsonrpc: "2.0", id, result: toPublicTask(rec) });
+		}
+
+		// tasks/result — per spec this MUST block until the task reaches a terminal
+		// status. waitForTerminal bounds that block (see its doc comment in tasks.ts
+		// for why an unbounded block doesn't fit a Workers request).
+		const rec = await waitForTerminal(env, taskId);
+		if (!rec) return sseResponse({ jsonrpc: "2.0", id, error: { code: -32602, message: "Failed to retrieve task: Task not found" } });
+		if (!isTerminal(rec.status)) {
+			return sseResponse({ jsonrpc: "2.0", id, error: { code: -32603, message: `Task '${taskId}' is still '${rec.status}' — poll tasks/get and retry tasks/result.` } });
+		}
+		return sseResponse({ jsonrpc: "2.0", id, result: toTaskResult(rec) });
 	}
 	if (method === "prompts/list") {
 		// Two prompts: the sux routing SKILL + the life memory SKILL. No pagination.
@@ -197,6 +253,40 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 		}
 		const fn = findFn(FUNCTIONS, name);
 		if (!fn) return sseResponse({ jsonrpc: "2.0", id, error: { code: -32601, message: `unknown tool: ${name}` } });
+
+		// MCP Tasks: a task-augmented call carries `params.task` (spec: `{ttl?}`,
+		// `{}` included). Only TASK_CAPABLE_TOOLS may run this way — per spec
+		// §Tool-Level Negotiation rule 2.1, a tool whose taskSupport isn't declared
+		// defaults to "forbidden" and the server SHOULD -32601 a client that tries
+		// anyway. This path bypasses the KV response cache/single-flight coalescing
+		// entirely (the task's own KV record IS the durable result — see tasks.ts's
+		// module doc for why layering the content-addressed cache on top would just
+		// duplicate storage of the same answer) and returns the CreateTaskResult
+		// immediately instead of the tool's result.
+		if (rpc?.params?.task !== undefined) {
+			if (!TASK_CAPABLE_TOOLS.has(name)) {
+				return sseResponse({ jsonrpc: "2.0", id, error: { code: -32601, message: `'${name}' does not support task-augmented execution.` } });
+			}
+			const rawArgs = rpc?.params?.arguments;
+			const argErr = checkArgs(rawArgs, MAX_ARG_BYTES, MAX_ARG_DEPTH);
+			if (argErr) return sseResponse({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `Tool '${name}' rejected: ${argErr}` }], isError: true } });
+			const args = fn.raw ? rawArgs : normalizeArgs(rawArgs);
+			const rtEnv: RtEnv = { ...env, _egress: { ctx, reqId: crypto.randomUUID().slice(0, 8) } };
+			const taskField = rpc.params.task as { ttl?: unknown } | null;
+			const rec = createTask(env, ctx, name, taskField && typeof taskField === "object" ? taskField.ttl : undefined, async () => {
+				const ran = await withDeadline(name, FN_DEADLINE_MS, fn.run(rtEnv, args));
+				if (!fn.raw && !ran.isError && Array.isArray(ran.content)) {
+					for (const part of ran.content) {
+						if (part?.type === "text" && typeof part.text === "string") part.text = normalizeText(part.text);
+					}
+				}
+				return fn.raw ? ran : clampResult(ran, MAX_OUTPUT_CHARS);
+			});
+			const taskEvent = { tool: name, ms: 0, error: false };
+			recordCall(env, ctx, taskEvent);
+			shipToLoki(env, ctx, taskEvent);
+			return sseResponse({ jsonrpc: "2.0", id, result: { task: toPublicTask(rec) } });
+		}
 
 		// Universal cache-bypass: a truthy `fresh` in the arguments forces a cache
 		// miss (skip the READ so the fn runs on live data) while leaving the WRITE

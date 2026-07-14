@@ -144,6 +144,15 @@ describe("store", () => {
 		expect(out.cursor).toBe("next-page");
 	});
 
+	it("list forwards a caller-supplied cursor into R2.list to page past the first page", async () => {
+		const env = mkEnv();
+		const spy = vi.spyOn(env.R2, "list");
+		await store.run(env, { op: "list", cursor: "next-page" });
+		expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: "next-page" }));
+		await store.run(env, { op: "list" });
+		expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: undefined }));
+	});
+
 	it("delete removes the handle but keeps the blob", async () => {
 		const env = mkEnv();
 		const put = j(await store.run(env, { data: "x" }));

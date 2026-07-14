@@ -112,16 +112,20 @@ export async function runWeeklyRecall(env: RtEnv, opts: WeeklyRecallOpts, deps: 
 	if (!opts.force && (await led.seen(key))) return { week, skipped: true, note: "already ran this ISO week" };
 
 	const questions = standingQuestions(env);
-	const sections: WeeklyRecallSection[] = [];
-	for (const q of questions) {
-		try {
-			const r = await deps.recall(env, q);
-			sections.push({ question: q, answer: r.answer, citations: r.citations });
-		} catch (e) {
-			// One failing question must not sink the digest — record the failure inline and move on.
-			sections.push({ question: q, answer: `(recall failed: ${errMsg(e)})`, citations: [] });
-		}
-	}
+	// Each recall is the full cross-store fan-out + LLM synthesis — one of the heaviest ops here.
+	// Run the (independent) standing questions concurrently so the cron tick doesn't serialize up
+	// to MAX_QUESTIONS multi-second calls, keeping per-question failure isolated inside the map.
+	const sections: WeeklyRecallSection[] = await Promise.all(
+		questions.map(async (q) => {
+			try {
+				const r = await deps.recall(env, q);
+				return { question: q, answer: r.answer, citations: r.citations };
+			} catch (e) {
+				// One failing question must not sink the digest — record the failure inline and move on.
+				return { question: q, answer: `(recall failed: ${errMsg(e)})`, citations: [] };
+			}
+		}),
+	);
 
 	try {
 		await deps.digestAppend(env, `Weekly/${week}.md`, buildDigest(week, sections));

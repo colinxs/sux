@@ -5,8 +5,10 @@ import { errMsg, oj } from "./_util";
 // balances, transactions, budgets, cashflow, categories, holdings). Auth is a
 // personal API token used directly as `Authorization: Token <token>` (NO OAuth,
 // NO email/password/MFA login — that flow is prohibited to handle; Colin mints the
-// token out-of-band via the monarchmoney Python lib's interactive login, or copies
-// the `Authorization: Token …` request header from app.monarchmoney.com devtools).
+// token out-of-band via `scripts/mint-monarch-token.py`, which drives the
+// monarchmoney fork's interactive login. NOTE: the web app authenticates over an
+// httpOnly session cookie + CSRF, so there is NO `Authorization: Token` header to
+// copy from devtools — the login flow is the only source).
 // Inert until MONARCH_TOKEN is set, exactly like FASTMAIL_TOKEN / TODOIST_TOKEN.
 //
 // READ-ONLY BY CONSTRUCTION: no mutation op exists, and the `graphql` escape hatch
@@ -18,9 +20,10 @@ import { errMsg, oj } from "./_util";
 const API = "https://api.monarchmoney.com/graphql";
 
 const NOT_CONFIGURED =
-	"Monarch Money not configured. Set MONARCH_TOKEN to a Monarch API token " +
-	"(the `Authorization: Token` header from app.monarchmoney.com devtools, or the " +
-	"monarchmoney Python lib's interactive login). Read-only — sux never moves money.";
+	"Monarch Money not configured. Set MONARCH_TOKEN to a Monarch API token — " +
+	"mint one with `scripts/mint-monarch-token.py` (drives the monarchmoney fork's " +
+	"login; the web app is cookie+CSRF, so there is no devtools token to copy). " +
+	"Read-only — sux never moves money.";
 
 /** True when the Monarch token is configured. */
 export const hasMonarch = (env: RtEnv): boolean => Boolean(env.MONARCH_TOKEN);

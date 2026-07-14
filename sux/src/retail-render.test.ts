@@ -35,7 +35,7 @@ describe("retailRender ladder order", () => {
 	});
 
 	it("falls back to mac when cf fails (cf-first default)", async () => {
-		cfRenderMock.mockResolvedValueOnce({ ok: false, error: "Browser Rendering is not configured (BROWSER binding)." });
+		cfRenderMock.mockResolvedValueOnce({ ok: false, error: "Browser Run is not configured (BROWSER binding)." });
 		macRenderMock.mockResolvedValueOnce({ ok: true, contentType: "text/html", body: MAC_HTML });
 		const r = await retailRender(env, { url: "https://example.com/s" });
 		expect(r).toMatchObject({ ok: true, body: MAC_HTML });

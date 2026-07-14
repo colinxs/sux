@@ -146,6 +146,17 @@ describe("runBriefing — gating", () => {
 		expect(report.drafts_staged).toBe(0);
 	});
 
+	it("a vault digest-append failure never fails the cycle but is logged + surfaced as digest_error", async () => {
+		const deps = mkDeps({ digestAppend: vi.fn(async () => { throw new Error("bad vault token"); }) });
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const report = await runBriefing(envWith({ BRIEFING_ENABLED: "1" }), { cycle_id: "cerr", date: "2026-07-11" }, deps);
+		expect(report.digest_written).toBe(false);
+		expect(report.digest_error).toMatch(/bad vault token/);
+		expect(warn).toHaveBeenCalledWith(expect.stringMatching(/briefing: vault digest-append failed.*bad vault token/));
+		expect(report.digest).toContain("Good morning"); // the cycle still produced its briefing
+		warn.mockRestore();
+	});
+
 	it("ENABLED + STAGE → stages reply drafts to Drafts via mail_draft (never sends)", async () => {
 		const deps = mkDeps();
 		const report = await runBriefing(envWith({ BRIEFING_ENABLED: "1", BRIEFING_STAGE_DRAFTS: "1" }), { cycle_id: "c2", date: "2026-07-11" }, deps);

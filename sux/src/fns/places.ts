@@ -1,4 +1,4 @@
-import { type Fn, fail, ok } from "../registry";
+import { type Fn, fail, failWith, ok } from "../registry";
 import { errMsg, oj } from "./_util";
 
 // Google Places API (places.googleapis.com) — local business / point-of-interest
@@ -41,7 +41,7 @@ export const places: Fn = {
 	cacheable: true,
 	ttl: 900,
 	run: async (env, args) => {
-		if (!env.GOOGLE_MAPS_KEY) return fail("Google Places not configured (GOOGLE_MAPS_KEY). Free credit at console.cloud.google.com (Places API).");
+		if (!env.GOOGLE_MAPS_KEY) return failWith("not_configured", "Google Places not configured (GOOGLE_MAPS_KEY). Free credit at console.cloud.google.com (Places API).");
 
 		const query = String(args?.query ?? "").trim();
 		if (!query) return fail("`query` is required.");

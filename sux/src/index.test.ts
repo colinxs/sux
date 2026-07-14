@@ -33,6 +33,18 @@ function makeKv() {
 			store.delete(key);
 			meta.delete(key);
 		},
+		// Cursor = a plain numeric offset into the sorted keyspace — good enough for
+		// tests exercising tasks/list's pass-through pagination (KV's real cursor is
+		// an opaque token; we don't need to mimic its encoding, just its contract).
+		list: async (opts?: { prefix?: string; cursor?: string; limit?: number }) => {
+			const prefix = opts?.prefix ?? "";
+			const all = [...store.keys()].filter((k) => k.startsWith(prefix)).sort();
+			const limit = opts?.limit ?? 1000;
+			const start = opts?.cursor ? Number(opts.cursor) : 0;
+			const page = all.slice(start, start + limit);
+			const list_complete = start + limit >= all.length;
+			return { keys: page.map((name) => ({ name })), list_complete, cursor: list_complete ? undefined : String(start + limit) };
+		},
 	};
 	return { store, meta, kv };
 }
@@ -580,5 +592,122 @@ describe("rtServer.fetch — connector manifest (one front door)", () => {
 		const rpc = extractRpcFromText(await res.text(), res.headers.get("content-type"));
 		expect(["vault", "mail", "files"]).not.toContain(rpc?.result.serverInfo.name);
 		expect(rpc?.result.serverInfo.name).toBe("research-tools");
+	});
+});
+
+// MCP Tasks primitive (src/tasks.ts) — task-augmented tools/call, plus
+// tasks/get, tasks/result, tasks/list, tasks/cancel, all driven through the
+// real handleRpc dispatch (same helpers as the rest of this file).
+describe("MCP Tasks primitive", () => {
+	it("initialize advertises the tasks capability", async () => {
+		const { kv } = makeKv();
+		const { ctx } = makeCtx();
+		const out = await callRpc(makeEnv(kv), ctx, { jsonrpc: "2.0", id: 1, method: "initialize" });
+		expect(out.result.capabilities.tasks).toEqual({ list: {}, cancel: {}, requests: { tools: { call: {} } } });
+	});
+
+	it("tools/list tags task-capable tools with execution.taskSupport, leaves the rest untagged", async () => {
+		const { kv } = makeKv();
+		const { ctx } = makeCtx();
+		const out = await callRpc(makeEnv(kv), ctx, { jsonrpc: "2.0", id: 2, method: "tools/list" });
+		const byName = Object.fromEntries(out.result.tools.map((t: { name: string; execution?: unknown }) => [t.name, t.execution]));
+		expect(byName.pipe).toEqual({ taskSupport: "optional" });
+		expect(byName.batch).toEqual({ taskSupport: "optional" });
+		expect(byName.sux).toBeUndefined();
+		expect(byName.search).toBeUndefined();
+	});
+
+	it("a task-augmented call to a non-task-capable tool is refused with -32601", async () => {
+		const { kv } = makeKv();
+		const { ctx } = makeCtx();
+		const out = await callRpc(makeEnv(kv), ctx, {
+			jsonrpc: "2.0",
+			id: 3,
+			method: "tools/call",
+			params: { name: "hash", arguments: { text: "x" }, task: {} },
+		});
+		expect(out.error?.code).toBe(-32601);
+	});
+
+	it("a task-augmented call to a capable tool returns a CreateTaskResult, then completes and is retrievable", async () => {
+		const { kv } = makeKv();
+		const { ctx, deferred } = makeCtx();
+		const create = await callRpc(makeEnv(kv), ctx, {
+			jsonrpc: "2.0",
+			id: 4,
+			method: "tools/call",
+			params: { name: "pipe", arguments: { steps: [{ tool: "hash", args: { text: "task-me" } }] }, task: { ttl: 60_000 } },
+		});
+		expect(create.result.task).toBeDefined();
+		expect(create.result.task.status).toBe("working");
+		expect(typeof create.result.task.taskId).toBe("string");
+		expect(create.result.task.ttl).toBe(60_000);
+		const taskId = create.result.task.taskId;
+
+		// Let the ctx.waitUntil-scheduled run (and its KV writes) settle.
+		await Promise.all(deferred.splice(0));
+		await Promise.all(deferred.splice(0));
+
+		const got = await callRpc(makeEnv(kv), ctx, { jsonrpc: "2.0", id: 5, method: "tasks/get", params: { taskId } });
+		expect(got.result.status).toBe("completed");
+		expect(got.result).not.toHaveProperty("result"); // tasks/get never leaks the payload
+
+		const result = await callRpc(makeEnv(kv), ctx, { jsonrpc: "2.0", id: 6, method: "tasks/result", params: { taskId } });
+		expect(result.result.isError).toBeFalsy();
+		expect(typeof result.result.content[0].text).toBe("string");
+		expect(result.result._meta).toEqual({ "io.modelcontextprotocol/related-task": { taskId } });
+	});
+
+	it("tasks/get on an unknown taskId is a -32602 error", async () => {
+		const { kv } = makeKv();
+		const { ctx } = makeCtx();
+		const out = await callRpc(makeEnv(kv), ctx, { jsonrpc: "2.0", id: 7, method: "tasks/get", params: { taskId: "nope" } });
+		expect(out.error?.code).toBe(-32602);
+	});
+
+	it("tasks/cancel flips a working task to cancelled, and refuses a second cancel", async () => {
+		const { kv } = makeKv();
+		const { ctx, deferred } = makeCtx();
+		const create = await callRpc(makeEnv(kv), ctx, {
+			jsonrpc: "2.0",
+			id: 8,
+			method: "tools/call",
+			params: { name: "batch", arguments: { tool: "hash", calls: [{ text: "a" }] }, task: {} },
+		});
+		const taskId = create.result.task.taskId;
+
+		const cancelled = await callRpc(makeEnv(kv), ctx, { jsonrpc: "2.0", id: 9, method: "tasks/cancel", params: { taskId } });
+		expect(cancelled.result.status).toBe("cancelled");
+
+		const again = await callRpc(makeEnv(kv), ctx, { jsonrpc: "2.0", id: 10, method: "tasks/cancel", params: { taskId } });
+		expect(again.error?.code).toBe(-32602);
+
+		// The batch run keeps executing and settling in the background, but its
+		// result must never overwrite the cancelled status.
+		await Promise.all(deferred.splice(0));
+		const after = await callRpc(makeEnv(kv), ctx, { jsonrpc: "2.0", id: 11, method: "tasks/get", params: { taskId } });
+		expect(after.result.status).toBe("cancelled");
+	});
+
+	it("tasks/list paginates via cursor and only ever returns the public task shape", async () => {
+		const { kv } = makeKv();
+		const { ctx, deferred } = makeCtx();
+		for (let i = 0; i < 3; i++) {
+			await callRpc(makeEnv(kv), ctx, {
+				jsonrpc: "2.0",
+				id: 100 + i,
+				method: "tools/call",
+				params: { name: "batch", arguments: { tool: "hash", calls: [{ text: String(i) }] }, task: {} },
+			});
+		}
+		await Promise.all(deferred.splice(0));
+
+		const page1 = await callRpc(makeEnv(kv), ctx, { jsonrpc: "2.0", id: 200, method: "tasks/list", params: { limit: 2 } });
+		expect(page1.result.tasks.length).toBe(2);
+		expect(page1.result.nextCursor).toBeDefined();
+		for (const t of page1.result.tasks) expect(t).not.toHaveProperty("result");
+
+		const page2 = await callRpc(makeEnv(kv), ctx, { jsonrpc: "2.0", id: 201, method: "tasks/list", params: { cursor: page1.result.nextCursor, limit: 2 } });
+		expect(page2.result.tasks.length).toBe(1);
 	});
 });

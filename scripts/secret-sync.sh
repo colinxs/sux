@@ -15,6 +15,7 @@
 # Prereqs: `op` signed in (biometric ok), `wrangler` authed with Workers:edit,
 # `gh` authed. See docs/secrets.md for which secret belongs in which store.
 set -euo pipefail
+. "$(dirname "$0")/op-auth.sh"
 
 NAME="${1:?usage: secret-sync.sh NAME [--worker] [--github] [--op op://Vault/Item/field]}"
 shift || true
@@ -38,8 +39,10 @@ fi
 
 OP_REF="${OP_REF:-op://Secrets/$NAME/credential}"
 
+op_preflight || exit 1
+
 # Read once into a shell var (never echoed). Fail loudly on empty/missing.
-if ! val="$(op read "$OP_REF" 2>/dev/null)"; then
+if ! val="$(op_read "$OP_REF" 2>/dev/null)"; then
   echo "✗ could not read $OP_REF from 1Password (is the item there? is op signed in?)" >&2; exit 1
 fi
 [ -n "$val" ] || { echo "✗ empty value at $OP_REF" >&2; exit 1; }

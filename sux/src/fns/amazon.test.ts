@@ -18,7 +18,7 @@ beforeEach(() => {
 	// call history each test; default the cf leg to unavailable (no BROWSER binding).
 	macRenderMock.mockReset();
 	cfRenderMock.mockReset();
-	cfRenderMock.mockResolvedValue({ ok: false, error: "Browser Rendering is not configured (BROWSER binding)." });
+	cfRenderMock.mockResolvedValue({ ok: false, error: "Browser Run is not configured (BROWSER binding)." });
 });
 
 // A rendered Amazon search page with two `s-search-result` tiles: each carries a
@@ -123,12 +123,12 @@ describe("amazon", () => {
 	});
 
 	it("when BOTH backends fail, surfaces the cf error (the first-choice signal)", async () => {
-		cfRenderMock.mockResolvedValueOnce({ ok: false, error: "Browser Rendering is not configured (BROWSER binding)." });
+		cfRenderMock.mockResolvedValueOnce({ ok: false, error: "Browser Run is not configured (BROWSER binding)." });
 		macRenderMock.mockResolvedValueOnce({ ok: false, error: "mac render backend circuit-open" });
 		const r = await amazon.run({ MAC_RENDER_URL: "x", MAC_RENDER_SECRET: "y" } as any, { action: "search", term: "x" });
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toMatch(/blocked or render failed/);
-		expect(r.content[0].text).toMatch(/Browser Rendering is not configured/);
+		expect(r.content[0].text).toMatch(/Browser Run is not configured/);
 	});
 
 	it("fails with no backend configured (macRender ok:false)", async () => {

@@ -29,7 +29,6 @@ export const briefing: Fn = {
 			draft: { type: "boolean", description: "Stage reply drafts for flagged mail (default true; needs BRIEFING_STAGE_DRAFTS). false = summarize + nudge only." },
 			dry_run: { type: "boolean", description: "Compose + return only; stage nothing (no drafts, no digest write)." },
 			cycle_id: { type: "string", description: "Idempotency handle (default briefing::<date>)." },
-			limit: { type: "integer", description: "action:'log' — entries to return." },
 		},
 	},
 	run: async (env, a) => {

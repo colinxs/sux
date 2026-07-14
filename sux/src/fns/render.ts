@@ -1,4 +1,5 @@
 import { cfRender } from "../cf-render";
+import { normalizeMacWaitUntil } from "../mac-render";
 import { hmacHex, isBlockedTarget } from "../proxy";
 import { looksBlocked } from "../retail-render";
 import { type Fn, type RtEnv, type ToolResult, failWith, ok } from "../registry";
@@ -40,7 +41,9 @@ async function renderViaMac(env: RtEnv, payload: MacRenderPayload, delivery: str
 	if (!env.MAC_RENDER_URL || !env.MAC_RENDER_SECRET) {
 		return failWith("not_configured", "Mac render backend not configured (MAC_RENDER_URL/MAC_RENDER_SECRET).");
 	}
-	const body = JSON.stringify(payload);
+	// patchright's page.goto rejects Puppeteer's networkidle0/2 — normalize to its
+	// vocabulary (the shared mac boundary) so a default backend:mac render doesn't 502.
+	const body = JSON.stringify({ ...payload, wait_until: normalizeMacWaitUntil(payload.wait_until) });
 	const ts = String(Date.now());
 	const sig = await hmacHex(env.MAC_RENDER_SECRET, `${ts}\n${body}`);
 
@@ -89,13 +92,14 @@ export const render: Fn = {
 	name: "render",
 	cost: 5,
 	description:
-		"Scrape a JavaScript-rendered page via headless Chromium (Cloudflare Browser Rendering). Executes JS, unlike `scrape` (which fetches raw HTML through the residential proxy). " +
+		"Scrape a JavaScript-rendered page via headless Chromium (Cloudflare Browser Run, formerly Browser Rendering). Executes JS, unlike `scrape` (which fetches raw HTML through the residential proxy). " +
 		"Give `url` (absolute http(s)); options: wait_until (load|domcontentloaded|networkidle0|networkidle2, default networkidle0), wait_ms (extra delay after load, ≤10000), as (html|text|screenshot|pdf, default html), timeout_ms (nav timeout, default 30000, ≤60000). " +
 		"as:screenshot captures a PNG (full_page to shoot the whole scroll height) and returns it as a content-addressed /s/<uuid> URL by default (delivery:base64 to inline). block_resources aborts image/font/stylesheet/media fetches before navigation to speed up html/text extraction (ignored for screenshots to keep them visually correct). " +
 		"as:pdf renders the page to a PDF, delivered the same way as a screenshot (content-addressed /s/<uuid> URL by default, delivery:base64 to inline); options format (A4|Letter|Legal|A3, default A4), landscape (default false), print_background (default true so CSS backgrounds render). " +
 		"residential (default true) routes the browser's requests through the Tailscale residential proxy so they egress from a home IP instead of the Cloudflare datacenter — the point of this fn, since datacenter IPs are blocked by bot managers like Akamai. Trade-off: slower, because every subresource is proxied one by one; set residential:false to fetch directly from the datacenter (faster, but blockable). With residential and block_resources both on, heavy assets are still aborted and everything else is residential-routed; with residential on and block_resources off, images are proxied too (fully residential, heavier). " +
-		"stealth (default true) applies a realistic desktop UA/viewport/accept-language and masks navigator.webdriver to reduce headless-browser fingerprinting so bot managers are less likely to flag the render; pairs with residential routing (which fixes the IP signal). Best-effort — CF Browser Rendering limits deeper stealth, and each step degrades silently if unsupported. Set false to keep the default headless signals. " +
-		"backend (cf|mac, default cf) selects the render engine: cf = Cloudflare Browser Rendering (fast, default); mac = a residential patched-browser (patchright) service that egresses from a home IP and SOLVES active JS bot challenges (Akamai sensor) cf can't — slower, use it only for sites that block cf (e.g. Home Depot, Walmart). The mac backend takes url/as/wait_until/wait_ms/block_resources/full_page/timeout_ms; residential/stealth are inherent to it (no separate CF interception), and screenshot/pdf are delivered via the same /s/<uuid> vs base64 `delivery` path.",
+		"stealth (default true) applies a realistic desktop UA/viewport/accept-language and masks navigator.webdriver to reduce headless-browser fingerprinting so bot managers are less likely to flag the render; pairs with residential routing (which fixes the IP signal). Best-effort — CF Browser Run limits deeper stealth, and each step degrades silently if unsupported. Set false to keep the default headless signals. " +
+		"backend (cf|mac, default cf) selects the render engine: cf = Cloudflare Browser Run (fast, default); mac = a residential patched-browser (patchright) service that egresses from a home IP and SOLVES active JS bot challenges (Akamai sensor) cf can't — slower, use it only for sites that block cf (e.g. Home Depot, Walmart). The mac backend takes url/as/wait_until/wait_ms/block_resources/full_page/timeout_ms; residential/stealth are inherent to it (no separate CF interception), and screenshot/pdf are delivered via the same /s/<uuid> vs base64 `delivery` path. " +
+		"debug_recording (backend:cf only, default false) opts the session into Browser Run's session-recording feature — replayable in the Cloudflare dashboard (Browser Run > Runs) after the session closes — for diagnosing a render that came back blocked or wrong. Off by default (recording adds overhead); no-op for backend:mac.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -120,7 +124,7 @@ export const render: Fn = {
 				type: "boolean",
 				default: true,
 				description:
-					"Apply a realistic desktop UA/viewport/accept-language and mask navigator.webdriver to reduce headless-browser fingerprinting (bot managers like Akamai flag the default HeadlessChrome signals). Default true — pairs with residential routing. Best-effort (CF Browser Rendering limits deeper stealth); set false to keep default headless signals.",
+					"Apply a realistic desktop UA/viewport/accept-language and mask navigator.webdriver to reduce headless-browser fingerprinting (bot managers like Akamai flag the default HeadlessChrome signals). Default true — pairs with residential routing. Best-effort (CF Browser Run limits deeper stealth); set false to keep default headless signals.",
 			},
 			delivery: { type: "string", enum: ["base64", "url"], default: "url", description: "Screenshot only: content-addressed /s/<uuid> URL (default, ~100 tokens) or inline base64." },
 			solve: {
@@ -134,9 +138,15 @@ export const render: Fn = {
 				enum: ["cf", "mac"],
 				default: "cf",
 				description:
-					"Render engine: cf = Cloudflare Browser Rendering (fast, default); mac = residential patched-browser service that solves active JS bot challenges (Akamai) — slower, use for sites that block cf (e.g. Home Depot, Walmart).",
+					"Render engine: cf = Cloudflare Browser Run (fast, default); mac = residential patched-browser service that solves active JS bot challenges (Akamai) — slower, use for sites that block cf (e.g. Home Depot, Walmart).",
 			},
 			timeout_ms: { type: "integer", minimum: 1, maximum: 60000, default: 30000, description: "Navigation timeout in ms." },
+			debug_recording: {
+				type: "boolean",
+				default: false,
+				description:
+					"backend:cf only. Opt this session into a Browser Run session recording, replayable in the Cloudflare dashboard (Browser Run > Runs), for diagnosing a blocked/wrong render. Default false (adds overhead); no-op for backend:mac.",
+			},
 		},
 	},
 	cacheable: true,
@@ -190,6 +200,7 @@ export const render: Fn = {
 			format,
 			landscape,
 			print_background: printBackground,
+			debug_recording: args?.debug_recording === true,
 		});
 		if (!result.ok) return failWith("upstream_error", result.error);
 		// Screenshot/pdf come back as raw bytes to deliver; html/text as a string.

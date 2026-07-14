@@ -97,6 +97,12 @@ const ISSUE_COUNT_PREFIX = "sux:selfimprove:issuecount:";
 const FINDINGS_KEY = "sux:selfimprove:findings";
 const FINDINGS_CAP = 200;
 const COUNTER_TTL_SECONDS = 60 * 60 * 48; // two days — a day-counter needs no longer
+// Single-flight lease over the whole tick — its cap counters read-then-write KV, which has
+// no CAS, so two ticks running at once could each read a day-counter before either writes and
+// slip past the cap. The tick is reachable from two triggers that can overlap (the daily cron
+// and the manual bearer-gated POST /admin/tick?job=self-improve). This lease serializes them.
+const LOCK_KEY = "sux:selfimprove:lock";
+const LOCK_TTL_SECONDS = 300; // a tick finishes well under this; the TTL self-heals a crashed lease
 
 const DEFAULT_REPO = "SuxOS/sux";
 const SELF_IMPROVE_LABEL = "self-improve";
@@ -395,9 +401,22 @@ async function recordFinding(env: RtEnv, finding: Finding): Promise<void> {
 	await env.OAUTH_KV.put(FINDINGS_KEY, await maybeCompressString(JSON.stringify(items)));
 }
 
-/** Read the internal review-only findings log (newest first). Not an outward action. */
-export async function readFindings(env: RtEnv, limit = 50): Promise<Finding[]> {
-	return safeParse(await maybeDecompressString((await env.OAUTH_KV.get(FINDINGS_KEY)) ?? "")).slice(0, Math.max(0, limit));
+// ── Single-flight lease (serialize overlapping ticks — see LOCK_KEY) ───────────
+// Best-effort, NOT a strict mutex (KV has no CAS): it collapses the dominant overlap window —
+// a tick runs for seconds making GitHub calls, and a second trigger firing meanwhile sees the
+// held lease and no-ops rather than racing the same day-counter. The live-open caps
+// (openSelfImprove*Count, read from GitHub each tick) stay the hard backstop on total
+// outstanding PRs/issues regardless of any counter slip.
+async function acquireTick(env: RtEnv): Promise<boolean> {
+	const now = Date.now();
+	const until = Number(await env.OAUTH_KV.get(LOCK_KEY)) || 0;
+	if (until > now) return false; // a fresh lease is held — another tick is in flight
+	await env.OAUTH_KV.put(LOCK_KEY, String(now + LOCK_TTL_SECONDS * 1000), { expirationTtl: LOCK_TTL_SECONDS });
+	return true;
+}
+
+async function releaseTick(env: RtEnv): Promise<void> {
+	await env.OAUTH_KV.put(LOCK_KEY, "0", { expirationTtl: 1 });
 }
 
 // ── Rate cap: read the const, write only the KV day-counter ───────────────────
@@ -507,6 +526,7 @@ async function routeFinding(env: RtEnv, finding: Finding, github: GithubClient, 
 // ── The tick (rides index.ts scheduled(), beside maintenanceTick) ─────────────
 export async function selfImproveTick(env: RtEnv, deps: { github?: GithubClient } = {}): Promise<TickResult> {
 	const result: TickResult = { dormant: false, reason: "", processed: 0, prs: 0, issues: 0, armed: 0, comments: 0, skipped: 0 };
+	let held = false;
 	try {
 		// Kill wins over everything — checked before enable and before any feedback read.
 		if (isKilled(env)) {
@@ -518,6 +538,15 @@ export async function selfImproveTick(env: RtEnv, deps: { github?: GithubClient 
 		if (!hasSelfImprove(env)) {
 			result.dormant = true;
 			result.reason = "disabled";
+			return result;
+		}
+		// Serialize overlapping ticks so their cap counters can't interleave (see LOCK_KEY). An
+		// already-running tick holds the lease and is draining the same backlog behind the cursor,
+		// so a concurrent trigger safely no-ops rather than double-counting.
+		held = await acquireTick(env);
+		if (!held) {
+			result.dormant = true;
+			result.reason = "locked";
 			return result;
 		}
 		const github = deps.github ?? githubClient(env);
@@ -573,6 +602,10 @@ export async function selfImproveTick(env: RtEnv, deps: { github?: GithubClient 
 		// Never throw out of the tick — it rides ctx.waitUntil beside maintenanceTick.
 		result.error = String((e as Error)?.message ?? e);
 		console.warn(`sux self-improve tick error: ${result.error}`);
+	} finally {
+		// Release the lease so the next scheduled tick isn't blocked; the TTL is only a
+		// crash-safety net. A release failure is inert — the lease simply expires on its own.
+		if (held) await releaseTick(env).catch(() => {});
 	}
 	return result;
 }

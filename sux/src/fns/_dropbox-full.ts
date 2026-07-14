@@ -351,8 +351,9 @@ export async function transformFull(
 		if (sources.length < 2) throw new Error("merge needs at least 2 source paths.");
 		if (sources.length > MERGE_MAX_SOURCES) throw new Error(`merge is capped at ${MERGE_MAX_SOURCES} sources (got ${sources.length}).`);
 		if (sources.includes(dest) && opts.overwrite !== true) throw new Error(`dest '${dest}' is also a source — pass overwrite:true to replace it in place.`);
-		const read: Array<{ path: string; bytes: Uint8Array; isText: boolean }> = [];
-		for (const s of sources) read.push(await readTransformSource(env, s));
+		// Independent source reads (each a metadata fetch + content download) — fan out
+		// and let Promise.all preserve source order, rather than serializing the round trips.
+		const read = await Promise.all(sources.map((s) => readTransformSource(env, s)));
 		const mode = opts.mode ?? (sources.every((s) => /\.pdf$/i.test(s)) ? "pdf" : "concat");
 		let bytes: Uint8Array;
 		if (mode === "pdf") {

@@ -3,10 +3,12 @@ import { type JsonRpc, sseResponse } from "./mcp-util";
 import { fail, failWith, type RtEnv, type ToolResult } from "./registry";
 import { staged } from "./stage";
 import { jmap } from "./fns/jmap";
-import { doUpload, jstr, scopeProbe } from "./fns/_jmap";
+import { doUpload, downloadBlobBytes, jstr, scopeProbe, submissionMaxDelayedSend } from "./fns/_jmap";
 import { buildVEvent, buildVTodo, CALDAV_NOT_CONFIGURED, type CalendarRef, caldavFetch, calendarHome, dateProp, hasCalDav, icalDateToIso, listCalendars, parseICal, replaceProps, reportObjects, textProp } from "./fns/_caldav";
 import { htmlToMd } from "./fns/_markup";
-import { errMsg, storeBase } from "./fns/_util";
+import { errMsg, putBlob, storeBase } from "./fns/_util";
+import { dropboxPut, hasDropbox } from "./fns/dropbox";
+import { ledger } from "./ledger";
 
 // The mail MCP server — the ergonomic Fastmail surface, reached through the `mail_`
 // (and `cal_`/`contact_`) front verbs on the one /mcp connector, behind the same
@@ -35,7 +37,7 @@ async function jmapCall(env: RtEnv, args: Record<string, unknown>): Promise<{ me
 function resultFor(resp: { methodResponses: any[] }, method: string, callId?: string): any {
 	for (const mr of resp.methodResponses ?? []) {
 		if (mr[0] === method && (callId === undefined || mr[2] === callId)) return mr[1];
-		if (mr[0] === "error" && (callId === undefined || mr[2] === callId)) throw new Error(`JMAP ${method} error: ${mr[1]?.type ?? "unknown"}`);
+		if (mr[0] === "error" && (callId === undefined || mr[2] === callId)) throw new Error(`JMAP ${method} error: ${mr[1]?.type ?? "unknown"}${mr[1]?.description ? " — " + mr[1].description : ""}`);
 	}
 	return null;
 }
@@ -366,8 +368,18 @@ function quoteBody(mode: string, text: string, src: any): string {
 	return `${text}\n\n${attribution}\n${quoted}`.trimStart();
 }
 
-/** Fetch the mailbox role→id map (inbox/drafts/sent/archive/trash/junk). */
-async function mailboxMap(env: RtEnv): Promise<{ byRole: Record<string, string>; byName: Record<string, string>; list: any[] }> {
+type MailboxMap = { byRole: Record<string, string>; byName: Record<string, string>; list: any[] };
+
+// Per-isolate, short-TTL memo of the mailbox role→id map, keyed on `env`. mail_triage acts one
+// message at a time and each move op refetches this map — a fresh `Mailbox/get` JMAP round trip —
+// so an all-archive cycle over 25 messages fired 25 identical fetches. The role→id layout is
+// effectively stable within a request, so one fetch serves the whole cycle. Disabled under vitest
+// (mirroring _util.ts's FETCH_CACHE) so tests keep deterministic Mailbox/get call counts.
+const MAILBOX_MAP_CACHE = new WeakMap<RtEnv, { at: number; map: MailboxMap }>();
+const MAILBOX_MAP_TTL_MS = 30_000;
+const mailboxMapCacheActive = (): boolean => !(typeof process !== "undefined" && process.env?.VITEST);
+
+async function fetchMailboxMap(env: RtEnv): Promise<MailboxMap> {
 	const resp = await jmapCall(env, { method: "Mailbox/get", args: {} });
 	const list = resultFor(resp, "Mailbox/get")?.list ?? [];
 	const byRole: Record<string, string> = {};
@@ -377,6 +389,16 @@ async function mailboxMap(env: RtEnv): Promise<{ byRole: Record<string, string>;
 		if (m?.name) byName[String(m.name).toLowerCase()] = m.id;
 	}
 	return { byRole, byName, list };
+}
+
+/** Fetch the mailbox role→id map (inbox/drafts/sent/archive/trash/junk), memoized per env. */
+async function mailboxMap(env: RtEnv): Promise<MailboxMap> {
+	if (!mailboxMapCacheActive()) return fetchMailboxMap(env);
+	const hit = MAILBOX_MAP_CACHE.get(env);
+	if (hit && Date.now() - hit.at <= MAILBOX_MAP_TTL_MS) return hit.map;
+	const map = await fetchMailboxMap(env);
+	MAILBOX_MAP_CACHE.set(env, { at: Date.now(), map });
+	return map;
 }
 
 /** Resolve a mailbox arg (a role like "inbox", a display name, or a raw id) to an id. */
@@ -411,7 +433,7 @@ const ok = (v: unknown): ToolResult => ({ content: [{ type: "text", text: jstr(v
 const TOOLS: MailTool[] = [
 	{
 		name: "mail_search",
-		description: "Search mail — returns message references (id, subject, from, preview), never bodies. Filter by query text, mailbox (role like inbox/archive or a name), from, subject, unread, after/before (ISO dates). Read one with mail_read.",
+		description: "Search mail — returns message references (id, subject, from, preview), never bodies. Filter by query text, mailbox (role like inbox/archive or a name), from, subject, unread, after/before (ISO dates). Page past the first 50 with `position` (0-based offset into the result set); flip to oldest-first with `ascending:true`. Returns total (full match count) + position so you can page. Read one with mail_read.",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -424,22 +446,28 @@ const TOOLS: MailTool[] = [
 				after: { type: "string", description: "Only messages after this ISO date/time." },
 				before: { type: "string", description: "Only messages before this ISO date/time." },
 				limit: { type: "integer", minimum: 1, maximum: 50, default: 20 },
+				position: { type: "integer", minimum: 0, default: 0, description: "0-based offset into the result set — page past the first `limit` (e.g. position:50 for message 51+)." },
+				ascending: { type: "boolean", default: false, description: "Sort oldest-first instead of the default newest-first." },
 			},
 		},
 		run: async (env, a) => {
 			try {
 				const filter = await buildFilter(env, a);
 				const limit = clamp(a?.limit, 1, 50, 20);
+				const position = Math.max(0, Math.floor(Number(a?.position) || 0));
+				const ascending = a?.ascending === true;
 				const resp = await jmapCall(env, {
 					calls: [
-						["Email/query", { filter, sort: [{ property: "receivedAt", isAscending: false }], limit }, "q"],
+						["Email/query", { filter, sort: [{ property: "receivedAt", isAscending: ascending }], limit, position, calculateTotal: true }, "q"],
 						["Email/get", { "#ids": { resultOf: "q", name: "Email/query", path: "/ids" }, properties: ["id", "threadId", "subject", "from", "to", "cc", "receivedAt", "preview", "keywords", "mailboxIds", "hasAttachment"] }, "g"],
 						["Mailbox/get", { properties: ["id", "name"] }, "m"],
 					],
 				});
 				const boxNames: Record<string, string> = Object.fromEntries((resultFor(resp, "Mailbox/get")?.list ?? []).map((b: any) => [b?.id, b?.name]));
-				const emails = (resultFor(resp, "Email/get")?.list ?? []).slice().sort(byReceived(false)); // newest first, matching the query sort
-				return ok({ count: emails.length, emails: emails.map((e: any) => shapeRef(e, boxNames)) });
+				const query = resultFor(resp, "Email/query");
+				const emails = (resultFor(resp, "Email/get")?.list ?? []).slice().sort(byReceived(ascending)); // match the query sort
+				const total = Number.isFinite(Number(query?.total)) ? Number(query.total) : emails.length;
+				return ok({ count: emails.length, total, position, ascending, emails: emails.map((e: any) => shapeRef(e, boxNames)) });
 			} catch (e) {
 				return fail(errMsg(e));
 			}
@@ -633,12 +661,6 @@ const TOOLS: MailTool[] = [
 		run: async (env, a) => draftOrSend(env, a, true),
 	},
 	{
-		name: "mail_schedule",
-		description: "Schedule an email for future delivery (SMTP FUTURERELEASE). Like mail_send but `sendAt` (ISO-8601) is required — the message is held until then, cancelable with mail_unschedule. Stages a preview by default; re-call with the commit_token to schedule, or pass force:true to schedule in one shot.",
-		inputSchema: { type: "object", additionalProperties: false, required: ["to", "subject", "text", "sendAt"], properties: { to: { type: "array", items: { type: "string" } }, cc: { type: "array", items: { type: "string" } }, bcc: { type: "array", items: { type: "string" } }, subject: { type: "string" }, text: { type: "string" }, from: { type: "string", description: "Exact identity or any address at an owned *@domain." }, sendAt: { type: "string", description: "ISO-8601 date-time to release the message." }, attachments: ATTACHMENTS_SCHEMA, stage: { type: "boolean" }, commit_token: { type: "string" }, force: { type: "boolean", description: "Skip staging and apply in one shot (the ! override). By default this verb stages a preview first." } } },
-		run: async (env, a) => draftOrSend(env, { ...a, send_at: a?.sendAt }, true),
-	},
-	{
 		name: "mail_scheduled",
 		description: "List your pending scheduled (FUTURERELEASE-held) sends — each { id (submissionId), emailId, sendAt }. Cancel one with mail_unschedule.",
 		inputSchema: { type: "object", additionalProperties: false, properties: {} },
@@ -655,7 +677,7 @@ const TOOLS: MailTool[] = [
 	{
 		name: "mail_unschedule",
 		description: "Cancel a pending scheduled send by its submission id (undoStatus → canceled) before it releases. Idempotent: a submission that's already canceled or released reports success rather than erroring.",
-		inputSchema: { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string", description: "The submissionId from mail_send/mail_schedule or a mail_scheduled list." } } },
+		inputSchema: { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string", description: "The submissionId from mail_send or a mail_scheduled list." } } },
 		run: async (env, a) => {
 			if (!a?.id) return failWith("bad_input", "mail_unschedule requires the submission `id`.");
 			try {
@@ -681,6 +703,67 @@ const TOOLS: MailTool[] = [
 			try {
 				const up = (await doUpload(env, String(src), String(a?.type ?? "application/octet-stream"))) as any;
 				return ok({ blobId: up.blobId, type: up.type ?? a?.type ?? "application/octet-stream", size: up.size, ...(a?.name ? { name: a.name } : {}) });
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "mail_attachments",
+		description:
+			"Batch-export message attachments server-side (zero bytes in context): stream one or more Fastmail blobs straight to storage and get back handles. Give `items` [{blobId, messageId?, name?, type?}] (blobId + name/type from mail_read's attachments) and `dest`: 'store' → R2 CAS (/s/<uuid> handles, the default) or 'dropbox' → your Dropbox app folder (path + shared link). Idempotent per blobId+dest — a re-run skips blobs already exported. The batched counterpart to a single raw jmap download-as-store; the shrink-attachments recipe's export step.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["items"],
+			properties: {
+				items: {
+					type: "array",
+					description: "Attachments to export — {blobId} required; messageId (echoed back for correlation), name, and type optional.",
+					items: { type: "object", additionalProperties: false, required: ["blobId"], properties: { blobId: { type: "string" }, messageId: { type: "string" }, name: { type: "string" }, type: { type: "string" } } },
+				},
+				dest: { type: "string", enum: ["store", "dropbox"], default: "store", description: "store → R2 CAS handle (/s/<uuid>); dropbox → the Dropbox app folder (path + shared link)." },
+			},
+		},
+		run: async (env, a) => {
+			const items = Array.isArray(a?.items) ? a.items : [];
+			if (!items.length) return failWith("bad_input", "mail_attachments requires a non-empty `items` [{blobId, messageId?, name?, type?}].");
+			const dest = a?.dest ? String(a.dest) : "store";
+			if (dest !== "store" && dest !== "dropbox") return failWith("bad_input", "dest must be 'store' or 'dropbox'.");
+			if (dest === "dropbox" && !hasDropbox(env)) return failWith("not_configured", "Dropbox not configured — set DROPBOX_REFRESH_TOKEN + DROPBOX_APP_KEY (+ DROPBOX_APP_SECRET), or export to R2 with dest:'store'.");
+			const led = ledger(env, `mail_attachments:${dest}`);
+			const safe = (s: string) => s.replace(/[^\w.\-]+/g, "_").replace(/^_+|_+$/g, "") || "file";
+			const exported: Array<Record<string, unknown>> = [];
+			try {
+				for (const it of items) {
+					const blobId = it?.blobId ? String(it.blobId) : "";
+					if (!blobId) {
+						exported.push({ skipped: "missing blobId" });
+						continue;
+					}
+					const messageId = it?.messageId ? String(it.messageId) : undefined;
+					const base = { blobId, ...(messageId ? { messageId } : {}) };
+					if (await led.seen(blobId)) {
+						exported.push({ ...base, skipped: "already exported (idempotent)" });
+						continue;
+					}
+					const { bytes, type } = await downloadBlobBytes(env, { blobId, type: it?.type ? String(it.type) : undefined, name: it?.name ? String(it.name) : undefined });
+					if (dest === "dropbox") {
+						const fname = it?.name ? safe(String(it.name)) : `${safe(blobId)}.bin`;
+						const put = await dropboxPut(env, `/mail-attachments/${safe(blobId)}/${fname}`, bytes);
+						if ("error" in put) {
+							exported.push({ ...base, error: put.error });
+							continue;
+						}
+						await led.mark(blobId);
+						exported.push({ ...base, dest, type, size: put.size, path: put.path, ...(put.url ? { url: put.url } : {}) });
+					} else {
+						const ref = await putBlob(env, bytes, type);
+						await led.mark(blobId);
+						exported.push({ ...base, dest, type, size: ref.size, ref: ref.url });
+					}
+				}
+				return ok({ dest, count: exported.length, exported });
 			} catch (e) {
 				return fail(errMsg(e));
 			}
@@ -1222,6 +1305,15 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 			if (!Number.isFinite(at)) return failWith("bad_input", "send_at must be an ISO-8601 date-time, e.g. '2026-07-11T09:00:00Z'.");
 			holdFor = Math.ceil((at - Date.now()) / 1000);
 			if (holdFor <= 0) return failWith("bad_input", "send_at must be in the future.");
+			// Clamp to the account's advertised scheduling window (submission.maxDelayedSend, seconds) —
+			// a send_at beyond it otherwise fails downstream as an opaque JMAP notCreated. 0/absent = the
+			// capability isn't advertised, so we don't clamp (let Fastmail judge).
+			const maxDelay = await submissionMaxDelayedSend(env);
+			if (maxDelay > 0 && holdFor > maxDelay) {
+				const days = Math.floor(maxDelay / 86400);
+				const window = days >= 1 ? `${days} day${days === 1 ? "" : "s"}` : `${Math.floor(maxDelay / 3600)}h`;
+				return failWith("bad_input", `send_at is beyond this account's scheduling limit — it allows scheduling up to ${window} out (submission.maxDelayedSend = ${maxDelay}s).`);
+			}
 		}
 
 		// The mutation (draft create + submit) runs behind stage-then-commit: stage:true previews
@@ -1242,7 +1334,7 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 			if (holdFor > 0) {
 				subCreate.envelope = {
 					mailFrom: { email: identity.email, parameters: { HOLDFOR: String(holdFor) } },
-					rcptTo: [...to, ...(Array.isArray(a?.cc) ? a.cc : []), ...(Array.isArray(a?.bcc) ? a.bcc : [])].map((e) => ({ email: String(e) })),
+					rcptTo: [...to, ...cc, ...bcc].map((e) => ({ email: String(e) })),
 				};
 			}
 			const resp = await jmapCall(env, { allow_send: true, calls: [["Email/set", { create: { draft: sendDraft } }, "c"], ["EmailSubmission/set", { create: { sub: subCreate }, onSuccessUpdateEmail: { "#sub": onSuccess } }, "s"]] });

@@ -1,6 +1,6 @@
 import { hasAI, llm } from "../ai";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
-import { maybeDecompressString } from "./_gzip";
+import { readProfile, type VoiceExample } from "./preferences";
 
 // AI text-restyler. Rewrites `text` into a target `style` and/or a learned
 // preference `profile` (a distilled spec + a few-shot of writing samples kept in
@@ -9,17 +9,8 @@ import { maybeDecompressString } from "./_gzip";
 // as data (see ai.ts) and can't hijack the restyle instruction. Output is only the
 // rewritten text, no preamble.
 
-const KV_PREFIX = "sux:prefs:";
-
-/** A stored preference profile (written by the `preferences` fn). All fields optional. */
-type PrefProfile = {
-	name?: string;
-	distilled_spec?: string;
-	examples?: Array<string | Record<string, unknown>>;
-};
-
 /** Pull the best voice-sample text out of one stored example (string or object). */
-function exampleText(e: string | Record<string, unknown>): string {
+function exampleText(e: VoiceExample): string {
 	if (typeof e === "string") return e.trim();
 	if (e && typeof e === "object") {
 		const o = e as Record<string, unknown>;
@@ -33,26 +24,23 @@ function exampleText(e: string | Record<string, unknown>): string {
  * Load a profile from KV and fold its distilled spec + up to ~3 examples into
  * system guidance lines. Returns [] if the profile is absent or unparseable — the
  * caller degrades gracefully (a bad/missing profile never fails the restyle).
+ *
+ * The read goes through preferences.readProfile so the prefix/shape/compression
+ * contract has a single owner; this fn keeps only the object-form exampleText()
+ * unwrapping on top.
  */
 async function profileGuidance(env: RtEnv, profile: string): Promise<string[]> {
-	let raw: string | null = null;
+	let p: Awaited<ReturnType<typeof readProfile>>;
 	try {
-		const stored = await env.OAUTH_KV.get(`${KV_PREFIX}${profile}`);
-		raw = stored === null ? null : await maybeDecompressString(stored);
+		p = await readProfile(env, profile);
 	} catch {
 		return [];
 	}
-	if (!raw) return [];
-	let p: PrefProfile;
-	try {
-		p = JSON.parse(raw) as PrefProfile;
-	} catch {
-		return [];
-	}
+	if (!p) return [];
 	const lines: string[] = [];
-	const spec = String(p?.distilled_spec ?? "").trim();
+	const spec = p.distilled_spec.trim();
 	if (spec) lines.push(`Learned voice profile "${profile}" — match this style specification:\n${spec}`);
-	const examples = (Array.isArray(p?.examples) ? p.examples : [])
+	const examples = p.examples
 		.map(exampleText)
 		.filter((s) => s.length > 0)
 		.slice(0, 3);

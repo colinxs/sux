@@ -1,161 +1,23 @@
 name: Claude autofix CI
 
-# When CI fails on a PR, Claude reads the failure and pushes a fix to the PR branch.
-# CI then re-runs; if it goes green, the already-enabled native auto-merge (see
-# automerge.yml) merges it — fully async, no human. Bounded so it can't loop forever:
-#   - only bug/security/chore-safe/fix-type PRs (features are a human's job)
-#   - a hard cap of MAX_ATTEMPTS bot commits per branch, then it tags `needs-human`
-#   - --max-turns per run + concurrency cancel-in-progress + a cheaper model
-# Inert until CLAUDE_CODE_OAUTH_TOKEN is set (subscription, via claude setup-token) (the preflight skips cleanly if absent).
+# When CI fails on a PR, Claude reads the failure and pushes a fix to the PR branch; CI
+# re-runs and, if green, the already-enabled native auto-merge (automerge.yml) merges it —
+# fully async, no human. Bounded (safe-type PRs only, attempt cap, --max-turns). Inert until
+# CLAUDE_CODE_OAUTH_TOKEN is set (subscription, via claude setup-token).
+# Reusable workflow: SuxOS/.github/.github/workflows/claude-autofix.yml
 
 on:
   workflow_run:
     workflows: ["CI"]
     types: [completed]
 
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
-  actions: read
-  id-token: write  # OIDC token-exchange for the Claude app
-
-concurrency:
-  group: autofix-${{ github.event.workflow_run.head_branch }}
-  cancel-in-progress: true
-
-env:
-  MAX_ATTEMPTS: "4"
-
 jobs:
   autofix:
-    # Only on a FAILED CI run that came from a pull request.
-    if: >
-      vars.ACTIONS_BUDGET_PAUSED != 'true' &&
-      github.event.workflow_run.conclusion == 'failure' &&
-      github.event.workflow_run.event == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - name: Preflight — resolve the PR, check the gate, count attempts
-        id: pre
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          BASE_BRANCH: ${{ github.event.repository.default_branch }}
-          HAVE_KEY: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
-        run: |
-          set -euo pipefail
-          if [ "$HAVE_KEY" != "true" ]; then
-            echo "CLAUDE_CODE_OAUTH_TOKEN not set → autofix inert. Add the secret to arm it."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
-
-          # Resolve the PR exactly. `--head <name>` can match multiple PRs on a branch-name
-          # collision (e.g. a fork with the same branch name), and blindly taking `.[0]`
-          # could pick the wrong one — with a write token + the Claude OAuth token, that means
-          # running the wrong PR's code. Require an EXACT headRefName + base match, and bail
-          # if more than one PR qualifies rather than guessing.
-          prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$HEAD_BRANCH" --base "$BASE_BRANCH" --state open \
-                 --json number,labels,title,isDraft,authorAssociation,isCrossRepository,headRefName,baseRefName 2>/dev/null || echo '[]')
-          matches=$(echo "$prs" | jq -c --arg h "$HEAD_BRANCH" --arg b "$BASE_BRANCH" '[.[] | select(.headRefName==$h and .baseRefName==$b)]')
-          count=$(echo "$matches" | jq 'length')
-          if [ "$count" -eq 0 ]; then echo "no open PR for $HEAD_BRANCH → $BASE_BRANCH → skip"; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
-          if [ "$count" -gt 1 ]; then echo "::warning::$count PRs match head=$HEAD_BRANCH base=$BASE_BRANCH → ambiguous, refusing to guess"; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
-          pr=$(echo "$matches" | jq -c '.[0]')
-          num=$(echo "$pr" | jq -r .number)
-          title=$(echo "$pr" | jq -r .title)
-          draft=$(echo "$pr" | jq -r .isDraft)
-          labels=$(echo "$pr" | jq -r '[.labels[].name] | join(",")')
-          assoc=$(echo "$pr" | jq -r .authorAssociation)
-          fork=$(echo "$pr" | jq -r .isCrossRepository)
-          echo "PR #$num  title=$title  labels=$labels  draft=$draft  author=$assoc  fork=$fork"
-
-          # PUBLIC-REPO RCE GUARD: this job checks out and RUNS the PR's code with a
-          # write token + the Claude OAuth token. Only ever do that for a trusted author's
-          # same-repo branch — never a fork or external contributor's untrusted code.
-          case "$assoc" in OWNER|MEMBER|COLLABORATOR) ;; *) echo "untrusted author ($assoc) → refuse to run PR code"; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0;; esac
-          if [ "$fork" = "true" ]; then echo "cross-repo/fork PR → refuse to run PR code"; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
-
-          has(){ echo ",$labels," | grep -qi ",$1,"; }
-          if has hold || has needs-human; then echo "hold/needs-human → skip"; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
-
-          # Gate: only auto-fix the safe classes (mirror automerge.yml eligibility).
-          elig=false
-          for l in bug security chore-safe automerge; do has "$l" && elig=true; done
-          if printf '%s' "$title" | grep -qiE '^(fix|security|perf|refactor|chore|docs|test|build|ci|revert)(\([^)]*\))?:'; then elig=true; fi
-          if [ "$elig" != "true" ]; then echo "not an auto-fix-eligible PR → skip (a human drives features)"; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
-
-          echo "go=true" >> "$GITHUB_OUTPUT"
-          echo "pr=$num" >> "$GITHUB_OUTPUT"
-
-      # Push the fix with the SUX_BOT App identity, NOT GITHUB_TOKEN. GitHub suppresses
-      # workflow runs for pushes attributed to GITHUB_TOKEN (recursion prevention), so a
-      # GITHUB_TOKEN-pushed fix never re-fires CI on the new head SHA — the required
-      # "Type-check & build" check stays missing and native auto-merge waits forever.
-      # The App token looks like a normal user push, so ci.yml + security-review.yml fire.
-      - name: Mint app token
-        if: steps.pre.outputs.go == 'true'
-        id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          app-id: ${{ secrets.SUX_BOT_APP_ID }}
-          private-key: ${{ secrets.SUX_BOT_PRIVATE_KEY }}
-
-      - name: Checkout PR branch
-        if: steps.pre.outputs.go == 'true'
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ github.event.workflow_run.head_branch }}
-          fetch-depth: 0
-          token: ${{ steps.app-token.outputs.token }}
-
-      - name: Attempt cap — stop looping after MAX_ATTEMPTS bot commits
-        if: steps.pre.outputs.go == 'true'
-        id: cap
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          git fetch origin main --quiet
-          base=$(git merge-base origin/main HEAD)
-          # Count commits on this branch authored by the bot (its fix attempts). Match both
-          # the old GITHUB_TOKEN identity (github-actions) and the SUX_BOT App identity the
-          # push now uses (commits author as the App slug, e.g. `sux-bot[bot]`) — miss the
-          # App author and MAX_ATTEMPTS silently never trips, re-arming an unbounded loop.
-          attempts=$(git log --format='%an' "$base"..HEAD | grep -c -iE 'claude|github-actions|sux-bot|\[bot\]' || true)
-          echo "bot fix attempts so far: $attempts (cap $MAX_ATTEMPTS)"
-          if [ "$attempts" -ge "$MAX_ATTEMPTS" ]; then
-            echo "cap reached → tagging needs-human and stopping"
-            gh pr edit "${{ steps.pre.outputs.pr }}" --repo "$GITHUB_REPOSITORY" --add-label needs-human 2>/dev/null || true
-            gh pr comment "${{ steps.pre.outputs.pr }}" --repo "$GITHUB_REPOSITORY" \
-              --body "🤖 Auto-fix gave up after $attempts attempts — CI is still red. Tagging \`needs-human\`. (Remove the label to let the bot try again.)" 2>/dev/null || true
-            echo "go=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "go=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Claude — fix the CI failure
-        if: steps.pre.outputs.go == 'true' && steps.cap.outputs.go == 'true'
-        uses: anthropics/claude-code-action@e90deca47693f9457b72f2b53c17d7c445a87342 # v1
-        # head_branch / html_url are attacker-influenced (a PR author controls the branch
-        # name); interpolating them inline as ${{ }} would splice their raw text into the
-        # prompt (script-injection surface). Pass them through env: and reference $VARS so
-        # they stay data, never templated YAML.
-        env:
-          CI_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          CI_RUN_URL: ${{ github.event.workflow_run.html_url }}
-          ENABLE_PROMPT_CACHING_1H: "1" # 1h cache TTL — the CI→fix→CI loop spans >5 min, so the stable prefix cache-hits instead of expiring
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ steps.app-token.outputs.token }}
-          prompt: |
-            CI failed on this PR (branch $CI_HEAD_BRANCH,
-            run $CI_RUN_URL). Read the failing job's logs,
-            find the ROOT cause, and fix it. This repo's gates (from CLAUDE.md) must all pass:
-              npm run type-check · npm test · npm run check:node ·
-              npm run gen:index (commit the regenerated index.ts) ·
-              npx wrangler deploy --dry-run --config sux/wrangler.jsonc
-            Make the smallest correct change, re-run the gates locally, then commit and push
-            to this PR branch. Do NOT touch secrets, do NOT weaken a test to make it pass, and
-            do NOT change unrelated code. If the failure is a genuine design problem you can't
-            safely fix, leave a comment explaining it instead of forcing a change.
-          claude_args: "--max-turns 10 --model sonnet"
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: read
+      id-token: write
+    uses: SuxOS/.github/.github/workflows/claude-autofix.yml@main
+    secrets: inherit

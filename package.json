@@ -1,6 +1,6 @@
 {
-  "name": "kagi-mcp",
-  "version": "0.0.1",
+  "name": "sux",
+  "version": "0.4.0",
   "private": true,
   "scripts": {
     "prepare": "git config core.hooksPath scripts/hooks || true; git config merge.ours.driver true || true",

@@ -4,7 +4,7 @@ Two fetch primitives available:
 - **scrape** — residential IP + curl-impersonate (coherent Chrome JA3/HTTP2). Beats *passive* TLS/fingerprint bot walls. No JS.
 - **render backend:"mac"** — patchright headless Chromium on a residential Mac. *Solves active JS challenges* (Akamai `_abck` sensor, PerimeterX press-and-hold). Returns rendered HTML/text/screenshot/pdf. Slower.
 
-The render-based retail fns render via `retailRender` (mac→cf fallback): the Mac backend is primary, and when it's down the fn retries via Cloudflare Browser Rendering with residential routing + stealth. Proven for Amazon; excluded for Walmart (its press-and-hold needs the Mac gesture). See `docs/retail.md` → "Render resilience".
+The render-based retail fns render via `retailRender` (mac→cf fallback): the Mac backend is primary, and when it's down the fn retries via Cloudflare Browser Run with residential routing + stealth. Proven for Amazon; excluded for Walmart (its press-and-hold needs the Mac gesture). See `docs/retail.md` → "Render resilience".
 
 Difficulty ladder: **Kroger API (official) < Ace < Costco < Lowe's < Home Depot < Walmart < Amazon**.
 
@@ -43,7 +43,7 @@ Difficulty ladder: **Kroger API (official) < Ace < Costco < Lowe's < Home Depot 
 ## Amazon — render:mac → cf fallback (proven) ⚠
 - PA-API 5.0 (`webservices.amazon.com/paapi5/searchitems|getitems`, SigV4) needs an approved Associate account (closed to new users, deprecating 2026-05-15).
 - Direct: `amazon.com/s?k=<q>` (search) and `amazon.com/dp/<ASIN>` (detail). AWS WAF + image CAPTCHA / Robot Check. Rendered via the Mac backend (auto-escalates to CapSolver on a Robot Check); products from `s-search-result` tiles by ASIN.
-- **Fallback:** when the Mac node is down, `amazon` retries via Cloudflare Browser Rendering with residential routing + stealth — a **proven** pass for Amazon's wall (verified live), running the same extractor on the cf-rendered HTML.
+- **Fallback:** when the Mac node is down, `amazon` retries via Cloudflare Browser Run with residential routing + stealth — a **proven** pass for Amazon's wall (verified live), running the same extractor on the cf-rendered HTML.
 
 ## Build approach
 Shared `_retail.ts` helper: pick primitive per retailer (scrape vs render:mac), extract structured products → `{title, price, currency, in_stock, url, image, id, rating}`. Store context (zip/store) as inputs. Fns: `kroger` (banner param), `ace`, `costco`, `lowes`, `homedepot`, `walmart`, `amazon` (best-effort).

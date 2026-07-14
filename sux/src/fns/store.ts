@@ -19,7 +19,7 @@ export const store: Fn = {
 	name: "store",
 	description:
 		"Store and retrieve arbitrary content in sux's R2. Bytes are content-addressed (sha256 — identical content dedupes; Nix-store style); each put also mints a short uuid handle (kept in KV) and returns a resolvable URL ending in that uuid — GET /s/<uuid> streams the object back. " +
-		"`op`: put (default) | get | list | delete. put takes `data` (utf-8 text) or `base64` (binary) + optional `content_type` and optional `ttl_seconds` (positive int — the uuid handle self-expires after that many seconds, for ephemeral artifacts; omit for a permanent handle); returns { uuid, url, key, sha256, size, expiry? }. get takes `id` (uuid or url) or `key`; returns text for textual types else base64 (an expired/absent handle is not-found). delete takes the uuid `id` (removes the handle; the deduped blob is retained). list takes `prefix`/`limit` over raw R2 keys.",
+		"`op`: put (default) | get | list | delete. put takes `data` (utf-8 text) or `base64` (binary) + optional `content_type` and optional `ttl_seconds` (positive int — the uuid handle self-expires after that many seconds, for ephemeral artifacts; omit for a permanent handle); returns { uuid, url, key, sha256, size, expiry? }. get takes `id` (uuid or url) or `key`; returns text for textual types else base64 (an expired/absent handle is not-found). delete takes the uuid `id` (removes the handle; the deduped blob is retained). list takes `prefix`/`limit` over raw R2 keys and returns { objects, truncated, cursor }; when truncated, pass the returned `cursor` back to page through the rest.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -33,6 +33,7 @@ export const store: Fn = {
 			key: { type: "string", description: "get: a raw R2 object key (alternative to id)." },
 			prefix: { type: "string", description: "list: R2 key prefix filter." },
 			limit: { type: "integer", minimum: 1, maximum: 1000, default: 100 },
+			cursor: { type: "string", description: "list: opaque page cursor from a prior truncated response — pass it back to fetch the next page." },
 		},
 	},
 	cacheable: false,
@@ -118,7 +119,7 @@ export const store: Fn = {
 			}
 
 			if (op === "list") {
-				const res = await env.R2.list({ prefix: args?.prefix ? String(args.prefix) : undefined, limit: Math.min(1000, Math.max(1, Number(args?.limit) || 100)) });
+				const res = await env.R2.list({ prefix: args?.prefix ? String(args.prefix) : undefined, limit: Math.min(1000, Math.max(1, Number(args?.limit) || 100)), cursor: args?.cursor ? String(args.cursor) : undefined });
 				return ok(oj({ objects: res.objects.map((o) => ({ key: o.key, size: o.size, uploaded: o.uploaded })), truncated: Boolean(res.truncated), cursor: res.cursor }));
 			}
 

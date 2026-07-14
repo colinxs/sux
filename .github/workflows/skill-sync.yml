@@ -1,18 +1,13 @@
 name: Skill sync
 
-# Keeps the sux skill, its plugin copy, and the generated function reference in
-# sync — all derived from the repo itself (sux/src/fns/*.ts), no live server or
-# secrets required. `scripts/check-skill-sync.mjs` enforces these invariants:
-#   1. every function in FUNCTIONS.md is named in .claude/skills/sux/SKILL.md
-#      (FUNCTIONS.md is gitignored/regenerated in-memory — no staleness gate)
-#   2. plugins/sux/skills/ mirrors .claude/skills/ byte-for-byte
-#
-# check job — gates PRs that touch the skill / functions / script, and runs on
-#             the weekly schedule + manual dispatch. Offline, no secrets.
-# fix job   — schedule / manual dispatch only: re-mirrors the plugin skill, then
-#             opens/refreshes a PR on `bot/docs-update` if anything changed. Needs
-#             the repo setting "Allow GitHub Actions to create and approve pull
-#             requests" (Settings → Actions → General).
+# Keeps the sux skill, its plugin copy, and the generated function reference in sync — all
+# derived from the repo itself (sux/src/fns/*.ts), no live server or secrets required.
+# check job — gates PRs that touch the skill / functions / script, and runs on the weekly
+#             schedule + manual dispatch. Offline, no secrets.
+# fix job   — schedule / manual dispatch only: re-mirrors the plugin skill, then opens/
+#             refreshes a PR on `bot/docs-update` if anything changed. Needs the repo
+#             setting "Allow GitHub Actions to create and approve pull requests".
+# Reusable workflow: SuxOS/.github/.github/workflows/skill-sync.yml
 
 on:
   schedule:
@@ -28,67 +23,10 @@ on:
       - 'scripts/check-skill-sync.mjs'
       - '.github/workflows/skill-sync.yml'
 
-concurrency:
-  group: skill-sync-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  check:
-    name: SKILL.md / FUNCTIONS.md / plugin mirror
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with:
-          node-version: 24
-
-      - name: Check (source-derived, offline)
-        run: node scripts/check-skill-sync.mjs --offline
-
-  fix:
-    name: Re-mirror plugin skill
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+  skill-sync:
     permissions:
       contents: write
       pull-requests: write
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with:
-          node-version: 24
-
-      - name: Re-mirror plugin skill from source
-        run: node scripts/check-skill-sync.mjs --write
-
-      - name: Open or refresh PR if anything changed
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          # FUNCTIONS.md is gitignored (regenerated on demand), so only the
-          # mirrored plugin skill can produce a tracked change here.
-          if [ -z "$(git status --porcelain plugins/sux/skills)" ]; then
-            echo "Plugin skill mirror already up to date." | tee -a "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -B bot/docs-update
-          git add plugins/sux/skills
-          git commit -m "docs: re-mirror plugin skill"
-          git push -f origin bot/docs-update
-          existing=$(gh pr list --state open --head bot/docs-update --json number --jq '.[0].number // empty')
-          if [ -n "$existing" ]; then
-            gh pr comment "$existing" --body "Refreshed by the latest Skill sync run."
-            echo "Updated existing PR #$existing." | tee -a "$GITHUB_STEP_SUMMARY"
-          else
-            gh pr create \
-              --title "docs: re-mirror plugin skill" \
-              --body "$(printf 'Automated source-derived re-mirror by the **Skill sync** workflow:\n\n- `plugins/sux/skills/` — re-mirrored from `.claude/skills/`\n\nIf a newly added function is unmentioned in `.claude/skills/sux/SKILL.md`, the **check** job will fail until the skill prose is updated by hand.\n\nRun: %s/%s/actions/runs/%s' "${{ github.server_url }}" "${{ github.repository }}" "${{ github.run_id }}")"
-            echo "Opened new docs PR." | tee -a "$GITHUB_STEP_SUMMARY"
-          fi
+    uses: SuxOS/.github/.github/workflows/skill-sync.yml@main
+    secrets: inherit

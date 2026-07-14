@@ -28,7 +28,7 @@ export const sitemap: Fn = {
 	run: async (env, args) => {
 		const url = String(args?.url ?? "");
 		if (!isHttpUrl(url)) return fail("url must be an absolute http(s) URL.");
-		const limit = Math.min(Number(args?.limit) || 1000, 1000);
+		const limit = Math.min(1000, Math.max(1, Number(args?.limit) || 1000));
 
 		// Sitemaps run big (spec allows 50MB) — raise the byte cap well past the
 		// 2MB default so a full urlset isn't silently truncated mid-<loc>. Use

@@ -4,6 +4,7 @@
 // under a single KV key, newest-first, hard-capped) rather than inventing a second
 // store — but carries enough per-entry data (message id, origin + target mailbox,
 // cycle id) to REVERSE each move, which a feedback entry never needs.
+import { keyedSerialize } from "../keyed-serialize";
 import type { RtEnv } from "../registry";
 import { maybeCompressString, maybeDecompressString } from "./_gzip";
 import { errMsg } from "./_util";
@@ -38,6 +39,14 @@ export type TriageEntry = {
 const KEY = "sux:mail_triage:log";
 const CAP = 500;
 
+// Serializes read-modify-writes of the single log key within an isolate. The append
+// and undo paths are genuinely concurrent here — mailTriageTick fires from the cron,
+// the JMAP push webhook (a burst per StateChange), and the manual admin tick, while
+// the mail_triage undo action calls bulkUndo. Chaining same-key writes so each reads
+// the prior's result stops a later save from silently dropping entries another path
+// just appended. Per-isolate only (a Durable Object would serialize across isolates).
+const logChains = new Map<string, Promise<unknown>>();
+
 function safeParse(s: string | null): TriageEntry[] {
 	if (!s) return [];
 	try {
@@ -60,12 +69,14 @@ async function saveLog(env: RtEnv, items: TriageEntry[]): Promise<void> {
 /** Prepend a batch of entries (newest-first), capped. Returns the new total. */
 export async function appendTriageEntries(env: RtEnv, entries: TriageEntry[]): Promise<number> {
 	if (!entries.length) return 0;
-	const items = await loadLog(env);
-	// Prepend newest-first: reverse so the last-processed message ends up first.
-	items.unshift(...[...entries].reverse());
-	if (items.length > CAP) items.length = CAP;
-	await saveLog(env, items);
-	return items.length;
+	return keyedSerialize(logChains, KEY, async () => {
+		const items = await loadLog(env);
+		// Prepend newest-first: reverse so the last-processed message ends up first.
+		items.unshift(...[...entries].reverse());
+		if (items.length > CAP) items.length = CAP;
+		await saveLog(env, items);
+		return items.length;
+	});
 }
 
 /** Read entries, optionally filtered to one cycle, newest-first. */
@@ -132,7 +143,14 @@ export async function bulkUndo(env: RtEnv, cycle: string, reversers: Reversers =
 			errors.push({ keyword, ids, error: errMsg(e) });
 		}
 	}
-	for (const i of items) if (i.cycle === cycle && i.action === "acted" && reversed.has(i.id)) i.undone = true;
-	await saveLog(env, items);
+	// The remote reversals above can run for well over the cron cadence, during which
+	// other paths append to this log. Mark `undone` on a FRESH read (not the stale
+	// `items` snapshot from before those awaits) and save under the same-key lock, so
+	// entries appended mid-undo survive instead of being clobbered by this write.
+	await keyedSerialize(logChains, KEY, async () => {
+		const fresh = await loadLog(env);
+		for (const i of fresh) if (i.cycle === cycle && i.action === "acted" && reversed.has(i.id)) i.undone = true;
+		await saveLog(env, fresh);
+	});
 	return { cycle, undone: reversed.size, ids: [...reversed], ...(errors.length ? { errors } : {}) };
 }

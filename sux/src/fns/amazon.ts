@@ -127,7 +127,7 @@ export const amazon: Fn = {
 	name: "amazon",
 	cost: 5,
 	description:
-		"Amazon product search / product-detail via a rendered browser (Amazon has no usable free API and walls plain fetches). Renders through Cloudflare Browser Rendering with residential routing + stealth (a proven pass for Amazon's AWS WAF), falling back to the mac backend (a residential patched browser that auto-escalates to a captcha solver) only when cf can't clear the wall. " +
+		"Amazon product search / product-detail via a rendered browser (Amazon has no usable free API and walls plain fetches). Renders through Cloudflare Browser Run with residential routing + stealth (a proven pass for Amazon's AWS WAF), falling back to the mac backend (a residential patched browser that auto-escalates to a captcha solver) only when cf can't clear the wall. " +
 			"`action`: search (products for a `term`) or product (one product by `asin`). Extraction is best-effort from the rendered page, normalized to the shared retail shape (id=ASIN/title/price/image/url; brand for product). " +
 			"`limit` caps search results (default 15, max 40). Slower than an API.",
 	inputSchema: {
