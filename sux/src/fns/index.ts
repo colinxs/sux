@@ -109,6 +109,7 @@ import { vault } from "./vault";
 import { voice } from "./voice";
 import { walmart } from "./walmart";
 import { watch } from "./watch";
+import { watch_pipeline } from "./watch_pipeline";
 import { webSearch } from "./web_search";
 import { weekly_ad } from "./weekly_ad";
 import { xml } from "./xml";
@@ -220,6 +221,7 @@ export const FUNCTIONS: Fn[] = [
 	voice,
 	walmart,
 	watch,
+	watch_pipeline,
 	webSearch,
 	weekly_ad,
 	xml,

@@ -13,7 +13,7 @@ const FNS = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "fns");
 // this list can't silently rot as functions are added (the taxonomy mirrors the
 // hand-written catalog in sux/README.md).
 const CATEGORIES = [
-	["Net / transport", ["proxy", "scrape", "render", "redirects", "robots", "crawl", "watch"]],
+	["Net / transport", ["proxy", "scrape", "render", "redirects", "robots", "crawl", "watch", "watch_pipeline"]],
 	["Extract / parse", ["extract", "readability", "tables", "metadata", "feed", "sitemap", "extract_contacts", "select", "grep", "subtitles"]],
 	["Convert", ["markdown", "html", "csv", "json", "xml", "yaml", "image_convert", "pdf", "fillable"]],
 	["Compress / encode / data", ["compress", "encode", "hash", "archive"]],

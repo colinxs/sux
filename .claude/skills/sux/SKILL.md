@@ -55,7 +55,7 @@ Leaf index (semantics + args in `references/capability-tables.md`; call any via
 `jmap`, `kv_get`, `kv_put`, `kv_list`, `kv_delete`, `learn`, `linkedin`, `lowes`,
 `mail_triage`, `monarch`, `obsidian`, `people_finder`, `put`, `redirects`,
 `robots`, `sitemap`, `suggest`, `todoist`, `uw`, `voice`, `walmart`, `watch`,
-`web_search`, `weekly_ad`.
+`watch_pipeline`, `web_search`, `weekly_ad`.
 
 ## Conventions
 
