@@ -9,7 +9,7 @@ name: PR drain (close-stale + reconcile)
 
 on:
   schedule:
-    - cron: "37 6 * * *" # daily, offset minute to dodge the top-of-hour rush
+    - cron: "37 6,14,22 * * *" # every 8h, offset minute to dodge the top-of-hour rush
   workflow_dispatch:
 
 jobs:

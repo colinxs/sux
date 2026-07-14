@@ -78,6 +78,96 @@ async function applyStealth(page: PageForStealth, ua: string): Promise<void> {
 	}
 }
 
+// --- WebMCP fast-path (experimental, added 2026-07-13) ---------------------
+//
+// WebMCP (navigator.modelContext) lets a cooperating site declare callable
+// tools for an agent instead of forcing DOM scraping. As of this writing it's
+// a Chrome 149 origin trial only (public since ~June 2026; explainer at
+// github.com/webmachinelearning/webmcp) — adoption is effectively zero today,
+// and the explainer itself marks the tool-listing/-calling methods
+// (getTools/listTools, callTool/executeTool) as "TODO: spec and describe", and
+// is inconsistent about whether the surface hangs off `navigator` (per Chrome
+// for Developers docs) or `document` (per the explainer's own example). So
+// this checks BOTH objects and tries every plausible method name defensively,
+// wrapped so any shape mismatch — expected, since the spec is still moving —
+// degrades to "not detected" rather than breaking the render.
+//
+// This is a genuinely optional fast path: it only activates when the caller
+// names a specific tool (`webmcpTool`) to call, and only short-circuits the
+// existing scrape/extract logic if that call actually succeeds. Every other
+// render — i.e. the vast majority of sites, which don't support WebMCP at
+// all — is completely unaffected; this code path never even runs for them.
+const WEBMCP_TIMEOUT_MS = 3000;
+
+export type WebMcpDetection = { detected: boolean; tools: string[] };
+
+type EvaluatablePage = { evaluate: (fn: (...a: any[]) => unknown, ...args: any[]) => Promise<unknown> };
+
+/** Best-effort check for a WebMCP-capable page. Never throws; times out fast
+ * so a hung/unsupported page.evaluate can't stall the render. */
+async function detectWebMcp(page: EvaluatablePage): Promise<WebMcpDetection> {
+	try {
+		return (await Promise.race([
+			page.evaluate(() => {
+				try {
+					const nav = (globalThis as any).navigator;
+					const doc = (globalThis as any).document;
+					const mc = nav?.modelContext ?? doc?.modelContext;
+					if (!mc) return { detected: false, tools: [] };
+					let tools: string[] = [];
+					try {
+						const list = typeof mc.getTools === "function" ? mc.getTools() : typeof mc.listTools === "function" ? mc.listTools() : mc.tools;
+						if (Array.isArray(list)) tools = list.map((t: any) => (typeof t === "string" ? t : t?.name)).filter(Boolean);
+					} catch {
+						// Listing isn't spec'd yet — detection alone still stands.
+					}
+					return { detected: true, tools };
+				} catch {
+					return { detected: false, tools: [] };
+				}
+			}),
+			new Promise<WebMcpDetection>((resolve) => setTimeout(() => resolve({ detected: false, tools: [] }), WEBMCP_TIMEOUT_MS)),
+		])) as WebMcpDetection;
+	} catch {
+		return { detected: false, tools: [] };
+	}
+}
+
+/** Best-effort call of a named WebMCP tool with `args`. Never throws — any
+ * absence/shape-mismatch/exception resolves to `{ ok:false }` so the caller
+ * always has a clean fallback to the existing scrape/extract logic. */
+async function callWebMcpTool(page: EvaluatablePage, name: string, args: Record<string, unknown> | undefined): Promise<{ ok: true; result: unknown } | { ok: false }> {
+	try {
+		return (await Promise.race([
+			page.evaluate(
+				async (toolName: string, toolArgs: unknown) => {
+					try {
+						const nav = (globalThis as any).navigator;
+						const doc = (globalThis as any).document;
+						const mc = nav?.modelContext ?? doc?.modelContext;
+						if (!mc) return { ok: false };
+						if (typeof mc.callTool === "function") return { ok: true, result: await mc.callTool(toolName, toolArgs) };
+						if (typeof mc.executeTool === "function") return { ok: true, result: await mc.executeTool(toolName, toolArgs) };
+						// Fall back to invoking a listed tool's own `execute` directly, in
+						// case the page's registry is introspectable but has no call method.
+						const list = typeof mc.getTools === "function" ? mc.getTools() : typeof mc.listTools === "function" ? mc.listTools() : mc.tools;
+						const found = Array.isArray(list) ? list.find((t: any) => (typeof t === "string" ? t === toolName : t?.name === toolName)) : undefined;
+						if (found && typeof found.execute === "function") return { ok: true, result: await found.execute(toolArgs) };
+						return { ok: false };
+					} catch {
+						return { ok: false };
+					}
+				},
+				name,
+				args ?? {},
+			),
+			new Promise<{ ok: false }>((resolve) => setTimeout(() => resolve({ ok: false }), WEBMCP_TIMEOUT_MS)),
+		])) as { ok: true; result: unknown } | { ok: false };
+	} catch {
+		return { ok: false };
+	}
+}
+
 const STRIP_RESPONSE_HEADERS = new Set(["content-encoding", "content-length", "transfer-encoding"]);
 
 type RequestForInterception = {
@@ -157,12 +247,19 @@ export type CfRenderSpec = {
 	// came back blocked/wrong without adding server-side screenshot noise. Off by
 	// default: recordings cost a bit of overhead and aren't needed on the hot path.
 	debug_recording?: boolean;
+	// Experimental WebMCP fast-path (see the block above): when set AND the page
+	// declares navigator.modelContext/document.modelContext, call this tool
+	// instead of scraping the DOM. Ignored for as:screenshot/pdf. No-op (falls
+	// through to normal extraction) if undetected, the tool is missing, or the
+	// call throws.
+	webmcpTool?: string;
+	webmcpArgs?: Record<string, unknown>;
 };
 
 // For html/text the payload is the string `body`; for screenshot/pdf it is the raw
 // `bytes` (the caller decides delivery). On any failure: `{ ok:false, error }`.
 export type CfRenderResult =
-	| { ok: true; contentType: string; body: string }
+	| { ok: true; contentType: string; body: string; webmcp?: WebMcpDetection }
 	| { ok: true; contentType: string; bytes: Uint8Array }
 	| { ok: false; error: string };
 
@@ -211,6 +308,27 @@ export async function cfRender(env: RtEnv, spec: CfRenderSpec): Promise<CfRender
 		// waitUntil/format are validated strings; cast to puppeteer's literal unions.
 		await page.goto(spec.url, { waitUntil, timeout } as Parameters<typeof page.goto>[1]);
 		if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
+
+		// WebMCP fast-path — early in the render tier, before any DOM
+		// scraping/extraction below. Only engages when the caller named a tool
+		// AND the page actually declares navigator.modelContext/document.modelContext;
+		// otherwise falls straight through to the html/text/screenshot/pdf paths
+		// unchanged (see the detectWebMcp/callWebMcpTool comment above).
+		if (spec.webmcpTool && (as === "html" || as === "text")) {
+			const detection = await detectWebMcp(page as unknown as EvaluatablePage);
+			if (detection.detected) {
+				const called = await callWebMcpTool(page as unknown as EvaluatablePage, spec.webmcpTool, spec.webmcpArgs);
+				if (called.ok) {
+					return {
+						ok: true,
+						contentType: "application/json",
+						body: JSON.stringify({ webmcp: true, tool: spec.webmcpTool, result: called.result }),
+						webmcp: detection,
+					};
+				}
+			}
+		}
+
 		if (as === "screenshot") {
 			const shot = await page.screenshot({ fullPage });
 			const bytes = shot instanceof Uint8Array ? shot : new Uint8Array(shot as ArrayBuffer);

@@ -6,7 +6,7 @@
 // cycle id) to REVERSE each move, which a feedback entry never needs.
 import { keyedSerialize } from "../keyed-serialize";
 import type { RtEnv } from "../registry";
-import { maybeCompressString, maybeDecompressString } from "./_gzip";
+import { cappedKvLog } from "./_capped_kv_log";
 import { errMsg } from "./_util";
 
 export type TriageAction = "acted" | "suggested";
@@ -47,34 +47,18 @@ const CAP = 500;
 // just appended. Per-isolate only (a Durable Object would serialize across isolates).
 const logChains = new Map<string, Promise<unknown>>();
 
-function safeParse(s: string | null): TriageEntry[] {
-	if (!s) return [];
-	try {
-		const v = JSON.parse(s);
-		return Array.isArray(v) ? v : [];
-	} catch {
-		return [];
-	}
-}
-
-// Read/write the log through the transparent gzip store (the whole 500-entry
-// array is rewritten on every append/undo, so it's worth compressing).
-async function loadLog(env: RtEnv): Promise<TriageEntry[]> {
-	return safeParse(await maybeDecompressString((await env.OAUTH_KV.get(KEY)) ?? ""));
-}
-async function saveLog(env: RtEnv, items: TriageEntry[]): Promise<void> {
-	await env.OAUTH_KV.put(KEY, await maybeCompressString(JSON.stringify(items)));
-}
+// The whole 500-entry array is rewritten on every append/undo, so it's worth
+// compressing — the shared capped-gzip-KV log handles that plumbing.
+const log = (env: RtEnv) => cappedKvLog<TriageEntry>(env, KEY, CAP);
+const loadLog = (env: RtEnv) => log(env).load();
+const saveLog = (env: RtEnv, items: TriageEntry[]) => log(env).save(items);
 
 /** Prepend a batch of entries (newest-first), capped. Returns the new total. */
 export async function appendTriageEntries(env: RtEnv, entries: TriageEntry[]): Promise<number> {
 	if (!entries.length) return 0;
 	return keyedSerialize(logChains, KEY, async () => {
-		const items = await loadLog(env);
 		// Prepend newest-first: reverse so the last-processed message ends up first.
-		items.unshift(...[...entries].reverse());
-		if (items.length > CAP) items.length = CAP;
-		await saveLog(env, items);
+		const items = await log(env).push(...[...entries].reverse());
 		return items.length;
 	});
 }
