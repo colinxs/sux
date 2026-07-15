@@ -51,11 +51,12 @@ describe("mychart fn", () => {
 		expect(r.content[0].text).toContain("[not_configured]");
 	});
 
-	it("connect returns the operator URL with the token when SUX_CRON_TOKEN is set", async () => {
+	it("connect returns the URL WITHOUT embedding the operator secret", async () => {
 		const env = connectedEnv();
 		env.SUX_CRON_TOKEN = "op";
 		const out = parse(await mychart.run(env, { op: "connect" }));
-		expect(out.connect_url).toBe("https://suxos.net/mychart/connect?token=op");
+		expect(out.connect_url).toBe("https://suxos.net/mychart/connect");
+		expect(JSON.stringify(out)).not.toContain("op"); // no SUX_CRON_TOKEN value leak
 	});
 
 	it("get refuses a path that escapes the FHIR base (never fetches)", async () => {

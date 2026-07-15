@@ -68,12 +68,13 @@ export const mychart: Fn = {
 			if (op === "connect") {
 				const gate = env.SUX_CRON_TOKEN;
 				const base = redirectUri(env).replace(/\/callback$/, "/connect");
-				const urlWithToken = gate ? `${base}?token=${encodeURIComponent(gate)}` : base;
+				// Deliberately does NOT embed SUX_CRON_TOKEN: it's an operator secret and
+				// this string flows into model context/logs. The operator appends it.
 				return ok(
 					oj({
-						connect_url: urlWithToken,
+						connect_url: base,
 						note: gate
-							? "Open this URL in a browser, log into MyChart, and approve. The refresh grant is then stored and `pull`/`get` work headlessly."
+							? "Open this URL in a browser with `?token=<SUX_CRON_TOKEN>` appended, log into MyChart, and approve. The refresh grant is then stored and `pull`/`get` work headlessly."
 							: "SUX_CRON_TOKEN is not set — the /mychart/connect route is currently locked (404). Set it, then open /mychart/connect?token=<SUX_CRON_TOKEN>.",
 					}),
 				);
