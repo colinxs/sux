@@ -12,7 +12,7 @@ on:
   # Batch schedule replaces per-issue triggering, which fanned out parallel opus sessions
   # during fixer bursts (see SuxOS/.github docs/design/budget-and-cadence.md).
   schedule:
-    - cron: "7 2,8,14,20 * * *"
+    - cron: "*/15 * * * *" # TEMP 15min (bug-drain push), revert in 1h
   workflow_dispatch:
 
 jobs:
