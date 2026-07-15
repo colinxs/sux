@@ -41,7 +41,7 @@ Rule of thumb: **secret it if leaking it is bad; `[vars]` it if you'd want it in
 
 ## Which secret goes where
 
-**GitHub Actions** (CI/CD): `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` (deploy), `SUX_MCP_URL`, `SUX_MCP_TOKEN` (skill-sync `--live` probe — scope note below), `ANTHROPIC_API_KEY` (Claude bot), `SUX_BOT_APP_ID` + `SUX_BOT_PRIVATE_KEY` (GitHub App creds `automerge.yml` mints an app-token from, for native auto-merge — rotation note below).
+**GitHub Actions** (CI/CD): `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` (deploy), `SUX_MCP_URL`, `SUX_MCP_TOKEN` (skill-sync `--live` probe — scope note below), `CLAUDE_CODE_OAUTH_TOKEN` (Claude bot — subscription token via `claude setup-token`, not a metered API key), `SUX_BOT_APP_ID` + `SUX_BOT_PRIVATE_KEY` (GitHub App creds `automerge.yml` mints an app-token from, for native auto-merge — rotation note below).
 
 **`SUX_BOT_APP_ID` / `SUX_BOT_PRIVATE_KEY` rotation** — a linked pair. `automerge.yml` feeds them into `actions/create-github-app-token` to mint a short-lived token for merging green PRs. The private key is generated/downloaded **once** from the settings page of the GitHub App identified by `SUX_BOT_APP_ID`, and — like every GitHub/Worker secret — cannot be read back out of the Actions store. So keep a durable copy in op (`op://Secrets/SUX_BOT_PRIVATE_KEY/credential`); if it's ever lost or suspect, rotate = generate a fresh key on that App's settings page, re-seed op, then `scripts/secret-sync.sh SUX_BOT_PRIVATE_KEY --github`. The App id itself does not change on key rotation.
 
@@ -99,7 +99,7 @@ op item create --vault Secrets --category "API Credential" --title "FASTMAIL_TOK
 
 # then push it where it belongs (value never printed):
 scripts/secret-sync.sh FASTMAIL_TOKEN --worker
-scripts/secret-sync.sh ANTHROPIC_API_KEY --github
+scripts/secret-sync.sh CLAUDE_CODE_OAUTH_TOKEN --github
 scripts/secret-sync.sh SUX_MCP_TOKEN --github --worker      # if a key lives in both
 ```
 
