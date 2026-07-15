@@ -189,7 +189,10 @@ export function patchFrontmatter(content: string, field: string, value: unknown)
 		while (end < lines.length && /^\s*-\s+/.test(lines[end])) end++;
 		lines.splice(idx, end - idx, serialized);
 	}
-	const rebuilt = content.replace(FENCE, `---${nl}${lines.join(nl)}${nl}---${nl}`);
+	// A FUNCTION replacement so `$`-sequences in the values (e.g. `$1`, `$$`, `$&`) are
+	// taken literally — a string replacement would expand them (FENCE has a capture group),
+	// silently corrupting any value containing `$`.
+	const rebuilt = content.replace(FENCE, () => `---${nl}${lines.join(nl)}${nl}---${nl}`);
 	return { content: rebuilt, changed: rebuilt !== content };
 }
 

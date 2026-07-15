@@ -39,6 +39,13 @@ describe("obsidian (git backend)", () => {
 		expect(JSON.parse(r.content[0].text).notes).toEqual(["a.md", "dir/b.md"]);
 	});
 
+	it("list folder filter is slash-terminated — path:'Area' excludes the sibling Areas/ folder", async () => {
+		routes.handler = () =>
+			new Response(JSON.stringify({ tree: [{ type: "blob", path: "Area/a.md" }, { type: "blob", path: "Areas/b.md" }, { type: "blob", path: "Area/sub/c.md" }] }), { status: 200 });
+		const r = await obsidian.run(ENV, { action: "list", path: "Area" });
+		expect(JSON.parse(r.content[0].text).notes).toEqual(["Area/a.md", "Area/sub/c.md"]); // Areas/b.md not swept in
+	});
+
 	it("fails loudly on a 200 with a non-JSON body instead of reporting an empty vault", async () => {
 		// A residential-proxy interstitial / HTML block page returns 200 but no JSON;
 		// decoding null → `tree ?? []` would silently report 0 notes for a healthy repo.

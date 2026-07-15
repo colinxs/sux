@@ -170,6 +170,29 @@ describe("vault MCP server (/vault/mcp)", () => {
 		expect(capped.truncated).toBe(true);
 	});
 
+	it("scanVault folder scoping uses a slash-terminated prefix — folder:'Projects' excludes ProjectsArchive/", async () => {
+		const store = new Map<string, string>();
+		const kv = { get: async (k: string) => store.get(k) ?? null, put: async (k: string, v: string) => void store.set(k, v), delete: async (k: string) => void store.delete(k) };
+		const env = { OBSIDIAN_VAULT_REPO: "me/vault", OAUTH_KV: kv } as any;
+		const notes: Record<string, string> = {
+			"Projects/a.md": "#in",
+			"ProjectsArchive/b.md": "#out", // sibling folder with the scope name as a prefix
+		};
+		routes.handler = (url) => {
+			if (url.includes("/git/ref/heads/")) return new Response(JSON.stringify({ object: { sha: "h" } }), { status: 200 });
+			if (url.includes("/git/trees/")) return new Response(JSON.stringify({ tree: Object.keys(notes).map((p) => ({ type: "blob", path: p })) }), { status: 200 });
+			const m = /\/contents\/(.+?)(\?|$)/.exec(url);
+			const path = m ? decodeURIComponent(m[1]) : "";
+			if (notes[path] === undefined) return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+			return new Response(JSON.stringify({ content: b64(notes[path]), sha: "h" }), { status: 200 });
+		};
+		const call = async (name: string, args: any) => JSON.parse((await parse(await handleVaultRpc(env, CTX, rpc("tools/call", { name, arguments: args })))).result.content[0].text);
+
+		const folder = await call("vault_tags", { folder: "Projects" });
+		expect(folder.tags.map((x: any) => x.tag)).toEqual(["in"]); // ProjectsArchive/b.md's #out excluded
+		expect(folder.scanned).toBe(1);
+	});
+
 	it("scanVault doesn't double-prefix list→read when OBSIDIAN_VAULT_DIR is set (would 404 every note)", async () => {
 		const store = new Map<string, string>();
 		const kv = { get: async (k: string) => store.get(k) ?? null, put: async (k: string, v: string) => void store.set(k, v), delete: async (k: string) => void store.delete(k) };

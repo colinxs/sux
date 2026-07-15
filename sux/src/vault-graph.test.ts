@@ -89,6 +89,21 @@ describe("vault-graph pure layer (§4)", () => {
 		expect(fm.note).toBe(String.raw`foo\n---\nbar`); // recovered from inside the fence, not split across it
 	});
 
+	it("patchFrontmatter preserves literal `$`-sequences in a value (no String.replace expansion)", () => {
+		// content.replace(FENCE, rebuilt) with a STRING replacement interprets `$$`, `$&`,
+		// `` $` ``, `$'`, and `$1` — and FENCE has a capture group, so a value with `$1`
+		// would splice the whole OLD frontmatter block into the note. Assert every form
+		// survives verbatim through a round-trip.
+		const doc = "---\nstatus: draft\n---\nbody";
+		// `a$$b`→`a$b` under `$$`; `v$1x`/`cost $1000` splice the old block via the `$1`
+		// capture. All stay bare scalars, so the literal `price: <val>` line must survive.
+		for (const val of ["a$$b", "v$1x", "cost $1000"]) {
+			const r = patchFrontmatter(doc, "price", val);
+			expect(parseFrontmatter(r.content).price).toBe(val);
+			expect(r.content).toContain(`price: ${val}`);
+		}
+	});
+
 	it("patchHeadingSection replace/append; ambiguous or missing heading throws", () => {
 		const doc = "# A\nold\n\n# B\nkeep";
 		expect(patchHeadingSection(doc, "A", "replace", "new").content).toBe("# A\nnew\n\n# B\nkeep");

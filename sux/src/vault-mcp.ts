@@ -141,7 +141,10 @@ async function scanVault(env: RtEnv, folder: string | undefined, cap: number): P
 	if (idx && !("error" in cfg)) {
 		const raw = String(folder ?? "").replace(/^\/+|\/+$/g, "");
 		const prefix = raw ? cfg.inVault(raw) : "";
-		const base = prefix ? idx.records.filter((r) => r.path.startsWith(prefix)) : idx.records;
+		// Compare against a slash-terminated prefix so folder:'Area' scopes to `Area/…`
+		// only — a bare `startsWith('Area')` would also sweep in the sibling `Areas/…`.
+		const p = prefix.replace(/\/?$/, "/");
+		const base = prefix ? idx.records.filter((r) => r.path.startsWith(p)) : idx.records;
 		const total = prefix ? base.length : idx.total;
 		// idx.truncated (index capped at INDEX_MAX, or holes from failed reads) must
 		// surface even under a `folder` scope: a folder can hold notes that never made

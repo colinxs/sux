@@ -388,6 +388,9 @@ export const obsidian: Fn = {
 			if (action === "list") {
 				const rawFilter = String(args?.path ?? "").replace(/^\/+|\/+$/g, "");
 				const filter = rawFilter ? inVault(rawFilter) : dir;
+				// Match against a slash-terminated prefix so path:'Area' lists `Area/…` only —
+				// a bare `startsWith('Area')` would also pull in the sibling `Areas/…` folder.
+				const fp = filter ? filter.replace(/\/?$/, "/") : "";
 				const head = env.OAUTH_KV ? await vaultHead(env, cfg) : null;
 				if (head) {
 					const hit = await cacheGet(env, gitListKey(cfg, filter));
@@ -396,7 +399,7 @@ export const obsidian: Fn = {
 				const { status, json } = await ghJson(env, `${GH}/repos/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`);
 				if (status >= 400) return fail(`GitHub error listing vault: ${json?.message ?? `HTTP ${status}`}`);
 				const notes = (json?.tree ?? [])
-					.filter((n: any) => n?.type === "blob" && typeof n.path === "string" && n.path.endsWith(".md") && (!filter || n.path.startsWith(filter)))
+					.filter((n: any) => n?.type === "blob" && typeof n.path === "string" && n.path.endsWith(".md") && (!fp || n.path.startsWith(fp)))
 					.map((n: any) => n.path);
 				const payload = oj({ repo, branch, count: notes.length, notes });
 				if (head) await cachePut(env, gitListKey(cfg, filter), { payload, sha: head, at: Date.now() });
