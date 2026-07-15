@@ -7,7 +7,7 @@ name: Fixer
 
 on:
   schedule:
-    - cron: "17 8,16,0 * * *" # every 8h, off-minute; scans on a cadence
+    - cron: "17 8 * * *" # daily, off-minute; proposals queue behind triage/build throughput — 3x/day just built backlog
   workflow_dispatch:
 
 jobs:

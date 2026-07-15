@@ -8,17 +8,14 @@ name: Triage
 # Reusable workflow: SuxOS/.github/.github/workflows/triage.yml
 
 on:
-  issues:
-    types: [opened, reopened]
+  # Batch schedule replaces per-issue triggering, which fanned out parallel opus sessions
+  # during fixer bursts (see SuxOS/.github docs/design/budget-and-cadence.md).
+  schedule:
+    - cron: "7 5,13,21 * * *"
   workflow_dispatch:
 
 jobs:
   triage:
-    # Actor gate (visible; the reusable also enforces it centrally): only a trusted author can
-    # drive triage via an issues event. Dispatch/schedule already require write access.
-    if: >-
-      github.event_name != 'issues' ||
-      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association)
     # Grant exactly what triage.yml needs (default token is read-only → reusable would startup-fail).
     permissions:
       contents: read

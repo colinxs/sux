@@ -1,170 +1,30 @@
 name: Security review (no-dumb-shit bot)
 
-# Every PR gets a focused SECURITY review before it can merge — the standing net for
-# exactly the class of mistake that shipped a fork-PR-to-prod hole once. Author-gated
-# (public repo: never run for fork/external PRs), and it HARD-BLOCKS the merge on a
-# high/critical finding by applying `hold` (which automerge.yml refuses) and failing.
-# Inert until CLAUDE_CODE_OAUTH_TOKEN is set.
-
+# Every PR gets a focused SECURITY review before it can merge, hard-blocking on a
+# high/critical finding by applying `hold`. Author-gated (never runs for fork/
+# external PRs). The reusable's job-name default ("security-review") already
+# matches this repo's branch-protection required check, so no overrides needed.
+#
 # Also runs on merge_group: branch protection requires the "security-review" context, so
 # it MUST report on the merge queue's speculative ref or the queue freezes forever. The
-# real opus review is a PR-stage gate (a high/critical finding applies `hold`, which keeps
-# the PR out of the queue entirely) — so on the merge_group ref there is no PR to review and
-# the review has already happened. The job therefore short-circuits to a green passthrough on
-# merge_group, satisfying the required check without re-running (and re-paying for) opus.
+# reusable itself short-circuits to a green passthrough on merge_group (no PR exists on
+# that ref to review — the real opus review already happened at the PR stage).
+# Reusable workflow: SuxOS/.github/.github/workflows/security-review.yml
+# Inert until CLAUDE_CODE_OAUTH_TOKEN is set (see the reusable's own preflight).
+
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
 
-permissions:
-  contents: read
-  pull-requests: write
-  issues: write
-  id-token: write
-
-concurrency:
-  # PR number on pull_request; the speculative head SHA on merge_group (no PR in that payload).
-  group: secreview-${{ github.event.pull_request.number || github.event.merge_group.head_sha }}
-  cancel-in-progress: true
-
 jobs:
   security-review:
-    # Distinct job id + name so the check-run context is "security-review", NOT the bare
-    # "review" that claude.yml's review job produces — branch protection can then require
-    # this gate without also requiring (or being unable to disambiguate) that one.
-    name: security-review
-    # Trusted authors only (public repo). Draft PRs skipped. Matches automerge.yml's own
-    # eligibility condition exactly — NOT restricted to non-bot senders. A bot-authored PR
-    # (e.g. from issue-build.yml, via the SUX_BOT App) can carry a trusted author_association
-    # and be automerge-eligible without ever carrying `self-improve`; excluding bot senders
-    # from the trusted-author branch (as this condition previously did) let exactly those
-    # PRs skip this required check — GitHub treats a skipped required check as passing,
-    # so an unreviewed autonomous PR could merge on CI alone. ALSO run for any PR carrying
-    # the `self-improve` label regardless of author_association — that label is addable only
-    # by trusted write access, and self-improve branches are same-repo (never a fork), so
-    # there's no untrusted-checkout surface.
-    if: >
-      github.event_name == 'merge_group' ||
-      (
-        github.event.pull_request.draft == false &&
-        (
-          contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) ||
-          contains(github.event.pull_request.labels.*.name, 'self-improve')
-        )
-      )
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      # Merge queue: the PR was already security-reviewed before it was armed/queued, and the
-      # speculative merge_group ref carries no PR to review. Report the required "security-review"
-      # context green so the queue can proceed; the PR-only review machinery below is skipped.
-      - name: Merge queue — security review satisfied by the pre-queue PR review
-        if: github.event_name == 'merge_group'
-        run: echo "merge_group event - security-review already performed on the PR before queueing"
-
-      - name: Preflight — need the key
-        id: pre
-        if: github.event_name == 'pull_request'
-        run: |
-          if [ "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}" != "true" ]; then
-            echo "CLAUDE_CODE_OAUTH_TOKEN not set → security review inert (run 'claude setup-token')"; echo "go=false" >> "$GITHUB_OUTPUT"
-          else echo "go=true" >> "$GITHUB_OUTPUT"; fi
-      - name: Checkout
-        if: steps.pre.outputs.go == 'true'
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with: { fetch-depth: 0 }
-      - name: Claude security review
-        id: claude
-        if: steps.pre.outputs.go == 'true'
-        # The action can hard-fail (exit 1) even when the model ran fine but didn't emit
-        # --json-schema structured_output (flaky/refusing model, mid-review API error, etc).
-        # Without continue-on-error, that failure aborts the job before the Gate step below
-        # ever runs — skipping its deliberate no-verdict fail-closed/advisory policy entirely
-        # and just hard-failing the check with no comment, no hold, no explanation. Let the
-        # step fail visibly in the log but keep going so Gate's existing logic decides the
-        # outcome from the (here, empty) verdict, same as any other no-verdict case.
-        continue-on-error: true
-        uses: anthropics/claude-code-action@e90deca47693f9457b72f2b53c17d7c445a87342 # v1
-        env:
-          # 1-hour prompt-cache TTL (default is 5 min). The autofix→CI→re-review loop and
-          # back-to-back PR reviews span >5 min, so the stable prefix (system prompt + tools
-          # + CLAUDE.md) cache-hits at 0.1x instead of expiring. Caching itself is on by default.
-          ENABLE_PROMPT_CACHING_1H: "1"
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          prompt: |
-            Do a SECURITY review of this PR's diff vs the base branch. This repo is a PUBLIC
-            Cloudflare Worker + a live autonomous CI/CD pipeline, so weigh: secret handling/
-            exposure, auth-gate bypass, SSRF, injection (incl. shell injection via
-            `${{ github.event.* }}` in workflows), GitHub Actions abuse (pull_request_target +
-            untrusted checkout, missing author gates, over-scoped tokens), auto-merge/auto-deploy
-            blast radius, and any autonomous-bot action that could touch prod or user data
-            unsafely. Use the repo's /security-review skill if present. Post concise inline findings.
-
-            Your FINAL message MUST be the machine-readable verdict object matching the provided
-            JSON schema: {"critical":N,"high":N,"note":"..."} — the counts of CONFIRMED
-            critical/high issues (zeros if the diff is clean). Do NOT write any file; the verdict
-            is captured from your structured output, not the filesystem.
-          # --json-schema surfaces the model's final object as the step output `structured_output`,
-          # which is CWD-INDEPENDENT — the file-write channel was unreliable because the action
-          # runs Claude in a sandbox cwd that isn't the checkout the gate reads. (Empty output =>
-          # no verdict => existing blast-radius fail-closed, incl. the workflow-edit self-skip case.)
-          claude_args: >-
-            --max-turns 14 --model opus
-            --allowedTools Read,Grep,Glob,Bash
-            --json-schema '{"type":"object","properties":{"critical":{"type":"integer"},"high":{"type":"integer"},"note":{"type":"string"}},"required":["critical","high","note"],"additionalProperties":false}'
-      - name: Gate — scoped fail-closed on missing verdict; block on high/critical
-        if: steps.pre.outputs.go == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR: ${{ github.event.pull_request.number }}
-          # Empty when the action self-skipped (a workflow-editing PR fails claude-code-action's
-          # OIDC→app-token workflow-integrity check, so the model never runs) OR the model
-          # returned no verdict — both route into the fail-closed policy below.
-          VERDICT: ${{ steps.claude.outputs.structured_output }}
-        run: |
-          set -euo pipefail
-          verdict="${VERDICT:-}"
-          # The verdict is the reviewer's structured output. It's empty in two cases: the model
-          # returned no verdict, OR the action self-skipped (claude-code-action refuses to run on
-          # a PR that edits a workflow file — an anti-exfiltration integrity check — so those PRs
-          # ALWAYS land here and are correctly fail-closed below, needing a human review). Outcomes:
-          #   1. A PRODUCED crit/high verdict → HARD-BLOCK: apply `hold` + exit 1 (unchanged).
-          #   2. A MISSING verdict (reviewer did not finish — infra, not proof the diff is
-          #      unsafe) is gated by BLAST RADIUS, not a blanket policy:
-          #        • diff touches .github/workflows/**, auth, or secrets → FAIL CLOSED
-          #          (hold + exit 1): high-blast changes must never merge unreviewed.
-          #        • any other diff → ADVISORY PASS (::warning:: + exit 0): a flaky reviewer
-          #          must never DoS routine merges. The deterministic gates (strict + native
-          #          secret scanning/push-protection + trusted-author + features-need-human)
-          #          remain the real merge floor.
-          #        • changed-file list unreadable → can't prove low-blast, so FAIL CLOSED.
-          # Trusted-author-only pipeline, so an attacker can't suppress the verdict to sneak a
-          # high-blast diff through — the worst case is a stall on their own PR.
-          if [ -z "$verdict" ]; then
-            changed=$(gh pr diff "$PR" --name-only 2>/dev/null || true)
-            if [ -z "$changed" ]; then
-              echo "::error::security review produced no verdict AND the changed-file list is unreadable — failing closed (cannot rule out a high-blast diff)"
-              gh pr edit "$PR" --add-label hold 2>/dev/null || true
-              gh pr comment "$PR" --body "🛑 no-dumb-shit bot: security review did not finish and the diff was unreadable — applied \`hold\` (fail-closed). Re-run the review, then remove \`hold\`." 2>/dev/null || true
-              exit 1
-            fi
-            if printf '%s\n' "$changed" | grep -qiE '\.github/workflows/|auth|secret'; then
-              echo "::error::security review produced no verdict AND the diff touches high-blast paths (workflows/auth/secrets) — failing closed"
-              printf '%s\n' "$changed" | grep -iE '\.github/workflows/|auth|secret' | sed 's/^/  high-blast path: /'
-              gh pr edit "$PR" --add-label hold 2>/dev/null || true
-              gh pr comment "$PR" --body "🛑 no-dumb-shit bot: security review did not finish and this PR touches workflows/auth/secrets — applied \`hold\` (fail-closed). Re-run the review or justify, then remove \`hold\`." 2>/dev/null || true
-              exit 1
-            fi
-            echo "::warning::security review produced no verdict (reviewer did not finish) and the diff is not high-blast — advisory pass"
-            gh pr comment "$PR" --body "⚠️ no-dumb-shit bot: the security review did not finish (no verdict) and this diff doesn't touch workflows/auth/secrets — advisory pass, not blocking. Deterministic gates still apply." 2>/dev/null || true
-            exit 0; fi
-          crit=$(printf '%s' "$verdict" | jq -r '.critical // 0'); high=$(printf '%s' "$verdict" | jq -r '.high // 0')
-          echo "security verdict: critical=$crit high=$high"
-          if [ "${crit:-0}" -gt 0 ] || [ "${high:-0}" -gt 0 ]; then
-            gh pr edit "$PR" --add-label hold 2>/dev/null || true
-            gh pr comment "$PR" --body "🛑 **no-dumb-shit bot**: found $crit critical / $high high security issue(s). Applied \`hold\` (blocks auto-merge). Resolve or justify, then remove \`hold\`." 2>/dev/null || true
-            echo "::error::security review blocked this PR ($crit critical, $high high)"; exit 1
-          fi
-          echo "✓ no high/critical security findings"
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    uses: SuxOS/.github/.github/workflows/security-review.yml@main
+    with:
+      allowed-bots: "suxbot"
+    secrets: inherit

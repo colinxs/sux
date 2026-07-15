@@ -8,13 +8,14 @@ name: Issue build
 # Reusable workflow: SuxOS/.github/.github/workflows/issue-build.yml
 
 on:
-  issues:
-    types: [labeled]
+  # Batch schedule replaces per-issue triggering, which fanned out parallel opus sessions
+  # during fixer bursts (see SuxOS/.github docs/design/budget-and-cadence.md).
+  schedule:
+    - cron: "7 2,8,14,20 * * *"
   workflow_dispatch:
 
 jobs:
   issue-build:
-    if: github.event_name != 'issues' || github.event.label.name == 'queued-for-build'
     # Grant exactly what issue-build.yml needs (default token is read-only → reusable would startup-fail).
     permissions:
       contents: write

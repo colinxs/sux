@@ -1,121 +1,25 @@
 name: Stuck-PR watcher
 
-# Read-only visibility net for the autonomy pipeline. Every 6h (and on demand) it
-# lists open PRs and flags the ones that are silently stalled:
-#   - a failing required check,
-#   - green + mergeable but auto-merge was never armed and it's been idle >STALE_HOURS, or
-#   - armed + BEHIND main and still behind after STALE_HOURS.
-# The BEHIND case would be a false positive IF the GitHub-native merge queue were enabled (a
-# PR no longer needs to be up to date with main to merge — the queue rebases it as part of
-# forming the merge group). But the queue is BUILT, NOT YET ENABLED
-# (docs/design/merge-queue.md), so today an armed PR that falls BEHIND relies entirely on
-# pr-auto-update.yml (push:main + daily backstop) to get un-stuck. Flagging it here catches
-# the case where that workflow hasn't run yet, failed, or hit a real conflict (DIRTY) that
-# needs a human — this is exactly the gap that let 25+ PRs silently pile up BEHIND with no
-# visibility on 2026-07-14. Re-mute this once the queue is verified enabled (see the design
-# doc's "Enabling the queue" section).
-# It NEVER merges or mutates a PR. It only maintains a single rolling "Stuck PRs"
-# tracking issue — opened when stalls appear, refreshed while they persist, and
-# auto-closed when all clear — so a stuck PR can't rot unnoticed. gh CLI + jq only.
+# Read-only visibility net for the autonomy pipeline. Every 6h (and on demand) lists open
+# PRs and flags ones that are silently stalled (BEHIND main, a failing required check, or
+# green + mergeable but auto-merge never armed and idle > stale-hours). Never merges or
+# mutates a PR beyond a single rolling tracking issue. Defaults match this repo's needs, so
+# no overrides.
+# Reusable workflow: SuxOS/.github/.github/workflows/pr-watch.yml
 
 on:
   schedule:
     - cron: "23 */6 * * *" # every 6 hours (offset minute to dodge the top-of-hour rush)
   workflow_dispatch: # allow manual "Run workflow" from the Actions tab
 
-permissions:
-  contents: read
-  pull-requests: read
-  issues: write
-  checks: read
-  statuses: read
-  # `gh pr list --json statusCheckRollup` expands each check's checkSuite.workflowRun
-  # under the hood, which 403s ("Resource not accessible by integration") without this —
-  # every run then fails outright instead of just posting a thinner tracking issue.
-  actions: read
-
-concurrency:
-  group: pr-watch
-  cancel-in-progress: true
-
-env:
-  STALE_HOURS: "6" # a green, mergeable PR with no auto-merge armed is "stuck" past this
-
 jobs:
   watch:
-    name: Flag stuck PRs
-    runs-on: ubuntu-latest
-    steps:
-      - name: Scan open PRs and upsert the tracking issue
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ISSUE_TITLE: "Stuck PRs — pipeline watcher"
-        run: |
-          set -euo pipefail
-
-          # Read-only snapshot of every open PR with the fields we classify on.
-          prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --limit 100 \
-            --json number,title,url,isDraft,labels,mergeStateStatus,autoMergeRequest,statusCheckRollup,updatedAt)
-
-          now=$(date -u +%s)
-          stale=$(( STALE_HOURS * 3600 ))
-
-          # Classify. Skip drafts and intentionally-paused (`hold`) PRs. Priority:
-          # failing check > idle-green-no-automerge > idle-behind-armed. One row per stuck PR.
-          stuck=$(echo "$prs" | jq -c --argjson now "$now" --argjson stale "$stale" '
-            [ .[]
-              | select(.isDraft | not)
-              | select([.labels[].name] | index("hold") | not)
-              | ([.statusCheckRollup[]? | (.conclusion // .state // "" | ascii_upcase)]) as $st
-              | (($st | map(select(. == "FAILURE" or . == "ERROR" or . == "CANCELLED" or . == "TIMED_OUT" or . == "STARTUP_FAILURE")) | length) > 0) as $failing
-              | (($now - (.updatedAt | fromdateiso8601)) >= $stale) as $isStale
-              | ( if $failing then "failing required check"
-                  elif (.mergeStateStatus == "CLEAN" and (.autoMergeRequest == null) and $isStale) then "green + mergeable but auto-merge not armed"
-                  elif (.mergeStateStatus == "BEHIND" and (.autoMergeRequest != null) and $isStale) then "armed but BEHIND main and not auto-updating"
-                  else null end ) as $reason
-              | select($reason != null)
-              | { number, title, url, reason: $reason, state: .mergeStateStatus }
-            ]')
-
-          count=$(echo "$stuck" | jq 'length')
-          echo "stuck PRs: $count"
-          echo "$stuck" | jq .
-
-          # The single rolling tracking issue (open), if any.
-          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 --json number,title \
-            | jq -r --arg t "$ISSUE_TITLE" '[.[] | select(.title == $t) | .number] | first // empty')
-
-          if [ "$count" -eq 0 ]; then
-            if [ -n "$existing" ]; then
-              gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" \
-                --body "All clear — no stuck PRs as of $(date -u '+%Y-%m-%d %H:%M UTC'). Closing."
-              gh issue close "$existing" --repo "$GITHUB_REPOSITORY"
-              echo "closed stale tracking issue #$existing"
-            else
-              echo "no stuck PRs, no tracking issue — nothing to do"
-            fi
-            exit 0
-          fi
-
-          # Snapshot body (replaces prior content, not an append log).
-          rows=$(echo "$stuck" | jq -r '.[] | "| [#\(.number)](\(.url)) | \(.state) | \(.reason) | \(.title | gsub("\\|"; "\\|")) |"')
-          body=$(printf '%s\n' \
-            "Auto-maintained by the stuck-PR watcher (${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/workflows/pr-watch.yml). Refreshed $(date -u '+%Y-%m-%d %H:%M UTC'); auto-closes when all clear." \
-            "" \
-            "These open PRs are stalled and will not merge on their own:" \
-            "" \
-            "| PR | Merge state | Why it's stuck | Title |" \
-            "|----|-------------|----------------|-------|" \
-            "$rows" \
-            "" \
-            "- **failing required check** → fix CI (or the autofix bot handles it, if eligible)." \
-            "- **auto-merge not armed** → add an eligible label / conventional title, or enable auto-merge." \
-            "- **armed but BEHIND, not updating** → pr-auto-update.yml should catch this on the next push to main (or its daily backstop); run it manually (workflow_dispatch) for immediate relief, or check for a real conflict (DIRTY).")
-
-          if [ -n "$existing" ]; then
-            gh issue edit "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"
-            echo "refreshed tracking issue #$existing"
-          else
-            gh issue create --repo "$GITHUB_REPOSITORY" --title "$ISSUE_TITLE" --body "$body"
-            echo "opened tracking issue"
-          fi
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: write
+      checks: read
+      statuses: read
+      actions: read
+    uses: SuxOS/.github/.github/workflows/pr-watch.yml@main
+    secrets: inherit
