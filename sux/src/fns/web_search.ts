@@ -148,6 +148,23 @@ async function kagi(env: any, q: string, limit: number, route: Route): Promise<H
 	return hits;
 }
 
+export type SearchScope = { file_type?: string; include_domains?: string[]; exclude_domains?: string[] };
+
+/** Fold file_type/domain scoping into documented Kagi query operators (filetype:, site:,
+ * -site:) rather than structured API params — these work identically as plain query text
+ * on both the metered API and the session-scrape /html/search page (verified against
+ * https://help.kagi.com/kagi/features/search-operators.html and the unofficial kagi-ken
+ * client, which has no structured params at all — just `q=`). One code path covers both
+ * Kagi engines; lenses have no operator equivalent so aren't handled here. */
+export function withOperators(query: string, scope?: SearchScope): string {
+	if (!scope) return query;
+	const parts = [query];
+	if (scope.file_type) parts.push(`filetype:${scope.file_type}`);
+	for (const d of scope.include_domains ?? []) parts.push(`site:${d}`);
+	for (const d of scope.exclude_domains ?? []) parts.push(`-site:${d}`);
+	return parts.join(" ");
+}
+
 const unesc = (s: string): string =>
 	s.replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&nbsp;/g, " ");
 
@@ -247,7 +264,8 @@ export const webSearch: Fn = {
 	cost: 3,
 	description:
 		"Web search over Kagi, native Google, Exa, and Brave. `engine`: kagi_session, kagi, ddg, google, exa, brave, or `all` — which fans out across every currently-available engine concurrently (MAP), merges/dedupes by URL with consensus ranking, and with `summarize: true` reduces the pooled results into one Workers-AI synthesis with citations (map-reduce). " +
-		"DEFAULT is kagi_session — Kagi run on YOUR subscription (free/unmetered) by scraping the /html/search page with the KAGI_SESSION token through the residential proxy — when that secret is set, else ddg. ddg (DuckDuckGo) is scraped keyless+cheap via the residential proxy (no JS needed) — the free no-key fallback. google renders the real SERP in the headed `render` mac backend (Google needs JS; heavier/slower, opt-in). kagi, exa, and brave are key-gated (KAGI_API_KEY, EXA_API_KEY, BRAVE_API_KEY) and used only when their secret is set; `all` skips unconfigured ones. exa has a genuine 20,000 req/mo free tier and is the preferred key-gated fallback — brave lost its free tier in Feb 2026 and is now metered with no default spend cap, so prefer configuring EXA_API_KEY over BRAVE_API_KEY. Falls back to the plain merged list if AI isn't configured. Returns numbered results (title, url, snippet) — cite by number.",
+		"DEFAULT is kagi_session — Kagi run on YOUR subscription (free/unmetered) by scraping the /html/search page with the KAGI_SESSION token through the residential proxy — when that secret is set, else ddg. ddg (DuckDuckGo) is scraped keyless+cheap via the residential proxy (no JS needed) — the free no-key fallback. google renders the real SERP in the headed `render` mac backend (Google needs JS; heavier/slower, opt-in). kagi, exa, and brave are key-gated (KAGI_API_KEY, EXA_API_KEY, BRAVE_API_KEY) and used only when their secret is set; `all` skips unconfigured ones. exa has a genuine 20,000 req/mo free tier and is the preferred key-gated fallback — brave lost its free tier in Feb 2026 and is now metered with no default spend cap, so prefer configuring EXA_API_KEY over BRAVE_API_KEY. Falls back to the plain merged list if AI isn't configured. Returns numbered results (title, url, snippet) — cite by number. " +
+			"file_type / include_domains / exclude_domains scope the Kagi engines (kagi, kagi_session) via documented query operators (filetype:, site:, -site:) — neither Kagi surface has a structured param for these on the session path, so both fold into the query text the same way. Other engines ignore them.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -258,6 +276,9 @@ export const webSearch: Fn = {
 			limit: { type: "integer", minimum: 1, maximum: 25, default: 10 },
 			summarize: { type: "boolean", description: "Summarize the merged results with Workers AI.", default: false },
 			proxy: { type: "boolean", description: "Route the Kagi query through the Tailscale residential proxy (direct fallback if the node is down).", default: false },
+			file_type: { type: "string", description: "Kagi engines only (kagi, kagi_session): scope to a file extension, e.g. pdf. Folded into the query as a filetype: operator." },
+			include_domains: { type: "array", items: { type: "string" }, description: "Kagi engines only: folded into the query as site: operators." },
+			exclude_domains: { type: "array", items: { type: "string" }, description: "Kagi engines only: folded into the query as -site: operators." },
 		},
 	},
 	cacheable: true,
@@ -269,6 +290,8 @@ export const webSearch: Fn = {
 		const limit = Math.min(25, Math.max(1, Number(args?.limit) || 10));
 		const wantSummary = args?.summarize === true;
 		const route: Route = args?.proxy === true ? "proxy" : "auto";
+		const scope: SearchScope = { file_type: args?.file_type, include_domains: args?.include_domains, exclude_domains: args?.exclude_domains };
+		const hasScope = Boolean(scope.file_type || scope.include_domains?.length || scope.exclude_domains?.length);
 
 		let engines: string[];
 		if (engine === "all") {
@@ -281,8 +304,13 @@ export const webSearch: Fn = {
 			engines = [engine];
 		}
 
+		// file_type/include_domains/exclude_domains have no structured param on either Kagi
+		// surface (session path is q= only; see withOperators) — fold into the query text for
+		// the two Kagi engines only, leave other engines' query untouched.
+		const queryFor = (name: string): string => (hasScope && (name === "kagi" || name === "kagi_session") ? withOperators(q, scope) : q);
+
 		// Run the selected engines in parallel; keep whatever succeeds.
-		const settled = await Promise.allSettled(engines.map((name) => ENGINES[name].run(env, q, limit, route)));
+		const settled = await Promise.allSettled(engines.map((name) => ENGINES[name].run(env, queryFor(name), limit, route)));
 		const lists = settled.map((s) => (s.status === "fulfilled" ? s.value : []));
 		const ranAll = engine === "all";
 		// Don't swallow engine errors: log every rejection so a silently-dead engine
