@@ -202,12 +202,11 @@ describe("web_search", () => {
 	});
 
 	it("calls Exa when the key is present", async () => {
-		const fetchMock = vi.fn(async (_u?: any, _i?: any) => new Response(JSON.stringify({ results: [{ title: "E", url: "https://e.com", text: "exa snippet" }] }), { status: 200 }));
-		vi.stubGlobal("fetch", fetchMock);
+		smartFetch.mockResolvedValueOnce(new Response(JSON.stringify({ results: [{ title: "E", url: "https://e.com", text: "exa snippet" }] }), { status: 200 }));
 		const r = await webSearch.run({ EXA_API_KEY: "k" } as any, { query: "x", engine: "exa" });
 		expect(r.isError).toBeFalsy();
 		expect(r.content[0].text).toContain("1. E");
-		expect((fetchMock.mock.calls[0][1] as any).headers["x-api-key"]).toBe("k");
+		expect((smartFetch.mock.calls[0][2] as any).headers["x-api-key"]).toBe("k");
 	});
 
 	it("gates exa without the key", async () => {

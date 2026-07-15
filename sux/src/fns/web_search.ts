@@ -123,7 +123,7 @@ async function brave(env: any, q: string, limit: number, _route: Route): Promise
 // key-gated fallback ahead of the now-metered-only Brave. Response shape:
 // { results: [{ title, url, ... }] }.
 async function exa(env: any, q: string, limit: number, _route: Route): Promise<Hit[]> {
-	const resp = await fetch("https://api.exa.ai/search", {
+	const resp = await smartFetch(env, "https://api.exa.ai/search", {
 		method: "POST",
 		headers: { "x-api-key": env.EXA_API_KEY, "Content-Type": "application/json", Accept: "application/json" },
 		body: JSON.stringify({ query: q, numResults: limit }),
