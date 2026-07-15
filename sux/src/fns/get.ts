@@ -1,5 +1,8 @@
 import type { Hit } from "./web_search";
 import type { SearchScope } from "./web_search";
+import { kagiSession, parseKagiMarkdown, withOperators } from "./web_search";
+import { kagiTool } from "../kagi";
+import type { Route } from "../proxy";
 
 export type Kind = "pdf" | "document" | "ebook" | "code" | "docs" | "artifact" | "reference" | "any";
 
@@ -91,4 +94,30 @@ export function dedupeEditions(hits: Hit[]): Edition[] {
 		}
 	}
 	return [...seen.values()];
+}
+
+export async function runStrategies(env: any, strategies: Strategy[], extraDomains: string[], route: Route): Promise<Hit[]> {
+	if (!env?.KAGI_SESSION && !env?.KAGI_API_KEY) throw new Error("Neither KAGI_SESSION nor KAGI_API_KEY is configured — get needs at least one to search.");
+
+	const calls: Promise<Hit[]>[] = [];
+	for (const { kind, query } of strategies) {
+		const plan = KIND_PLANS[kind];
+		if (env?.KAGI_SESSION) {
+			for (const scope of plan.operatorScopes) {
+				const merged: SearchScope = { ...scope, include_domains: [...(scope.include_domains ?? []), ...extraDomains] };
+				calls.push(kagiSession(env, withOperators(query, merged), 10, route).catch(() => [] as Hit[]));
+			}
+		}
+		if (env?.KAGI_API_KEY) {
+			for (const lens_id of plan.lensIds) {
+				calls.push(
+					kagiTool(env, "kagi_search_fetch", { query, limit: 10, lens_id }, route)
+						.then((r) => parseKagiMarkdown(r?.content?.[0]?.text ?? "", 10))
+						.catch(() => [] as Hit[]),
+				);
+			}
+		}
+	}
+	const results = await Promise.all(calls);
+	return results.flat();
 }

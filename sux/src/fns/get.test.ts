@@ -1,7 +1,20 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const { kagiTool } = vi.hoisted(() => ({ kagiTool: vi.fn() }));
+vi.mock("../kagi", () => ({ kagiTool }));
+
+const { kagiSession } = vi.hoisted(() => ({ kagiSession: vi.fn() }));
+vi.mock("./web_search", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./web_search")>();
+	return { ...actual, kagiSession };
+});
+
+afterEach(() => vi.clearAllMocks());
+
 import { isUrlInput, parseStrategies } from "./get";
 import { KIND_PLANS, LENSES } from "./get";
 import { dedupeEditions } from "./get";
+import { runStrategies } from "./get";
 
 describe("isUrlInput", () => {
 	it("recognizes absolute http(s) URLs", () => {
@@ -93,5 +106,39 @@ describe("dedupeEditions", () => {
 	it("skips a hit with no parseable URL instead of throwing", () => {
 		const hits = [{ title: "Bad", url: "not-a-url" }, { title: "Good", url: "https://a.com/g.pdf" }];
 		expect(dedupeEditions(hits).length).toBe(1);
+	});
+});
+
+describe("runStrategies", () => {
+	it("runs operator strategies via kagiSession and lens strategies via kagiTool, merging all hits", async () => {
+		kagiSession.mockResolvedValueOnce([{ title: "Op Hit", url: "https://a.com/op.pdf" }]);
+		kagiTool.mockResolvedValueOnce({ content: [{ text: "### [Lens Hit](https://b.com/lens.pdf)\nsnippet" }] });
+		const hits = await runStrategies({ KAGI_SESSION: "tok", KAGI_API_KEY: "k" }, [{ kind: "pdf", query: "textbook" }], [], "auto");
+		expect(hits.map((h) => h.title)).toEqual(["Op Hit", "Lens Hit"]);
+	});
+
+	it("skips operator strategies when KAGI_SESSION is unset", async () => {
+		kagiTool.mockResolvedValueOnce({ content: [{ text: "### [Lens Hit](https://b.com/lens.pdf)\nsnippet" }] });
+		const hits = await runStrategies({ KAGI_API_KEY: "k" }, [{ kind: "pdf", query: "textbook" }], [], "auto");
+		expect(kagiSession).not.toHaveBeenCalled();
+		expect(hits.map((h) => h.title)).toEqual(["Lens Hit"]);
+	});
+
+	it("skips lens strategies when KAGI_API_KEY is unset", async () => {
+		kagiSession.mockResolvedValueOnce([{ title: "Op Hit", url: "https://a.com/op.pdf" }]);
+		const hits = await runStrategies({ KAGI_SESSION: "tok" }, [{ kind: "pdf", query: "textbook" }], [], "auto");
+		expect(kagiTool).not.toHaveBeenCalled();
+		expect(hits.map((h) => h.title)).toEqual(["Op Hit"]);
+	});
+
+	it("throws when neither secret is configured", async () => {
+		await expect(runStrategies({}, [{ kind: "pdf", query: "x" }], [], "auto")).rejects.toThrow(/KAGI_SESSION|KAGI_API_KEY/);
+	});
+
+	it("swallows a single strategy's failure instead of rejecting the whole fan-out", async () => {
+		kagiSession.mockRejectedValueOnce(new Error("boom"));
+		kagiTool.mockResolvedValueOnce({ content: [{ text: "### [Lens Hit](https://b.com/lens.pdf)\nsnippet" }] });
+		const hits = await runStrategies({ KAGI_SESSION: "tok", KAGI_API_KEY: "k" }, [{ kind: "pdf", query: "x" }], [], "auto");
+		expect(hits.map((h) => h.title)).toEqual(["Lens Hit"]);
 	});
 });
