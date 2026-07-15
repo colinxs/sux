@@ -35,6 +35,11 @@ Pattern for anything with a **refresh token**: store the long-lived `*_REFRESH_T
 KV and self-heals on 401 (see [[vault-stack|`dropbox.ts`]] — the model every new
 provider follows).
 
+**Never interpolate a secret/token into a redirect or `connect_url`.** It leaks via
+Referer headers, browser history, and logs — and flows straight into model/LLM
+context if the URL is ever echoed back. Have the caller append the token themselves;
+the response should never carry the value (see #468, the MyChart OAuth leak+XSS fix).
+
 ## Currently wired (already in the code)
 
 | Secret | Used by | Status |

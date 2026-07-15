@@ -119,7 +119,12 @@ a preflight `go=false` skip). `ENABLE_PROMPT_CACHING_1H` is a Claude-Code **env 
    push and fires CI. Must be applied to **all** pushers (autofix, mention, auto-update,
    drain, automerge).
 
-3. **A written verdict FILE is cwd-fragile (#10).** `claude-code-action` runs Claude in a
+3. **Bot actor names need the literal `[bot]` suffix to match (#451).** GitHub Actions
+   bot logins (`github.actor`, `claude-code-action`'s `allowed-bots`) do exact-string
+   matching — this org's bot is `suxbot[bot]`, not `suxbot`; an allowlist entry missing
+   the suffix silently never matches.
+
+4. **A written verdict FILE is cwd-fragile (#10).** `claude-code-action` runs Claude in a
    sandbox cwd ≠ `$GITHUB_WORKSPACE`, so a model-written `.sec-verdict.json` landed where the
    gate couldn't find it → the security net read "no verdict" for weeks, silently
    advisory-passing PRs unreviewed. **Get the verdict from the `structured_output` step
