@@ -44,14 +44,16 @@ bare (no `file(url)` wrapper — that was rejected as awkward).
 
 Fan out concurrent `kagi_search_fetch` calls, one per strategy, then merge:
 
-- **Built-in Kagi lenses** relevant to files: `pdf`, `usenet`, `archive`.
-  > ⚠️ Implementation must **verify the exact lens IDs** against Kagi before
-  > hardcoding. `search.ts` documents only Academic=2, Forums=1, Programming=15,
-  > News360=29, Recipes=120, Small Web=107 — the pdf/usenet/archive IDs are
-  > unknown and MUST be confirmed (Kagi lens listing / settings), not guessed.
+- **Built-in Kagi lenses** relevant to files, passed to `kagi_search_fetch` as
+  `lens_id` **by name-slug** (verified live 2026-07-15 through the deployed
+  connector — Kagi accepts the lowercase slug, no numeric ID needed):
+  - `pdfs` — PDF files anywhere.
+  - `usenet/archive` — Usenet Archives **and archive.org** non-web collections
+    (this lens already covers archive.org — no separate domain filter needed for it).
 - **Filetype extensions** — `file_type: pdf|epub|djvu|txt|…`, derived from
   `kind` or from each `file(kind, …)` clause.
-- **Archive domains** — `include_domains: [archive.org, …]`.
+- **Archive domains** — `include_domains: [archive.org, …]` as a belt-and-braces
+  strategy alongside the `usenet/archive` lens.
 
 Cost note: each strategy is one Kagi call (`search` fn is `cost: 3`). Fan-out is
 concurrent (`Promise.all`) and capped by a `strategies`/`limit` knob. Stopping
