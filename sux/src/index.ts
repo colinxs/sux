@@ -144,7 +144,11 @@ export function checkArgs(args: unknown, maxBytes: number, maxDepth: number): st
 	} catch {
 		return "arguments are not serializable";
 	}
-	if (json.length > maxBytes) return `arguments too large (${json.length} > ${maxBytes} bytes)`;
+	// Measure actual UTF-8 bytes, not json.length (UTF-16 code units) — multi-byte
+	// content (CJK, emoji, accented text) makes code-unit count undercount true byte
+	// size by up to ~3x, letting an oversized payload slip under maxBytes.
+	const bytes = new TextEncoder().encode(json).length;
+	if (bytes > maxBytes) return `arguments too large (${bytes} > ${maxBytes} bytes)`;
 	return null;
 }
 

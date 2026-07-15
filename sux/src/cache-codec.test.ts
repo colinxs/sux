@@ -1,5 +1,20 @@
+import zlib from "node:zlib";
 import { describe, expect, it } from "vitest";
 import { packForCache, unpackFromCache } from "./cache-codec";
+
+const Z = zlib as any;
+const MAGIC = [0x73, 0x78, 0x7a, 0x31];
+
+/** Build a raw sxz1 frame around an already-compressed payload, bypassing
+ * packForCache — lets a test hand-craft a frame packForCache itself would
+ * never produce (e.g. a decompression bomb). */
+function frame(tag: number, compressed: Uint8Array): Uint8Array {
+	const out = new Uint8Array(MAGIC.length + 1 + compressed.length);
+	out.set(MAGIC, 0);
+	out[MAGIC.length] = tag;
+	out.set(compressed, MAGIC.length + 1);
+	return out;
+}
 
 describe("cache-codec", () => {
 	it("passes small payloads through as a plain string (frame not worth it)", () => {
@@ -32,5 +47,20 @@ describe("cache-codec", () => {
 		const packed = packForCache(s);
 		// Either it compressed (bytes) or bailed to string — but it must round-trip.
 		expect(unpackFromCache(packed as any)).toBe(s);
+	});
+
+	it("rejects a decompression bomb instead of allocating past the output cap", () => {
+		// All-zero buffers compress to a few KB with every codec but decompress
+		// back to their full size — a crafted/corrupted KV entry could use this
+		// to force a huge allocation before unpackFromCache's throw is caught.
+		const bomb = new Uint8Array(40 * 1024 * 1024);
+		const codecs: [number, Uint8Array][] = [
+			[0x7a, Z.zstdCompressSync(bomb, { params: { [Z.constants.ZSTD_c_compressionLevel]: 10 } })],
+			[0x62, Z.brotliCompressSync(bomb, { params: { [Z.constants.BROTLI_PARAM_QUALITY]: 6 } })],
+			[0x67, Z.gzipSync(bomb, { level: 6 })],
+		];
+		for (const [tag, compressed] of codecs) {
+			expect(() => unpackFromCache(frame(tag, compressed))).toThrow();
+		}
 	});
 });

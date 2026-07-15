@@ -37,6 +37,25 @@ describe("parseYaml (leading-zero and oversized integers stay strings)", () => {
 	});
 });
 
+describe("parseYaml (prototype pollution)", () => {
+	it("drops a top-level __proto__ key instead of polluting the returned object's prototype", () => {
+		const out: any = parseYaml("a: x\n__proto__:\n  polluted: true");
+		expect(out).toEqual({ a: "x" });
+		expect(Object.getPrototypeOf(out)).toBe(Object.prototype);
+		expect(({} as any).polluted).toBeUndefined();
+	});
+
+	it("drops a nested constructor key while still parsing sibling keys correctly", () => {
+		const out: any = parseYaml("outer:\n  constructor:\n    polluted: true\n  b: y\nafter: z");
+		expect(out).toEqual({ outer: { b: "y" }, after: "z" });
+	});
+
+	it("drops an inline __proto__ key (key: value on one line)", () => {
+		const out: any = parseYaml("__proto__: polluted\nb: y");
+		expect(out).toEqual({ b: "y" });
+	});
+});
+
 describe("detectFormat (bare scalars and header-only CSV don't degrade to yaml)", () => {
 	it("detects a bare JSON scalar as json instead of yaml (which parseYaml maps to {})", () => {
 		expect(detectFormat("42")).toBe("json");
@@ -109,6 +128,19 @@ describe("parseXml (`>` inside a quoted attribute value)", () => {
 
 	it("handles `>` inside a single-quoted attribute value", () => {
 		expect(parseXml("<tag attr='x>y'/>")).toEqual({ tag: { "@attr": "x>y" } });
+	});
+});
+
+describe("parseXml (prototype pollution)", () => {
+	it("drops a __proto__ element instead of polluting the parent node's prototype", () => {
+		const out: any = parseXml("<root><__proto__><polluted>true</polluted></__proto__><b>y</b></root>");
+		expect(out).toEqual({ root: { b: "y" } });
+		expect(Object.getPrototypeOf(out.root ?? out)).toBe(Object.prototype);
+		expect(({} as any).polluted).toBeUndefined();
+	});
+
+	it("drops a self-closing __proto__ element", () => {
+		expect(parseXml("<root><__proto__/><b>y</b></root>")).toEqual({ root: { b: "y" } });
 	});
 });
 

@@ -89,6 +89,25 @@ describe("mychart OAuth callback (PKCE round-trip)", () => {
 		expect(env.OAUTH_KV.map.has("sux:mychart:pkce:STATE1")).toBe(false);
 	});
 
+	it("escapes HTML-special characters in the patient id on the success page", async () => {
+		const env = baseEnv();
+		await env.OAUTH_KV.put("sux:mychart:pkce:STATE2", JSON.stringify({ verifier: "VERIFIER456", created: Date.now() }));
+		const xssPatient = `"><script>alert(1)</script>`;
+		vi.stubGlobal("fetch", vi.fn(async (u: any) => {
+			const url = String(u);
+			if (url.includes(".well-known/smart-configuration")) return smartCfgResponse();
+			if (url === TOKEN) return new Response(JSON.stringify({ access_token: "AT1", refresh_token: "RT1", patient: xssPatient, scope: "patient/*.read", expires_in: 3600 }), { status: 200 });
+			throw new Error(`unexpected fetch ${url}`);
+		}));
+		const resp = await handleMychartRoutes(new URL("https://suxos.net/mychart/callback?code=CODE2&state=STATE2"), new Request("https://suxos.net/mychart/callback?code=CODE2&state=STATE2"), env);
+		expect(resp?.status).toBe(200);
+		const text = await resp!.text();
+		expect(text).not.toContain(xssPatient);
+		expect(text).not.toContain("<script>");
+		expect(text).toContain("&lt;script&gt;");
+		expect(text).toContain("&quot;&gt;");
+	});
+
 	it("serves the reflected `error` param as text/plain (no HTML execution)", async () => {
 		const env = baseEnv();
 		const xss = "<script>alert(1)</script>";
@@ -127,6 +146,21 @@ describe("mychart /connect gate", () => {
 		expect(loc.searchParams.get("redirect_uri")).toBe("https://suxos.net/mychart/callback");
 		const state = loc.searchParams.get("state")!;
 		expect(env.OAUTH_KV.map.has(`sux:mychart:pkce:${state}`)).toBe(true);
+	});
+
+	it("serves a connect-flow exception as text/plain (no HTML execution), same as the callback catch", async () => {
+		const env = baseEnv({ SUX_CRON_TOKEN: "op-secret" });
+		const xss = "<script>alert(1)</script>";
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => {
+				throw new Error(xss);
+			}),
+		);
+		const resp = await handleMychartRoutes(new URL("https://suxos.net/mychart/connect?token=op-secret"), new Request("https://suxos.net/mychart/connect?token=op-secret"), env);
+		expect(resp?.status).toBe(502);
+		expect(resp!.headers.get("content-type")).toMatch(/text\/plain/);
+		expect(await resp!.text()).toContain(xss);
 	});
 });
 

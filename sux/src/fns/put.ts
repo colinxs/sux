@@ -102,7 +102,7 @@ export const put: Fn = {
 		},
 	},
 	cacheable: false,
-	annotations: { readOnlyHint: false, idempotentHint: false, openWorldHint: true },
+	annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
 	run: async (env, args) => {
 		if (!Array.isArray(args?.urls)) return fail("`urls` must be an array of http(s) URLs.");
 		const urls: unknown[] = args.urls;

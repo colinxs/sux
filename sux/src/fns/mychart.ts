@@ -84,7 +84,12 @@ export const mychart: Fn = {
 				const path = String(a?.path ?? "");
 				if (!path.trim()) return failWith("bad_input", "op=get requires a `path` (e.g. `Observation?category=vital-signs`).");
 				const abs = resolveFhirPath(env, path);
-				if (!abs) return failWith("bad_input", `op=get: path escapes the configured FHIR base — refused. (${path})`);
+				if (!abs) {
+					// PHI-free: no query string (search params carry identifiers like
+					// given/family/birthdate — §5), just the path segment, allowlisted.
+					const safePath = path.split("?")[0].replace(/[^A-Za-z0-9/_.\-]/g, "").slice(0, 80);
+					return failWith("bad_input", `op=get: path escapes the configured FHIR base — refused. (${safePath})`);
+				}
 				if (!(await readGrant(env))) return failWith("not_configured", "MyChart not connected — open /mychart/connect once.");
 				const resp = await mychartFetch(env, abs);
 				const text = await resp.text();

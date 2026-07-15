@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { redactPublicHealth } from "./github-handler";
+import { GitHubHandler, redactPublicHealth } from "./github-handler";
 
 describe("redactPublicHealth", () => {
 	it("strips cron sub-job error text but keeps the ok/stale/age_ms signal", () => {
@@ -29,5 +29,41 @@ describe("redactPublicHealth", () => {
 		expect(redacted.tailscale.node.hostname).toBeUndefined();
 		expect(redacted.tailscale.node.tailscaleIPs).toBeUndefined();
 		expect(redacted.tailscale.node.online).toBe(true);
+	});
+});
+
+describe("POST /authorize (CSRF one-time-use)", () => {
+	// Regression for #420: validateCSRFToken's clearCookie was computed but
+	// discarded at the call site, leaving __Host-CSRF_TOKEN replayable for its
+	// full 600s TTL instead of being invalidated after a successful use.
+	it("clears __Host-CSRF_TOKEN alongside setting the approved-client cookie", async () => {
+		const formData = new FormData();
+		formData.set("csrf_token", "tok-123");
+		formData.set(
+			"state",
+			btoa(JSON.stringify({ oauthReqInfo: { clientId: "client-A" } })),
+		);
+
+		const request = new Request("https://mcp.example.com/authorize", {
+			method: "POST",
+			headers: { Cookie: "__Host-CSRF_TOKEN=tok-123" },
+			body: formData,
+		});
+
+		const env = {
+			OAUTH_KV: { put: async () => {} } as unknown as KVNamespace,
+			COOKIE_ENCRYPTION_KEY: "test-cookie-secret",
+			GITHUB_CLIENT_ID: "test-client-id",
+		} as any;
+
+		const response = await GitHubHandler.fetch(request, env);
+
+		expect(response.status).toBe(302);
+		const setCookies = response.headers.getSetCookie();
+		expect(setCookies.some((c) => c.startsWith("__Host-APPROVED_CLIENTS="))).toBe(true);
+		const csrfClear = setCookies.find((c) => c.startsWith("__Host-CSRF_TOKEN="));
+		expect(csrfClear).toBeDefined();
+		expect(csrfClear).toContain("__Host-CSRF_TOKEN=;");
+		expect(csrfClear).toContain("Max-Age=0");
 	});
 });

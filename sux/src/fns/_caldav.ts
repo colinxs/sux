@@ -29,14 +29,30 @@ const POST_TIMEOUT_MS = 30_000;
 
 export type CalDavResponse = { status: number; ok: boolean; text: string; etag: string | null };
 
-/** One authenticated CalDAV request. `path` is absolute-from-host or a full URL. */
+/** One authenticated CalDAV request. `path` is absolute-from-host or a full URL — an
+ *  absolute URL must resolve to CALDAV_HOST, since every request attaches the Fastmail
+ *  Basic-auth credential unconditionally; a caller-supplied href pointing off-host would
+ *  ship that app password to an arbitrary attacker-controlled server (SSRF / credential
+ *  exfiltration — mirrors _jmap.ts's resolveUploadBytes SSRF guard). */
 export async function caldavFetch(
 	env: RtEnv,
 	method: string,
 	path: string,
 	opts: { body?: string; contentType?: string; depth?: string; ifMatch?: string; ifNoneMatch?: string } = {},
 ): Promise<CalDavResponse> {
-	const url = path.startsWith("http") ? path : `${CALDAV_HOST}${path}`;
+	let url: string;
+	if (path.startsWith("http")) {
+		let origin: string;
+		try {
+			origin = new URL(path).origin;
+		} catch {
+			throw new Error(`invalid CalDAV href '${path}'.`);
+		}
+		if (origin !== CALDAV_HOST) throw new Error(`CalDAV href must be on ${CALDAV_HOST} — refusing off-host URL (would leak the Fastmail credential).`);
+		url = path;
+	} else {
+		url = `${CALDAV_HOST}${path}`;
+	}
 	const headers: Record<string, string> = { Authorization: authHeader(env) };
 	if (opts.contentType) headers["Content-Type"] = opts.contentType;
 	if (opts.depth) headers.Depth = opts.depth;

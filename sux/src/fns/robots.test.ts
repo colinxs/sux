@@ -7,7 +7,7 @@ vi.mock("../proxy", () => ({
 	smartFetch: vi.fn(async () => new Response(ROBOTS, { status: 200, statusText: "OK", headers: { "content-type": "text/plain" } })),
 }));
 
-import { robots } from "./robots";
+import { pathMatches, robots } from "./robots";
 import { smartFetch } from "../proxy";
 
 const serveRobots = (body: string) =>
@@ -63,5 +63,13 @@ describe("robots", () => {
 		serveRobots(["User-agent: *", "Disallow: /page", "Allow: /page"].join("\n"));
 		const r = await robots.run({} as any, { url: "https://x.com", path: "/page" });
 		expect(JSON.parse(r.content[0].text).allowed).toBe(true);
+	});
+
+	it("pathMatches resolves a many-wildcard rule against a long non-matching path in linear time (ReDoS regression)", async () => {
+		const rule = `/${"*".repeat(30)}z$`;
+		const path = "/" + "a".repeat(200);
+		const start = performance.now();
+		expect(pathMatches(rule, path)).toBe(false);
+		expect(performance.now() - start).toBeLessThan(100);
 	});
 });

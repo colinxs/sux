@@ -101,6 +101,17 @@ describe("checkArgs (arg-size / depth guard)", () => {
 		expect(reason).toContain("too large");
 	});
 
+	it("rejects a multi-byte blob whose UTF-16 code-unit length is under maxBytes but whose UTF-8 byte length exceeds it", () => {
+		// U+66F8 encodes as 3 UTF-8 bytes but 1 UTF-16 code unit, so JSON.stringify's
+		// .length undercounts the real byte size by ~3x — exactly the gap that let an
+		// oversized payload slip past a .length-based check.
+		const json = JSON.stringify({ blob: "書".repeat(100_000) });
+		expect(json.length).toBeLessThan(256_000);
+		expect(new TextEncoder().encode(json).length).toBeGreaterThan(256_000);
+		const reason = checkArgs({ blob: "書".repeat(100_000) }, 256_000, 64);
+		expect(reason).toContain("too large");
+	});
+
 	it("rejects args nested past the depth limit without blowing the stack", () => {
 		// Build a chain deeper than the limit; exceedsDepth must bail out early.
 		let node: Record<string, unknown> = {};

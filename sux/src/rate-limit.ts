@@ -30,6 +30,19 @@ export function extraCost(name: string): number {
 const MAX_BATCH_CALLS = 100;
 const MAX_PIPE_STEPS = 25;
 
+// Tools whose own flat weight (cost 1 → 0 extra) doesn't reflect the real work they
+// fan into — mirrors batch.ts's NESTED_FANOUT_TOOLS. requestCost recurses into one
+// of these when it appears as a batch's mapped/reduce tool or a pipe step, instead of
+// charging its flat weight, so wrapping an expensive fan-out inside another one (e.g.
+// batch-over-pipe-of-renders) can't launder its cost down to ~0.
+const RECURSIVE_FANOUT_TOOLS = new Set(["pipe", "batch_fetch", "crawl"]);
+
+/** Cost of running `tool` once with `args` — recurses for a nested fan-out tool,
+ *  otherwise its flat extraCost. */
+function nestedCost(tool: string, args: unknown): number {
+	return RECURSIVE_FANOUT_TOOLS.has(tool) ? requestCost(tool, args) : extraCost(tool);
+}
+
 /** EXTRA limiter tokens this whole request will consume — the sum of the leaf
  *  weights it fans into, not just the front tool's. Falls back to extraCost(name)
  *  for every non-fan-out tool. */
@@ -40,12 +53,22 @@ export function requestCost(name: string, args: unknown): number {
 		// Missing/recursive target is rejected in dispatch and never fans out — charge
 		// only the wrapper so an invalid batch can't be gamed into a free pass either way.
 		if (!tool || tool === "batch") return extraCost(name);
-		const width = Array.isArray(a.over) ? a.over.length : Array.isArray(a.calls) ? a.calls.length : 0;
-		const calls = Math.min(width, MAX_BATCH_CALLS);
-		let total = extraCost(tool) * calls;
+		let total: number;
+		if (Array.isArray(a.calls)) {
+			// Explicit per-call arg objects — each may fan out differently (e.g. a
+			// per-call pipe with a different step count), so price each on its own args.
+			const calls = (a.calls as unknown[]).slice(0, MAX_BATCH_CALLS);
+			total = calls.reduce<number>((sum, c) => sum + nestedCost(tool, c), 0);
+		} else {
+			// over+args: one template shared by every mapped call ({{item}} substitution
+			// doesn't change its shape) — price it once and multiply by the width.
+			const width = Math.min(Array.isArray(a.over) ? a.over.length : 0, MAX_BATCH_CALLS);
+			total = nestedCost(tool, a.args) * width;
+		}
 		const reduceWith = a.reduce_with;
 		if (reduceWith && typeof reduceWith === "object" && typeof (reduceWith as { tool?: unknown }).tool === "string") {
-			total += extraCost((reduceWith as { tool: string }).tool.trim());
+			const rw = reduceWith as { tool: string; args?: unknown };
+			total += nestedCost(rw.tool.trim(), rw.args);
 		}
 		return total;
 	}
@@ -54,7 +77,8 @@ export function requestCost(name: string, args: unknown): number {
 		let total = 0;
 		for (const s of steps) {
 			const tool = s && typeof s === "object" && typeof (s as { tool?: unknown }).tool === "string" ? (s as { tool: string }).tool.trim() : "";
-			if (tool) total += extraCost(tool);
+			const stepArgs = s && typeof s === "object" ? (s as { args?: unknown }).args : undefined;
+			if (tool) total += nestedCost(tool, stepArgs);
 		}
 		return total;
 	}

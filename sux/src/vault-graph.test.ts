@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { parseYaml } from "./fns/_convert";
 import { evalFilter, extractTags, extractWikilinks, frontmatterMatches, linkResolvesTo, noteBasename, parseFrontmatter, patchBlockRef, patchFrontmatter, patchHeadingSection } from "./vault-graph";
 
 describe("vault-graph pure layer (§4)", () => {
@@ -69,6 +70,17 @@ describe("vault-graph pure layer (§4)", () => {
 		const r2 = patchFrontmatter("---\nstatus: draft\n---\nbody", "status", "active");
 		expect(r2.content).toContain("status: active");
 		expect(patchFrontmatter(r2.content, "status", "active").changed).toBe(false); // idempotent
+	});
+
+	it("patchFrontmatter quotes an embedded newline so a \\n--- payload can't prematurely close the fence (#412)", () => {
+		const payload = "safe line\n---\ninjected pseudo-frontmatter\nmore attacker text";
+		const r = patchFrontmatter("---\ntitle: Test\n---\nOriginal body", "note", payload);
+		expect(r.content.split(/\r?\n/).filter((l) => l === "---")).toHaveLength(2); // no extra fence opened
+		expect(r.content).toContain("Original body"); // body survives untouched
+		const m = r.content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+		expect(m).not.toBeNull();
+		const fm = parseYaml(m![1]) as Record<string, unknown>;
+		expect(fm.note).toBe(payload); // exact round-trip, dashes and all
 	});
 
 	it("patchHeadingSection replace/append; ambiguous or missing heading throws", () => {

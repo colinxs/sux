@@ -68,6 +68,44 @@ describe("mychart fn", () => {
 		expect(spy).not.toHaveBeenCalled();
 	});
 
+	it("get's bad_input error never leaks the query string (patient identifiers) for an escaping path", async () => {
+		const env = connectedEnv();
+		const spy = vi.fn();
+		vi.stubGlobal("fetch", spy);
+		const r = await mychart.run(env, { op: "get", path: "https://evil.com/Patient?given=Jane&family=Doe&birthdate=1990-01-01" });
+		expect(r.errorCode).toBe("bad_input");
+		expect(spy).not.toHaveBeenCalled();
+		const text = r.content[0].text;
+		expect(text).not.toContain("?");
+		expect(text).not.toContain("Jane");
+		expect(text).not.toContain("Doe");
+		expect(text).not.toContain("1990-01-01");
+	});
+
+	it("get's upstream-error detail carries only HTTP status + OperationOutcome resourceType/issue-code, never the raw body", async () => {
+		const env = connectedEnv();
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () =>
+				new Response(
+					JSON.stringify({
+						resourceType: "OperationOutcome",
+						issue: [{ severity: "error", code: "not-found", diagnostics: "No Patient found for given=Jane&family=Doe&birthdate=1990-01-01" }],
+					}),
+					{ status: 404 },
+				),
+			),
+		);
+		const r = await mychart.run(env, { op: "get", path: "Patient?given=Jane&family=Doe&birthdate=1990-01-01" });
+		expect(r.errorCode).toBe("not_found");
+		const text = r.content[0].text;
+		expect(text).toContain("OperationOutcome");
+		expect(text).toContain("not-found");
+		expect(text).not.toContain("Jane");
+		expect(text).not.toContain("Doe");
+		expect(text).not.toContain("diagnostics");
+	});
+
 	it("get passes a validated FHIR query through and returns the raw body", async () => {
 		const env = connectedEnv();
 		vi.stubGlobal("fetch", vi.fn(async (u: any) => {

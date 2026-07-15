@@ -43,6 +43,9 @@ export const STAGE_KINDS: Record<string, StageKind> = {
 	files_delete_full: { irreversible: true },
 	files_operate: { irreversible: true },
 	files_transform: { irreversible: true },
+	// fn-tier egress mint: a fresh `store` put returns a world-readable, unauthenticated
+	// /s/<uuid> URL for arbitrary bytes — stages by default like mail_send.
+	store_put: { irreversible: true },
 };
 
 // In-isolate spent-token claim. A commit's KV get→verify→delete is not atomic —

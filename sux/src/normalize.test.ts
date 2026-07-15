@@ -81,4 +81,13 @@ describe("normalizeArgs", () => {
 		const out = normalizeArgs({ q: "𝐇𝐢", n: 42, nested: { list: ["𝐀", true] } });
 		expect(out).toEqual({ q: "Hi", n: 42, nested: { list: ["A", true] } });
 	});
+
+	it("drops __proto__/constructor/prototype keys instead of polluting the copy's prototype", () => {
+		const evil = JSON.parse('{"a":"x","__proto__":{"polluted":true},"nested":{"constructor":{"polluted":true},"b":"y"}}');
+		const out: any = normalizeArgs(evil);
+		expect(out).toEqual({ a: "x", nested: { b: "y" } });
+		expect(Object.getPrototypeOf(out)).toBe(Object.prototype);
+		expect((out as any).polluted).toBeUndefined();
+		expect(({} as any).polluted).toBeUndefined();
+	});
 });

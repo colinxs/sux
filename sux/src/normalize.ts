@@ -81,6 +81,12 @@ export function normalizeText(input: string, opts: NormalizeOptions = SANE): str
 	return s;
 }
 
+// __proto__/constructor/prototype as an own JSON key must never reach a plain-object
+// assignment: `out[k] = ...` on `{}` invokes the inherited `__proto__` setter for that
+// key, swapping `out`'s prototype to attacker-supplied content instead of storing it as
+// data.
+const UNSAFE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
 /** Deep-normalize the string values of a JSON-RPC arguments object in place-safe
  * fashion (returns a new value). Non-strings pass through untouched. */
 export function normalizeArgs<T>(value: T, opts: NormalizeOptions = SANE): T {
@@ -88,7 +94,10 @@ export function normalizeArgs<T>(value: T, opts: NormalizeOptions = SANE): T {
 	if (Array.isArray(value)) return value.map((v) => normalizeArgs(v, opts)) as unknown as T;
 	if (value && typeof value === "object") {
 		const out: Record<string, unknown> = {};
-		for (const [k, v] of Object.entries(value)) out[k] = normalizeArgs(v, opts);
+		for (const [k, v] of Object.entries(value)) {
+			if (UNSAFE_KEYS.has(k)) continue;
+			out[k] = normalizeArgs(v, opts);
+		}
 		return out as T;
 	}
 	return value;

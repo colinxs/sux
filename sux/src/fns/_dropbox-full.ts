@@ -44,10 +44,19 @@ const flagOn = (v: string | undefined): boolean => {
  *  reachable whole-account mutation surface. An env flag is not injection-settable (unlike force:true). */
 export const hasDropboxFullWrite = (env: RtEnv): boolean => hasDropboxFull(env) && flagOn(env.DROPBOX_FULL_WRITE_ENABLED);
 
-/** Absolute Dropbox path: "" = account root; a file/folder is "/Foo/bar". */
+/** Absolute Dropbox path: "" = account root; a file/folder is "/Foo/bar".
+ *  Canonicalizes `.`/`..` segments (rooted — a `..` past the root is dropped, not escaped)
+ *  BEFORE returning, because fenceFull's protected-prefix check is a plain startsWith on this
+ *  output: an un-collapsed "/Public/../Private/x" would dodge the fence yet still resolve to
+ *  /Private server-side on Dropbox's end (adversarial-review: path-traversal deny-list bypass). */
 export const normFull = (p: unknown): string => {
-	const s = String(p ?? "").trim().replace(/\/+$/g, "").replace(/^\/+/, "");
-	return s ? `/${s}` : "";
+	const parts: string[] = [];
+	for (const seg of String(p ?? "").trim().split("/")) {
+		if (seg === "" || seg === ".") continue;
+		if (seg === "..") parts.pop();
+		else parts.push(seg);
+	}
+	return parts.length ? `/${parts.join("/")}` : "";
 };
 
 // Thin per-scope binders so the read/write/search call sites read as before.

@@ -8,6 +8,12 @@ import { decodeEntities } from "./_markup";
 
 export type Format = "json" | "yaml" | "csv" | "xml";
 
+// __proto__/constructor/prototype as a YAML/XML key must never reach a plain-object
+// assignment (`obj[key] = ...`) — that invokes the inherited `__proto__` setter and
+// swaps the object's prototype instead of storing data. Both parsers run over
+// untrusted fetched/scraped content, so this is a real sink, not just a lint nit.
+const UNSAFE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
 /** Best-effort source-format detection for `from: auto`. */
 export function detectFormat(s: string): Format {
 	const t = s.trim();
@@ -148,8 +154,13 @@ export function parseYaml(text: string): unknown {
 				const m = rest.match(/^([^:]+):\s*(.*)$/)!;
 				const obj: Record<string, unknown> = {};
 				const childIndent = ind + 2;
-				if (m[2].trim() === "") obj[m[1].trim()] = parseBlock(childIndent);
-				else obj[m[1].trim()] = parseScalar(m[2]);
+				const mk = m[1].trim();
+				// Always advance `i` past the value (parseBlock consumes child lines even
+				// when discarded) so an unsafe key doesn't desync the parser position.
+				if (m[2].trim() === "") {
+					const v = parseBlock(childIndent);
+					if (!UNSAFE_KEYS.has(mk)) obj[mk] = v;
+				} else if (!UNSAFE_KEYS.has(mk)) obj[mk] = parseScalar(m[2]);
 				mergeMap(obj, childIndent);
 				arr.push(obj);
 			} else {
@@ -200,8 +211,11 @@ export function parseYaml(text: string): unknown {
 				// a `- ` item at the key's own indent belongs to the key.
 				const next = lines[i];
 				const seqAtKeyIndent = next !== undefined && indentOf(next) === ind && /^\s*-(\s|$)/.test(next);
-				obj[key] = parseBlock(seqAtKeyIndent ? ind : ind + 1);
-			} else obj[key] = parseScalar(kv.rest);
+				// Always advance `i` past the value, even for an unsafe key, so the parser
+				// position doesn't desync — only the assignment into `obj` is skipped.
+				const v = parseBlock(seqAtKeyIndent ? ind : ind + 1);
+				if (!UNSAFE_KEYS.has(key)) obj[key] = v;
+			} else if (!UNSAFE_KEYS.has(key)) obj[key] = parseScalar(kv.rest);
 		}
 	}
 	return parseBlock(0);
@@ -305,6 +319,7 @@ function encodeEntities(s: string): string {
 	return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 function attach(node: Record<string, unknown>, name: string, child: unknown) {
+	if (UNSAFE_KEYS.has(name)) return;
 	if (name in node) {
 		const cur = node[name];
 		if (Array.isArray(cur)) cur.push(child);

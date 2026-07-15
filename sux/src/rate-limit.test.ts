@@ -45,6 +45,27 @@ describe("requestCost", () => {
 		const steps = Array.from({ length: 40 }, () => ({ tool: "render" }));
 		expect(requestCost("pipe", { steps })).toBe(25 * 4); // clamped at 25 steps
 	});
+
+	it("recurses into a reduce_with:{tool:'pipe'} reducer's own steps instead of charging pipe's flat 0 (#356)", () => {
+		const steps = Array.from({ length: 25 }, () => ({ tool: "render" }));
+		const cost = requestCost("batch", { tool: "hash", over: [1], reduce_with: { tool: "pipe", args: { steps } } });
+		expect(cost).toBe(25 * 4); // 25 nested renders, not extraCost("pipe") = 0
+	});
+
+	it("recurses into a batch-mapped pipe's per-item steps instead of charging pipe's flat 0 (#454)", () => {
+		const steps = Array.from({ length: 25 }, () => ({ tool: "render" }));
+		const over = Array.from({ length: 25 }, (_, i) => i);
+		const cost = requestCost("batch", { tool: "pipe", over, args: { steps } });
+		expect(cost).toBe(25 * 25 * 4); // 25 mapped calls × 25 nested renders each
+	});
+
+	it("prices each `calls` entry on its own args, not a shared template", () => {
+		const cost = requestCost("batch", {
+			tool: "pipe",
+			calls: [{ steps: [{ tool: "render" }] }, { steps: [{ tool: "render" }, { tool: "render" }] }],
+		});
+		expect(cost).toBe(4 + 8); // 1 render + 2 renders
+	});
 });
 
 describe("weightedRateLimit", () => {

@@ -52,39 +52,42 @@ function innerHtml(el: string): string {
 	return el.slice(open[0].length, close ? el.length - close[0].length : el.length);
 }
 
-/** All top-level elements whose tag matches `tag` (or any tag), returning outer HTML. */
+/** All elements whose tag matches `tag` (or any tag), returning outer HTML. A nested
+ * element sharing its ancestor's tag name is returned in addition to the ancestor
+ * (existing behavior — descendant-combinator matching in `selectOneUnsafe` relies on
+ * seeing both).
+ *
+ * One linear pass tokenizes every open/close tag of the target name (one stack per
+ * distinct name in wildcard mode) and matches nesting via that stack. The previous
+ * approach re-scanned the *entire remaining HTML* from every open tag looking for its
+ * close — O(n) per tag, O(n^2) overall — so a hostile page with thousands of stray
+ * unclosed tags (each scan falling through to `html.length`) drove quadratic CPU use.
+ */
 function findByTag(html: string, tag: string | null): string[] {
-	const t = tag ?? "[a-z0-9]+";
-	const re = new RegExp(`<(${t})\\b([^>]*?)(\\/?)>`, "gi");
-	const out: string[] = [];
+	const pat = tag ?? "[a-z0-9]+";
+	const tokenRe = new RegExp(`<(${pat})\\b([^>]*?)(\\/?)>|<\\/(${pat})\\s*>`, "gi");
+	type Open = { start: number; end: number };
+	const opens: Open[] = [];
+	const stacks = new Map<string, Open[]>();
 	let m: RegExpExecArray | null;
-	while ((m = re.exec(html))) {
-		const name = m[1];
-		const selfClose = m[3] === "/" || /^(area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)$/i.test(name);
-		if (selfClose) {
-			out.push(m[0]);
+	while ((m = tokenRe.exec(html))) {
+		if (m[4] !== undefined) {
+			const stack = stacks.get(m[4].toLowerCase());
+			if (stack?.length) stack.pop()!.end = m.index + m[0].length;
 			continue;
 		}
-		// Walk forward to the matching close tag, accounting for nesting of the same tag.
-		const openRe = new RegExp(`<${name}\\b[^>]*?(?<!/)>|<\\/${name}\\s*>`, "gi");
-		openRe.lastIndex = m.index;
-		let depth = 0;
-		let end = -1;
-		let om: RegExpExecArray | null;
-		while ((om = openRe.exec(html))) {
-			if (om[0].startsWith("</")) {
-				if (--depth === 0) {
-					end = om.index + om[0].length;
-					break;
-				}
-			} else {
-				depth++;
-			}
+		const name = m[1];
+		const selfClose = m[3] === "/" || /^(area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)$/i.test(name);
+		const open: Open = { start: m.index, end: selfClose ? m.index + m[0].length : -1 };
+		opens.push(open);
+		if (!selfClose) {
+			const key = name.toLowerCase();
+			let stack = stacks.get(key);
+			if (!stack) stacks.set(key, (stack = []));
+			stack.push(open);
 		}
-		if (end === -1) end = html.length;
-		out.push(html.slice(m.index, end));
 	}
-	return out;
+	return opens.map((o) => html.slice(o.start, o.end === -1 ? html.length : o.end));
 }
 
 /** Split a selector list on commas that sit outside `[...]` and quotes, so a

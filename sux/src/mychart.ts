@@ -410,7 +410,7 @@ export async function handleMychartRoutes(url: URL, request: Request, env: RtEnv
 			auth.searchParams.set("code_challenge_method", "S256");
 			return new Response(null, { status: 302, headers: { location: auth.toString(), "cache-control": "no-store", "referrer-policy": "no-referrer" } });
 		} catch (e) {
-			return new Response(`MyChart connect failed: ${String((e as Error)?.message ?? e)}`, { status: 502 });
+			return new Response(`MyChart connect failed: ${String((e as Error)?.message ?? e)}`, { status: 502, headers: TEXT_HEADERS });
 		}
 	}
 

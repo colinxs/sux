@@ -2,8 +2,14 @@ import { type Fn, fail, ok } from "../registry";
 import { oj } from "./_util";
 import { smartFetch } from "../proxy";
 
-// Translate a robots.txt path rule to a regex: `*` → `.*`, a trailing `$`
-// anchors the end of the path, and every other character is matched literally.
+// Match a robots.txt path rule against `path`: `*` matches any run of chars, a
+// trailing `$` anchors the end of the path, everything else is literal — always
+// anchored at the start (robots.txt rules are prefix rules by default). Matched
+// with a linear scan (segment-by-segment indexOf), not a compiled regex: joining
+// each `*`-split segment with `.*` and letting V8 backtrack over it is
+// catastrophic-backtracking-prone on attacker-controlled robots.txt content (a
+// rule with N wildcards is O(path.length^N) to fail-match) — this walks the
+// segments once instead, so it's O(rule.length * path.length) worst case.
 export const pathMatches = (rule: string, path: string): boolean => {
 	let pat = rule;
 	let anchored = false;
@@ -11,11 +17,21 @@ export const pathMatches = (rule: string, path: string): boolean => {
 		anchored = true;
 		pat = pat.slice(0, -1);
 	}
-	const re = pat
-		.split("*")
-		.map((seg) => seg.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-		.join(".*");
-	return new RegExp(`^${re}${anchored ? "$" : ""}`).test(path);
+	const segments = pat.split("*");
+	if (segments.length === 1) return anchored ? path === segments[0] : path.startsWith(segments[0]);
+	if (!path.startsWith(segments[0])) return false;
+	let pos = segments[0].length;
+	for (let s = 1; s < segments.length - 1; s++) {
+		const seg = segments[s];
+		if (seg === "") continue; // adjacent wildcards collapse to one
+		const idx = path.indexOf(seg, pos);
+		if (idx === -1) return false;
+		pos = idx + seg.length;
+	}
+	const last = segments[segments.length - 1];
+	if (last === "") return true;
+	if (anchored) return pos <= path.length - last.length && path.endsWith(last);
+	return path.indexOf(last, pos) !== -1;
 };
 
 export type RobotsGroup = { agents: string[]; allow: string[]; disallow: string[]; crawl_delay?: number };

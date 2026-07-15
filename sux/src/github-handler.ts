@@ -435,7 +435,7 @@ async function handleAuthorizePost(request: Request, env: HandlerEnv): Promise<R
 	try {
 		const formData = await request.formData();
 
-		validateCSRFToken(formData, request);
+		const { clearCookie } = validateCSRFToken(formData, request);
 
 		const encodedState = formData.get("state");
 		if (!encodedState || typeof encodedState !== "string") {
@@ -461,7 +461,10 @@ async function handleAuthorizePost(request: Request, env: HandlerEnv): Promise<R
 
 		const { stateToken } = await createOAuthState(state.oauthReqInfo, env.OAUTH_KV);
 
-		return redirectToGithub(request, env, stateToken, { "Set-Cookie": approvedClientCookie });
+		return redirectToGithub(request, env, stateToken, [
+			["Set-Cookie", approvedClientCookie],
+			["Set-Cookie", clearCookie],
+		]);
 	} catch (error: any) {
 		console.error("POST /authorize error:", error);
 		if (error instanceof OAuthError) return error.toResponse();
@@ -473,21 +476,20 @@ function redirectToGithub(
 	request: Request,
 	env: HandlerEnv,
 	stateToken: string,
-	headers: Record<string, string> = {},
+	headers: [string, string][] = [],
 ): Response {
-	return new Response(null, {
-		status: 302,
-		headers: {
-			...headers,
-			location: getUpstreamAuthorizeUrl({
-				client_id: env.GITHUB_CLIENT_ID,
-				redirect_uri: new URL("/callback", request.url).href,
-				scope: "read:user",
-				state: stateToken,
-				upstream_url: "https://github.com/login/oauth/authorize",
-			}),
-		},
-	});
+	const responseHeaders = new Headers(headers);
+	responseHeaders.set(
+		"location",
+		getUpstreamAuthorizeUrl({
+			client_id: env.GITHUB_CLIENT_ID,
+			redirect_uri: new URL("/callback", request.url).href,
+			scope: "read:user",
+			state: stateToken,
+			upstream_url: "https://github.com/login/oauth/authorize",
+		}),
+	);
+	return new Response(null, { status: 302, headers: responseHeaders });
 }
 
 async function handleCallback(request: Request, url: URL, env: HandlerEnv): Promise<Response> {

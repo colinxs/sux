@@ -86,3 +86,22 @@ describe("select attr regex-injection safety", () => {
 		expect(JSON.parse(r.content[0].text)).toEqual(["right"]);
 	});
 });
+
+describe("select performance on adversarial HTML", () => {
+	it("stays linear-time on thousands of stray unclosed tags", async () => {
+		// findByTag used to re-scan forward through the entire remaining HTML for
+		// each opened tag's close, falling through to `html.length` on an unclosed
+		// tag — O(n^2) on a page like this. A stack-based single pass keeps it fast.
+		const html = `<html><body>${"<div class=\"x\">".repeat(20000)}<p>end</p></body></html>`;
+		const start = performance.now();
+		const r = await select.run({} as any, { html, selector: "p" });
+		const elapsed = performance.now() - start;
+		expect(JSON.parse(r.content[0].text)).toEqual(["end"]);
+		expect(elapsed).toBeLessThan(500);
+	});
+
+	it("still matches correctly on a normal well-formed document", async () => {
+		const r = await select.run({} as any, { html: HTML, selector: "div.post h2" });
+		expect(JSON.parse(r.content[0].text)).toEqual(["Title A", "Title B"]);
+	});
+});

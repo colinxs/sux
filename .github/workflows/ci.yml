@@ -36,6 +36,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # A hallucinated/typosquatted package name is a real risk for issue-build.yml's
+      # unattended `npm ci` — no human reviews the dependency list before this job runs.
+      # Cheap backstop: a PR that adds a dependency not on main needs the
+      # `new-dependency` label (added after a human checks the name on npm) (#473).
+      - name: Guard new dependencies
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: node scripts/guard-new-deps.mjs
+
       - name: Type-check
         run: npm run type-check
 

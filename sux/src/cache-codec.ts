@@ -33,10 +33,18 @@ function compressBytes(input: Uint8Array): { tag: number; out: Uint8Array } {
 	return { tag: TAG_BROTLI, out: Z.brotliCompressSync(input, { params: { [Z.constants.BROTLI_PARAM_QUALITY]: 6 } }) };
 }
 
+// Decompression-bomb guard: a crafted/corrupted KV entry could carry a tiny
+// compressed payload that inflates to gigabytes, OOMing the isolate before
+// unpackFromCache's throw can fall through to a cache-miss recompute (see
+// index.ts). Matches compress.ts's MAX_DECOMPRESS_BYTES — same node:zlib sync
+// API family, so the same `maxOutputLength` option applies to every codec here.
+const MAX_DECOMPRESS_BYTES = 32 * 1024 * 1024;
+
 function decompressByTag(tag: number, payload: Uint8Array): Uint8Array {
-	if (tag === TAG_ZSTD) return Z.zstdDecompressSync(payload);
-	if (tag === TAG_BROTLI) return Z.brotliDecompressSync(payload);
-	if (tag === TAG_GZIP) return Z.gunzipSync(payload);
+	const opts = { maxOutputLength: MAX_DECOMPRESS_BYTES };
+	if (tag === TAG_ZSTD) return Z.zstdDecompressSync(payload, opts);
+	if (tag === TAG_BROTLI) return Z.brotliDecompressSync(payload, opts);
+	if (tag === TAG_GZIP) return Z.gunzipSync(payload, opts);
 	throw new Error(`unknown cache codec tag ${tag}`);
 }
 

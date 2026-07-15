@@ -44,6 +44,14 @@ describe("hasDropboxFull / normFull", () => {
 		expect(normFull("/Documents/")).toBe("/Documents");
 		expect(normFull("/a/b/")).toBe("/a/b");
 	});
+
+	it("canonicalizes dot-segments before the protected-prefix fence ever sees them (regression: #408 traversal bypass)", () => {
+		expect(normFull("/Public/../Private/exfil.txt")).toBe("/Private/exfil.txt");
+		expect(normFull("/a/b/../../Private/x")).toBe("/Private/x"); // multiple ..
+		expect(normFull("/../../Private/x")).toBe("/Private/x"); // .. past the root is dropped, not escaped
+		expect(normFull("/Public/./Private/x")).toBe("/Public/Private/x"); // . is a no-op segment
+		expect(normFull("/Public/%2e%2e/Private/x")).toBe("/Public/%2e%2e/Private/x"); // not percent-decoded — paths never transit a URL, so this is literal, not traversal
+	});
 });
 
 describe("auth — isolated to the full credential", () => {
@@ -321,6 +329,16 @@ describe("Mode B write firewall — dry-run default, fence, backup, rev-conditio
 		await expect(writeFull(env, { path: "/Obsidian/vault/n.md", bytes: new Uint8Array(), dryRun: true })).rejects.toThrow(/protected prefix/);
 		await expect(deleteFull(env, { path: "/private/secret.txt", dryRun: true })).rejects.toThrow(/protected prefix/);
 		await expect(moveFull(env, { from: "/ok.txt", to: "/Obsidian/x", dryRun: true })).rejects.toThrow(/protected prefix/);
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("the fence catches a dot-segment traversal into a protected prefix (regression: #408 — Dropbox resolves '..' server-side, so the fence must too)", async () => {
+		const env = { DROPBOX_FULL_TOKEN: "ft", DROPBOX_FULL_PROTECT_PREFIXES: "/Private" } as any;
+		const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+		vi.stubGlobal("fetch", fetchMock);
+		await expect(writeFull(env, { path: "/Public/../Private/exfil.txt", bytes: new Uint8Array(), dryRun: true })).rejects.toThrow(/protected prefix/);
+		await expect(deleteFull(env, { path: "/a/b/../../Private/x", dryRun: true })).rejects.toThrow(/protected prefix/);
+		await expect(moveFull(env, { from: "/ok.txt", to: "/Public/../../Private/x", dryRun: true })).rejects.toThrow(/protected prefix/);
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
 

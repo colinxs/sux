@@ -202,8 +202,10 @@ function serializeScalar(value: unknown): string {
 	if (typeof value === "number" || typeof value === "boolean") return String(value);
 	const s = String(value ?? "");
 	// Quote only when a bare scalar would reparse wrong (leading/trailing space, or
-	// YAML-significant punctuation); keep clean strings/dates unquoted for readability.
-	return /^\s|\s$|[:#\[\]{},&*!|>'"%@`]/.test(s) ? JSON.stringify(s) : s;
+	// YAML-significant punctuation) or could break out of the enclosing `---` fence
+	// (an embedded newline, regardless of what follows it); keep clean strings/dates
+	// unquoted for readability.
+	return /^\s|\s$|\n|[:#\[\]{},&*!|>'"%@`]/.test(s) ? JSON.stringify(s) : s;
 }
 
 /** Operate on the section under a `# Heading` (matched by heading text at any
