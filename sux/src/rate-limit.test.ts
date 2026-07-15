@@ -62,11 +62,15 @@ describe("requestCost", () => {
 		expect(requestCost("pipe", { steps })).toBe(25 * 4); // clamped at 25 steps
 	});
 
-	it("prices get's query-mode fan-out per file() clause, clamped to MAX_GET_STRATEGIES (unbounded-fanout evasion)", () => {
-		expect(requestCost("get", { input: "textbook" })).toBe(2); // 1 bare-query strategy × extraCost("search")
-		expect(requestCost("get", { input: "file(pdf, a) file(code, b) file(docs, c)" })).toBe(6); // 3 strategies × 2
-		const manyClauses = Array.from({ length: 20 }, (_, i) => `file(pdf, q${i})`).join(" ");
-		expect(requestCost("get", { input: manyClauses })).toBe(5 * 2); // clamped at MAX_GET_STRATEGIES=5
+	it("prices get's query-mode fan-out per metered lens call, clamped to MAX_GET_STRATEGIES (unbounded-fanout evasion)", () => {
+		// Bare query defaults to kind "any", whose KIND_PLANS entry has 2 lensIds → 2 metered kagiTool calls.
+		expect(requestCost("get", { input: "textbook" })).toBe(4); // 1 "any" strategy × 2 lensIds × 2
+		expect(requestCost("get", { input: "textbook", kind: "pdf" })).toBe(2); // pdf has 1 lensId × 2
+		expect(requestCost("get", { input: "file(pdf, a) file(code, b) file(docs, c)" })).toBe(6); // 3 single-lens kinds × 2
+		// document/ebook/any each run 2 lensIds — the undercounted kinds (#512).
+		expect(requestCost("get", { input: "file(document, a) file(ebook, b)" })).toBe(8); // (2 + 2) lens calls × 2
+		const manyClauses = Array.from({ length: 20 }, (_, i) => `file(document, q${i})`).join(" ");
+		expect(requestCost("get", { input: manyClauses })).toBe(5 * 2 * 2); // 5 strategies (clamped) × 2 lensIds × 2
 	});
 
 	it("prices get's URL mode by which acquisition path it takes (render vs wayback+scrape)", () => {
@@ -75,8 +79,8 @@ describe("requestCost", () => {
 	});
 
 	it("adds ingest's weight to get when a store is requested", () => {
-		expect(requestCost("get", { input: "textbook", store: "vault" })).toBe(2 + 2); // search-leaf + ingest
-		expect(requestCost("get", { input: "textbook", store: "none" })).toBe(2); // explicit none adds nothing
+		expect(requestCost("get", { input: "textbook", store: "vault" })).toBe(4 + 2); // "any" 2-lens search-leaf + ingest
+		expect(requestCost("get", { input: "textbook", store: "none" })).toBe(4); // explicit none adds nothing
 	});
 });
 
