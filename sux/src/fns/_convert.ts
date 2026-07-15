@@ -431,6 +431,22 @@ export function toXml(obj: unknown, name?: string): string {
 	return name ? `<${name}>${esc}</${name}>` : esc;
 }
 
+/** csv/yaml/xml declare `data` as a pre-stringified JSON string, but an LLM
+ * tool-caller naturally passes a real object/array for a param described as
+ * "a JSON array/document" instead. String(obj) coerces that to the literal
+ * "[object Object]", which then fails JSON.parse with a message that gives no
+ * hint what went wrong — so accept the object directly instead of coercing it. */
+export function resolveJsonData(raw: unknown): unknown {
+	if (raw !== null && typeof raw === "object") return raw;
+	return JSON.parse(String(raw ?? ""));
+}
+
+/** True when `raw` has nothing usable for resolveJsonData — an object/array is
+ * always usable, so only an empty/missing string counts as "no data". */
+export function isEmptyJsonData(raw: unknown): boolean {
+	return raw === undefined || raw === null || (typeof raw !== "object" && !String(raw).trim());
+}
+
 /** Parse any supported source string into a JS value (Julia-style: json() calls
  * this dispatching on the detected/declared source format). */
 export function parseSource(data: string, from: Format, opts?: { delimiter?: string }): unknown {

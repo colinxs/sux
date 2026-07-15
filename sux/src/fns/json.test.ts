@@ -36,6 +36,12 @@ describe("json (to JSON, dispatched on source)", () => {
 	it("still passes a genuine empty JSON object through", async () => {
 		expect(await jrun({ data: "{}" })).toBe("{}");
 	});
+
+	it("accepts a real object for data when from is json or auto, but rejects it for other formats", async () => {
+		expect(await jrun({ data: { a: 1 }, indent: 0 })).toBe('{"a":1}');
+		expect(await jrun({ data: { a: 1 }, from: "json", indent: 0 })).toBe('{"a":1}');
+		expect((await json.run({} as any, { data: { a: 1 }, from: "yaml" })).isError).toBe(true);
+	});
 });
 
 describe("json/yaml compose (bidirectionality)", () => {

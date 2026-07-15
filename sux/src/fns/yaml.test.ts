@@ -20,4 +20,8 @@ describe("yaml (JSON to YAML)", () => {
 		expect(await yrun({ data: '{"a":[],"b":{}}' })).toContain("a: []");
 		expect((await yaml.run({} as any, { data: "not json" })).isError).toBe(true);
 	});
+
+	it("accepts a real object (not just a pre-stringified JSON string)", async () => {
+		expect(await yrun({ data: { name: "Ada" } })).toContain("name: Ada");
+	});
 });

@@ -19,6 +19,10 @@ describe("xml (JSON -> XML)", () => {
 	it("errors on invalid JSON", async () => {
 		expect((await xml.run({} as any, { data: "<not-json>" })).isError).toBe(true);
 	});
+
+	it("accepts a real object (not just a pre-stringified JSON string)", async () => {
+		expect(await xrun({ data: { note: { "#text": "hi" } } })).toBe("<note>hi</note>");
+	});
 });
 
 describe("json from xml (dispatch + round-trip)", () => {

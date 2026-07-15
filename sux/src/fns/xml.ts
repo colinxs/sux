@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { toXml } from "./_convert";
+import { isEmptyJsonData, resolveJsonData, toXml } from "./_convert";
 
 // xml(x): serialize a JSON document TO XML. Inverse of json(from:'xml').
 // Attributes come from '@attr' keys, text from '#text'; arrays repeat the tag.
@@ -13,16 +13,15 @@ export const xml: Fn = {
 		additionalProperties: false,
 		required: ["data"],
 		properties: {
-			data: { type: "string", description: "JSON text to convert to XML." },
+			data: { type: "string", description: "JSON text to convert to XML (a real object/array is also accepted)." },
 		},
 	},
 	cacheable: true,
 	ttl: 86400, // pure deterministic converter — same input always yields the same XML
 	run: async (_env, args) => {
-		const data = String(args?.data ?? "");
-		if (!data.trim()) return fail("`data` is required.");
+		if (isEmptyJsonData(args?.data)) return fail("`data` is required.");
 		try {
-			return ok(toXml(JSON.parse(data)));
+			return ok(toXml(resolveJsonData(args?.data)));
 		} catch (e) {
 			return fail(`xml failed: ${String((e as Error).message ?? e)}`);
 		}
