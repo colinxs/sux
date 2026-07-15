@@ -78,6 +78,7 @@ import { jmap } from "./jmap";
 import { json } from "./json";
 import { kroger } from "./kroger";
 import { learn } from "./learn";
+import { life_wiki } from "./life_wiki";
 import { linkedin } from "./linkedin";
 import { lowes } from "./lowes";
 import { mail } from "./mail";
@@ -195,6 +196,7 @@ export const FUNCTIONS: Fn[] = [
 	json,
 	kroger,
 	learn,
+	life_wiki,
 	linkedin,
 	lowes,
 	mail,

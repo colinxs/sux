@@ -657,6 +657,19 @@ const METRICS_CRON = "*/5 * * * *";
 // Each sub-job runs via runSubJob: swallows failures (a bad one never blocks the
 // rest) and stamps a {ok,at,error?} heartbeat into KV, so gatherHealth can surface
 // last-success + staleness for the unattended cron parts on the public status page.
+// One living-wiki synthesis, driven by the same Cron Trigger. FAIL-CLOSED: early-returns
+// doing nothing unless LIFE_WIKI_ENABLED is set (the cron fires daily regardless, but is a
+// total no-op — reading nothing, writing nothing — until Colin flips the flag). When armed
+// it regenerates the wiki ONLY inside the sandboxed vault subdir (sux/wiki/), never touching
+// the user's own notes. Dynamically imported so the cron path pulls the retrieval+synthesis
+// surface in only when armed; self-bounds nothing beyond recall's own per-facet failures.
+async function lifeWikiTick(env: RtEnv): Promise<void> {
+	const mod = await import("./fns/_life_wiki");
+	if (!mod.hasLifeWiki(env)) return;
+	const deps = await mod.defaultDeps();
+	await mod.runLifeWiki(env, {}, deps);
+}
+
 async function maintenanceTick(env: RtEnv, ctx: ExecutionContext): Promise<void> {
 	await runSubJob(env, "kroger_token", () => refreshKrogerToken(env));
 	// Keep the Epic refresh grant alive (some orgs expire it on inactivity) — a pure
@@ -672,6 +685,7 @@ async function maintenanceTick(env: RtEnv, ctx: ExecutionContext): Promise<void>
 		const { refreshAdblockEngine } = await import("./fns/_adblock");
 		await refreshAdblockEngine(env);
 	});
+	await runSubJob(env, "life_wiki", () => lifeWikiTick(env));
 	try {
 		// Push the pre-aggregated metrics snapshot to Grafana Cloud Prometheus. Self-
 		// contained + idempotent: a pure no-op unless the GRAFANA_PROM_* secrets are set,
