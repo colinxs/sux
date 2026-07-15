@@ -9,8 +9,21 @@ vi.mock("./web_search", async (importOriginal) => {
 	return { ...actual, kagiSession };
 });
 
-const { pdfRun, loadBytesMock } = vi.hoisted(() => ({ pdfRun: vi.fn(), loadBytesMock: vi.fn() }));
-vi.mock("./index", () => ({ FUNCTIONS: [{ name: "pdf", run: pdfRun }] }));
+const { pdfRun, renderRun, waybackRun, scrapeRun, loadBytesMock } = vi.hoisted(() => ({
+	pdfRun: vi.fn(),
+	renderRun: vi.fn(),
+	waybackRun: vi.fn(),
+	scrapeRun: vi.fn(),
+	loadBytesMock: vi.fn(),
+}));
+vi.mock("./index", () => ({
+	FUNCTIONS: [
+		{ name: "pdf", run: pdfRun },
+		{ name: "render", run: renderRun },
+		{ name: "wayback", run: waybackRun },
+		{ name: "scrape", run: scrapeRun },
+	],
+}));
 vi.mock("./_util", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("./_util")>();
 	return { ...actual, loadBytes: loadBytesMock };
@@ -38,6 +51,7 @@ import { KIND_PLANS, LENSES } from "./get";
 import { dedupeEditions } from "./get";
 import { runStrategies } from "./get";
 import { fetchAndNormalize } from "./get";
+import { acquireFromUrl } from "./get";
 
 describe("isUrlInput", () => {
 	it("recognizes absolute http(s) URLs", () => {
@@ -195,5 +209,33 @@ describe("fetchAndNormalize", () => {
 		expect(result.isError).toBeFalsy();
 		const parsed = JSON.parse(result.content[0].text);
 		expect(parsed.url).toMatch(/^https:\/\/suxos\.net\/s\//);
+	});
+});
+
+describe("acquireFromUrl", () => {
+	it("as:pdf delegates to render(as:pdf, delivery:base64) and decodes the returned base64", async () => {
+		renderRun.mockResolvedValueOnce({ content: [{ text: '{"mime":"application/pdf","size":4,"base64":"JVBERg=="}' }] });
+		const { bytes, contentType } = await acquireFromUrl({} as any, "https://a.com/page", "pdf");
+		expect(renderRun).toHaveBeenCalledWith({}, expect.objectContaining({ url: "https://a.com/page", as: "pdf", delivery: "base64" }));
+		expect(contentType).toBe("application/pdf");
+		expect(bytes.length).toBeGreaterThan(0);
+	});
+
+	it("as:archive uses wayback's raw_url when a snapshot is available", async () => {
+		waybackRun.mockResolvedValueOnce({ content: [{ text: '{"available":true,"url":"https://web.archive.org/web/2020/https://a.com","raw_url":"https://web.archive.org/web/2020id_/https://a.com"}' }] });
+		loadBytesMock.mockResolvedValueOnce({ bytes: new TextEncoder().encode("<html>archived</html>"), contentType: "text/html" });
+		const { contentType } = await acquireFromUrl({} as any, "https://a.com", "archive");
+		expect(waybackRun).toHaveBeenCalledWith({}, expect.objectContaining({ url: "https://a.com", mode: "snapshot" }));
+		expect(loadBytesMock).toHaveBeenCalledWith({}, { url: "https://web.archive.org/web/2020id_/https://a.com" });
+		expect(contentType).toBe("text/html");
+	});
+
+	it("as:archive falls back to scrape when no wayback snapshot exists", async () => {
+		waybackRun.mockResolvedValueOnce({ content: [{ text: '{"available":false,"url":"https://a.com"}' }] });
+		scrapeRun.mockResolvedValueOnce({ content: [{ text: "<html>live</html>" }] });
+		const { bytes, contentType } = await acquireFromUrl({} as any, "https://a.com", "archive");
+		expect(scrapeRun).toHaveBeenCalledWith({}, { url: "https://a.com" });
+		expect(contentType).toBe("text/html");
+		expect(new TextDecoder().decode(bytes)).toBe("<html>live</html>");
 	});
 });

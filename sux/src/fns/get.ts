@@ -4,7 +4,7 @@ import { kagiSession, parseKagiMarkdown, withOperators } from "./web_search";
 import { kagiTool } from "../kagi";
 import type { Route } from "../proxy";
 import type { RtEnv, ToolResult } from "../registry";
-import { deliverBytes, inlineB64, loadBytes, toB64 } from "./_util";
+import { deliverBytes, fromB64, inlineB64, loadBytes, toB64 } from "./_util";
 
 export type Kind = "pdf" | "document" | "ebook" | "code" | "docs" | "artifact" | "reference" | "any";
 
@@ -152,4 +152,31 @@ export async function fetchAndNormalize(env: RtEnv, url: string, convertToPdf: b
 	// No converter for this content — deliver the fetched bytes as-is, respecting `deliver`.
 	const mime = ct || "application/octet-stream";
 	return { result: await deliverBytes(env, bytes, mime, deliver === "url" ? "url" : undefined, () => inlineB64(bytes, mime)), converted: false };
+}
+
+export async function acquireFromUrl(env: RtEnv, url: string, as: "pdf" | "archive"): Promise<{ bytes: Uint8Array; contentType: string }> {
+	if (as === "pdf") {
+		const renderFn = await findFn("render");
+		const r = await renderFn.run(env, { url, as: "pdf", delivery: "base64" });
+		if (r?.isError) throw new Error(r.content?.[0]?.text ?? "render failed");
+		const parsed = JSON.parse(r.content?.[0]?.text ?? "{}") as { mime?: string; base64?: string };
+		if (!parsed.base64) throw new Error("render did not return pdf bytes");
+		return { bytes: fromB64(parsed.base64), contentType: parsed.mime ?? "application/pdf" };
+	}
+
+	const waybackFn = await findFn("wayback");
+	const w = await waybackFn.run(env, { url, mode: "snapshot" });
+	if (!w?.isError) {
+		const snap = JSON.parse(w.content?.[0]?.text ?? "{}") as { available?: boolean; raw_url?: string };
+		if (snap.available && snap.raw_url) {
+			const { bytes, contentType } = await loadBytes(env, { url: snap.raw_url });
+			return { bytes, contentType: contentType ?? "text/html" };
+		}
+	}
+
+	const scrapeFn = await findFn("scrape");
+	const s = await scrapeFn.run(env, { url });
+	if (s?.isError) throw new Error(s.content?.[0]?.text ?? "scrape failed");
+	const html = s.content?.[0]?.text ?? "";
+	return { bytes: new TextEncoder().encode(html), contentType: "text/html" };
 }
