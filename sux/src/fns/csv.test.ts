@@ -48,6 +48,10 @@ describe("csv (JSON array -> CSV)", () => {
 		expect((await csv.run({} as any, { data: '[{"a":1},"stray"]' })).isError).toBe(true);
 		expect((await csv.run({} as any, { data: "[1,2,3]" })).isError).toBe(true);
 	});
+
+	it("accepts a real array (not just a pre-stringified JSON string)", async () => {
+		expect(await crun({ data: [{ a: 1, b: "x" }] })).toBe("a,b\n1,x");
+	});
 });
 
 describe("json from csv (dispatch + round-trip)", () => {

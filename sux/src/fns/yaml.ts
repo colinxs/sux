@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { toYaml } from "./_convert";
+import { isEmptyJsonData, resolveJsonData, toYaml } from "./_convert";
 
 // yaml(x): serialize a JSON document TO YAML. Inverse of json(); compose as
 // yaml(...) over json(...) to round-trip. Practical common subset (scalars,
@@ -13,16 +13,15 @@ export const yaml: Fn = {
 		additionalProperties: false,
 		required: ["data"],
 		properties: {
-			data: { type: "string", description: "JSON text to convert to YAML." },
+			data: { type: "string", description: "JSON text to convert to YAML (a real object/array is also accepted)." },
 		},
 	},
 	cacheable: true,
 	ttl: 86400, // pure deterministic converter — same input always yields the same YAML
 	run: async (_env, args) => {
-		const data = String(args?.data ?? "");
-		if (!data.trim()) return fail("`data` is required.");
+		if (isEmptyJsonData(args?.data)) return fail("`data` is required.");
 		try {
-			return ok(toYaml(JSON.parse(data)));
+			return ok(toYaml(resolveJsonData(args?.data)));
 		} catch (e) {
 			return fail(`yaml failed: ${String((e as Error).message ?? e)}`);
 		}
