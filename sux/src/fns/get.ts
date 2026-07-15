@@ -3,6 +3,8 @@ import type { SearchScope } from "./web_search";
 import { kagiSession, parseKagiMarkdown, withOperators } from "./web_search";
 import { kagiTool } from "../kagi";
 import type { Route } from "../proxy";
+import type { RtEnv, ToolResult } from "../registry";
+import { inlineB64, loadBytes, toB64 } from "./_util";
 
 export type Kind = "pdf" | "document" | "ebook" | "code" | "docs" | "artifact" | "reference" | "any";
 
@@ -120,4 +122,36 @@ export async function runStrategies(env: any, strategies: Strategy[], extraDomai
 	}
 	const results = await Promise.all(calls);
 	return results.flat();
+}
+
+async function findFn(name: string): Promise<{ run: (env: any, args: any) => Promise<ToolResult> }> {
+	const { FUNCTIONS } = (await import("./index")) as { FUNCTIONS: Array<{ name: string; run: (env: any, args: any) => Promise<ToolResult> }> };
+	const fn = FUNCTIONS.find((f) => f.name === name);
+	if (!fn) throw new Error(`the \`${name}\` fn is not available`);
+	return fn;
+}
+
+const isPdfMagic = (b: Uint8Array): boolean => b.length >= 4 && b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46;
+
+export async function fetchAndNormalize(env: RtEnv, url: string, convertToPdf: boolean, deliver: "inline" | "url" | undefined): Promise<{ result: ToolResult; converted: boolean }> {
+	const { bytes, contentType } = await loadBytes(env, { url });
+	const ct = contentType ?? "";
+	const asArg = deliver === "url" ? "url" : "base64";
+
+	if (isPdfMagic(bytes)) {
+		const pdfFn = await findFn("pdf");
+		return { result: await pdfFn.run(env, { data: toB64(bytes), compress: true, as: asArg }), converted: false };
+	}
+
+	const convertibleKind = /html/i.test(ct) ? "html" : /^text\//i.test(ct) ? "text" : null;
+	if (convertToPdf && convertibleKind) {
+		const pdfFn = await findFn("pdf");
+		return { result: await pdfFn.run(env, { data: toB64(bytes), kind: convertibleKind, compress: true, as: asArg }), converted: true };
+	}
+
+	// No converter for this content — deliver the fetched bytes as-is. URL-vs-inline
+	// delivery for the non-convertible case is a later task's job (storeResult); here
+	// we always inline so this fn has no R2-store dependency of its own.
+	const mime = ct || "application/octet-stream";
+	return { result: inlineB64(bytes, mime), converted: false };
 }

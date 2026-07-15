@@ -9,12 +9,20 @@ vi.mock("./web_search", async (importOriginal) => {
 	return { ...actual, kagiSession };
 });
 
+const { pdfRun, loadBytesMock } = vi.hoisted(() => ({ pdfRun: vi.fn(), loadBytesMock: vi.fn() }));
+vi.mock("./index", () => ({ FUNCTIONS: [{ name: "pdf", run: pdfRun }] }));
+vi.mock("./_util", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./_util")>();
+	return { ...actual, loadBytes: loadBytesMock };
+});
+
 afterEach(() => vi.clearAllMocks());
 
 import { isUrlInput, parseStrategies } from "./get";
 import { KIND_PLANS, LENSES } from "./get";
 import { dedupeEditions } from "./get";
 import { runStrategies } from "./get";
+import { fetchAndNormalize } from "./get";
 
 describe("isUrlInput", () => {
 	it("recognizes absolute http(s) URLs", () => {
@@ -140,5 +148,35 @@ describe("runStrategies", () => {
 		kagiTool.mockResolvedValueOnce({ content: [{ text: "### [Lens Hit](https://b.com/lens.pdf)\nsnippet" }] });
 		const hits = await runStrategies({ KAGI_SESSION: "tok", KAGI_API_KEY: "k" }, [{ kind: "pdf", query: "x" }], [], "auto");
 		expect(hits.map((h) => h.title)).toEqual(["Lens Hit"]);
+	});
+});
+
+describe("fetchAndNormalize", () => {
+	it("compresses a PDF via the pdf fn and reports converted:false", async () => {
+		const pdfBytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34]); // %PDF-1.4
+		loadBytesMock.mockResolvedValueOnce({ bytes: pdfBytes, contentType: "application/pdf" });
+		pdfRun.mockResolvedValueOnce({ content: [{ type: "text", text: '{"mime":"application/pdf","size":8,"base64":"x"}' }] });
+		const { result, converted } = await fetchAndNormalize({} as any, "https://a.com/doc.pdf", false, "inline");
+		expect(converted).toBe(false);
+		expect(pdfRun).toHaveBeenCalledWith({}, expect.objectContaining({ compress: true, as: "base64" }));
+		expect(result.content[0].text).toContain("application/pdf");
+	});
+
+	it("converts html to PDF via the pdf fn when convertToPdf is true, reports converted:true", async () => {
+		const html = new TextEncoder().encode("<html><body>hi</body></html>");
+		loadBytesMock.mockResolvedValueOnce({ bytes: html, contentType: "text/html; charset=utf-8" });
+		pdfRun.mockResolvedValueOnce({ content: [{ type: "text", text: '{"mime":"application/pdf","size":8,"base64":"x"}' }] });
+		const { converted } = await fetchAndNormalize({} as any, "https://a.com/page.html", true, "inline");
+		expect(converted).toBe(true);
+		expect(pdfRun).toHaveBeenCalledWith({}, expect.objectContaining({ kind: "html", compress: true }));
+	});
+
+	it("delivers a non-convertible binary (e.g. epub) as-is even when convertToPdf is true", async () => {
+		const bytes = new Uint8Array([1, 2, 3, 4]);
+		loadBytesMock.mockResolvedValueOnce({ bytes, contentType: "application/epub+zip" });
+		const { result, converted } = await fetchAndNormalize({} as any, "https://a.com/book.epub", true, "url");
+		expect(converted).toBe(false);
+		expect(pdfRun).not.toHaveBeenCalled();
+		expect(result.isError).toBeFalsy();
 	});
 });
