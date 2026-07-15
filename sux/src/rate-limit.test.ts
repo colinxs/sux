@@ -35,6 +35,22 @@ describe("requestCost", () => {
 		expect(requestCost("batch", { tool: "hash", over: [1, 2], reduce_with: { tool: "summarize" } })).toBe(1);
 	});
 
+	it("prices a reduce_with pipe reducer's own steps, not its flat cost-1 weight (#356)", () => {
+		const reduceWith = { tool: "pipe", args: { steps: [{ tool: "render" }, { tool: "render" }] } };
+		expect(requestCost("batch", { tool: "hash", over: [1], reduce_with: reduceWith })).toBe(8); // 2 renders × 4 extra, not 0
+	});
+
+	it("prices a batch-mapped pipe's nested steps per mapped call, not pipe's flat cost-1 weight (#454)", () => {
+		const args = { steps: [{ tool: "render" }, { tool: "render" }] };
+		expect(requestCost("batch", { tool: "pipe", over: [1, 2, 3], args })).toBe(3 * 8); // 3 mapped pipes × 2 renders × 4 extra
+	});
+
+	it("clamps a batch-mapped nested-fanout tool to the tighter nested-call cap, not MAX_BATCH_CALLS (#454)", () => {
+		const over = Array.from({ length: 50 }, (_, i) => i);
+		const args = { steps: [{ tool: "render" }] };
+		expect(requestCost("batch", { tool: "pipe", over, args })).toBe(25 * 4); // clamped at 25 nested calls, not 50
+	});
+
 	it("charges only the wrapper for an invalid/recursive batch target", () => {
 		expect(requestCost("batch", { over: [1, 2, 3] })).toBe(0); // no tool
 		expect(requestCost("batch", { tool: "batch", over: [1, 2] })).toBe(0); // recursive

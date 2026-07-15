@@ -86,3 +86,13 @@ describe("select attr regex-injection safety", () => {
 		expect(JSON.parse(r.content[0].text)).toEqual(["right"]);
 	});
 });
+
+describe("select performance on pathological HTML", () => {
+	it("stays linear on thousands of unclosed tags (would hang under O(n^2) rescanning)", async () => {
+		const html = "<div>".repeat(4000) + '<p id="target">hi</p>';
+		const start = Date.now();
+		const r = await select.run({} as any, { html, selector: "#target" });
+		expect(Date.now() - start).toBeLessThan(1500);
+		expect(JSON.parse(r.content[0].text)).toEqual(["hi"]);
+	});
+});

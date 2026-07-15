@@ -52,39 +52,43 @@ function innerHtml(el: string): string {
 	return el.slice(open[0].length, close ? el.length - close[0].length : el.length);
 }
 
-/** All top-level elements whose tag matches `tag` (or any tag), returning outer HTML. */
+/** All elements (any depth) whose tag matches `tag` (or any tag), returning outer HTML,
+ * in document order of their opening tag.
+ *
+ * Matches each open tag to its close via a per-tag-name LIFO stack in a single forward
+ * pass, instead of re-scanning the remaining HTML from every open tag — that rescan is
+ * what made this O(n^2) on pages with many stray unclosed tags. A single stack pass finds
+ * the same pairing (classic bracket-matching equivalence) because nesting is tracked only
+ * within a tag name, exactly like the old independent per-element scan did.
+ */
 function findByTag(html: string, tag: string | null): string[] {
 	const t = tag ?? "[a-z0-9]+";
-	const re = new RegExp(`<(${t})\\b([^>]*?)(\\/?)>`, "gi");
-	const out: string[] = [];
+	const re = new RegExp(`<(${t})\\b([^>]*?)(\\/?)>|<\\/(${t})\\s*>`, "gi");
+	type Rec = { start: number; end: number };
+	const elements: Rec[] = [];
+	const stacks = new Map<string, Rec[]>();
 	let m: RegExpExecArray | null;
 	while ((m = re.exec(html))) {
-		const name = m[1];
-		const selfClose = m[3] === "/" || /^(area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)$/i.test(name);
-		if (selfClose) {
-			out.push(m[0]);
+		if (m[4] !== undefined) {
+			const stack = stacks.get(m[4].toLowerCase());
+			const rec = stack?.pop();
+			if (rec) rec.end = m.index + m[0].length;
 			continue;
 		}
-		// Walk forward to the matching close tag, accounting for nesting of the same tag.
-		const openRe = new RegExp(`<${name}\\b[^>]*?(?<!/)>|<\\/${name}\\s*>`, "gi");
-		openRe.lastIndex = m.index;
-		let depth = 0;
-		let end = -1;
-		let om: RegExpExecArray | null;
-		while ((om = openRe.exec(html))) {
-			if (om[0].startsWith("</")) {
-				if (--depth === 0) {
-					end = om.index + om[0].length;
-					break;
-				}
-			} else {
-				depth++;
-			}
+		const name = m[1].toLowerCase();
+		const selfClose = m[3] === "/" || /^(area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)$/i.test(name);
+		if (selfClose) {
+			elements.push({ start: m.index, end: m.index + m[0].length });
+			continue;
 		}
-		if (end === -1) end = html.length;
-		out.push(html.slice(m.index, end));
+		const rec: Rec = { start: m.index, end: -1 };
+		elements.push(rec);
+		const stack = stacks.get(name);
+		if (stack) stack.push(rec);
+		else stacks.set(name, [rec]);
 	}
-	return out;
+	for (const rec of elements) if (rec.end === -1) rec.end = html.length;
+	return elements.map((rec) => html.slice(rec.start, rec.end));
 }
 
 /** Split a selector list on commas that sit outside `[...]` and quotes, so a

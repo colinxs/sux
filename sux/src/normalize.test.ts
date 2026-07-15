@@ -81,4 +81,18 @@ describe("normalizeArgs", () => {
 		const out = normalizeArgs({ q: "𝐇𝐢", n: 42, nested: { list: ["𝐀", true] } });
 		expect(out).toEqual({ q: "Hi", n: 42, nested: { list: ["A", true] } });
 	});
+
+	it("does not let a __proto__ own-key swap the copy's prototype", () => {
+		const args = JSON.parse('{"__proto__":{"polluted":true},"q":"hi"}');
+		const out = normalizeArgs(args);
+		expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+		expect(Object.getPrototypeOf(out)).toBe(Object.prototype);
+		expect(out).toEqual({ q: "hi" });
+	});
+
+	it("drops constructor/prototype own-keys the same way", () => {
+		const args = JSON.parse('{"constructor":{"bad":true},"prototype":{"bad":true},"q":"hi"}');
+		const out = normalizeArgs(args);
+		expect(out).toEqual({ q: "hi" });
+	});
 });

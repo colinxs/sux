@@ -351,4 +351,14 @@ describe("vault MCP server (/vault/mcp)", () => {
 		expect(out.result.isError).toBe(true);
 		expect(out.result.content[0].text).toMatch(/too large/);
 	});
+
+	it("rejects multi-byte-UTF-8 args whose byte size exceeds the cap even though its UTF-16 code-unit length reads under it", async () => {
+		// 750k CJK chars: ~750k UTF-16 code units (under the 2MB cap by length) but
+		// ~2.25MB of UTF-8 bytes (over it) — the exact gap String.length misses.
+		const junk = "国".repeat(750_000);
+		const r = await handleVaultRpc(ENV, CTX, rpc("tools/call", { name: "vault_read", arguments: { path: "x.md", junk } }));
+		const out = await parse(r);
+		expect(out.result.isError).toBe(true);
+		expect(out.result.content[0].text).toMatch(/too large/);
+	});
 });

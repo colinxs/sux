@@ -2,8 +2,12 @@ import { type Fn, fail, ok } from "../registry";
 import { oj } from "./_util";
 import { smartFetch } from "../proxy";
 
-// Translate a robots.txt path rule to a regex: `*` → `.*`, a trailing `$`
-// anchors the end of the path, and every other character is matched literally.
+// Match a robots.txt path rule against `path`: `*` matches any run of
+// characters, a trailing `$` anchors the end of the path, and every other
+// character is literal. This walks the literal segments in order instead of
+// compiling `seg1.*seg2.*seg3…` into a regex — a robots.txt is attacker-
+// controlled input, and a pattern with many `*`s turns adjacent `.*` groups
+// into catastrophic backtracking in V8's regex engine (ReDoS).
 export const pathMatches = (rule: string, path: string): boolean => {
 	let pat = rule;
 	let anchored = false;
@@ -11,11 +15,17 @@ export const pathMatches = (rule: string, path: string): boolean => {
 		anchored = true;
 		pat = pat.slice(0, -1);
 	}
-	const re = pat
-		.split("*")
-		.map((seg) => seg.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-		.join(".*");
-	return new RegExp(`^${re}${anchored ? "$" : ""}`).test(path);
+	const segs = pat.split("*");
+	if (!path.startsWith(segs[0])) return false;
+	let pos = segs[0].length;
+	for (let i = 1; i < segs.length; i++) {
+		const seg = segs[i];
+		if (anchored && i === segs.length - 1) return pos <= path.length - seg.length && path.endsWith(seg);
+		const idx = path.indexOf(seg, pos);
+		if (idx === -1) return false;
+		pos = idx + seg.length;
+	}
+	return !anchored || pos === path.length;
 };
 
 export type RobotsGroup = { agents: string[]; allow: string[]; disallow: string[]; crawl_delay?: number };

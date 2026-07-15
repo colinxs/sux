@@ -43,6 +43,16 @@ export const STAGE_KINDS: Record<string, StageKind> = {
 	files_delete_full: { irreversible: true },
 	files_operate: { irreversible: true },
 	files_transform: { irreversible: true },
+	// fn tier — store.put mints a world-readable, unauthenticated /s/<uuid> URL for
+	// whatever bytes it's given, the one concrete egress channel a prompt-injected
+	// agent could use to hand out private content (mail/vault/financial). Stages by
+	// default so a fresh put needs a second explicit step (commit_token or force),
+	// same threat class as mail_send. dropbox/obsidian/kv_*/ingest are NOT routed
+	// through this guard: unlike store, they're called internally as building blocks
+	// by ~a dozen other fns (recall, advise, _kb, _agenda, _consolidate, mail triage,
+	// …) that need to auto-run — gating them here would mean threading force:true
+	// through every one of those call sites, well beyond this fix's scope.
+	store_put: { irreversible: true },
 };
 
 // In-isolate spent-token claim. A commit's KV get→verify→delete is not atomic —

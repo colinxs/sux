@@ -1,4 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
+import { staged } from "../stage";
 import { maybeDecompress } from "./_gzip";
 import { extractStoreId, fromB64, isExpired, putBlob, STORE_KV_PREFIX, storeBase, toB64, oj } from "./_util";
 
@@ -19,7 +20,7 @@ export const store: Fn = {
 	name: "store",
 	description:
 		"Store and retrieve arbitrary content in sux's R2. Bytes are content-addressed (sha256 — identical content dedupes; Nix-store style); each put also mints a short uuid handle (kept in KV) and returns a resolvable URL ending in that uuid — GET /s/<uuid> streams the object back. " +
-		"`op`: put (default) | get | list | delete. put takes `data` (utf-8 text) or `base64` (binary) + optional `content_type` and optional `ttl_seconds` (positive int — the uuid handle self-expires after that many seconds, for ephemeral artifacts; omit for a permanent handle); returns { uuid, url, key, sha256, size, expiry? }. get takes `id` (uuid or url) or `key`; returns text for textual types else base64 (an expired/absent handle is not-found). delete takes the uuid `id` (removes the handle; the deduped blob is retained). list takes `prefix`/`limit` over raw R2 keys and returns { objects, truncated, cursor }; when truncated, pass the returned `cursor` back to page through the rest.",
+		"`op`: put (default) | get | list | delete. put takes `data` (utf-8 text) or `base64` (binary) + optional `content_type` and optional `ttl_seconds` (positive int — the uuid handle self-expires after that many seconds, for ephemeral artifacts; omit for a permanent handle); returns { uuid, url, key, sha256, size, expiry? }. put mints a world-readable URL, so a FRESH put STAGES A PREVIEW BY DEFAULT (nothing written) — re-call with the returned commit_token to write, or pass force:true to write in one shot. get takes `id` (uuid or url) or `key`; returns text for textual types else base64 (an expired/absent handle is not-found). delete takes the uuid `id` (removes the handle; the deduped blob is retained). list takes `prefix`/`limit` over raw R2 keys and returns { objects, truncated, cursor }; when truncated, pass the returned `cursor` back to page through the rest.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -34,6 +35,9 @@ export const store: Fn = {
 			prefix: { type: "string", description: "list: R2 key prefix filter." },
 			limit: { type: "integer", minimum: 1, maximum: 1000, default: 100 },
 			cursor: { type: "string", description: "list: opaque page cursor from a prior truncated response — pass it back to fetch the next page." },
+			stage: { type: "boolean", description: "put: preview + commit_token, no write." },
+			commit_token: { type: "string", description: "put: commit a previously staged write (the payload must match what was staged)." },
+			force: { type: "boolean", description: "put: skip staging and write in one shot (the ! override). By default a fresh put stages a preview first." },
 		},
 	},
 	cacheable: false,
@@ -60,8 +64,14 @@ export const store: Fn = {
 					ttlSeconds = Number(args.ttl_seconds);
 					if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0) return fail("ttl_seconds must be a positive integer.");
 				}
-				const ref = await putBlob(env, bytes, ct, ttlSeconds !== undefined ? { ttlSeconds } : undefined);
-				return ok(oj(ref));
+				// Mints a world-readable /s/<uuid> URL for whatever bytes it's given — the
+				// one concrete egress channel here, so it stages by default (STAGE_KINDS)
+				// rather than writing on the first call.
+				const payload = { data: args?.data, base64: args?.base64, content_type: args?.content_type, ttl_seconds: args?.ttl_seconds };
+				const preview = { action: "store put", content_type: ct, size: bytes.length, ...(ttlSeconds !== undefined ? { ttl_seconds: ttlSeconds } : {}) };
+				const gateArgs = { stage: args?.stage === true, commit_token: args?.commit_token ? String(args.commit_token) : undefined, force: args?.force === true };
+				const out = await staged(env, "store_put", gateArgs, payload, preview, () => putBlob(env, bytes, ct, ttlSeconds !== undefined ? { ttlSeconds } : undefined));
+				return ok(oj("stageResult" in out ? out.stageResult : out.result));
 			}
 
 			if (op === "get") {

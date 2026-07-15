@@ -121,6 +121,17 @@ describe("handleRpc (index.ts dispatch)", () => {
 		expect(out.error.message).toContain("not_a_real_tool");
 	});
 
+	it("rejects multi-byte-UTF-8 args whose byte size exceeds the cap even though its UTF-16 code-unit length reads under it", async () => {
+		const { kv } = makeKv();
+		const { ctx } = makeCtx();
+		// 100k CJK chars: ~100k UTF-16 code units (under the 256k-byte cap by length)
+		// but ~300k UTF-8 bytes (over it) — the exact gap String.length misses.
+		const text = "国".repeat(100_000);
+		const out = await callRpc(makeEnv(kv), ctx, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "hash", arguments: { text } } });
+		expect(out.result.isError).toBe(true);
+		expect(out.result.content[0].text).toMatch(/too large/);
+	});
+
 	// The `fn` escape hatch: fn({name, args}) reaches any hidden leaf and must behave
 	// exactly like a direct call — same output, same cache entry.
 	it("fn escape dispatches to a leaf identically to a direct call", async () => {

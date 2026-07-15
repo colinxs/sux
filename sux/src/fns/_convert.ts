@@ -195,13 +195,18 @@ export function parseYaml(text: string): unknown {
 			if (!kv) break;
 			i++;
 			const key = kv.key;
+			// obj[key] = ... on "__proto__" invokes the Object.prototype setter and
+			// repoints obj's prototype to attacker-controlled YAML content; still
+			// parse the value (to consume its lines) but drop the assignment.
+			const dangerous = key === "__proto__" || key === "constructor" || key === "prototype";
 			if (kv.rest.trim() === "") {
 				// Zero-relative-indent sequences (kubernetes/GitHub-Actions style):
 				// a `- ` item at the key's own indent belongs to the key.
 				const next = lines[i];
 				const seqAtKeyIndent = next !== undefined && indentOf(next) === ind && /^\s*-(\s|$)/.test(next);
-				obj[key] = parseBlock(seqAtKeyIndent ? ind : ind + 1);
-			} else obj[key] = parseScalar(kv.rest);
+				const block = parseBlock(seqAtKeyIndent ? ind : ind + 1);
+				if (!dangerous) obj[key] = block;
+			} else if (!dangerous) obj[key] = parseScalar(kv.rest);
 		}
 	}
 	return parseBlock(0);
@@ -305,6 +310,9 @@ function encodeEntities(s: string): string {
 	return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 function attach(node: Record<string, unknown>, name: string, child: unknown) {
+	// node[name] = ... on "__proto__" invokes the Object.prototype setter and
+	// repoints node's prototype to attacker-controlled XML content.
+	if (name === "__proto__" || name === "constructor" || name === "prototype") return;
 	if (name in node) {
 		const cur = node[name];
 		if (Array.isArray(cur)) cur.push(child);

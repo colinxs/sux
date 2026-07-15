@@ -7,7 +7,7 @@ vi.mock("../proxy", () => ({
 	smartFetch: vi.fn(async () => new Response(ROBOTS, { status: 200, statusText: "OK", headers: { "content-type": "text/plain" } })),
 }));
 
-import { robots } from "./robots";
+import { pathMatches, robots } from "./robots";
 import { smartFetch } from "../proxy";
 
 const serveRobots = (body: string) =>
@@ -63,5 +63,35 @@ describe("robots", () => {
 		serveRobots(["User-agent: *", "Disallow: /page", "Allow: /page"].join("\n"));
 		const r = await robots.run({} as any, { url: "https://x.com", path: "/page" });
 		expect(JSON.parse(r.content[0].text).allowed).toBe(true);
+	});
+});
+
+describe("pathMatches", () => {
+	it.each([
+		["/private/*", "/private/x", true],
+		["/private/*", "/private/", true],
+		["/private/*", "/private", false],
+		["/private/*", "/public/x", false],
+		["/*.pdf$", "/docs/file.pdf", true],
+		["/*.pdf$", "/docs/file.pdf.bak", false],
+		["/*.pdf$", "/pdf", false],
+		["/foo*bar", "/foo123bar", true],
+		["/foo*bar", "/foo123barXYZ", true],
+		["/foo*bar", "/foobar", true],
+		["/foo*bar", "/bar", false],
+		["*", "/anything/at/all", true],
+		["/page$", "/page", true],
+		["/page$", "/page/sub", false],
+		["", "/anything", true],
+	])("matches %s against %s => %s", (rule, path, expected) => {
+		expect(pathMatches(rule, path)).toBe(expected);
+	});
+
+	it("evaluates a pattern with many wildcards against a long non-matching path in linear time", () => {
+		const rule = `/${"a*".repeat(30)}z$`;
+		const path = `/${"b".repeat(10000)}`;
+		const start = Date.now();
+		expect(pathMatches(rule, path)).toBe(false);
+		expect(Date.now() - start).toBeLessThan(100);
 	});
 });
