@@ -1,3 +1,8 @@
+# VESTIGIAL (2026-07-15): the gitleaks/secret-scan CI gate was retired org-wide, so NO
+# workflow references this file anymore. It is kept only as ready-made config for a
+# possible future LOCAL pre-commit hook (`gitleaks protect`). Not wired to anything today
+# — delete it freely if that hook never materializes.
+#
 # gitleaks configuration for the sux repo.
 # Extends the built-in ruleset (which detects cloud keys, tokens, private keys,
 # etc.) and adds a defensive allowlist for known-safe paths so CI stays green on

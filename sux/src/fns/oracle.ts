@@ -170,7 +170,7 @@ export const oracle: Fn = {
 	description:
 		"A learn-then-answer knowledge oracle backed by KV + Workers AI. Teach it `knowledge` and it DISTILLS the material into concise notes and remembers them (one namespaced knowledge base per `topic`); ask it a `problem` and it answers using its OWN (Workers-AI) knowledge PLUS the accumulated distilled knowledge base — preferring the KB where relevant. Pass both to learn first, then answer against the freshly-updated KB. " +
 		"`knowledge` may be raw text OR an http(s) URL (article, book, website, .txt or HTML page) — a URL is fetched (residential, capped ~40KB), reduced to readable prose for HTML, then distilled. Each learn appends a distilled chunk (last 15 kept) and re-distills a single coherent KB, so it stays bounded and self-consistent. " +
-		"`topic` (default \"default\") keeps separate bodies of knowledge. `action`: get (return the topic's distilled knowledge + sources + chunk count) | list (topic names) | forget (delete the topic) — manages instead of learn/answer. " +
+		"`topic` (default \"default\") keeps separate bodies of knowledge. `action`: get (return the topic's distilled knowledge + sources + chunk count) | list (topic names) | status (a one-shot cross-topic dashboard: every topic's chunk_count + updated_at + whitelist flag + KB size, so you can see what's in the oracle without paging get per topic) | forget (delete the topic) — manages instead of learn/answer. " +
 		"Learned material is untrusted and is fenced as data when distilled/answered. Stateful — never cached.",
 	inputSchema: {
 		type: "object",
@@ -179,7 +179,7 @@ export const oracle: Fn = {
 			problem: { type: "string", description: "A question/problem to answer using own + learned knowledge." },
 			knowledge: { type: "string", description: "Raw text to learn from, OR an http(s) URL (article/book/website) to fetch, distill, and remember." },
 			topic: { type: "string", default: "default", description: "Knowledge-base namespace — keep separate bodies of knowledge (default \"default\")." },
-			action: { type: "string", enum: ["get", "list", "forget"], description: "Manage instead of learn/answer: get | list | forget." },
+			action: { type: "string", enum: ["get", "list", "status", "forget"], description: "Manage instead of learn/answer: get | list | status | forget." },
 		},
 	},
 	cacheable: false,
@@ -202,6 +202,37 @@ export const oracle: Fn = {
 				} while (cursor);
 				topics.sort();
 				return ok(oj({ action, count: topics.length, topics }));
+			}
+
+			if (action === "status") {
+				// One-shot cross-topic dashboard: enumerate every topic, load each KB, and
+				// report its health signals (chunk_count, updated_at, whitelist, KB size + a
+				// near-cap flag) — answers 'what's in the oracle?' without an N+1 list→get walk.
+				const names: string[] = [];
+				let cursor: string | undefined;
+				do {
+					const page = await env.OAUTH_KV.list({ prefix: KV_PREFIX, cursor });
+					for (const k of page.keys) names.push(k.name.slice(KV_PREFIX.length));
+					cursor = page.list_complete ? undefined : page.cursor;
+				} while (cursor);
+				names.sort();
+				// KV reads fan out in parallel (order-preserving) — a wide oracle stays ~one round-trip.
+				const loaded = await Promise.all(names.map((t) => loadKb(env, t)));
+				const topics = names.map((t, i) => {
+					const kb = loaded[i];
+					const kb_bytes = kb ? kb.distilled.length : 0;
+					return {
+						topic: t,
+						chunk_count: kb?.chunks.length ?? 0,
+						updated_at: kb?.updated_at ?? 0,
+						whitelisted: Boolean(kb?.whitelist),
+						kb_bytes,
+						// KB_CAP (~8KB) is the redistill cap; flag a KB within 10% of it so a caller sees
+						// which topics are near saturation and churning older knowledge out.
+						near_cap: kb_bytes >= KB_CAP * 0.9,
+					};
+				});
+				return ok(oj({ action, count: topics.length, kb_cap: KB_CAP, topics }));
 			}
 
 			if (action === "get") {

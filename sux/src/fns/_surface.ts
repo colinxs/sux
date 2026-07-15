@@ -1,4 +1,4 @@
-import type { Fn } from "../registry";
+import { type Fn, FRONT_VERBS } from "../registry";
 
 // The sux capability surface — the single curated map of the whole toolset, shared
 // by the `sux` root verb (mobile-safe tool call) and the public `GET /llms.txt`
@@ -65,15 +65,23 @@ export const DOMAINS: DomainSpec[] = [
 	{ key: "meta", blurb: "This map (sux), the `fn` escape hatch (call any leaf by name), preferences, feedback issues, self-diagnostics, and the autonomy-gate mirror.", leaves: ["sux", "fn", "preferences", "issue", "selftest", "autonomy_status"] },
 ];
 
-// The three personal-data namespaces mount as SEPARATE /<domain>/mcp connectors, not
-// as leaf fns in this list — so they carry their own verbs (handle-discipline: list/
-// search return refs, exactly one deliberate byte-read per namespace). Summarized here
-// so the one map still points at them.
-export const NAMESPACES: Array<{ key: string; mount: string; blurb: string }> = [
-	{ key: "vault", mount: "/vault/mcp", blurb: "Obsidian notes over git — read/write/append/edit, daily notes, capture. Also reachable via the `obsidian` + `ingest` leaves." },
-	{ key: "mail", mount: "/mail/mcp", blurb: "Email + calendar + contacts on Fastmail (JMAP for mail, CalDAV for cal/tasks). Verbs: mail_search/read/thread/draft/send, cal_*/task_*, contact_*." },
-	{ key: "files", mount: "/files/mcp", blurb: "Dropbox files — Mode A app-folder always-on; Mode B whole-Dropbox read/search with a gated, firewalled write path." },
+// The personal-data namespaces are reached by FRONT VERBS on the single `/mcp` connector,
+// NOT as separate /<domain>/mcp connectors — those are retired (see connectors.ts). Each
+// verb dispatches into its underlying `<verb>_*` namespace tools (handle-discipline: list/
+// search return refs, exactly one deliberate byte-read per namespace). The `verb` here is
+// the personal-data member of registry's FRONT_VERBS; asserted below so this can't drift.
+export const NAMESPACES: Array<{ key: string; verb: string; blurb: string }> = [
+	{ key: "vault", verb: "vault", blurb: "Obsidian notes over git — read/write/append/edit, daily notes, capture (`vault_*`). Also reachable via the `obsidian` + `ingest` leaves." },
+	{ key: "mail", verb: "mail", blurb: "Email on Fastmail over JMAP (`mail_*`: search/read/thread/draft/send). Calendar/tasks are the `calendar` verb (CalDAV, `cal_*`/`task_*`), contacts the `contact` verb (`contact_*`)." },
+	{ key: "files", verb: "files", blurb: "Dropbox files (`files_*`) — Mode A app-folder always-on; Mode B whole-Dropbox read/search with a gated, firewalled write path." },
 ];
+
+// Guard: every namespace verb above is a real front verb (single /mcp connector). If a
+// verb is renamed/removed in the registry this trips at import/test time instead of the
+// map silently pointing at a dead verb.
+for (const n of NAMESPACES) {
+	if (!FRONT_VERBS.has(n.verb)) throw new Error(`_surface: namespace verb "${n.verb}" is not a registered front verb`);
+}
 
 export const firstSentence = (desc: string): string => {
 	const t = (desc.split(/\.\s/)[0] ?? "").trim();
@@ -104,7 +112,7 @@ export function renderOverview(fns: Fn[]): string {
 	out.push("# sux — capability map");
 	out.push("");
 	out.push(
-		`${fns.length} tools + 3 namespace connectors. tools/list shows only the front verbs; every other tool is a leaf — reach it with \`fn({name, args})\`, e.g. \`fn({name:"arxiv", args:{query}})\`. Front verbs you can call directly: \`search\`, \`scrape\`, \`shop\`, \`ingest\`, \`recall\`, \`oracle\`, \`pipe\`, \`batch\`, \`store\`. Pass \`sux({domain})\` to expand any group below.`,
+		`${fns.length} tools on ONE \`/mcp\` connector. tools/list shows only the front verbs; every other tool is a leaf — reach it with \`fn({name, args})\`, e.g. \`fn({name:"arxiv", args:{query}})\`. Front verbs you can call directly: \`search\`, \`scrape\`, \`shop\`, \`ingest\`, \`recall\`, \`oracle\`, \`pipe\`, \`batch\`, \`store\`, plus the personal-data verbs \`vault\`, \`mail\`, \`files\`, \`calendar\`, \`contact\`. Pass \`sux({domain})\` to expand any group below.`,
 	);
 	out.push("");
 	out.push("## Domains");
@@ -126,10 +134,10 @@ export function renderOverview(fns: Fn[]): string {
 	}
 
 	out.push("");
-	out.push("## Namespaces (separate /<domain>/mcp connectors)");
+	out.push("## Personal-data namespaces (front verbs on the one /mcp connector)");
 	for (const n of NAMESPACES) {
 		out.push("");
-		out.push(`### ${n.key} — \`${n.mount}\``);
+		out.push(`### ${n.key} — \`${n.verb}\` verb`);
 		out.push(n.blurb);
 	}
 
@@ -139,7 +147,7 @@ export function renderOverview(fns: Fn[]): string {
 	out.push('- Any other leaf: `fn({name, args})`, e.g. `fn({name:"tables", args:{html}})`. Cache flags like `fresh` go inside `args`.');
 	out.push('- Zoom a domain for per-leaf summaries: `sux({domain:"shop"})`.');
 	out.push("- Compose leaves server-side: `batch` (map+reduce), `pipe` ({{prev}} chaining).");
-	out.push("- Personal data lives behind the vault/mail/files connectors above, each with its own verbs.");
+	out.push("- Personal data: call the front verb directly — `vault`, `mail`, `files`, `calendar`, `contact` — each dispatching into its `<verb>_*` namespace tools on the one /mcp connector (the old /<domain>/mcp connectors are retired).");
 
 	return out.join("\n");
 }

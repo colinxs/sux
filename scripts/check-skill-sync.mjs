@@ -7,6 +7,11 @@
 //   sux/FUNCTIONS.md  --------------------> .claude/skills/sux/SKILL.md  (every fn named)
 //   .claude/skills/   --------------------> plugins/sux/skills/          (byte-for-byte mirror)
 //
+// This is THE sync mechanism for the duplicated skill trees (.claude/skills/ is the
+// source; plugins/sux/skills/ is a byte-for-byte mirror it regenerates) — they are NOT
+// hand-kept. Surfaced as npm scripts: `npm run sync:skills` (fix/mirror) and
+// `npm run check:skills` (drift gate). CI enforces the same via .github/workflows/skill-sync.yml.
+//
 // Modes:
 //   node scripts/check-skill-sync.mjs            offline, source-derived check (default)
 //   node scripts/check-skill-sync.mjs --offline  same as default (explicit)

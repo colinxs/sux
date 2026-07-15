@@ -47,18 +47,18 @@ The check **context name is the job `name`** and is identical across `pull_reque
 `merge_group` runs — so branch protection matching (which is purely by name) is satisfied
 by the merge_group run with no context-string drift.
 
-### The 4 required checks and where they come from
+### The 3 required checks and where they come from
 
 | Required check (context) | Workflow | Job | `merge_group` handling |
 | --- | --- | --- | --- |
 | **Type-check & build** | `ci.yml` | `check` | Runs fully on merge_group (no author gate). |
-| **gitleaks** | `secret-scan.yml` | `gitleaks` | Runs fully on merge_group. |
 | **npm audit & SBOM** | `audit.yml` | `audit` | Runs fully on merge_group. |
 | **security-review** | `security-review.yml` | `security-review` | **Passthrough** — see below. |
 
-All four now carry `on: merge_group`. Each byte-identical context name was preserved.
+All three now carry `on: merge_group`. Each byte-identical context name was preserved.
+(The former gitleaks/`secret-scan.yml` context was retired org-wide.)
 
-**`push` excludes the queue branches.** `ci.yml`, `secret-scan.yml`, and `audit.yml` also
+**`push` excludes the queue branches.** `ci.yml` and `audit.yml` also
 trigger on bare `push` with `concurrency: cancel-in-progress: true` keyed on `github.ref`.
 The queue's `gh-readonly-queue/**` branch creation fires a `push` on the *same ref* as the
 `merge_group` event — they would share the concurrency group and **cancel each other**, and
@@ -78,7 +78,7 @@ the job short-circuits to a green no-op step (the required `security-review` con
 
 ## Workflow changes in this PR
 
-- **`ci.yml`, `secret-scan.yml`, `audit.yml`** — added `on: merge_group`; `push` now ignores
+- **`ci.yml`, `audit.yml`** — added `on: merge_group`; `push` now ignores
   `gh-readonly-queue/**` (collision fix above).
 - **`security-review.yml`** — added `on: merge_group` + a `merge_group` passthrough step;
   the real review is gated to `pull_request`. Concurrency group falls back to the merge
@@ -106,7 +106,7 @@ changes above are on `main` and verified.** Do NOT enable the queue before the `
 triggers are merged, or the very first queued PR stalls.
 
 The queue's merge method should be **squash** (the repo squash-merges today), and the queue's
-required checks must be **exactly** the 4 contexts above — each of which now runs on
+required checks must be **exactly** the 3 contexts above — each of which now runs on
 `merge_group`.
 
 ### Option A — repository ruleset (recommended, `gh api`)
@@ -139,7 +139,6 @@ gh api --method POST /repos/SuxOS/sux/rulesets --input - <<'JSON'
         "required_status_checks": [
           { "context": "Type-check & build" },
           { "context": "security-review" },
-          { "context": "gitleaks" },
           { "context": "npm audit & SBOM" }
         ]
       }
@@ -174,21 +173,21 @@ Batching is the entire payoff (N PRs → 1 deploy). Recommended starting point:
   (ALLGREEN re-runs the group without the offender). Given this repo's PR volume, 3–5 is the
   sweet spot; raise it only if the queue is regularly full.
 - **`max_entries_to_build: 5`** — bounded speculative parallelism (also bounds Actions
-  minutes, which `budget-guard.yml` watches).
+  minutes, which `health.yml`'s billing/usage guard watches).
 
 ### Option B — classic branch protection UI
 
 Settings → Branches → branch protection rule for `main` → check **"Require merge queue"** →
 set **Merge method = Squash and merge**, **Build concurrency**, **Min/Max group size**, **Wait
 time to build a merge group**, **Check timeout**, and grouping ("Only merge non-failing pull
-requests" = ALLGREEN). Under **"Require status checks to pass before merging"**, ensure the 4
+requests" = ALLGREEN). Under **"Require status checks to pass before merging"**, ensure the 3
 contexts above are listed by name. (Merge-queue checks validate on the `gh-readonly-queue` ref,
 so those workflows must trigger `on: merge_group` — done in this PR.)
 
 ### After enabling — verify, don't assume
 
 1. Open a trivial `chore:`/`docs:` PR, let automerge arm it, confirm it is **added to the
-   queue** (not merged directly) and that all 4 checks report on the `gh-readonly-queue/...`
+   queue** (not merged directly) and that all 3 checks report on the `gh-readonly-queue/...`
    ref.
 2. Confirm it merges and `deploy.yml` fires once.
 3. Only then trust the queue with real batches. If the first PR stalls with checks stuck

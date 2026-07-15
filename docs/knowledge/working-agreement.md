@@ -59,7 +59,7 @@ every project/account); sux-specific overlay (command language, autonomy, spend)
 - **Two runtimes, two wallets**: GitHub Actions (metered minutes) + scheduled Claude tasks (subscription/included pool — $0 marginal). Claude-in-Actions pays BOTH.
 - **Gating rule**: a task that runs Claude → gate on BOTH pools; a scripts-only workflow → gate on Actions minutes only.
 - **MAXIMIZE the FREE/included pools; be careful with PAID.** Spend GitHub Actions minutes + included API credits + other included allowances FULLY — don't leave free capacity idle (aggressive-on-free). Back off only where it dips into PAID spend, and cap ~50% of the session limit so the human is never starved (the 2026-07-12 weekly-limit exhaustion is the failure to avoid). "Use the free tier to the hilt; spend paid wisely."
-- **Always-on** security/bug gates (`security-review`, `secret-scan`, `audit`, `health`); the **improvement bot is discretionary** (daily, ≤3 batched PRs, gated on backlog + minutes + usage). Backlog-as-budget-proxy: if the queue isn't draining, don't add to it.
+- **Always-on** security/bug gates (`security-review`, `audit`, `health`); the **improvement bot is discretionary** (daily, ≤3 batched PRs, gated on backlog + minutes + usage). Backlog-as-budget-proxy: if the queue isn't draining, don't add to it.
 - **Model-tier the fleet**: haiku = ground/mechanical, sonnet = build, opus = verify/design, fable = crux. Cheap work on cheap models. Prompt caching + Batch API + free web search (kagi_session/DDG) where they pay. Observable billing (Grafana now, Monarch later). See `docs/knowledge/llm-models-cost-and-caching.md` + `dev-speed-and-credit-playbook.md`.
 
 ## Taste & method

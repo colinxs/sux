@@ -22,8 +22,10 @@ describe("sux root verb", () => {
 		for (const f of FUNCTIONS) {
 			expect(text, `overview mentions \`${f.name}\``).toContain(`\`${f.name}\``);
 		}
-		// The three namespace connectors are pointed at too.
-		for (const mount of ["/vault/mcp", "/mail/mcp", "/files/mcp"]) expect(text).toContain(mount);
+		// The personal-data namespaces are pointed at via their front verbs on the one
+		// /mcp connector (the retired /<domain>/mcp mounts must NOT reappear).
+		for (const verb of ["`vault` verb", "`mail` verb", "`files` verb"]) expect(text).toContain(verb);
+		for (const mount of ["/vault/mcp", "/mail/mcp", "/files/mcp"]) expect(text).not.toContain(mount);
 	});
 
 	it("zooms a domain into per-leaf summaries", async () => {

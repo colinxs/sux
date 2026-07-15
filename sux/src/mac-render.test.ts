@@ -3,8 +3,8 @@ import { __resetMacRenderBreaker, macRender } from "./mac-render";
 import { hmacHex } from "./proxy";
 
 // macRender is the HMAC-signed client for the Mac patchright render node — the
-// residential egress path six retailer fns (amazon/lowes/walmart/homedepot/ace/
-// winco) depend on. Those fns all MOCK it, so its own signing + error handling is
+// residential egress path the retailer fns (amazon/lowes/walmart/homedepot/ace)
+// depend on. Those fns all MOCK it, so its own signing + error handling is
 // otherwise unexercised. The node authenticates every request by re-computing the
 // SAME HMAC, so a signing regression silently 401s the entire mac backend; these
 // pin the wire contract (sig over `${ts}\n${body}`, on the query string AND the

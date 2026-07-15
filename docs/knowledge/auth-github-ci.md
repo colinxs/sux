@@ -2,7 +2,7 @@
 
 Durable reference so future sessions don't re-fetch. Ground truth: `sux/src/*.ts`,
 `.github/workflows/*.yml`, `CLAUDE.md`, and memory `autonomous-pipeline-lessons` (#9–11).
-Last verified 2026-07-12.
+Last verified 2026-07-15.
 
 ---
 
@@ -63,16 +63,17 @@ verbs. Add a namespace to the `CONNECTORS` array and it routes + self-describes 
 - **`actions/create-github-app-token@v3.2.0`** — mints a **`SUX_BOT` GitHub App** token
   (`app/sux1241`) from `SUX_BOT_APP_ID` + `SUX_BOT_PRIVATE_KEY`. Used by every workflow that
   **pushes or arms auto-merge** (`claude.yml`, `claude-autofix.yml`,
-  `pr-drain.yml`, `automerge.yml`, `budget-guard.yml`). Reason in §3.
+  `pr-drain.yml`, `automerge.yml`). Reason in §3.
 - **`actions/github-script@v7`** — REST calls for the upsert-a-tracking-issue pattern
-  (`deploy.yml`, `health.yml`, `pr-watch.yml`, `budget-guard.yml`).
+  (`deploy.yml`, `health.yml`, `pr-watch.yml`).
 - **`gh` CLI + `jq`** — read-only PR classification and `gh pr merge --auto`,
   `gh pr update-branch`, `gh pr edit --add-label`, label/comment mutations.
 - **`cloudflare/wrangler-action@v4`** — the actual prod deploy (`CLOUDFLARE_API_TOKEN` +
   `CLOUDFLARE_ACCOUNT_ID`).
-- **GitHub REST billing API** — `budget-guard.yml` reads used Actions minutes.
-- **Repo variable `ACTIONS_BUDGET_PAUSED`** — race-free brake flag the discretionary
-  workflows gate their `if:` on.
+- **GitHub REST billing API** — `health.yml`'s billing job (`scripts/billing-check.mjs`,
+  token `GH_BILLING_TOKEN`) reads used Actions minutes and opens/updates a billing-alert
+  issue on a threshold breach. Advisory only — it no longer auto-pauses any workflow (the
+  old `budget-guard.yml` + `ACTIONS_BUDGET_PAUSED` brake was retired).
 - **Native GitHub auto-merge** — the pipeline only *enables* it; GitHub merges once branch
   protection is satisfied. Merge method: squash.
 
@@ -113,7 +114,7 @@ a preflight `go=false` skip). `ENABLE_PROMPT_CACHING_1H` is a Claude-Code **env 
    will not create a new workflow run" (except `workflow_dispatch`/`repository_dispatch`) —
    anti-recursion. So a bot push/rebase/merge attributed to `GITHUB_TOKEN` never re-fires
    `ci`/`security-review`, the required checks stay missing, and the queue stalls looking
-   green (diagnosis tell: a PR with only 1 check present while `main` requires 4). **Fix:
+   green (diagnosis tell: a PR with only 1 check present while `main` requires 3). **Fix:
    push with the `SUX_BOT` App token** (`create-github-app-token`) — it looks like a user
    push and fires CI. Must be applied to **all** pushers (autofix, mention, auto-update,
    drain, automerge).
@@ -146,9 +147,10 @@ Sources: [claude-code-action action.yml](https://github.com/anthropics/claude-co
    one generated file that IS committed — the Worker imports it)
 5. `wrangler deploy --dry-run` (bundles/config deployable)
 
-The 4 branch-protection required contexts are **"Type-check & build"** (`ci.yml`),
-**"security-review"** (`security-review.yml`), **"gitleaks"** (`secret-scan.yml`), and
-**"npm audit & SBOM"** (`audit.yml`). Under the **merge queue** (see
+The 3 branch-protection required contexts are **"Type-check & build"** (`ci.yml`),
+**"security-review"** (`security-review.yml`), and **"npm audit & SBOM"** (`audit.yml`).
+(The former gitleaks/`secret-scan.yml` context was retired org-wide.) Under the **merge
+queue** (see
 `docs/design/merge-queue.md`) each of these ALSO triggers `on: merge_group` — a required
 context that doesn't report on the queue's speculative `gh-readonly-queue/...` ref freezes
 the queue forever. security-review passes through (green no-op) on `merge_group` because it's
@@ -170,16 +172,14 @@ change.
 | --- | --- | --- | --- |
 | `ci.yml` | push, pull_request (all branches) | The 5 required checks (job "Type-check & build"). | Concurrency cancels in-progress per ref. |
 | `deploy.yml` | push to `main`, workflow_dispatch | Re-runs the CI floor, then `wrangler deploy` to prod. Opens/updates a tracking issue on failure. | `main` auto-deploys — every merge is a release. Does NOT touch secrets. |
-| `claude.yml` | issue/PR/review comment (`@claude`), PR opened/ready | Mention bot (can push fixes) + a `/code-review` pass on non-draft PRs. | Trusted authors only (public repo); pushes with SUX_BOT token so CI fires; gated on `ACTIONS_BUDGET_PAUSED`. |
+| `claude.yml` | issue/PR/review comment (`@claude`), PR opened/ready | Mention bot (can push fixes) + a `/code-review` pass on non-draft PRs. | Trusted authors only (public repo); pushes with SUX_BOT token so CI fires. |
 | `security-review.yml` | pull_request opened/synchronize/reopened/ready | Opus security review; **hard-blocks** merge on high/critical by applying `hold` + exit 1. Distinct check name `security-review`. | Self-skips on workflow-editing PRs (#11) → those need human merge. Missing-verdict handling is blast-radius-gated (workflows/auth/secrets ⇒ fail-closed). |
 | `claude-autofix.yml` | workflow_run (CI) completed=failure | Reads the CI failure and pushes a fix to the PR branch; native auto-merge lands it if green. | Safe PR classes only; `MAX_ATTEMPTS` cap then `needs-human`; RCE guard = same-repo trusted authors only; SUX_BOT push. |
 | `automerge.yml` | pull_request_target (opened/…/labeled/edited) | Enables **native** auto-merge (squash) on the safe hands-off subset. Only enables, never force-merges. | Uses `pull_request_target` but never checks out PR code; trusted authors only (+ `self-improve`-labelled bot PRs); features/`hold`/`!` excluded. Enables with App token. |
 | `pr-drain.yml` | schedule (`37 6 * * *`), dispatch | Close-stale (`self-improve`/`needs-human` idle > 14d) + reconcile (arm auto-merge on eligible-but-unarmed green PRs). | No checkout; `hold`/`keep` opt-out; every mutation `|| true`; SUX_BOT token. |
 | `pr-watch.yml` | schedule (`23 */6 * * *`), dispatch | **Read-only** stuck-PR detector → one rolling "Stuck PRs" tracking issue. | Never merges/mutates a PR. |
-| `budget-guard.yml` | schedule (hourly), dispatch | Pauses ONLY discretionary spenders (`claude.yml`, `claude-autofix.yml`) when used Actions minutes cross `BUDGET=2500` (resume < 2400). | Never touches safety/deploy gates; no-op if billing read fails; sets `ACTIONS_BUDGET_PAUSED` + `gh workflow disable`. |
-| `health.yml` | schedule (`17 9 * * *`), dispatch | Daily regression canary (tests) + live smoke (`/mcp` must 401). Opens/updates a tracking issue on failure. | 401 is the healthy response (gate enforcing). |
+| `health.yml` | schedule (`17 9 * * *`), dispatch | Daily regression canary (tests) + live smoke (`/mcp` must 401) + a billing/usage guard (`scripts/billing-check.mjs`) that opens a billing-alert issue on a threshold breach. Opens/updates a tracking issue on failure. | 401 is the healthy response (gate enforcing). Billing guard is advisory — it no longer auto-pauses any workflow. |
 | `audit.yml` | push, pull_request, schedule (`0 7 * * 1`) | `npm audit` fail on high/critical CVEs + CycloneDX SBOM artifact. | Registry/network failure ⇒ advisory (`::warning::`), not red. |
-| `secret-scan.yml` | push, pull_request | gitleaks; fails the build on a committed secret. Allowlist in `.gitleaks.toml`. | A gitleaks *action* crash ("Resource not accessible by integration") is a token-perms issue, NOT a leak (#5); comment/upload side-channels disabled. |
 | `skill-sync.yml` | schedule (`0 14 * * 1`), dispatch, pull_request | Enforces skill/plugin/fn-reference sync (`check-skill-sync.mjs`); fix job re-mirrors + opens a `bot/docs-update` PR. | Offline, no secrets; FUNCTIONS.md is gitignored so only the mirrored plugin skill can drift. |
 
 Autonomy policy (memory `sux-deploy-autonomy-policy`): fixes merge+deploy autonomously;

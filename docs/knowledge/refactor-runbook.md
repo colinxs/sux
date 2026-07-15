@@ -27,7 +27,7 @@ A GitHub transfer moves the repo but NOT its secrets or branch protection. Two d
 
 ## Phase 1 — Extract SuxOS/.github (reusable pipeline) [safe, do BEFORE transfer]
 1. Create the `SuxOS/.github` repo (org profile + reusable workflows).
-2. Convert the shared workflows to reusable (`on: workflow_call` + inputs) in `SuxOS/.github/.github/workflows/`: the gates (`ci`, `security-review`, `audit`, `secret-scan`, `health`) and the pipeline (`automerge`, `pr-auto-update`, `pr-drain`, `pr-watch`, `claude`, `claude-autofix`, `budget-guard`, `skill-sync`). Keep the App-token + `--json-schema structured_output` verdict logic exactly as fixed in #178/#175.
+2. Convert the shared workflows to reusable (`on: workflow_call` + inputs) in `SuxOS/.github/.github/workflows/`: the gates (`ci`, `security-review`, `audit`, `health`) and the pipeline (`automerge`, `pr-auto-update`, `pr-drain`, `pr-watch`, `claude`, `claude-autofix`, `skill-sync`). (The former `secret-scan.yml` and `budget-guard.yml` workflows were retired org-wide.) Keep the App-token + `--json-schema structured_output` verdict logic exactly as fixed in #178/#175.
 3. In each consuming repo, leave a thin caller stub that `uses: SuxOS/.github/.github/workflows/<name>.yml@main` with `secrets: inherit`. The gating stub must live per-repo (GitHub only gates a repo from its own workflows), but the logic is now shared.
 4. Org secrets flow to callers via `secrets: inherit`.
 5. Verify on a scratch repo: a test PR runs the reusable CI green and produces a real security verdict.
@@ -36,7 +36,7 @@ A GitHub transfer moves the repo but NOT its secrets or branch protection. Two d
 1. Confirm preconditions. Snapshot: `gh api /repos/colinxs/sux/branches/main/protection` (to re-apply after).
 2. Transfer: `gh api -X POST /repos/colinxs/sux/transfer -f new_owner=SuxOS`. PRs, issues, and redirects move with it.
 3. Post-transfer fixups:
-   - Re-apply branch protection on `SuxOS/sux` main: required checks `Type-check & build`, `security-review`, `gitleaks`, `npm audit & SBOM`; strict = true.
+   - Re-apply branch protection on `SuxOS/sux` main: required checks `Type-check & build`, `security-review`, `npm audit & SBOM`; strict = true.
    - Add repo secrets that are NOT org-level: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` (deploy). The 3 bot keys come from org secrets automatically.
    - `deploy.yml` needs no change if the CF token/account secrets resolve.
    - Update local remote: `git remote set-url origin git@github.com:SuxOS/sux.git`.

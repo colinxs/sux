@@ -62,7 +62,7 @@ Overlap rule: papers-in-general → `openalex` or `semantic_scholar`;
 |---|---|
 | Product search, no retailer named | `shop` (routes over the retail fns) |
 | Fan one term across many retailers | `product_search` (kroger, walmart, homedepot, … at once) |
-| Named retailer | `amazon`, `walmart`, `homedepot`, `lowes`, `bestbuy`, `ebay`, `costco`, `kroger` (+ QFC/Fred Meyer/Ralphs banners via `chain`; pass `zip` for prices), `ace`; `winco` is store-locations only |
+| Named retailer | `amazon`, `walmart`, `homedepot`, `lowes`, `bestbuy`, `ebay`, `costco`, `kroger` (+ QFC/Fred Meyer/Ralphs banners via `chain`; pass `zip` for prices), `ace` |
 | Grocery weekly-ad / flyer deals by ZIP | `weekly_ad` (Flipp, keyless) |
 | Local businesses / points of interest | `places` (free-text, e.g. "hardware store near 98133") |
 | Who is X / org directory | `people` (`extract_contacts: true` pulls emails/phones from the top hit; `source: usagov` for federal agencies) |

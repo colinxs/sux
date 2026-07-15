@@ -296,6 +296,20 @@ describe("oracle — get / list / forget", () => {
 		expect(j.count).toBe(2);
 	});
 
+	it("status returns a one-shot cross-topic dashboard with per-topic health signals", async () => {
+		const kv = makeKv();
+		kv.store.set("sux:oracle:beta", JSON.stringify({ distilled: "x".repeat(100), chunks: ["c1", "c2"], sources: ["inline text", "inline text"], updated_at: 42 }));
+		kv.store.set("sux:oracle:alpha", JSON.stringify({ distilled: "y".repeat(7800), chunks: ["c"], sources: ["inline text"], updated_at: 7, whitelist: { source: "s", kind: "text", learned_at: 1, via: "study" } }));
+		const noAi = { OAUTH_KV: kv } as any; // status is pure KV — no AI binding needed
+
+		const r = await oracle.run(noAi, { action: "status" });
+		const j = JSON.parse(r.content[0].text);
+		expect(j.count).toBe(2);
+		expect(j.topics.map((t: any) => t.topic)).toEqual(["alpha", "beta"]); // sorted
+		expect(j.topics[0]).toMatchObject({ topic: "alpha", chunk_count: 1, updated_at: 7, whitelisted: true, kb_bytes: 7800, near_cap: true });
+		expect(j.topics[1]).toMatchObject({ topic: "beta", chunk_count: 2, updated_at: 42, whitelisted: false, kb_bytes: 100, near_cap: false });
+	});
+
 	it("forget deletes the topic; forgetting a missing topic reports nothing deleted", async () => {
 		const { env, kv } = makeEnv();
 		await oracle.run(env, { knowledge: "a", topic: "bio" });

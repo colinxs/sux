@@ -102,7 +102,10 @@ export const put: Fn = {
 		},
 	},
 	cacheable: false,
-	annotations: { readOnlyHint: false, idempotentHint: false, openWorldHint: true },
+	// destructiveHint mirrors its egress siblings (store/ingest/dropbox/kv_put in registry.ts's
+	// WRITE_DESTRUCTIVE): a put mints a world-readable, unauthenticated /s/<uuid> URL for arbitrary
+	// bytes, so a client should drive a confirm prompt. openWorldHint stays true — put also fetches.
+	annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
 	run: async (env, args) => {
 		if (!Array.isArray(args?.urls)) return fail("`urls` must be an array of http(s) URLs.");
 		const urls: unknown[] = args.urls;

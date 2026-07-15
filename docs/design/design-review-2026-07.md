@@ -3,7 +3,7 @@ title: sux design review — 2026-07-11
 status: superseded
 cluster: meta
 type: review
-summary: "Adversarial 9-agent review snapshot. The 'Changes' checklist is now ~shipped — only two fixes remain live: the render.ts renderViaMac path-unify and dropping the mail_schedule duplicate. The 'Needs Colin' judgment calls are still open decisions."
+summary: "Adversarial 9-agent review snapshot. The 'Changes' checklist is now fully shipped — the render.ts renderViaMac path-unify and the mail_schedule de-dupe have both landed. The 'Needs Colin' judgment calls are still open decisions."
 tags: [sux, meta, review]
 updated: 2026-07-12
 ---
@@ -12,7 +12,7 @@ updated: 2026-07-12
 
 _Adversarial synthesis over 4 code-review dimensions + 4 web-research topics (9 agents). Verdict-first; skepticism cuts toward NOT churning._
 
-> **Status (2026-07-12): superseded — do not re-fix from this checklist.** Nearly every item under **Changes** has since landed in code (failWith taxonomy, tool annotations, cal_update/task_update/task_complete, vault read-time sha, bounded CalDAV time-range, per-request `_egress`, UTF-8 octet folding, parseICal component-stack rewrite, ingest R2 fallthrough, Amazon cf-first mac-render fallback). **Only two Changes items are still live:** the render.ts `renderViaMac` path-unify (still a drifted private path, `fns/render.ts:34` — should call the shared breaker-aware `macRender`) and dropping the `mail_schedule` duplicate (`mail-mcp.ts:502`, standardize on `mail_send`'s `send_at`). The **Needs Colin** section below is a set of open judgment calls, not shipped work — leave it as decisions to make.
+> **Status (2026-07-12): superseded — do not re-fix from this checklist.** Nearly every item under **Changes** has since landed in code (failWith taxonomy, tool annotations, cal_update/task_update/task_complete, vault read-time sha, bounded CalDAV time-range, per-request `_egress`, UTF-8 octet folding, parseICal component-stack rewrite, ingest R2 fallthrough, Amazon cf-first mac-render fallback). **Both remaining Changes items have since landed (DONE):** the render.ts `renderViaMac` path-unify now routes through the shared breaker-aware `macRender` (`fns/render.ts:19`, with an explicit comment about not drifting from a second hand-rolled mac client), and the `mail_schedule` duplicate is gone — scheduling is standardized on `mail_send`'s `send_at` (held via FUTURERELEASE), listed by `mail_scheduled`, cancelled by `mail_unschedule`. The **Needs Colin** section below is a set of open judgment calls, not shipped work — leave it as decisions to make.
 
 ## Verdict
 
