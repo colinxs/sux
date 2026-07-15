@@ -66,7 +66,13 @@ export const stackexchange: Fn = {
 		} catch (e) {
 			return fail(`Stack Exchange fetch failed: ${String((e as Error)?.message ?? e)}`);
 		}
-		if (!resp.ok) return fail(`Stack Exchange API HTTP ${resp.status}.`);
+		if (!resp.ok) {
+			const hint =
+				resp.status === 403 && !env?.STACKEXCHANGE_KEY
+					? " Likely the shared anonymous quota (300 req/day/IP) is exhausted — set STACKEXCHANGE_KEY to raise it."
+					: "";
+			return fail(`Stack Exchange API HTTP ${resp.status}.${hint}`);
+		}
 		const j: any = await resp.json();
 		const results = (j?.items ?? []).map(normItem);
 		return ok(oj({ site, count: results.length, results }));

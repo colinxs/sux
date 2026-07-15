@@ -63,4 +63,19 @@ describe("stackexchange", () => {
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toMatch(/400/);
 	});
+
+	it("hints at the anonymous quota on a keyless 403", async () => {
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("nope", { status: 403 }));
+		const r = await stackexchange.run({} as any, { term: "x" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/403/);
+		expect(r.content[0].text).toMatch(/quota/i);
+	});
+
+	it("omits the quota hint on a 403 when a key is already set", async () => {
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("nope", { status: 403 }));
+		const r = await stackexchange.run({ STACKEXCHANGE_KEY: "k" } as any, { term: "x" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).not.toMatch(/quota/i);
+	});
 });
