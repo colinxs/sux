@@ -53,11 +53,11 @@ export function clampBytes(s: string, maxBytes: number): string {
  * registry (dynamic import breaks the index.ts→fns cycle); throws on render
  * failure so callers can wrap with their own message. Was triplicated inline.
  */
-export async function renderHtml(env: RtEnv, url: string, opts?: { solve?: boolean; wait_ms?: number }): Promise<string> {
+export async function renderHtml(env: RtEnv, url: string, opts?: { solve?: boolean; wait_ms?: number; backend?: "cf" | "mac" }): Promise<string> {
 	const { FUNCTIONS } = (await import("./index")) as { FUNCTIONS: Array<{ name: string; run: (e: RtEnv, a: unknown) => Promise<{ content?: Array<{ text?: string }>; isError?: boolean }> }> };
 	const render = FUNCTIONS.find((f) => f.name === "render");
 	if (!render) throw new Error("the `render` fn is not available");
-	const r = await render.run(env, { url, backend: "mac", as: "html", solve: opts?.solve ?? true, wait_ms: opts?.wait_ms ?? 6000 });
+	const r = await render.run(env, { url, backend: opts?.backend ?? "mac", as: "html", solve: opts?.solve ?? true, wait_ms: opts?.wait_ms ?? 6000 });
 	if (r?.isError) throw new Error(r.content?.[0]?.text ?? "render failed");
 	return r.content?.[0]?.text ?? "";
 }
@@ -375,6 +375,40 @@ export async function fetchTextOk(
 	return { text: fetched.text, headers: fetched.headers, status: fetched.status };
 }
 
+// Status codes a bot wall / auth gate typically answers with — the ones where a
+// second rung (a JS-executing render) stands a real chance where a raw fetch
+// doesn't. NOT the full >=400 range: a genuine 404/500 means the resource isn't
+// there, and re-fetching it through the render fn would just burn a Browser Run
+// session to relearn the same fact.
+const ESCALATABLE_STATUSES = /HTTP (401|403|429) /;
+
+/**
+ * `fetchTextOk`, escalating to `render` (cf backend — cheap/fast, no CapSolver)
+ * when the raw/residential-proxy fetch comes back blocked. THE extract-family
+ * fetch seam (tables/readability/select/metadata/grep/extract_contacts/… via
+ * loadHtml): those leaves used to hard-fail on any UA-gated site `render` itself
+ * clears fine (e.g. Wikipedia's bare-UA block). GET-only (render only navigates);
+ * falls straight back to the original error if the render leg also throws, so a
+ * genuinely dead URL fails exactly like fetchTextOk always did.
+ */
+export async function fetchTextOkEscalating(
+	env: RtEnv,
+	url: unknown,
+	init?: { method?: string; headers?: Record<string, string>; body?: string; maxBytes?: number },
+): Promise<{ text: string; headers: Headers; status: number } | { error: string }> {
+	const first = await fetchTextOk(env, url, init);
+	if (!("error" in first)) return first;
+	const method = (init?.method ?? "GET").toUpperCase();
+	if (method !== "GET" || !ESCALATABLE_STATUSES.test(first.error)) return first;
+	try {
+		const html = await renderHtml(env, String(url), { backend: "cf" });
+		if (html) return { text: html, headers: new Headers({ "content-type": "text/html" }), status: 200 };
+	} catch {
+		// render couldn't clear it either — surface the original fetch error below.
+	}
+	return first;
+}
+
 /**
  * Transport fns (proxy/protocol/scrape/batch_fetch) faithfully return
  * error pages too — the raw response IS their content — but a transient
@@ -432,7 +466,7 @@ export async function loadBytes(env: RtEnv, src: { url?: string; base64?: string
 export async function loadHtml(env: RtEnv, args: any, maxBytes?: number): Promise<{ html: string } | { error: string }> {
 	if (typeof args?.html === "string" && args.html) return { html: args.html };
 	if (args?.url) {
-		const fetched = await fetchTextOk(env, args.url, { maxBytes });
+		const fetched = await fetchTextOkEscalating(env, args.url, { maxBytes });
 		if ("error" in fetched) return { error: fetched.error };
 		return { html: fetched.text };
 	}

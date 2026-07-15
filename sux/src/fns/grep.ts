@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { fetchTextOk, oj } from "./_util";
+import { fetchTextOkEscalating, oj } from "./_util";
 
 export const grep: Fn = {
 	name: "grep",
@@ -43,7 +43,7 @@ export const grep: Fn = {
 
 		let text = typeof args?.text === "string" ? args.text : "";
 		if (!text && args?.url) {
-			const fetched = await fetchTextOk(env, args.url);
+			const fetched = await fetchTextOkEscalating(env, args.url);
 			if ("error" in fetched) return fail(fetched.error);
 			text = fetched.text;
 		}

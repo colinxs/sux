@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { fetchTextOk, stripHtml } from "./_util";
+import { fetchTextOkEscalating, stripHtml } from "./_util";
 
 const EMAIL = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi;
 // US-style (with optional country code) OR an E.164-ish international run.
@@ -56,7 +56,7 @@ export const extract_contacts: Fn = {
 		} else if (typeof args?.html === "string" && args.html) {
 			raw = args.html;
 		} else if (args?.url) {
-			const fetched = await fetchTextOk(env, args.url);
+			const fetched = await fetchTextOkEscalating(env, args.url);
 			if ("error" in fetched) return fail(fetched.error);
 			raw = fetched.text;
 		} else {

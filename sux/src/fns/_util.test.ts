@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../proxy", () => ({
 	smartFetch: vi.fn(async (_env: any, url: string) => {
@@ -7,9 +7,18 @@ vi.mock("../proxy", () => ({
 		if (String(url).includes("huge")) return new Response("x".repeat(50_000), { status: 200 });
 		if (String(url).includes("toobig")) return new Response(new Uint8Array(500_000), { status: 200, headers: { "content-type": "application/octet-stream" } });
 		if (String(url).includes("binary")) return new Response(new Uint8Array([0, 1, 0xff, 0x80, 0xd9]), { status: 200, headers: { "content-type": "image/jpeg" } });
+		if (String(url).includes("notfound")) return new Response("no such page", { status: 404 });
 		return new Response("<p>content</p>", { status: 200 });
 	}),
 }));
+
+// fetchTextOkEscalating's render fallback goes through the fn registry (see
+// renderHtml) — mock it the way linkedin.test.ts does so tests control whether
+// the render leg "clears" a block without a real browser. Unset (the default)
+// resolves to undefined, i.e. renderHtml returns "" — a no-op escalation, which
+// is what every test NOT about the fallback itself relies on.
+const { renderRun } = vi.hoisted(() => ({ renderRun: vi.fn() }));
+vi.mock("./index", () => ({ FUNCTIONS: [{ name: "render", run: renderRun }] }));
 
 import {
 	byteBudget,
@@ -23,6 +32,7 @@ import {
 	fetchCacheSet,
 	fetchText,
 	fetchTextOk,
+	fetchTextOkEscalating,
 	fromB64,
 	isHttpUrl,
 	loadBytes,
@@ -225,6 +235,37 @@ describe("fetchTextOk (the fetch-validation seam)", () => {
 	it("wraps a thrown fetch in the same error shape", async () => {
 		const r = await fetchTextOk({} as any, "https://boom.example");
 		expect("error" in r && r.error).toMatch(/Fetch failed: socket hang up/);
+	});
+});
+
+describe("fetchTextOkEscalating (extract-family scrape→render fallback)", () => {
+	beforeEach(() => renderRun.mockReset());
+
+	it("escalates a 403 to render's cf backend and returns its html", async () => {
+		renderRun.mockResolvedValueOnce({ content: [{ text: "<h1>rendered</h1>" }] });
+		const r = await fetchTextOkEscalating({} as any, "https://blocked.example");
+		expect(renderRun).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ url: "https://blocked.example", backend: "cf" }));
+		expect("text" in r && r.text).toBe("<h1>rendered</h1>");
+		expect("status" in r && r.status).toBe(200);
+	});
+
+	it("falls back to the original error when render can't clear it either", async () => {
+		renderRun.mockResolvedValueOnce({ content: [{ text: "Browser Run is not configured" }], isError: true });
+		const r = await fetchTextOkEscalating({} as any, "https://blocked.example");
+		expect(renderRun).toHaveBeenCalled();
+		expect("error" in r && r.error).toMatch(/HTTP 403/);
+	});
+
+	it("does not escalate a genuine 404 — a render retry wouldn't fix a missing page", async () => {
+		const r = await fetchTextOkEscalating({} as any, "https://notfound.example");
+		expect(renderRun).not.toHaveBeenCalled();
+		expect("error" in r && r.error).toMatch(/HTTP 404/);
+	});
+
+	it("does not escalate a healthy 2xx fetch", async () => {
+		const r = await fetchTextOkEscalating({} as any, "https://ok.example");
+		expect(renderRun).not.toHaveBeenCalled();
+		expect("text" in r && r.text).toBe("<p>content</p>");
 	});
 });
 
