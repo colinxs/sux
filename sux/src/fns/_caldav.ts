@@ -314,7 +314,9 @@ export function parseICal(text: string): ParsedComponent[] {
 		if (idx < 0) continue;
 		const { name, params } = splitPropName(line.slice(0, idx));
 		if (!name) continue;
-		cur.props[name] = line.slice(idx + 1).replace(/\\n/g, "\n").replace(/\\N/g, "\n").replace(/\\,/g, ",").replace(/\\;/g, ";").replace(/\\\\/g, "\\");
+		// Single pass so an escaped backslash (`\\`) is consumed as one unit and can't be
+		// re-read as the `\n`/`\,`/`\;` of a following char (chaining \\n→LF before \\→\ mis-decodes `\\nb`).
+		cur.props[name] = line.slice(idx + 1).replace(/\\([\\nN,;])/g, (_, c) => (c === "n" || c === "N" ? "\n" : c));
 		if (Object.keys(params).length) cur.params[name] = params;
 	}
 	return out;

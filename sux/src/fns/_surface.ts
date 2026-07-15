@@ -84,7 +84,9 @@ for (const n of NAMESPACES) {
 }
 
 export const firstSentence = (desc: string): string => {
-	const t = (desc.split(/\.\s/)[0] ?? "").trim();
+	// Split on a sentence-ending period, but not the period inside `e.g.`/`i.e.` — those
+	// abbreviations would otherwise truncate a description at their first dot.
+	const t = (desc.split(/(?<!\be\.g)(?<!\bi\.e)\.\s/)[0] ?? "").trim();
 	return t.length > 140 ? `${t.slice(0, 139)}…` : t;
 };
 

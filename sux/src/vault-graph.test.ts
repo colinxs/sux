@@ -89,6 +89,15 @@ describe("vault-graph pure layer (§4)", () => {
 		expect(fm.note).toBe(String.raw`foo\n---\nbar`); // recovered from inside the fence, not split across it
 	});
 
+	it("patchFrontmatter quotes a value with an embedded carriage return (lone CR is a YAML line break too)", () => {
+		const evil = "line1\rline2";
+		const r = patchFrontmatter("# Note\nbody", "summary", evil);
+		// A lone \r is a line break in the YAML spec; unquoted it would split the value
+		// across two physical lines, so it must be JSON-escaped inside a quoted scalar.
+		expect(r.content).toContain(String.raw`"line1\rline2"`);
+		expect(r.content).not.toContain("summary: line1\rline2");
+	});
+
 	it("patchFrontmatter preserves literal `$`-sequences in a value (no String.replace expansion)", () => {
 		// content.replace(FENCE, rebuilt) with a STRING replacement interprets `$$`, `$&`,
 		// `` $` ``, `$'`, and `$1` — and FENCE has a capture group, so a value with `$1`

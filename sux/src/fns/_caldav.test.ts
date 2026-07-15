@@ -64,6 +64,16 @@ describe("_caldav iCal build/parse", () => {
 		expect(comp.props.UID).toBe("u3");
 	});
 
+	it("unescapes in a single pass: an escaped backslash before n is literal, not a newline", () => {
+		// Wire `\\nb` = escaped backslash (\\) then literal `nb`. Correct decode is `\nb`
+		// (backslash, n, b), NOT backslash + LF + b. A chained \\n→LF before \\→\ mis-decodes it.
+		const raw = "BEGIN:VEVENT\r\nUID:u5\r\nSUMMARY:\\\\nb\r\nEND:VEVENT";
+		expect(parseICal(raw)[0].props.SUMMARY).toBe("\\nb");
+		// A genuine escaped newline still decodes to LF.
+		const nl = "BEGIN:VEVENT\r\nUID:u6\r\nSUMMARY:a\\nb\r\nEND:VEVENT";
+		expect(parseICal(nl)[0].props.SUMMARY).toBe("a\nb");
+	});
+
 	it("folding counts UTF-8 octets at 75 and never splits a multibyte sequence", () => {
 		// A multibyte (emoji + accented) summary long enough to fold several times.
 		const summary = "café 🎉 déjà vu — ".repeat(12);

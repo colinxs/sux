@@ -38,6 +38,23 @@ describe("feed", () => {
 		expect(out.items[0].published).toBe("2024-01-01T00:00:00Z");
 	});
 
+	it("prefers the rel=alternate link over an earlier rel=edit link", async () => {
+		const xml = `<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Atom Feed</title>
+  <entry><title>E</title><link rel="edit" href="https://a.com/edit"/><link rel="alternate" href="https://a.com/real"/><updated>2024-01-01T00:00:00Z</updated></entry>
+</feed>`;
+		const out = JSON.parse((await feed.run({} as any, { xml })).content[0].text);
+		expect(out.items[0].link).toBe("https://a.com/real"); // the canonical entry URL, not the edit endpoint
+	});
+
+	it("falls back to the first link when no rel=alternate is present", async () => {
+		const xml = `<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom">
+  <entry><title>E</title><link href="https://a.com/only"/><updated>2024-01-01T00:00:00Z</updated></entry>
+</feed>`;
+		const out = JSON.parse((await feed.run({} as any, { xml })).content[0].text);
+		expect(out.items[0].link).toBe("https://a.com/only");
+	});
+
 	it("respects the limit", async () => {
 		const r = await feed.run({} as any, { xml: RSS, limit: 1 });
 		expect(JSON.parse(r.content[0].text).count).toBe(1);

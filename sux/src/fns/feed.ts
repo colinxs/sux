@@ -28,6 +28,18 @@ function tag(xml: string, name: string): string | null {
 	return m ? decodeEntities(m[1]).trim() : null;
 }
 
+// Atom permits several <link>s per entry (alternate/edit/self/enclosure). The item URL
+// is the rel="alternate" one (or the relless default per RFC 4287); fall back to the
+// first link with an href so a feed that omits rel still resolves.
+function atomLink(entry: string): string | null {
+	const links = [...entry.matchAll(/<link\b([^>]*)\/?>/gi)]
+		.map((m) => m[1])
+		.map((attrs) => ({ href: attrs.match(/\bhref=["']([^"']+)["']/i)?.[1] ?? null, rel: attrs.match(/\brel=["']([^"']+)["']/i)?.[1]?.toLowerCase() ?? null }))
+		.filter((l) => l.href);
+	const preferred = links.find((l) => l.rel === null || l.rel === "alternate") ?? links[0];
+	return preferred?.href ?? null;
+}
+
 export const feed: Fn = {
 	name: "feed",
 	description:
@@ -59,8 +71,8 @@ export const feed: Fn = {
 
 		const items = blocks.slice(0, limit).map((m) => {
 			const b = m[0];
-			// Atom links live in a href attribute; RSS links are element text.
-			let link = isAtom ? b.match(/<link\b[^>]*\bhref=["']([^"']+)["']/i)?.[1] ?? null : tag(b, "link");
+			// Atom links live in a href attribute (pick the rel=alternate one); RSS links are element text.
+			const link = isAtom ? atomLink(b) : tag(b, "link");
 			const summaryRaw = tag(b, "description") ?? tag(b, "summary") ?? tag(b, "content") ?? "";
 			const summary = summaryRaw.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 500) || null;
 			return {

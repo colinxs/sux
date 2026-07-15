@@ -6,6 +6,7 @@ vi.mock("../proxy", () => ({
 		if (url.includes("blocked")) return new Response("rate limited", { status: 429 });
 		if (url.includes("huge")) return new Response("x", { status: 200, headers: { "content-length": "99999999" } }); // declared > 25MB cap
 		if (url.includes("bigtext")) return new Response("y".repeat(3_000_000), { status: 200 }); // 3MB body > FETCH_TEXT_MAX_BYTES
+		if (url.includes("utf8")) return new Response("héllo😀", { status: 200 }); // multibyte: 7 UTF-16 units, 10 UTF-8 bytes
 		return new Response(`body of ${url}`, { status: 200 });
 	}),
 }));
@@ -158,6 +159,17 @@ describe("batch_fetch", () => {
 		// Body is 3MB but the returned text is capped at the 2MB ceiling, not the requested 500MB.
 		expect(out[0].text.length).toBeLessThanOrEqual(FETCH_TEXT_MAX_BYTES);
 		expect(out[0].bytes).toBe(out[0].text.length);
+	});
+
+	it("reports text-mode bytes as real UTF-8 byte length, not UTF-16 code-unit length", () => {
+		return batch_fetch.run({} as any, { urls: ["https://ex.com/utf8"] }).then((r) => {
+			const out = JSON.parse(r.content[0].text);
+			expect(out[0].text).toBe("héllo😀");
+			// UTF-16 length is 7; real byte length is 10 — bytes must count octets like the url branch.
+			expect(out[0].bytes).toBe(new TextEncoder().encode(out[0].text).length);
+			expect(out[0].bytes).toBe(10);
+			expect(out[0].bytes).not.toBe(out[0].text.length);
+		});
 	});
 
 	it("declares the max_bytes ceiling in its schema", () => {

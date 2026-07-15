@@ -206,9 +206,10 @@ function serializeScalar(value: unknown): string {
 	const s = String(value ?? "");
 	// Quote only when a bare scalar would reparse wrong (leading/trailing space, or
 	// YAML-significant punctuation); keep clean strings/dates unquoted for readability.
-	// An embedded newline must always quote too — unquoted it would prematurely
-	// close the `---` frontmatter fence (or inject pseudo-frontmatter/body text).
-	return /^\s|\s$|\n|[:#\[\]{},&*!|>'"%@`]/.test(s) ? JSON.stringify(s) : s;
+	// An embedded line break (LF or a lone CR — both are YAML line breaks) must always
+	// quote too — unquoted it would prematurely close the `---` frontmatter fence or
+	// split the value across physical lines (dropping the tail on reparse).
+	return /^\s|\s$|[\n\r]|[:#\[\]{},&*!|>'"%@`]/.test(s) ? JSON.stringify(s) : s;
 }
 
 /** Operate on the section under a `# Heading` (matched by heading text at any

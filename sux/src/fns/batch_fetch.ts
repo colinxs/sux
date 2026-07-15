@@ -134,7 +134,8 @@ export const batch_fetch: Fn = {
 					}
 				}
 				const r = await fetchText(env, url, { method, maxBytes });
-				return { url, status: r.status, bytes: r.text.length, text: r.text };
+				// Count UTF-8 octets, not UTF-16 code units, so `bytes` matches the url branch and reality.
+				return { url, status: r.status, bytes: new TextEncoder().encode(r.text).length, text: r.text };
 			} catch (e) {
 				return { url, error: String((e as Error)?.message ?? e) };
 			}
