@@ -26,5 +26,5 @@ jobs:
       id-token: write
     uses: SuxOS/.github/.github/workflows/security-review.yml@main
     with:
-      allowed-bots: "suxbot"
+      allowed-bots: "suxbot[bot]"
     secrets: inherit
