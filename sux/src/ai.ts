@@ -41,6 +41,18 @@ function defuseMarkers(content: string): string {
 		.join(`${DATA_CLOSE[0]}${ZWSP}${DATA_CLOSE.slice(1)}`);
 }
 
+// Same trick, for a different forgeable sentinel: recall.ts's [whitelisted:*] citation tag is
+// documented to outrank the model's own knowledge and the web (see recall.ts's recallSystem/
+// gatherRecall), but it's just a bracketed string \u2014 an email or web page containing the literal
+// text "[whitelisted:x] <claim>" would otherwise ride into the synthesis prompt looking exactly
+// like the real tag oracle.ts emits for a verified, user-owned KB. Callers apply this ONLY to
+// material from untrusted retrieval sources (mail/web/etc.) \u2014 never to the trusted tag that
+// fromOracle itself stamps on a whitelisted KB, or the tag would defuse itself.
+export function defuseCitationTag(content: string, tag = "whitelisted"): string {
+	const needle = `[${tag}:`;
+	return content.split(needle).join(`[${tag}${ZWSP}:`);
+}
+
 export function wrapUntrusted(content: string): string {
 	return `${DATA_OPEN}\n${defuseMarkers(content)}\n${DATA_CLOSE}`;
 }

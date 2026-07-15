@@ -57,6 +57,12 @@ envelope:
 `ToolResult` also carries an optional `noCache?: boolean` — set it (via `noCacheOn4xx` /
 `noCacheOnMutation` helpers in `fns/_util.ts`) so error pages and mutations are never cached.
 
+**Structured conflict signals.** `failWith("conflict", ...)` (added alongside mail-mcp.ts's
+`calPatch`/`cal_delete`) is the current standard for new structured-error signals — it flows
+through the same `FAIL_CODES` taxonomy and observability grouping as every other code.
+`obsidian.ts`'s bare `{conflict: true}` field predates `failWith` and is legacy; don't copy that
+shape into new code — use `failWith("conflict", ...)` instead.
+
 **Registration.** Fns are collected in the one generated-and-committed file
 `sux/src/fns/index.ts` (`export const FUNCTIONS: Fn[]`). Generate it with `npm run gen:index`
 (`sux/scripts/gen-index.mjs`): it scans `fns/*.ts`, extracts each `export const X: Fn` +

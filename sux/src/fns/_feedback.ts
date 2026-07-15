@@ -12,6 +12,9 @@ export type FeedbackEntry = { kind: FeedbackKind; text: string; at: number; tool
 
 const KEY = "sux:feedback";
 const CAP = 500;
+// Bound any single entry's text so one pasted essay/scrape can't dominate the
+// blob's byte budget — feedback is meant to be a short note, not a document.
+const MAX_TEXT_CHARS = 4000;
 
 // Serializes appends to the single feedback key within an isolate so two concurrent
 // issue()/suggest() calls don't clobber each other's just-appended entry (lost-update
@@ -26,7 +29,7 @@ export async function appendFeedback(env: RtEnv, kind: FeedbackKind, text: strin
 		const at = Date.now();
 		// GET /feedback is public + unauthenticated, so scrub PII the agent may have
 		// relayed from a scrape or vault/mail excerpt before it lands verbatim there.
-		const items = await log(env).push({ kind, text: redactPII(text).redacted, at, ...(tool ? { tool } : {}) });
+		const items = await log(env).push({ kind, text: redactPII(text).redacted.slice(0, MAX_TEXT_CHARS), at, ...(tool ? { tool } : {}) });
 		return { total: items.length, at };
 	});
 }

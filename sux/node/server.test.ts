@@ -54,6 +54,10 @@ describe("isPrivateIp (SSRF guard)", () => {
 		for (const ip of ["::ffff:7f00:1", "::ffff:a9fe:a9fe", "::ffff:c0a8:101", "::ffff:a00:1"]) expect(isPrivateIp(ip)).toBe(true);
 		expect(isPrivateIp("::ffff:808:808")).toBe(false); // 8.8.8.8 mapped — public
 	});
+	it("blocks IPv4-compatible IPv6 literals (deprecated ::a.b.c.d / ::hi:lo form)", () => {
+		for (const ip of ["::127.0.0.1", "::192.168.0.1", "::10.0.0.1", "::169.254.169.254", "::c0a8:1"]) expect(isPrivateIp(ip)).toBe(true);
+		expect(isPrivateIp("::808:808")).toBe(false); // 8.8.8.8 — public, not over-blocked
+	});
 	it("fails closed on malformed input (wrong shape / NaN octets)", () => {
 		for (const ip of ["not-an-ip", "1.2.3", "1.2.3.4.5", ""]) expect(isPrivateIp(ip)).toBe(true);
 	});

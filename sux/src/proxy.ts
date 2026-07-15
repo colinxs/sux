@@ -140,6 +140,13 @@ export function isPrivateIp(host: string): boolean {
 			const dotted = mappedV4ToDotted(host.slice(7));
 			return dotted != null && isPrivateIp(dotted);
 		}
+		// IPv4-compatible IPv6 (deprecated ::a.b.c.d / ::hi:lo form, first 96 bits
+		// zero): same embedded-IPv4 trick as the v4-mapped case above, just without
+		// the `ffff` marker group — decode the tail and re-run it as IPv4.
+		if (host.startsWith("::") && host !== "::" && host !== "::1") {
+			const dotted = mappedV4ToDotted(host.slice(2));
+			return dotted != null && isPrivateIp(dotted);
+		}
 		return false;
 	}
 	const parts = host.split(".");

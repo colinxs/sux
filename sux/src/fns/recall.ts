@@ -1,4 +1,4 @@
-import { hasAI, llm } from "../ai";
+import { defuseCitationTag, hasAI, llm } from "../ai";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { hasDropboxFull, readFull, searchFull } from "./_dropbox-full";
 import { obsidian } from "./obsidian";
@@ -322,7 +322,11 @@ export async function gatherRecall(
 		const r = results[i];
 		if (r.status === "fulfilled") {
 			if (r.value.material) {
-				materials.push(r.value.material);
+				// SECURITY: only fromOracle may legitimately emit "[whitelisted:...]" — every other
+				// source is attacker-influenced (mail/web) or user-editable (vault/files), so a literal
+				// "[whitelisted:...]" planted there is forged and must not ride into synthesis looking
+				// authoritative. Defuse it here, before it ever reaches the lead/rest split below.
+				materials.push(s === "oracle" ? r.value.material : defuseCitationTag(r.value.material));
 				materialSources.push(s);
 				citations.push(...r.value.refs);
 				status[s] = `${r.value.refs.length} hit(s)`;

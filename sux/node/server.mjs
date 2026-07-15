@@ -97,6 +97,12 @@ export function isPrivateIp(ip) {
 			const dotted = mappedV4ToDotted(l.slice(7));
 			return dotted != null && isPrivateIp(dotted);
 		}
+		// IPv4-compatible IPv6 (deprecated ::a.b.c.d / ::hi:lo form, first 96 bits
+		// zero): same embedded-IPv4 trick, just without the `ffff` marker group.
+		if (l.startsWith("::") && l !== "::" && l !== "::1") {
+			const dotted = mappedV4ToDotted(l.slice(2));
+			return dotted != null && isPrivateIp(dotted);
+		}
 		return false;
 	}
 	const p = ip.split(".").map(Number);

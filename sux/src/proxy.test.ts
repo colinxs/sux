@@ -116,6 +116,17 @@ describe("SSRF guard", () => {
 		expect(isPrivateIp("::ffff:808:808")).toBe(false); // 8.8.8.8
 	});
 
+	it("blocks IPv4-compatible IPv6 literals (deprecated ::a.b.c.d / ::hi:lo form)", () => {
+		expect(isPrivateIp("::127.0.0.1")).toBe(true); // loopback
+		expect(isPrivateIp("::192.168.0.1")).toBe(true); // private LAN
+		expect(isPrivateIp("::10.0.0.1")).toBe(true); // private
+		expect(isPrivateIp("::169.254.169.254")).toBe(true); // cloud metadata
+		expect(isPrivateIp("::c0a8:1")).toBe(true); // 192.168.0.1, compressed hex form
+		expect(isPrivateIp("::808:808")).toBe(false); // 8.8.8.8 — public, not over-blocked
+		expect(isBlockedTarget("http://[::192.168.0.1]/")).toBe(true);
+		expect(isBlockedTarget("http://[::8.8.8.8]/")).toBe(false);
+	});
+
 	it("smartFetch refuses a private target and never calls fetch", async () => {
 		const fetchMock = vi.fn(async () => new Response("ok"));
 		vi.stubGlobal("fetch", fetchMock);

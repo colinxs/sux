@@ -28,10 +28,15 @@ export type CappedKvLog<T> = {
 	push(...entries: T[]): Promise<T[]>;
 };
 
+// KV values cap at 25MB; stay well under that so one blob of large entries can't
+// push a `put` over the limit and start throwing on every subsequent append.
+const MAX_TOTAL_BYTES = 8 * 1024 * 1024;
+
 export function cappedKvLog<T>(env: RtEnv, key: string, cap: number): CappedKvLog<T> {
 	const load = async (): Promise<T[]> => safeParse<T>(await maybeDecompressString((await env.OAUTH_KV.get(key)) ?? ""));
 	const save = async (items: T[]): Promise<void> => {
 		if (items.length > cap) items.length = cap;
+		while (items.length > 1 && new TextEncoder().encode(JSON.stringify(items)).length > MAX_TOTAL_BYTES) items.length--;
 		await env.OAUTH_KV.put(key, await maybeCompressString(JSON.stringify(items)));
 	};
 	const push = async (...entries: T[]): Promise<T[]> => {

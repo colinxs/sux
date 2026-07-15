@@ -58,7 +58,11 @@ export type TriageLabel = "junk" | "transaction" | "receipt" | "amazon_return" |
  *  `gh:ci-fail`) instead of the label's blanket action. It is still funnelled through the same
  *  auto-act allow-list + confidence gate, so an override can never smuggle a non-reversible op. */
 type Classification = { label: TriageLabel; confidence: number; reason: string; op?: TriageOp };
-export type TriageMsg = { id: string; from?: string; subject?: string; preview?: string };
+/** `mailboxes` is the message's full pre-move mailboxIds set (names/roles, from mail_search's
+ *  `labels`) — captured so a move op can log the WHOLE set for undo, not just the one mailbox
+ *  it's headed to/from (#465: an archive→undo must restore every mailbox the message belonged to,
+ *  not just `from_mailbox`). */
+export type TriageMsg = { id: string; from?: string; subject?: string; preview?: string; mailboxes?: string[] };
 
 /** Confidence at/above which an attention-INCREASING op (label:add / unarchive / undelete) may
  *  auto-act. Conservative on purpose: in v1 the confidence gate is the ONLY thing between a bad
@@ -141,14 +145,18 @@ export function resolveOp(op: TriageOp, label: TriageLabel, confidence: number):
 /** Project an op into the acted-record `to` field + the log fields needed to REVERSE it:
  *  a move records its origin/target mailbox (undo moves back to origin); a label records the
  *  keyword (undo removes it). Keeps the loop and the undo path reading from one source of truth. */
-function opRecord(op: TriageOp, fromMailbox: string): { to: string; log: Partial<TriageEntry> } {
+function opRecord(op: TriageOp, fromMailbox: string, fromMailboxes?: string[]): { to: string; log: Partial<TriageEntry> } {
 	if (op.kind === "label") return { to: `${op.add ? "+" : "-"}label:${op.label}`, log: { op: "label", keyword: op.label } };
 	// draft-reply is a CREATE, not a move: it stages a new draft (the draft id is filled in by the
 	// draft lane). No from/to mailbox, and bulkUndo intentionally never reverses it (see below).
 	if (op.kind === "draft-reply") return { to: "draft", log: { op: "draft-reply" } };
 	// archive files into Archive; unarchive/undelete both restore to the inbox.
 	const to = op.kind === "archive" ? "archive" : "inbox";
-	return { to, log: { op: op.kind, from_mailbox: fromMailbox, to_mailbox: to } };
+	// from_mailboxes carries the message's FULL pre-move mailbox set (when the search lane observed
+	// it) so undo restores every mailbox it belonged to, not just the single `from_mailbox` role
+	// (#465) — a message archived out of both Inbox and some other label would otherwise come back
+	// into Inbox only.
+	return { to, log: { op: op.kind, from_mailbox: fromMailbox, ...(fromMailboxes?.length ? { from_mailboxes: fromMailboxes } : {}), to_mailbox: to } };
 }
 
 const JUNK_SUBJECT = /\b(lottery|you won|winner|claim your prize|viagra|nigerian prince|wire transfer|risk-free|act now|100% free|congratulations you|crypto giveaway)\b/i;
@@ -410,7 +418,7 @@ export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps):
 		const sensitive = isSensitiveSender(String(m.from ?? "")) && c.label !== "important";
 		// Allow-list guard sits BEFORE the confidence gate: an op not on AUTO_ACT_OPS can never act.
 		const wouldAct = !sensitive && !!op && isAutoActAllowed(op) && c.confidence >= bar;
-		const rec = op ? opRecord(op, mailbox) : null;
+		const rec = op ? opRecord(op, mailbox, m.mailboxes) : null;
 		let markSeen = false;
 		// This message's log entry, persisted BEFORE led.mark below (see the ordering note).
 		let entry: TriageEntry | null = null;
@@ -524,7 +532,7 @@ export async function defaultDeps(): Promise<TriageDeps> {
 			const r = await searchTool.run(env, { mailbox: o.mailbox, ...(o.unread ? { unread: true } : {}), limit: o.limit });
 			if (r.isError) throw new Error(r.content?.[0]?.text ?? "mail_search failed");
 			const parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
-			return (parsed.emails ?? []).map((e: any) => ({ id: String(e?.id ?? ""), from: e?.from, subject: e?.subject, preview: e?.preview }));
+			return (parsed.emails ?? []).map((e: any) => ({ id: String(e?.id ?? ""), from: e?.from, subject: e?.subject, preview: e?.preview, mailboxes: Array.isArray(e?.labels) ? e.labels : undefined }));
 		},
 		act: async (env, ids, op) => {
 			if (op.kind === "label") {

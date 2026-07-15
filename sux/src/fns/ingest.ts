@@ -1,6 +1,6 @@
 import { type Fn, fail, ok } from "../registry";
 import { htmlToMd } from "./_markup";
-import { clamp, loadBytes, putBlob, vaultToday, oj } from "./_util";
+import { clampBytes, loadBytes, putBlob, vaultToday, oj } from "./_util";
 import { dropboxPut, hasDropbox } from "./dropbox";
 import { type VaultCfg, vaultCfg, vaultPut } from "./obsidian";
 
@@ -203,7 +203,7 @@ export const ingest: Fn = {
 
 			title = title.replace(/\s+/g, " ").trim() || "capture";
 			const explicit = String(args?.path ?? "").trim();
-			const md = buildNote(title, source, clamp(body, BODY_MAX), tags);
+			const md = buildNote(title, source, clampBytes(body, BODY_MAX), tags);
 			// An explicit `path` overwrites intentionally. A default Inbox path never
 			// clobbers: same-slug same-day captures disambiguate (-1, -2, …) so no
 			// earlier note is lost, even for two captures in the same second.

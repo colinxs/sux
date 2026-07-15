@@ -3,6 +3,7 @@
 // dashboard at low/medium volume. NOT strongly consistent: concurrent writers
 // can lose an increment. If precise counts ever matter, move to a Durable Object.
 
+import { redactPII } from "./fns/redact";
 import { drainRouteTally } from "./proxy";
 import type { RtEnv } from "./registry";
 
@@ -120,7 +121,12 @@ export type CallEvent = { tool: string; ms: number; cache?: boolean; error?: boo
 /** Truncate an error message to its first ~200 chars (undefined stays undefined/empty). */
 export function clipErr(err?: string): string | undefined {
 	if (!err) return undefined;
-	return err.length > ERR_CAP ? err.slice(0, ERR_CAP) : err;
+	// Redact PII/secret-shaped fragments BEFORE clipping: raw upstream error text
+	// (echoed input, proxy error bodies) can carry emails/tokens/IPs, and this is
+	// the one choke point shared by the KV-backed metrics, Workers Logs, and the
+	// Loki/Grafana ship — none of which should ever see it unredacted.
+	const redacted = redactPII(err).redacted;
+	return redacted.length > ERR_CAP ? redacted.slice(0, ERR_CAP) : redacted;
 }
 
 /**

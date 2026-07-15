@@ -29,6 +29,11 @@ export type TriageEntry = {
 	subject?: string;
 	op?: TriageOpKind;
 	from_mailbox?: string;
+	/** Full pre-move mailboxIds set (as names/roles), captured at archive/unarchive/undelete time —
+	 *  undo restores ALL of these, not just `from_mailbox`, so a message that also lived in another
+	 *  mailbox before the move isn't silently dropped from it on undo (#465). Falls back to
+	 *  `from_mailbox` alone when absent (older log entries, or a mover that couldn't observe it). */
+	from_mailboxes?: string[];
 	to_mailbox?: string;
 	keyword?: string;
 	draft_id?: string; // draft-reply only: the id of the staged draft (recorded for audit, not undo)
@@ -73,7 +78,7 @@ export async function readTriageEntries(env: RtEnv, opts?: { cycle?: string; lim
 /** Resolve to the ids that ACTUALLY reversed — moveMessages/labelMessages can fail
  *  partially (some ids notUpdated) without setting isError, so callers must check
  *  per-id outcome, not just the batch-level error flag. */
-export type Mover = (env: RtEnv, ids: string[], target: string) => Promise<string[]>;
+export type Mover = (env: RtEnv, ids: string[], target: string | string[]) => Promise<string[]>;
 export type Labeler = (env: RtEnv, ids: string[], keyword: string, add: boolean) => Promise<string[]>;
 /** The two reversers bulkUndo needs — the inverse of each auto-act op kind. Injected in tests. */
 export type Reversers = { move?: Mover; label?: Labeler };
@@ -118,16 +123,22 @@ export async function bulkUndo(env: RtEnv, cycle: string, reversers: Reversers =
 	if (!moves.length && !labels.length) return { cycle, undone: 0, note: "nothing to undo for this cycle (no applied actions, or already undone)." };
 	const reversed = new Set<string>();
 	const errors: Array<Record<string, unknown>> = [];
-	const byBox = new Map<string, string[]>();
-	for (const e of moves) (byBox.get(e.from_mailbox as string) ?? byBox.set(e.from_mailbox as string, []).get(e.from_mailbox as string)!).push(e.id);
-	for (const [box, ids] of byBox) {
+	// Group by the full pre-move mailbox SET (from_mailboxes), falling back to the single
+	// from_mailbox for older entries — restoring to every origin mailbox, not just one (#465).
+	const byBox = new Map<string, { target: string | string[]; ids: string[] }>();
+	for (const e of moves) {
+		const target = e.from_mailboxes?.length ? e.from_mailboxes : (e.from_mailbox as string);
+		const key = JSON.stringify(target);
+		(byBox.get(key) ?? byBox.set(key, { target, ids: [] }).get(key)!).ids.push(e.id);
+	}
+	for (const { target, ids } of byBox.values()) {
 		try {
-			const succeeded = await move(env, ids, box);
+			const succeeded = await move(env, ids, target);
 			for (const id of succeeded) reversed.add(id);
 			const failedIds = ids.filter((id) => !succeeded.includes(id));
-			if (failedIds.length) errors.push({ mailbox: box, ids: failedIds, error: "partial failure — see move result" });
+			if (failedIds.length) errors.push({ mailbox: target, ids: failedIds, error: "partial failure — see move result" });
 		} catch (e) {
-			errors.push({ mailbox: box, ids, error: errMsg(e) });
+			errors.push({ mailbox: target, ids, error: errMsg(e) });
 		}
 	}
 	const byKeyword = new Map<string, string[]>();

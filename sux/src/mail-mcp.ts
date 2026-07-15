@@ -1364,8 +1364,8 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 			return holdFor > 0 ? { scheduled: true, send_at: String(a.send_at), ...base, note: "held via FUTURERELEASE — cancel with mail_unschedule." } : { sent: true, ...base };
 		};
 		const attDesc = attachDescriptors(atts);
-		const payload = { from: identity.email, to, cc: a?.cc ?? null, bcc: a?.bcc ?? null, subject: String(subject), text: bodyText, send_at: a?.send_at ?? null, attachments: attDesc };
-		const preview = { action: holdFor > 0 ? "scheduled_send" : "send", from: identity.email, to, ...(a?.cc ? { cc: a.cc } : {}), ...(a?.bcc ? { bcc: a.bcc } : {}), subject: String(subject), body_chars: bodyText.length, ...(attDesc.length ? { attachments: attDesc } : {}), ...(holdFor > 0 ? { send_at: String(a.send_at) } : {}) };
+		const payload = { from: identity.email, to, cc: cc.length ? cc : null, bcc: a?.bcc ?? null, subject: String(subject), text: bodyText, send_at: a?.send_at ?? null, attachments: attDesc };
+		const preview = { action: holdFor > 0 ? "scheduled_send" : "send", from: identity.email, to, ...(cc.length ? { cc } : {}), ...(a?.bcc ? { bcc: a.bcc } : {}), subject: String(subject), body_chars: bodyText.length, ...(attDesc.length ? { attachments: attDesc } : {}), ...(holdFor > 0 ? { send_at: String(a.send_at) } : {}) };
 		const out = await staged(env, "mail_send", gateArgs(a), payload, preview, doSend);
 		return ok("stageResult" in out ? out.stageResult : out.result);
 	} catch (e) {
@@ -1373,26 +1373,34 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 	}
 }
 
-/** Move messages into a target mailbox — REPLACES the mailbox set (a real move, not an add). */
-export async function moveMessages(env: RtEnv, ids: unknown, target: string): Promise<ToolResult> {
+/** Move messages into a target mailbox (or set of mailboxes) — REPLACES the mailbox set (a real
+ *  move, not an add). `target` is normally a single role/name/id; an array restores a message to
+ *  several mailboxes at once — the archive→undo path needs this to put a message back into EVERY
+ *  mailbox it belonged to pre-archive, not just the one `from_mailbox` the triage log used to keep. */
+export async function moveMessages(env: RtEnv, ids: unknown, target: string | string[]): Promise<ToolResult> {
 	const list = Array.isArray(ids) ? ids.map(String) : [];
-	if (!list.length || !target) return failWith("bad_input", "mail_move requires a non-empty `ids` array and a `mailbox` (role like inbox/archive/junk/trash, a display name, or a raw id) — not `mailboxId` or `to`.");
+	const targets = Array.isArray(target) ? target : [target];
+	if (!list.length || !targets.length || !targets.every(Boolean)) return failWith("bad_input", "mail_move requires a non-empty `ids` array and a `mailbox` (role like inbox/archive/junk/trash, a display name, or a raw id) — not `mailboxId` or `to`.");
 	try {
 		const map = await mailboxMap(env);
-		const targetId = resolveMailboxId(map, target);
-		if (!targetId) return failWith("bad_input", `unknown mailbox '${target}'.`);
-		// A MOVE sets mailboxIds to EXACTLY the target — the additive `mailboxIds/<id>:true`
+		const targetIds: string[] = [];
+		for (const t of targets) {
+			const resolved = resolveMailboxId(map, t);
+			if (!resolved) return failWith("bad_input", `unknown mailbox '${t}'.`);
+			targetIds.push(resolved);
+		}
+		// A MOVE sets mailboxIds to EXACTLY the target set — the additive `mailboxIds/<id>:true`
 		// patch left the message in its origin mailbox too (move-to-trash stayed in the Inbox).
 		const update: Record<string, unknown> = {};
-		for (const id of list) update[id] = { mailboxIds: { [targetId]: true } };
+		for (const id of list) update[id] = { mailboxIds: Object.fromEntries(targetIds.map((tid) => [tid, true])) };
 		const resp = await jmapCall(env, { calls: [["Email/set", { update }, "u"]] });
 		const setResult = resultFor(resp, "Email/set");
 		const moved = Object.keys(setResult?.updated ?? {});
 		const notUpdated = setResult?.notUpdated ?? {};
 		const failed = Object.keys(notUpdated);
 		// Don't report a silent moved:0 — an invalid target / rejected patch surfaces as an error.
-		if (!moved.length && failed.length) return fail(`move to '${target}' failed: ${JSON.stringify(notUpdated).slice(0, 300)}`);
-		return ok({ moved: moved.length, to: target, ...(failed.length ? { failed: failed.length, errors: notUpdated } : {}) });
+		if (!moved.length && failed.length) return fail(`move to '${targets.join(", ")}' failed: ${JSON.stringify(notUpdated).slice(0, 300)}`);
+		return ok({ moved: moved.length, to: targets.length === 1 ? targets[0] : targets, ...(failed.length ? { failed: failed.length, errors: notUpdated } : {}) });
 	} catch (e) {
 		return fail(errMsg(e));
 	}

@@ -245,9 +245,12 @@ missing key degrades to a clear "not configured" message; the rest keep working.
 
 **Search**
 - `KAGI_API_KEY` — `search`, `web_search` (kagi engine), `summarize` (URL mode).
-- `BRAVE_API_KEY` — `web_search` brave engine. (`web_search` also uses keyless
-  DuckDuckGo and a JS-rendered native Google, no SERP-API key needed.)
-- `TAVILY_API_KEY` — `tavily`. `EXA_API_KEY` — `find_similar`.
+- `BRAVE_API_KEY` — `web_search` brave engine. Brave dropped its free tier (Feb
+  2026); it's now metered with no default spend cap, so this is the
+  least-preferred fallback — prefer `EXA_API_KEY`. (`web_search` also uses
+  keyless DuckDuckGo and a JS-rendered native Google, no SERP-API key needed.)
+- `TAVILY_API_KEY` — `tavily`. `EXA_API_KEY` — `find_similar`, `web_search` exa
+  engine (20,000 req/mo free tier — the preferred key-gated fallback).
 
 **Retail / places / social**
 - `KROGER_CLIENT_ID`, `KROGER_CLIENT_SECRET` — `kroger` (and the daily

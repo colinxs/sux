@@ -34,6 +34,18 @@ export function clamp(s: string, maxChars = 100_000): string {
 	return s.length > maxChars ? `${s.slice(0, maxChars)}\n… [truncated at ${maxChars} chars]` : s;
 }
 
+/** Truncate a string to at most `maxBytes` of UTF-8, never splitting a multi-byte
+ * character — for call sites where the bound is a genuine byte budget (e.g. a
+ * vault write cap), where char-based `clamp` can run ~3x over on emoji/CJK-heavy
+ * text. Encodes once, slices on the byte boundary, then decodes ignoring any
+ * partial trailing sequence the slice may have cut. */
+export function clampBytes(s: string, maxBytes: number): string {
+	const bytes = new TextEncoder().encode(s);
+	if (bytes.length <= maxBytes) return s;
+	const decoded = new TextDecoder("utf-8").decode(bytes.subarray(0, maxBytes)).replace(/�+$/, "");
+	return `${decoded}\n… [truncated at ${maxBytes} bytes]`;
+}
+
 /**
  * Fetch a URL as post-JS HTML via the `render` mac backend (headed browser +
  * CapSolver). The path for sites that gate content behind JS / bot walls
@@ -554,7 +566,7 @@ export async function deliverBytes(
 ): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
 	if (as === "url") {
 		try {
-			const ref = await putBlob(env, bytes, contentType);
+			const ref = await putBlob(env, bytes, contentType, { ttlSeconds: FANOUT_STORE_TTL_S });
 			return { content: [{ type: "text", text: oj({ url: ref.url, sha256: ref.sha256, size: ref.size, content_type: contentType }) }] };
 		} catch (e) {
 			return { content: [{ type: "text", text: `as:"url" needs the R2 store: ${errMsg(e)}` }], isError: true };

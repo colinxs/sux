@@ -103,6 +103,13 @@ async function googleDirect(env: any, q: string, limit: number, _route: Route): 
 	return parseGoogleSerp(await renderHtml(env, url), limit);
 }
 
+// Brave dropped its free tier in Feb 2026 — it's now metered-only (~$5/1k queries)
+// with just a $5/mo credit and NO default spend cap, so any use here can quietly
+// rack up charges once the credit runs out. Left key-gated (BRAVE_API_KEY unset by
+// default) rather than picked automatically; `all` still includes it (opt-in via
+// the key), but the auto-fallback prefers the free-tier `exa` engine over this one.
+// Spend-cap enforcement is out of scope for this file (needs quota-tracking infra
+// this fn doesn't have) — set a budget alert/cap on the Brave account itself.
 async function brave(env: any, q: string, limit: number, _route: Route): Promise<Hit[]> {
 	const resp = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(q)}&count=${limit}`, {
 		headers: { "X-Subscription-Token": env.BRAVE_API_KEY, Accept: "application/json" },
@@ -110,6 +117,20 @@ async function brave(env: any, q: string, limit: number, _route: Route): Promise
 	if (!resp.ok) throw new Error(`Brave HTTP ${resp.status}`);
 	const j = (await resp.json()) as any;
 	return (j?.web?.results ?? []).slice(0, limit).map((r: any) => ({ title: r.title, url: r.url, snippet: r.description }));
+}
+
+// Exa — genuine 20,000 req/mo free tier (as of 2026), so it's the preferred
+// key-gated fallback ahead of the now-metered-only Brave. Response shape:
+// { results: [{ title, url, ... }] }.
+async function exa(env: any, q: string, limit: number, _route: Route): Promise<Hit[]> {
+	const resp = await fetch("https://api.exa.ai/search", {
+		method: "POST",
+		headers: { "x-api-key": env.EXA_API_KEY, "Content-Type": "application/json", Accept: "application/json" },
+		body: JSON.stringify({ query: q, numResults: limit }),
+	});
+	if (!resp.ok) throw new Error(`Exa HTTP ${resp.status}`);
+	const j = (await resp.json()) as any;
+	return (j?.results ?? []).slice(0, limit).map((r: any) => ({ title: r.title, url: r.url, snippet: r.text ?? r.summary }));
 }
 
 // Kagi (the flagship) — its hosted MCP returns markdown `### [title](url)` blocks.
@@ -173,7 +194,8 @@ const ENGINES: Record<string, { envKey?: string; envName?: string; run: (env: an
 	kagi: { envKey: "KAGI_API_KEY", envName: "KAGI_API_KEY", run: kagi }, // metered Search API
 	ddg: { run: ddg }, // no key — cheap residential HTML scrape (no JS)
 	google: { run: googleDirect }, // no key — heavy: rendered in the mac backend (Google needs JS)
-	brave: { envKey: "BRAVE_API_KEY", envName: "BRAVE_API_KEY", run: brave },
+	exa: { envKey: "EXA_API_KEY", envName: "EXA_API_KEY", run: exa }, // 20k req/mo free tier — preferred over brave
+	brave: { envKey: "BRAVE_API_KEY", envName: "BRAVE_API_KEY", run: brave }, // metered-only since Feb 2026, no free tier — see comment above
 };
 
 /** The default engine: prefer free Kagi-on-the-subscription, then the free keyless DDG,
@@ -224,15 +246,15 @@ export const webSearch: Fn = {
 	name: "web_search",
 	cost: 3,
 	description:
-		"Web search over Kagi, native Google, and Brave. `engine`: kagi_session, kagi, ddg, google, brave, or `all` — which fans out across every currently-available engine concurrently (MAP), merges/dedupes by URL with consensus ranking, and with `summarize: true` reduces the pooled results into one Workers-AI synthesis with citations (map-reduce). " +
-		"DEFAULT is kagi_session — Kagi run on YOUR subscription (free/unmetered) by scraping the /html/search page with the KAGI_SESSION token through the residential proxy — when that secret is set, else ddg. ddg (DuckDuckGo) is scraped keyless+cheap via the residential proxy (no JS needed) — the free no-key fallback. google renders the real SERP in the headed `render` mac backend (Google needs JS; heavier/slower, opt-in). kagi is the metered Search API and brave are key-gated (KAGI_API_KEY, BRAVE_API_KEY) and used only when their secret is set; `all` skips unconfigured ones. Falls back to the plain merged list if AI isn't configured. Returns numbered results (title, url, snippet) — cite by number.",
+		"Web search over Kagi, native Google, Exa, and Brave. `engine`: kagi_session, kagi, ddg, google, exa, brave, or `all` — which fans out across every currently-available engine concurrently (MAP), merges/dedupes by URL with consensus ranking, and with `summarize: true` reduces the pooled results into one Workers-AI synthesis with citations (map-reduce). " +
+		"DEFAULT is kagi_session — Kagi run on YOUR subscription (free/unmetered) by scraping the /html/search page with the KAGI_SESSION token through the residential proxy — when that secret is set, else ddg. ddg (DuckDuckGo) is scraped keyless+cheap via the residential proxy (no JS needed) — the free no-key fallback. google renders the real SERP in the headed `render` mac backend (Google needs JS; heavier/slower, opt-in). kagi, exa, and brave are key-gated (KAGI_API_KEY, EXA_API_KEY, BRAVE_API_KEY) and used only when their secret is set; `all` skips unconfigured ones. exa has a genuine 20,000 req/mo free tier and is the preferred key-gated fallback — brave lost its free tier in Feb 2026 and is now metered with no default spend cap, so prefer configuring EXA_API_KEY over BRAVE_API_KEY. Falls back to the plain merged list if AI isn't configured. Returns numbered results (title, url, snippet) — cite by number.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
 		required: ["query"],
 		properties: {
 			query: { type: "string", description: "Search query." },
-			engine: { type: "string", enum: ["kagi_session", "kagi", "ddg", "google", "brave", "all"], description: "Default: kagi_session (free, on your Kagi subscription) when KAGI_SESSION is set, else ddg (free, keyless)." },
+			engine: { type: "string", enum: ["kagi_session", "kagi", "ddg", "google", "exa", "brave", "all"], description: "Default: kagi_session (free, on your Kagi subscription) when KAGI_SESSION is set, else ddg (free, keyless)." },
 			limit: { type: "integer", minimum: 1, maximum: 25, default: 10 },
 			summarize: { type: "boolean", description: "Summarize the merged results with Workers AI.", default: false },
 			proxy: { type: "boolean", description: "Route the Kagi query through the Tailscale residential proxy (direct fallback if the node is down).", default: false },
@@ -251,7 +273,7 @@ export const webSearch: Fn = {
 		let engines: string[];
 		if (engine === "all") {
 			engines = available(env);
-			if (!engines.length) return fail("No search engine is configured. Set KAGI_API_KEY and/or BRAVE_API_KEY (google needs no key).");
+			if (!engines.length) return fail("No search engine is configured. Set KAGI_API_KEY and/or EXA_API_KEY/BRAVE_API_KEY (google needs no key).");
 		} else {
 			const spec = ENGINES[engine];
 			if (!spec) return fail(`Unknown engine '${engine}'. Options: ${Object.keys(ENGINES).join(", ")}, all.`);

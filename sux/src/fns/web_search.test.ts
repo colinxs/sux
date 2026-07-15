@@ -160,6 +160,21 @@ describe("web_search", () => {
 		expect(r.content[0].text).toMatch(/BRAVE_API_KEY/);
 	});
 
+	it("calls Exa when the key is present", async () => {
+		const fetchMock = vi.fn(async (_u?: any, _i?: any) => new Response(JSON.stringify({ results: [{ title: "E", url: "https://e.com", text: "exa snippet" }] }), { status: 200 }));
+		vi.stubGlobal("fetch", fetchMock);
+		const r = await webSearch.run({ EXA_API_KEY: "k" } as any, { query: "x", engine: "exa" });
+		expect(r.isError).toBeFalsy();
+		expect(r.content[0].text).toContain("1. E");
+		expect((fetchMock.mock.calls[0][1] as any).headers["x-api-key"]).toBe("k");
+	});
+
+	it("gates exa without the key", async () => {
+		const r = await webSearch.run({} as any, { query: "x", engine: "exa" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/EXA_API_KEY/);
+	});
+
 	it("engine 'all' fans out over the keyless engines + kagi and merges by consensus", async () => {
 		// google also returns example.com/a → consensus ranks it above example.org/b; ddg returns nothing.
 		renderRun.mockResolvedValueOnce({ content: [{ text: serp([{ url: "https://example.com/a", title: "Shared" }]) }] });

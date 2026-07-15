@@ -128,7 +128,6 @@ export const product_search: Fn = {
 		const { FUNCTIONS } = (await import("./index")) as { FUNCTIONS: Fn[] };
 
 		const products: TaggedProduct[] = [];
-		const by_retailer: Record<string, number> = {};
 		const errors: Array<{ retailer: string; error: string }> = [];
 
 		// Each retailer runs in its own settled slot — a rejection or fail result is
@@ -149,13 +148,17 @@ export const product_search: Fn = {
 			const s = settled[i];
 			if (s.status === "fulfilled") {
 				products.push(...s.value.products);
-				by_retailer[retailer] = s.value.products.length;
 			} else {
 				errors.push({ retailer, error: String(s.reason?.message ?? s.reason) });
 			}
 		}
 
+		// Tally by_retailer from the post-slice capped list, not the raw per-retailer
+		// counts — otherwise a retailer whose products got sliced off still reports
+		// its full uncapped count, and by_retailer sums to more than products.length.
 		const capped = products.slice(0, limit);
+		const by_retailer: Record<string, number> = {};
+		for (const p of capped) by_retailer[p.retailer] = (by_retailer[p.retailer] ?? 0) + 1;
 		const result: ToolResult = ok(oj({ term, count: capped.length, by_retailer, products: capped, errors }));
 		if (args?.ui) return withUiResource(result, "product-search-dashboard", renderProductDashboard(term, capped));
 		return result;

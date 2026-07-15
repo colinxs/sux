@@ -7,6 +7,7 @@ import type { Fn } from "../registry";
 import { search } from "./search";
 import { fnEscape } from "./fn";
 import { scrape } from "./scrape";
+import { render } from "./render";
 import { proxyFn } from "./proxy";
 import { extract } from "./extract";
 import { readability } from "./readability";
@@ -15,10 +16,17 @@ import { grep } from "./grep";
 import { select } from "./select";
 import { pack } from "./pack";
 import { compress } from "./compress";
+import { declutter } from "./declutter";
 import { batch } from "./batch";
 import { batch_fetch } from "./batch_fetch";
 import { metadata } from "./metadata";
 import { tables } from "./tables";
+import { markdown } from "./markdown";
+import { html } from "./html";
+import { csv } from "./csv";
+import { json } from "./json";
+import { xml } from "./xml";
+import { yaml } from "./yaml";
 import { archive } from "./archive";
 import { encode } from "./encode";
 import { hash } from "./hash";
@@ -38,95 +46,88 @@ import { redirects } from "./redirects";
 import { robots } from "./robots";
 import { crawl } from "./crawl";
 import { subtitles } from "./subtitles";
+import { pdf } from "./pdf";
+import { fillable } from "./fillable";
+import { imageConvert } from "./image_convert";
+import { webSearch } from "./web_search";
+import { tavily } from "./tavily";
+import { find_similar } from "./find_similar";
+import { arxiv } from "./arxiv";
+import { openalex } from "./openalex";
+import { crossref } from "./crossref";
+import { semantic_scholar } from "./semantic_scholar";
+import { stackexchange } from "./stackexchange";
+import { reddit } from "./reddit";
+import { coingecko } from "./coingecko";
+import { shop } from "./shop";
+import { product_search } from "./product_search";
+import { amazon } from "./amazon";
+import { walmart } from "./walmart";
+import { homedepot } from "./homedepot";
+import { lowes } from "./lowes";
+import { bestbuy } from "./bestbuy";
+import { ebay } from "./ebay";
+import { costco } from "./costco";
+import { kroger } from "./kroger";
+import { ace } from "./ace";
+import { weekly_ad } from "./weekly_ad";
+import { people } from "./people";
+import { people_finder } from "./people_finder";
+import { places } from "./places";
+import { linkedin } from "./linkedin";
+import { facebook } from "./facebook";
+import { ingest } from "./ingest";
+import { citation } from "./citation";
+import { consolidate } from "./consolidate";
+import { oracle } from "./oracle";
+import { study } from "./study";
+import { advise } from "./advise";
+import { learn } from "./learn";
+import { preferences } from "./preferences";
+import { life_wiki } from "./life_wiki";
+import { agenda } from "./agenda";
+import { jmap } from "./jmap";
+import { mail_triage } from "./mail_triage";
+import { mail_sieve } from "./mail_sieve";
+import { mail_sieve_backfill } from "./mail_sieve_backfill";
+import { briefing } from "./briefing";
+import { vault } from "./vault";
+import { mail } from "./mail";
+import { files } from "./files";
+import { calendar } from "./calendar";
+import { contact } from "./contact";
+import { monarch } from "./monarch";
+import { mychart } from "./mychart";
+import { pipe } from "./pipe";
+import { watch } from "./watch";
+import { watch_pipeline } from "./watch_pipeline";
 import { kv_get } from "./kv_get";
 import { kv_put } from "./kv_put";
 import { kv_list } from "./kv_list";
 import { kv_delete } from "./kv_delete";
+import { store } from "./store";
+import { put } from "./put";
+import { dropbox } from "./dropbox";
 import { issue } from "./issue";
 import { suggest } from "./suggest";
-import { imageConvert } from "./image_convert";
-import { recall } from "./recall";
-import { ace } from "./ace";
-import { advise } from "./advise";
-import { agenda } from "./agenda";
-import { amazon } from "./amazon";
-import { arxiv } from "./arxiv";
-import { autonomy_status } from "./autonomy_status";
-import { bestbuy } from "./bestbuy";
-import { briefing } from "./briefing";
-import { calendar } from "./calendar";
-import { citation } from "./citation";
-import { coingecko } from "./coingecko";
-import { consolidate } from "./consolidate";
-import { contact } from "./contact";
-import { controld } from "./controld";
-import { costco } from "./costco";
-import { crossref } from "./crossref";
-import { csv } from "./csv";
-import { declutter } from "./declutter";
-import { dropbox } from "./dropbox";
-import { ebay } from "./ebay";
-import { facebook } from "./facebook";
-import { files } from "./files";
-import { fillable } from "./fillable";
-import { find_similar } from "./find_similar";
-import { fontcase } from "./fontcase";
-import { homedepot } from "./homedepot";
-import { html } from "./html";
-import { ingest } from "./ingest";
-import { jmap } from "./jmap";
-import { json } from "./json";
-import { kroger } from "./kroger";
-import { learn } from "./learn";
-import { life_wiki } from "./life_wiki";
-import { linkedin } from "./linkedin";
-import { lowes } from "./lowes";
-import { mail } from "./mail";
-import { mail_sieve } from "./mail_sieve";
-import { mail_sieve_backfill } from "./mail_sieve_backfill";
-import { mail_triage } from "./mail_triage";
-import { markdown } from "./markdown";
-import { monarch } from "./monarch";
-import { mychart } from "./mychart";
-import { uw } from "./uw";
-import { openalex } from "./openalex";
-import { oracle } from "./oracle";
-import { pdf } from "./pdf";
-import { people } from "./people";
-import { people_finder } from "./people_finder";
-import { pipe } from "./pipe";
-import { places } from "./places";
-import { preferences } from "./preferences";
-import { product_search } from "./product_search";
 import { proposals } from "./proposals";
-import { put } from "./put";
-import { reddit } from "./reddit";
-import { render } from "./render";
 import { selftest } from "./selftest";
-import { semantic_scholar } from "./semantic_scholar";
-import { shop } from "./shop";
-import { stackexchange } from "./stackexchange";
-import { store } from "./store";
-import { study } from "./study";
+import { autonomy_status } from "./autonomy_status";
+import { controld } from "./controld";
+import { tailscale } from "./tailscale";
 import { obsidian } from "./obsidian";
 import { sux } from "./sux";
-import { tailscale } from "./tailscale";
-import { tavily } from "./tavily";
 import { todoist } from "./todoist";
-import { vault } from "./vault";
 import { voice } from "./voice";
-import { walmart } from "./walmart";
-import { watch } from "./watch";
-import { watch_pipeline } from "./watch_pipeline";
-import { webSearch } from "./web_search";
-import { weekly_ad } from "./weekly_ad";
-import { xml } from "./xml";
-import { yaml } from "./yaml";
+import { fontcase } from "./fontcase";
+import { recall } from "./recall";
+import { uw } from "./uw";
 
 export const FUNCTIONS: Fn[] = [
 	search,
 	fnEscape,
 	scrape,
+	render,
 	proxyFn,
 	extract,
 	readability,
@@ -135,10 +136,17 @@ export const FUNCTIONS: Fn[] = [
 	select,
 	pack,
 	compress,
+	declutter,
 	batch,
 	batch_fetch,
 	metadata,
 	tables,
+	markdown,
+	html,
+	csv,
+	json,
+	xml,
+	yaml,
 	archive,
 	encode,
 	hash,
@@ -158,88 +166,80 @@ export const FUNCTIONS: Fn[] = [
 	robots,
 	crawl,
 	subtitles,
+	pdf,
+	fillable,
+	imageConvert,
+	webSearch,
+	tavily,
+	find_similar,
+	arxiv,
+	openalex,
+	crossref,
+	semantic_scholar,
+	stackexchange,
+	reddit,
+	coingecko,
+	shop,
+	product_search,
+	amazon,
+	walmart,
+	homedepot,
+	lowes,
+	bestbuy,
+	ebay,
+	costco,
+	kroger,
+	ace,
+	weekly_ad,
+	people,
+	people_finder,
+	places,
+	linkedin,
+	facebook,
+	ingest,
+	citation,
+	consolidate,
+	oracle,
+	study,
+	advise,
+	learn,
+	preferences,
+	life_wiki,
+	agenda,
+	jmap,
+	mail_triage,
+	mail_sieve,
+	mail_sieve_backfill,
+	briefing,
+	vault,
+	mail,
+	files,
+	calendar,
+	contact,
+	monarch,
+	mychart,
+	pipe,
+	watch,
+	watch_pipeline,
 	kv_get,
 	kv_put,
 	kv_list,
 	kv_delete,
+	store,
+	put,
+	dropbox,
 	issue,
 	suggest,
-	imageConvert,
-	recall,
-	ace,
-	advise,
-	agenda,
-	amazon,
-	arxiv,
-	autonomy_status,
-	bestbuy,
-	briefing,
-	calendar,
-	citation,
-	coingecko,
-	consolidate,
-	contact,
-	controld,
-	costco,
-	crossref,
-	csv,
-	declutter,
-	dropbox,
-	ebay,
-	facebook,
-	files,
-	fillable,
-	find_similar,
-	fontcase,
-	homedepot,
-	html,
-	ingest,
-	jmap,
-	json,
-	kroger,
-	learn,
-	life_wiki,
-	linkedin,
-	lowes,
-	mail,
-	mail_sieve,
-	mail_sieve_backfill,
-	mail_triage,
-	markdown,
-	monarch,
-	mychart,
-	uw,
-	openalex,
-	oracle,
-	pdf,
-	people,
-	people_finder,
-	pipe,
-	places,
-	preferences,
-	product_search,
 	proposals,
-	put,
-	reddit,
-	render,
 	selftest,
-	semantic_scholar,
-	shop,
-	stackexchange,
-	store,
-	study,
+	autonomy_status,
+	controld,
+	tailscale,
 	obsidian,
 	sux,
-	tailscale,
-	tavily,
 	todoist,
-	vault,
 	voice,
-	walmart,
-	watch,
-	watch_pipeline,
-	webSearch,
-	weekly_ad,
-	xml,
-	yaml,
+	fontcase,
+	recall,
+	uw,
 ];

@@ -24,7 +24,7 @@
               "refId": "A",
               "relativeTimeRange": { "from": 900, "to": 0 },
               "datasourceUid": "${DS_PROM}",
-              "model": { "refId": "A", "expr": "count(sux_calls_total)", "instant": true, "datasource": { "type": "prometheus", "uid": "${DS_PROM}" } }
+              "model": { "refId": "A", "expr": "count(sux_calls_total or sux_calls_total_value)", "instant": true, "datasource": { "type": "prometheus", "uid": "${DS_PROM}" } }
             },
             {
               "refId": "C",

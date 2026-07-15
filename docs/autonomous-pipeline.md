@@ -42,6 +42,16 @@ Eligible (auto-merges when green) — any of:
 **Never auto-merged** (a human decides): `feat:` titles, the `feature` label, a breaking
 `!` title, or anything labelled `hold`. Security-*risky* changes: label `feature`/`hold`.
 
+## Issue routing before a builder ever sees it
+
+An issue titled `consider:` or whose body says "needs a design decision"/"not implementing
+blind"/"needs a design pass" is a request for a **design-decision doc**, not code — dispatching
+it to the code-shipping builder lane risks either a wasted batch (the builder correctly
+refuses to implement blind) or, worse, a speculative infra migration shipped without the
+design pass the issue explicitly asked for. Pre-route these to a design-decision deliverable
+(a doc under `docs/design/`) or label them `needs-human`, the same way #219/#220 were, before
+they reach a builder.
+
 ## The workflows
 
 | File | Trigger | Does |

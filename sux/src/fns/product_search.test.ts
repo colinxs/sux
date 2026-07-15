@@ -84,6 +84,18 @@ describe("product_search", () => {
 		expect(out.count).toBe(2);
 	});
 
+	it("by_retailer reflects the post-slice counts, not raw per-retailer totals, when limit cuts off a later retailer", async () => {
+		// kroger (1 product) settles before walmart (2 products); limit:1 keeps only
+		// kroger's product, so walmart must be entirely absent from by_retailer too —
+		// otherwise by_retailer would report walmart:2 while zero walmart products
+		// actually appear in `products`.
+		const r = await product_search.run({} as any, { term: "milk", retailers: ["kroger", "walmart"], limit: 1 });
+		const out = JSON.parse(r.content[0].text);
+		expect(out.products).toHaveLength(1);
+		expect(out.by_retailer).toEqual({ kroger: 1 });
+		expect(Object.values(out.by_retailer as Record<string, number>).reduce((a, b) => a + b, 0)).toBe(out.products.length);
+	});
+
 	it("rejects when no known retailer is selected", async () => {
 		const r = await product_search.run({} as any, { term: "milk", retailers: ["nope", "alsonope"] });
 		expect(r.isError).toBe(true);
