@@ -9,7 +9,7 @@ name: Stuck-PR watcher
 
 on:
   schedule:
-    - cron: "*/15 * * * *" # TEMP 15min (bug-drain push), revert in 1h
+    - cron: "31 * * * *" # hourly (reverted from temp 15min bug-drain push)
   workflow_dispatch: # allow manual "Run workflow" from the Actions tab
 
 jobs:

@@ -9,7 +9,7 @@ name: PR drain (close-stale + reconcile)
 
 on:
   schedule:
-    - cron: "*/15 * * * *" # TEMP 15min (bug-drain push), revert in 1h
+    - cron: "19 * * * *" # hourly (reverted from temp 15min bug-drain push)
   workflow_dispatch:
 
 jobs:

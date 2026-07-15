@@ -12,7 +12,7 @@ on:
   # Batch schedule replaces per-issue triggering, which fanned out parallel opus sessions
   # during fixer bursts (see SuxOS/.github docs/design/budget-and-cadence.md).
   schedule:
-    - cron: "*/15 * * * *" # TEMP 15min (bug-drain push), revert in 1h
+    - cron: "3 * * * *" # hourly (reverted from temp 15min bug-drain push)
   workflow_dispatch:
   issues:
     types: [labeled]  # event-driven: fires when fixer files a typed issue; reusable concurrency group serializes runs (no Opus fan-out)
