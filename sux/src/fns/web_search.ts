@@ -133,10 +133,9 @@ async function exa(env: any, q: string, limit: number, _route: Route): Promise<H
 	return (j?.results ?? []).slice(0, limit).map((r: any) => ({ title: r.title, url: r.url, snippet: r.text ?? r.summary }));
 }
 
-// Kagi (the flagship) — its hosted MCP returns markdown `### [title](url)` blocks.
-async function kagi(env: any, q: string, limit: number, route: Route): Promise<Hit[]> {
-	const r = await kagiTool(env, "kagi_search_fetch", { query: q, limit }, route);
-	const md = r?.content?.[0]?.text ?? "";
+/** Parse Kagi's markdown SERP (### [title](url) blocks) from a kagi_search_fetch
+ * response — shared by the metered `kagi` engine and get.ts's lens strategies. */
+export function parseKagiMarkdown(md: string, limit: number): Hit[] {
 	const hits: Hit[] = [];
 	for (const block of md.split(/\n(?=###\s*\[)/)) {
 		const m = block.match(/###\s*\[([^\]]+)\]\((https?:\/\/[^)]+)\)/);
@@ -146,6 +145,12 @@ async function kagi(env: any, q: string, limit: number, route: Route): Promise<H
 		if (hits.length >= limit) break;
 	}
 	return hits;
+}
+
+// Kagi (the flagship) — its hosted MCP returns markdown `### [title](url)` blocks.
+async function kagi(env: any, q: string, limit: number, route: Route): Promise<Hit[]> {
+	const r = await kagiTool(env, "kagi_search_fetch", { query: q, limit }, route);
+	return parseKagiMarkdown(r?.content?.[0]?.text ?? "", limit);
 }
 
 export type SearchScope = { file_type?: string; include_domains?: string[]; exclude_domains?: string[] };
@@ -194,7 +199,7 @@ export function parseKagiSession(html: string, limit: number): Hit[] {
 // authenticates the /html/search page as the account, so results are unmetered on
 // paid tiers. Routed through the residential proxy so the request looks like a normal
 // home browser (Kagi bot-gates datacenter IPs). No JS needed — /html/search is SSR.
-async function kagiSession(env: any, q: string, limit: number, route: Route): Promise<Hit[]> {
+export async function kagiSession(env: any, q: string, limit: number, route: Route): Promise<Hit[]> {
 	const url = `https://kagi.com/html/search?q=${encodeURIComponent(q)}`;
 	const resp = await smartFetch(
 		env,

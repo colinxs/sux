@@ -11,7 +11,7 @@ vi.mock("./index", () => ({ FUNCTIONS: [{ name: "render", run: renderRun }] }));
 const { smartFetch } = vi.hoisted(() => ({ smartFetch: vi.fn() }));
 vi.mock("../proxy", () => ({ smartFetch }));
 
-import { defaultEngine, parseDdg, parseGoogleSerp, parseKagiSession, webSearch, withOperators } from "./web_search";
+import { defaultEngine, parseDdg, parseGoogleSerp, parseKagiMarkdown, parseKagiSession, webSearch, withOperators } from "./web_search";
 
 const serp = (hits: Array<{ url: string; title: string }>) =>
 	`<html><body>${hits.map((h) => `<div class="g"><a href="${h.url}"><h3>${h.title}</h3></a></div>`).join("")}</body></html>`;
@@ -77,6 +77,20 @@ describe("parseKagiSession", () => {
 		expect(hits[0].snippet).toContain("policy routing & failover"); // entities decoded
 		expect(hits[1].url).toBe("https://forum.openwrt.org/t/failover/123");
 		expect(parseKagiSession(html, 1).length).toBe(1); // limit respected
+	});
+});
+
+describe("parseKagiMarkdown", () => {
+	it("parses ### [title](url) blocks with a snippet, respecting limit", () => {
+		const md = "### [First](https://a.com)\n**URL:** https://a.com\nFirst snippet.\n\n### [Second](https://b.com)\n**URL:** https://b.com\nSecond snippet.";
+		const hits = parseKagiMarkdown(md, 1);
+		expect(hits.length).toBe(1);
+		expect(hits[0]).toMatchObject({ title: "First", url: "https://a.com" });
+		expect(hits[0].snippet).toContain("First snippet");
+	});
+
+	it("returns an empty array for markdown with no result blocks", () => {
+		expect(parseKagiMarkdown("(no results)", 10)).toEqual([]);
 	});
 });
 
