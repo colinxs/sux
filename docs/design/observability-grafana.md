@@ -10,6 +10,17 @@ updated: 2026-07-12
 
 # owl-tegu observability → Grafana (logs + metrics)
 
+**Status update (2026-07-15 audit):** the metrics half of Phase 1–2 is live —
+`node_load1`, `node_hwmon_temp_celsius`, etc. are flowing into Grafana Cloud
+Prometheus (`grafanacloud-prom`) and rendered on the live **owl-tegu / System
+Overview** dashboard (5 panels: temps, current temps, load average, memory,
+uptime), superseding this doc's "prototype removed" note below. **Not
+confirmed live:** Phase 3 (textfile enrichers — NVMe SMART, dnsmasq, tailscale,
+docker, ksmbd), Phase 4 (rsyslog → Loki log shipping), and the full 3-dashboard
+split (§4) — the live dashboard is a simpler single-page version than what's
+designed there. Treat §4's "Gateway / DNS / Storage" three-dashboard plan and
+the alerting rows as still open work, not just the live 5-panel dashboard.
+
 Design + light prototype. Opinionated, KISS, gateway-SACRED. Complements — does not
 duplicate — `docs/design/generalized-watchdog-debug.md` (the `/health` hub + dead-drop),
 the sux Worker `/health`, and the recovery dead-drop.

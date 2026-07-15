@@ -1,5 +1,13 @@
 # sux — Grafana dashboards & alerts (as code)
 
+**Status (2026-07-15 audit): provisioned.** Both dashboards and all three alert
+rules live in Grafana Cloud under the **`sux`** folder — `sux — resilience &
+observability` (`sux-resilience-obs`) and `sux — metrics & SLO (Prometheus)`
+(`sux-metrics-prom`), confirmed rendering real data (`sux_calls_total`,
+`{service="sux"}` logs both flowing). These files remain the source of truth —
+re-run the import/install steps below after editing them to update Grafana in
+place (both dashboard UIDs and all three alert `uid`s are stable).
+
 Dashboard-as-code for the sux Cloudflare Worker MCP server. Two complementary
 halves, both shipped from `sux/src/grafana.ts` — nothing is scraped:
 
