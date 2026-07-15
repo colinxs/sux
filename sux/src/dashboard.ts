@@ -75,7 +75,11 @@ export async function recentNotes(env: RtEnv, limit: number): Promise<NoteSummar
 	// a whole-path sort regardless of actual recency.
 	const basename = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 	paths.sort((a, b) => basename(b).localeCompare(basename(a)));
-	const top = paths.slice(0, limit);
+	// obsidian `list` returns REPO-relative paths that already carry any OBSIDIAN_VAULT_DIR
+	// prefix, but `read` re-applies the dir itself — strip it here or every read double-prefixes
+	// into a 404 → empty excerpt (mirrors fns/citation.ts export + fns/recall.ts fromVault).
+	const dir = String((env as { OBSIDIAN_VAULT_DIR?: string }).OBSIDIAN_VAULT_DIR ?? "").replace(/^\/+|\/+$/g, "");
+	const top = paths.slice(0, limit).map((p) => (dir && p.startsWith(`${dir}/`) ? p.slice(dir.length + 1) : p));
 	const reads = await Promise.all(top.map((p) => obsidian.run(env, { action: "read", path: p, backend: "git" })));
 	return top.map((path, i) => {
 		const r = reads[i];
@@ -350,7 +354,16 @@ export async function handleDashboardRoutes(url: URL, request: Request, env: RtE
 	}
 
 	if (url.pathname === "/dashboard") {
-		return new Response(DASHBOARD_HTML, { status: 200, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+		return new Response(DASHBOARD_HTML, {
+			status: 200,
+			headers: {
+				"content-type": "text/html; charset=utf-8",
+				"cache-control": "no-store",
+				// The shell ships its own inline <script>/<style> (KISS, no framework) — allow those,
+				// but nothing external, so an injected note excerpt can't pull in third-party origins.
+				"content-security-policy": "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'",
+			},
+		});
 	}
 
 	if (url.pathname === "/dashboard/api/metrics") {
