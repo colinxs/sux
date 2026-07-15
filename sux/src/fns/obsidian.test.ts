@@ -420,6 +420,14 @@ describe("obsidian (remote backend — Funnel'd Local REST API)", () => {
 		expect(JSON.parse(r.content[0].text).hits[0]).toEqual({ path: "a.md", score: 3 });
 	});
 
+	it("hints at a dead tunnel when a search 530 comes back (Cloudflare edge-to-origin failure)", async () => {
+		vi.stubGlobal("fetch", vi.fn(async () => new Response("cloudflare error page", { status: 530 })));
+		const r = await obsidian.run(REMOTE, { action: "search", query: "todo", backend: "remote" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/HTTP 530/);
+		expect(r.content[0].text).toMatch(/tunnel/i);
+	});
+
 	it("appends by POSTing markdown to the note path", async () => {
 		const fetchMock = vi.fn(async (u: string | URL, init?: any) => {
 			expect(init.method).toBe("POST");

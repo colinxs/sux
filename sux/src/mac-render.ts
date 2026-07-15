@@ -15,6 +15,7 @@
 
 import { hmacHex } from "./proxy";
 import type { RtEnv } from "./registry";
+import { cfOriginHint } from "./fns/_util";
 
 // What a caller asks the Mac service to render. Only `url` is required; the rest
 // mirror the render fn's knobs and default sensibly for HTML extraction.
@@ -140,10 +141,10 @@ export async function macRender(env: RtEnv, spec: MacRenderSpec): Promise<MacRen
 	try {
 		data = (await resp.json()) as MacRenderResponse;
 	} catch {
-		return { ok: false, error: `mac render failed: unreadable response (HTTP ${resp.status}).` };
+		return { ok: false, error: `mac render failed: unreadable response (HTTP ${resp.status}).${cfOriginHint(resp.status)}` };
 	}
 	if (!resp.ok || data.error) {
-		return { ok: false, error: `mac render failed: ${data.error ?? `HTTP ${resp.status}`}` };
+		return { ok: false, error: `mac render failed: ${data.error ?? `HTTP ${resp.status}`}${cfOriginHint(resp.status)}` };
 	}
 	return {
 		ok: true,

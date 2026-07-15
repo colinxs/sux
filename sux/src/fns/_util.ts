@@ -20,6 +20,20 @@ export function isHttpUrl(u: unknown): u is string {
 	return typeof u === "string" && /^https?:\/\//i.test(u);
 }
 
+// Cloudflare's edge-to-origin error family: the CF edge itself answered, but
+// couldn't reach/resolve whatever sits behind it — a dead Tunnel or broken DNS on
+// a self-hosted origin, NOT an app-level error from the origin service. Both the
+// Mac render bridge and the Obsidian remote-search backend sit behind tunneled
+// origins, so a 530 (or its siblings) from either is an availability signal, not
+// something a caller can retry its way out of. See #551.
+const CF_ORIGIN_UNREACHABLE_STATUSES = new Set([521, 522, 523, 524, 525, 526, 530]);
+
+/** A short hint appended to an error message when `status` is one of Cloudflare's
+ * edge-to-origin codes — empty string for any other status. */
+export function cfOriginHint(status: number): string {
+	return CF_ORIGIN_UNREACHABLE_STATUSES.has(status) ? ` Likely a dead Tunnel, not an app error — check whether it's up.` : "";
+}
+
 /** The vault owner's LOCAL calendar day as YYYY-MM-DD (default Pacific). A Worker
  * runs in UTC, so a plain toISOString() date rolls to tomorrow from ~5pm Pacific —
  * wrong for daily-note targeting and capture filenames. en-CA renders ISO order. */
