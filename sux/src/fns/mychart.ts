@@ -84,7 +84,13 @@ export const mychart: Fn = {
 				const path = String(a?.path ?? "");
 				if (!path.trim()) return failWith("bad_input", "op=get requires a `path` (e.g. `Observation?category=vital-signs`).");
 				const abs = resolveFhirPath(env, path);
-				if (!abs) return failWith("bad_input", `op=get: path escapes the configured FHIR base — refused. (${path})`);
+				if (!abs) {
+					// PHI-free error surface, same reasoning as the resp.status>=400 branch below:
+					// the query string can carry patient identifiers (e.g. `given=Jane&family=Doe`)
+					// which must never reach Logs/Loki/metrics.tools.mychart.last_error.
+					const safePath = path.split("?")[0].slice(0, 100);
+					return failWith("bad_input", `op=get: path escapes the configured FHIR base — refused. (${safePath})`);
+				}
 				if (!(await readGrant(env))) return failWith("not_configured", "MyChart not connected — open /mychart/connect once.");
 				const resp = await mychartFetch(env, abs);
 				const text = await resp.text();

@@ -33,4 +33,20 @@ describe("cache-codec", () => {
 		// Either it compressed (bytes) or bailed to string — but it must round-trip.
 		expect(unpackFromCache(packed as any)).toBe(s);
 	});
+
+	it("still decompresses a normal, moderately-sized payload unaffected by the bomb cap", () => {
+		const normal = JSON.stringify({ content: [{ type: "text", text: "the quick brown fox ".repeat(5000) }] });
+		const packed = packForCache(normal);
+		expect(typeof packed).not.toBe("string");
+		expect(unpackFromCache(packed as Uint8Array)).toBe(normal);
+	});
+
+	it("throws instead of allocating unbounded memory when a frame decompresses past the cap (decompression bomb)", () => {
+		// Highly-compressible 40MB payload — a fast, small frame that inflates well
+		// past the 32MB cap, standing in for a crafted/corrupt KV cache entry.
+		const bomb = "a".repeat(40 * 1024 * 1024);
+		const packed = packForCache(bomb);
+		expect(typeof packed).not.toBe("string"); // must actually be a compressed frame to exercise the guard
+		expect(() => unpackFromCache(packed as Uint8Array)).toThrow();
+	});
 });

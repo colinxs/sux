@@ -63,3 +63,78 @@ jobs:
       # Validates the Worker bundles & config are deployable without deploying.
       - name: Build (dry-run deploy)
         run: npx wrangler deploy --dry-run --config sux/wrangler.jsonc
+
+  new-dependency-guard:
+    name: New dependency guard
+    # Unattended AI-authored PRs (issue-build.yml) are a known target for supply-chain
+    # squatting: an LLM can hallucinate a plausible-but-nonexistent package name, and an
+    # attacker pre-registers that exact name betting an agent will `npm ci` it sight-unseen
+    # (#473). Not urgent enough to hard-fail CI over — a real, legitimate new dependency is
+    # the common case — so this just surfaces the diff for a human and leans on the same
+    # `hold` label automerge.yml/security-review.yml already treat as a merge-blocking gate,
+    # rather than inventing a second label+hold mechanism.
+    # pull_request-only: push/merge_group don't carry a stable base ref to diff against.
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # actions/checkout's default depth (1) only has the PR's synthetic merge commit —
+      # fetch just the base commit object (not full history) so `git show <base>:package.json`
+      # resolves without slowing this down into a full clone.
+      - name: Diff package.json dependencies against PR base
+        id: diff-deps
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git fetch --depth=1 origin "$BASE_SHA"
+          cat > /tmp/diff-deps.cjs <<'EOF'
+          const fs = require("fs");
+          const { execSync } = require("child_process");
+          const baseSha = process.env.BASE_SHA;
+          const basePkg = JSON.parse(execSync(`git show ${baseSha}:package.json`).toString());
+          const headPkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          const baseDeps = new Set([
+            ...Object.keys(basePkg.dependencies || {}),
+            ...Object.keys(basePkg.devDependencies || {}),
+          ]);
+          const headDeps = [
+            ...Object.keys(headPkg.dependencies || {}),
+            ...Object.keys(headPkg.devDependencies || {}),
+          ];
+          const added = headDeps.filter((d) => !baseDeps.has(d));
+          const out = process.env.GITHUB_OUTPUT;
+          if (added.length === 0) {
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, "No new package.json dependencies in this PR.\n");
+            fs.appendFileSync(out, "has_new=false\n");
+            process.exit(0);
+          }
+          const lines = [
+            "## :warning: New dependency added — human review required before merge",
+            "",
+            "This PR adds a package name not present on the base branch. Unattended/AI-authored " +
+              "PRs are a known target for supply-chain (typosquat) attacks: an LLM can recommend a " +
+              "plausible-sounding package that doesn't exist, and an attacker can pre-register that " +
+              "exact name anticipating `npm ci` will install it. Confirm each of these is a real, " +
+              "intended dependency before merging:",
+            "",
+            ...added.map((d) => "- `" + d + "`"),
+          ];
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join("\n") + "\n");
+          fs.appendFileSync(out, "has_new=true\n");
+          EOF
+          node /tmp/diff-deps.cjs
+
+      # Reuse the repo's existing hold convention (docs/design/merge-queue.md) rather than a
+      # bespoke gate: applying it here pauses auto-merge the same way a high/critical security
+      # finding does, until a human reviews the new name(s) and clears the label. Best-effort —
+      # never fail the run over a label-write hiccup (e.g. a fork PR's read-only token).
+      - name: Hold PR pending human review of new dependency
+        if: steps.diff-deps.outputs.has_new == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr edit "${{ github.event.pull_request.number }}" --add-label hold

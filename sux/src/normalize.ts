@@ -88,7 +88,13 @@ export function normalizeArgs<T>(value: T, opts: NormalizeOptions = SANE): T {
 	if (Array.isArray(value)) return value.map((v) => normalizeArgs(v, opts)) as unknown as T;
 	if (value && typeof value === "object") {
 		const out: Record<string, unknown> = {};
-		for (const [k, v] of Object.entries(value)) out[k] = normalizeArgs(v, opts);
+		for (const [k, v] of Object.entries(value)) {
+			// Object.entries surfaces "__proto__" as an own key from JSON.parse;
+			// out[k] = ... on that key invokes the Object.prototype setter and
+			// repoints out's prototype to attacker-controlled data.
+			if (k === "__proto__" || k === "constructor" || k === "prototype") continue;
+			out[k] = normalizeArgs(v, opts);
+		}
 		return out as T;
 	}
 	return value;

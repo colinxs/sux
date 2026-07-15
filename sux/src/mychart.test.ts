@@ -128,6 +128,16 @@ describe("mychart /connect gate", () => {
 		const state = loc.searchParams.get("state")!;
 		expect(env.OAUTH_KV.map.has(`sux:mychart:pkce:${state}`)).toBe(true);
 	});
+
+	it("a smartConfig failure is escaped and served with an explicit text content-type (#360)", async () => {
+		const env = baseEnv({ SUX_CRON_TOKEN: "op-secret" });
+		vi.stubGlobal("fetch", vi.fn(async () => new Response("boom", { status: 500 })));
+		const resp = await handleMychartRoutes(new URL("https://suxos.net/mychart/connect?token=op-secret"), new Request("https://suxos.net/mychart/connect?token=op-secret"), env);
+		expect(resp?.status).toBe(502);
+		expect(resp?.headers.get("content-type")).toMatch(/text\/plain/);
+		const body = await resp!.text();
+		expect(body).not.toContain("<script>"); // any future attacker-influenced message stays HTML-inert
+	});
 });
 
 describe("mychart token lifecycle (mint / rotate / 401 self-heal)", () => {

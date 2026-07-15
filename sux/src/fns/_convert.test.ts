@@ -112,6 +112,37 @@ describe("parseXml (`>` inside a quoted attribute value)", () => {
 	});
 });
 
+describe("prototype-pollution guard (__proto__ own-keys)", () => {
+	it("does not let a top-level __proto__ YAML key swap the parsed object's prototype", () => {
+		const out = parseYaml("__proto__:\n  polluted: true\nq: hi") as Record<string, unknown>;
+		expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+		expect(Object.getPrototypeOf(out)).toBe(Object.prototype);
+		expect(out).toEqual({ q: "hi" });
+	});
+
+	it("does not let a scalar __proto__ YAML key swap the parsed object's prototype", () => {
+		const out = parseYaml("__proto__: 1\nq: hi") as Record<string, unknown>;
+		expect(Object.getPrototypeOf(out)).toBe(Object.prototype);
+		expect(out).toEqual({ q: "hi" });
+	});
+
+	it("does not let a __proto__ XML element swap the parsed node's prototype", () => {
+		const out = parseXml("<root><__proto__><polluted>true</polluted></__proto__><q>hi</q></root>") as Record<
+			string,
+			unknown
+		>;
+		expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+		const root = out.root as Record<string, unknown>;
+		expect(Object.getPrototypeOf(root)).toBe(Object.prototype);
+		expect(root).toEqual({ q: "hi" });
+	});
+
+	it("still parses normal YAML and XML unaffected by the guard", () => {
+		expect(parseYaml("a: 1\nb: 2")).toEqual({ a: 1, b: 2 });
+		expect(parseXml("<root><a>1</a></root>")).toEqual({ root: { a: "1" } });
+	});
+});
+
 describe("parseCsv (quoted-empty vs truly-blank rows)", () => {
 	it("keeps a row that is an explicitly quoted single empty field", () => {
 		// The blank-row filter must drop a bare `\n` line but keep `""`, which is a

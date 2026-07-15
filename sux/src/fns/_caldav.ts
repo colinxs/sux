@@ -11,6 +11,7 @@ import { type RtEnv } from "../registry";
 // shape (Workers have no DOMParser); it curates the common properties, not the whole spec.
 
 const CALDAV_HOST = "https://caldav.fastmail.com";
+const CALDAV_ORIGIN = new URL(CALDAV_HOST).origin;
 
 export function hasCalDav(env: RtEnv): boolean {
 	return !!(env as any).FASTMAIL_CALDAV_USER && !!(env as any).FASTMAIL_APP_PASSWORD;
@@ -29,14 +30,30 @@ const POST_TIMEOUT_MS = 30_000;
 
 export type CalDavResponse = { status: number; ok: boolean; text: string; etag: string | null };
 
-/** One authenticated CalDAV request. `path` is absolute-from-host or a full URL. */
+/** One authenticated CalDAV request. `path` is absolute-from-host or a full URL — a full
+ *  URL's origin MUST match CALDAV_HOST, or the Fastmail credential the Authorization
+ *  header carries would ship to whatever host an agent-supplied `href` (cal_update/
+ *  cal_delete/task_update/task_complete) points at. Mirrors _jmap.ts's resolveUploadBytes
+ *  SSRF guard on the upload path. */
 export async function caldavFetch(
 	env: RtEnv,
 	method: string,
 	path: string,
 	opts: { body?: string; contentType?: string; depth?: string; ifMatch?: string; ifNoneMatch?: string } = {},
 ): Promise<CalDavResponse> {
-	const url = path.startsWith("http") ? path : `${CALDAV_HOST}${path}`;
+	let url: string;
+	if (path.startsWith("http")) {
+		let origin: string;
+		try {
+			origin = new URL(path).origin;
+		} catch {
+			throw new Error(`invalid CalDAV href '${path}'.`);
+		}
+		if (origin !== CALDAV_ORIGIN) throw new Error(`CalDAV href must be on ${CALDAV_ORIGIN} — refusing off-host request to '${origin}'.`);
+		url = path;
+	} else {
+		url = `${CALDAV_HOST}${path}`;
+	}
 	const headers: Record<string, string> = { Authorization: authHeader(env) };
 	if (opts.contentType) headers["Content-Type"] = opts.contentType;
 	if (opts.depth) headers.Depth = opts.depth;

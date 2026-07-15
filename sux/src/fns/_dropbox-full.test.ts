@@ -44,6 +44,13 @@ describe("hasDropboxFull / normFull", () => {
 		expect(normFull("/Documents/")).toBe("/Documents");
 		expect(normFull("/a/b/")).toBe("/a/b");
 	});
+
+	it("resolves '.'/'..' segments so a traversal can't slip past a downstream startsWith fence", () => {
+		expect(normFull("/Public/../Private/exfil.txt")).toBe("/Private/exfil.txt");
+		expect(normFull("/a/./b")).toBe("/a/b");
+		expect(normFull("/a/../../b")).toBe("/b"); // clamps at root instead of escaping above it
+		expect(normFull("/..")).toBe("");
+	});
 });
 
 describe("auth — isolated to the full credential", () => {
@@ -321,6 +328,14 @@ describe("Mode B write firewall — dry-run default, fence, backup, rev-conditio
 		await expect(writeFull(env, { path: "/Obsidian/vault/n.md", bytes: new Uint8Array(), dryRun: true })).rejects.toThrow(/protected prefix/);
 		await expect(deleteFull(env, { path: "/private/secret.txt", dryRun: true })).rejects.toThrow(/protected prefix/);
 		await expect(moveFull(env, { from: "/ok.txt", to: "/Obsidian/x", dryRun: true })).rejects.toThrow(/protected prefix/);
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("the fence catches a '..' traversal that would otherwise resolve into a protected prefix unchanged", async () => {
+		const env = { DROPBOX_FULL_TOKEN: "ft", DROPBOX_FULL_PROTECT_PREFIXES: "/Private" } as any;
+		const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+		vi.stubGlobal("fetch", fetchMock);
+		await expect(writeFull(env, { path: "/Public/../Private/exfil.txt", bytes: new Uint8Array(), dryRun: true })).rejects.toThrow(/protected prefix/);
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
 

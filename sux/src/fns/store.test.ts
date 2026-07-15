@@ -39,9 +39,28 @@ describe("store", () => {
 		expect(r.content[0].text).toMatch(/R2 is not available/);
 	});
 
+	it("a fresh put stages a preview by default — nothing written until commit_token or force (#456)", async () => {
+		const env = mkEnv();
+		const staged = j(await store.run(env, { data: "hello world" }));
+		expect(staged.staged).toBe(true);
+		expect(typeof staged.commit_token).toBe("string");
+		expect(env.R2._m.size).toBe(0); // nothing written yet
+		const committed = j(await store.run(env, { data: "hello world", commit_token: staged.commit_token }));
+		expect(committed.uuid).toMatch(UUID);
+		expect(committed.url).toBe(`https://suxos.net/s/${committed.uuid}`);
+		expect(env.R2._m.size).toBe(1);
+	});
+
+	it("force:true writes a put in one shot, skipping the stage step", async () => {
+		const env = mkEnv();
+		const put = j(await store.run(env, { data: "hello world", force: true }));
+		expect(put.uuid).toMatch(UUID);
+		expect(env.R2._m.size).toBe(1);
+	});
+
 	it("put returns a url ending in a uuid and maps it in KV; get by id round-trips", async () => {
 		const env = mkEnv();
-		const put = j(await store.run(env, { data: "hello world" }));
+		const put = j(await store.run(env, { data: "hello world", force: true }));
 		expect(put.key).toBe(`cas/${put.sha256}`);
 		expect(put.size).toBe(11);
 		expect(put.uuid).toMatch(UUID);
@@ -56,8 +75,8 @@ describe("store", () => {
 
 	it("content-addresses: identical content dedupes to one blob but mints distinct handles", async () => {
 		const env = mkEnv();
-		const a = j(await store.run(env, { data: "same" }));
-		const b = j(await store.run(env, { data: "same" }));
+		const a = j(await store.run(env, { data: "same", force: true }));
+		const b = j(await store.run(env, { data: "same", force: true }));
 		expect(a.key).toBe(b.key);
 		expect(a.uuid).not.toBe(b.uuid);
 		expect(env.R2._m.size).toBe(1);
@@ -66,7 +85,7 @@ describe("store", () => {
 
 	it("stores and returns binary as base64", async () => {
 		const env = mkEnv();
-		const put = j(await store.run(env, { base64: btoa("\x00\x01\x02"), content_type: "application/octet-stream" }));
+		const put = j(await store.run(env, { base64: btoa("\x00\x01\x02"), content_type: "application/octet-stream", force: true }));
 		const got = j(await store.run(env, { op: "get", id: put.uuid }));
 		expect(got.base64).toBe(btoa("\x00\x01\x02"));
 	});
@@ -85,7 +104,7 @@ describe("store", () => {
 
 	it("get by raw key falls back to the object's stored content type (text branch)", async () => {
 		const env = mkEnv();
-		const put = j(await store.run(env, { data: '{"a":1}', content_type: "application/json" }));
+		const put = j(await store.run(env, { data: '{"a":1}', content_type: "application/json", force: true }));
 		const got = j(await store.run(env, { op: "get", key: put.key }));
 		expect(got.key).toBe(put.key);
 		expect(got.content_type).toBe("application/json");
@@ -110,8 +129,8 @@ describe("store", () => {
 
 	it("list filters by prefix over raw R2 keys", async () => {
 		const env = mkEnv();
-		await store.run(env, { data: "one" });
-		await store.run(env, { data: "two" });
+		await store.run(env, { data: "one", force: true });
+		await store.run(env, { data: "two", force: true });
 		env.R2._m.set("other/misc", { bytes: new Uint8Array([1]) });
 		const all = j(await store.run(env, { op: "list" }));
 		expect(all.objects).toHaveLength(3);
@@ -123,8 +142,8 @@ describe("store", () => {
 
 	it("list clamps limit into [1, 1000] and defaults to 100", async () => {
 		const env = mkEnv();
-		await store.run(env, { data: "a" });
-		await store.run(env, { data: "b" });
+		await store.run(env, { data: "a", force: true });
+		await store.run(env, { data: "b", force: true });
 		const spy = vi.spyOn(env.R2, "list");
 		const one = j(await store.run(env, { op: "list", limit: -5 }));
 		expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({ limit: 1 }));
@@ -155,7 +174,7 @@ describe("store", () => {
 
 	it("delete removes the handle but keeps the blob", async () => {
 		const env = mkEnv();
-		const put = j(await store.run(env, { data: "x" }));
+		const put = j(await store.run(env, { data: "x", force: true }));
 		const del = j(await store.run(env, { op: "delete", id: put.uuid }));
 		expect(del.deleted).toBe(true);
 		expect((await store.run(env, { op: "get", id: put.uuid })).isError).toBe(true);
@@ -164,7 +183,7 @@ describe("store", () => {
 
 	it("get by id of an over-4MB object returns the url ref and never inlines (texty branch)", async () => {
 		const env = mkEnv();
-		const put = j(await store.run(env, { data: "small", content_type: "text/plain" }));
+		const put = j(await store.run(env, { data: "small", content_type: "text/plain", force: true }));
 		const text = vi.fn(async () => "small");
 		const arrayBuffer = vi.fn(async () => new Uint8Array([1]).buffer);
 		env.R2.get = async () => ({ size: 5 * 1024 * 1024, httpMetadata: { contentType: "text/plain" }, customMetadata: {}, text, arrayBuffer });
@@ -210,7 +229,7 @@ describe("store", () => {
 
 	it("GET /s/<uuid> serves the stored bytes with its content type", async () => {
 		const env = mkEnv();
-		const put = j(await store.run(env, { data: "page body", content_type: "text/plain" }));
+		const put = j(await store.run(env, { data: "page body", content_type: "text/plain", force: true }));
 		const resp = await handleObservability(new URL(put.url), new Request(put.url), env);
 		expect(resp).toBeTruthy();
 		expect(resp!.status).toBe(200);
@@ -220,7 +239,7 @@ describe("store", () => {
 
 	it("put with no ttl_seconds mints a permanent handle (no expiry) — backward compatible", async () => {
 		const env = mkEnv();
-		const put = j(await store.run(env, { data: "forever" }));
+		const put = j(await store.run(env, { data: "forever", force: true }));
 		expect(put.expiry).toBeUndefined();
 		expect(JSON.parse(env.OAUTH_KV._m.get(`store:${put.uuid}`)!).expiry).toBeUndefined();
 	});
@@ -228,7 +247,7 @@ describe("store", () => {
 	it("put with ttl_seconds records an absolute expiry and sets KV expirationTtl; still readable before it lapses", async () => {
 		const env = mkEnv();
 		const spy = vi.spyOn(env.OAUTH_KV, "put");
-		const put = j(await store.run(env, { data: "ephemeral", ttl_seconds: 3600 }));
+		const put = j(await store.run(env, { data: "ephemeral", ttl_seconds: 3600, force: true }));
 		expect(put.expiry).toBeGreaterThan(Math.floor(Date.now() / 1000));
 		// The handle JSON carries the same expiry, and KV self-evicts via expirationTtl.
 		expect(JSON.parse(env.OAUTH_KV._m.get(`store:${put.uuid}`)!).expiry).toBe(put.expiry);
@@ -245,14 +264,14 @@ describe("store", () => {
 	it("sub-60s ttl_seconds records the expiry but skips expirationTtl (KV's 60s floor)", async () => {
 		const env = mkEnv();
 		const spy = vi.spyOn(env.OAUTH_KV, "put");
-		const put = j(await store.run(env, { data: "blink", ttl_seconds: 30 }));
+		const put = j(await store.run(env, { data: "blink", ttl_seconds: 30, force: true }));
 		expect(put.expiry).toBe(Math.floor(Date.now() / 1000) + 30);
 		expect(spy).toHaveBeenCalledWith(`store:${put.uuid}`, expect.any(String), undefined);
 	});
 
 	it("get of an expired handle is not-found and best-effort deletes the handle", async () => {
 		const env = mkEnv();
-		const put = j(await store.run(env, { data: "gone soon", ttl_seconds: 60 }));
+		const put = j(await store.run(env, { data: "gone soon", ttl_seconds: 60, force: true }));
 		// Simulate KV expiry lapsing: rewind the handle's absolute expiry into the past.
 		const key = `store:${put.uuid}`;
 		const handle = JSON.parse(env.OAUTH_KV._m.get(key)!);
@@ -268,7 +287,7 @@ describe("store", () => {
 
 	it("GET /s/<uuid> of an expired handle is 404 and reaps the handle", async () => {
 		const env = mkEnv();
-		const put = j(await store.run(env, { data: "expiring page", ttl_seconds: 60 }));
+		const put = j(await store.run(env, { data: "expiring page", ttl_seconds: 60, force: true }));
 		const key = `store:${put.uuid}`;
 		const handle = JSON.parse(env.OAUTH_KV._m.get(key)!);
 		handle.expiry = Math.floor(Date.now() / 1000) - 1;
@@ -281,7 +300,7 @@ describe("store", () => {
 	it("transparently gzips a large text blob in R2 and inflates it on get + /s/", async () => {
 		const env = mkEnv();
 		const body = "sux transparent compression round-trip. ".repeat(300);
-		const put = j(await store.run(env, { data: body, content_type: "text/plain" }));
+		const put = j(await store.run(env, { data: body, content_type: "text/plain", force: true }));
 		// R2 holds the compressed frame (marker + gzip magic), smaller than the input.
 		const stored = env.R2._m.get(put.key)!.bytes;
 		expect(stored.length).toBeLessThan(new TextEncoder().encode(body).length);

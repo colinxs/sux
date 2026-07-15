@@ -203,7 +203,9 @@ function serializeScalar(value: unknown): string {
 	const s = String(value ?? "");
 	// Quote only when a bare scalar would reparse wrong (leading/trailing space, or
 	// YAML-significant punctuation); keep clean strings/dates unquoted for readability.
-	return /^\s|\s$|[:#\[\]{},&*!|>'"%@`]/.test(s) ? JSON.stringify(s) : s;
+	// An embedded newline must always quote too — unquoted it would prematurely
+	// close the `---` frontmatter fence (or inject pseudo-frontmatter/body text).
+	return /^\s|\s$|\n|[:#\[\]{},&*!|>'"%@`]/.test(s) ? JSON.stringify(s) : s;
 }
 
 /** Operate on the section under a `# Heading` (matched by heading text at any

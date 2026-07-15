@@ -71,6 +71,24 @@ describe("vault-graph pure layer (§4)", () => {
 		expect(patchFrontmatter(r2.content, "status", "active").changed).toBe(false); // idempotent
 	});
 
+	it("patchFrontmatter leaves plain scalars unquoted (no regression)", () => {
+		const r = patchFrontmatter("# Note\nbody", "title", "Hello World");
+		expect(r.content).toContain("title: Hello World");
+		expect(r.content).not.toContain('"Hello World"');
+	});
+
+	it("patchFrontmatter quotes a value with an embedded newline, so it can't fence-inject (#412)", () => {
+		const evil = "foo\n---\nbar";
+		const r = patchFrontmatter("# Note\nbody", "note", evil);
+		// the embedded '---' must be escaped inside the quoted scalar, not left as a bare line
+		expect(r.content).toContain(String.raw`"foo\n---\nbar"`);
+		const fenceLines = r.content.split("\n").filter((l) => l === "---");
+		expect(fenceLines).toHaveLength(2); // exactly the real open/close fence — no injected third fence
+		expect(r.content).toContain("\n\n# Note\nbody"); // original body untouched, not swallowed as pseudo-frontmatter
+		const fm = parseFrontmatter(r.content);
+		expect(fm.note).toBe(String.raw`foo\n---\nbar`); // recovered from inside the fence, not split across it
+	});
+
 	it("patchHeadingSection replace/append; ambiguous or missing heading throws", () => {
 		const doc = "# A\nold\n\n# B\nkeep";
 		expect(patchHeadingSection(doc, "A", "replace", "new").content).toBe("# A\nnew\n\n# B\nkeep");

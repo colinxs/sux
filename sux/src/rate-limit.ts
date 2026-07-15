@@ -33,6 +33,13 @@ const MAX_PIPE_STEPS = 25;
 /** EXTRA limiter tokens this whole request will consume — the sum of the leaf
  *  weights it fans into, not just the front tool's. Falls back to extraCost(name)
  *  for every non-fan-out tool. */
+// batch's own nested-fanout amplification cap (mirrors NESTED_FANOUT_TOOLS/
+// MAX_NESTED_CALLS in batch.ts — duplicated here, same as MAX_BATCH_CALLS/
+// MAX_PIPE_STEPS above, so pricing can't be gamed past what dispatch will
+// actually run without importing batch.ts's internals).
+const NESTED_FANOUT_TOOLS = new Set(["pipe", "batch_fetch", "crawl"]);
+const MAX_NESTED_CALLS = 25;
+
 export function requestCost(name: string, args: unknown): number {
 	const a = (args && typeof args === "object" && !Array.isArray(args) ? args : {}) as Record<string, unknown>;
 	if (name === "batch") {
@@ -41,11 +48,24 @@ export function requestCost(name: string, args: unknown): number {
 		// only the wrapper so an invalid batch can't be gamed into a free pass either way.
 		if (!tool || tool === "batch") return extraCost(name);
 		const width = Array.isArray(a.over) ? a.over.length : Array.isArray(a.calls) ? a.calls.length : 0;
-		const calls = Math.min(width, MAX_BATCH_CALLS);
-		let total = extraCost(tool) * calls;
+		const cap = NESTED_FANOUT_TOOLS.has(tool) ? MAX_NESTED_CALLS : MAX_BATCH_CALLS;
+		const calls = Math.min(width, cap);
+		// Price each mapped call by the mapped TOOL's own cost, recursing when it's
+		// itself a fan-out (pipe/batch_fetch/crawl) — a flat extraCost(tool) lookup
+		// undercounts a batch-mapped pipe's real nested-render weight to ~0 (#454).
+		// `calls` (per-item full args) prices each entry individually; `over`+`args`
+		// shares one template across every mapped call.
+		let total: number;
+		if (Array.isArray(a.calls)) {
+			total = (a.calls as unknown[]).slice(0, calls).reduce((sum: number, c) => sum + requestCost(tool, c), 0);
+		} else {
+			total = requestCost(tool, a.args) * calls;
+		}
 		const reduceWith = a.reduce_with;
 		if (reduceWith && typeof reduceWith === "object" && typeof (reduceWith as { tool?: unknown }).tool === "string") {
-			total += extraCost((reduceWith as { tool: string }).tool.trim());
+			// Recurse into the reducer's own args too — a reduce_with:{tool:'pipe',...}
+			// fans into real nested calls just like the map side (#356).
+			total += requestCost((reduceWith as { tool: string }).tool.trim(), (reduceWith as { args?: unknown }).args);
 		}
 		return total;
 	}
@@ -54,7 +74,8 @@ export function requestCost(name: string, args: unknown): number {
 		let total = 0;
 		for (const s of steps) {
 			const tool = s && typeof s === "object" && typeof (s as { tool?: unknown }).tool === "string" ? (s as { tool: string }).tool.trim() : "";
-			if (tool) total += extraCost(tool);
+			const stepArgs = s && typeof s === "object" ? (s as { args?: unknown }).args : undefined;
+			if (tool) total += requestCost(tool, stepArgs);
 		}
 		return total;
 	}

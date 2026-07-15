@@ -410,7 +410,11 @@ export async function handleMychartRoutes(url: URL, request: Request, env: RtEnv
 			auth.searchParams.set("code_challenge_method", "S256");
 			return new Response(null, { status: 302, headers: { location: auth.toString(), "cache-control": "no-store", "referrer-policy": "no-referrer" } });
 		} catch (e) {
-			return new Response(`MyChart connect failed: ${String((e as Error)?.message ?? e)}`, { status: 502 });
+			// Defense-in-depth: today only smartConfig()'s status-number-only errors reach here,
+			// but escapeHtml + an explicit content-type keep this catch consistent with every
+			// other error response in this flow the moment its error surface gains attacker-
+			// influenced content (matches the reflected-XSS fix applied to the callback route).
+			return new Response(escapeHtml(String((e as Error)?.message ?? e)), { status: 502, headers: TEXT_HEADERS });
 		}
 	}
 

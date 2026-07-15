@@ -68,6 +68,16 @@ describe("mychart fn", () => {
 		expect(spy).not.toHaveBeenCalled();
 	});
 
+	it("get's escaped-FHIR-base error strips the query string — never leaks patient identifiers into the error surface (#360)", async () => {
+		const env = connectedEnv();
+		vi.stubGlobal("fetch", vi.fn());
+		const r = await mychart.run(env, { op: "get", path: "https://evil.com/Patient?given=Jane&family=Doe&birthdate=1990-01-01" });
+		expect(r.errorCode).toBe("bad_input");
+		expect(r.content[0].text).not.toContain("Jane");
+		expect(r.content[0].text).not.toContain("Doe");
+		expect(r.content[0].text).not.toContain("1990-01-01");
+	});
+
 	it("get passes a validated FHIR query through and returns the raw body", async () => {
 		const env = connectedEnv();
 		vi.stubGlobal("fetch", vi.fn(async (u: any) => {

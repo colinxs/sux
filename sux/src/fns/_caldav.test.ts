@@ -214,6 +214,27 @@ describe("_caldav discovery + report", () => {
 		expect(((f.mock.calls[0] as any[])[1] as any).headers.Authorization).toMatch(/^Basic /);
 	});
 
+	it("caldavFetch accepts an absolute href on the CalDAV host itself", async () => {
+		const f = vi.fn(async () => new Response("ok", { status: 200 }));
+		global.fetch = f as any;
+		await caldavFetch(env(), "GET", "https://caldav.fastmail.com/dav/calendars/user/me@fastmail.com/personal/x.ics");
+		expect(f).toHaveBeenCalledTimes(1);
+	});
+
+	it("caldavFetch refuses an off-host absolute href before issuing any request — the Fastmail credential must never ship to an attacker host (#402, #453)", async () => {
+		const f = vi.fn(async () => new Response("ok", { status: 200 }));
+		global.fetch = f as any;
+		await expect(caldavFetch(env(), "GET", "https://attacker.example/x")).rejects.toThrow(/must be on https:\/\/caldav\.fastmail\.com/);
+		expect(f).not.toHaveBeenCalled();
+	});
+
+	it("caldavFetch refuses an unparseable http(s)-looking href", async () => {
+		const f = vi.fn(async () => new Response("ok", { status: 200 }));
+		global.fetch = f as any;
+		await expect(caldavFetch(env(), "GET", "http://")).rejects.toThrow(/invalid CalDAV href/);
+		expect(f).not.toHaveBeenCalled();
+	});
+
 	it("reportObjects pulls calendar-data blocks from a REPORT multistatus", async () => {
 		const ical = buildVEvent({ uid: "e9", summary: "Standup", start: "2026-07-11T09:00:00Z", dtstamp: "2026-07-10T00:00:00Z" });
 		const body = `<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:response><d:href>/dav/calendars/user/me@fastmail.com/personal/e9.ics</d:href><d:propstat><d:prop><d:getetag>"e1"</d:getetag><c:calendar-data>${ical}</c:calendar-data></d:prop></d:propstat></d:response></d:multistatus>`;

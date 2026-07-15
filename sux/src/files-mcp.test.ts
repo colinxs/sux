@@ -287,4 +287,13 @@ describe("handleFilesRpc protocol shell", () => {
 		const body = await sseJson(await call({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "nope" } }));
 		expect(body.error.code).toBe(-32601);
 	});
+
+	it("rejects multi-byte-UTF-8 args whose byte size exceeds the cap even though its UTF-16 code-unit length reads under it", async () => {
+		// 750k CJK chars: ~750k UTF-16 code units (under the 2MB cap by length) but
+		// ~2.25MB of UTF-8 bytes (over it) — the exact gap String.length misses.
+		const junk = "国".repeat(750_000);
+		const body = await sseJson(await call({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "files_list", arguments: { junk } } }));
+		expect(body.result.isError).toBe(true);
+		expect(body.result.content[0].text).toMatch(/too large/);
+	});
 });
