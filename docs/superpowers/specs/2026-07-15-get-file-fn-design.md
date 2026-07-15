@@ -171,9 +171,15 @@ and reports which strategies it actually ran.
 Merge all hits, then collapse mirror-duplicates while keeping distinct editions
 apart:
 
-- Dedup key = normalized `{title + host + filetype + size-if-known}`.
+- Dedup key = normalized `{title + filetype}` — **excluding host**. (Correction,
+  caught while writing the implementation plan: an earlier draft of this key
+  included `host`, which is self-contradictory — including host in the identity
+  key would stop same-file mirrors on different hosts from collapsing, which is
+  exactly what the next line requires. Host is kept on the `Edition` record for
+  display, not used for dedup identity.)
 - Same file mirrored on multiple hosts → **one** candidate.
-- Different edition (year / format / filetype differs) → **separate** candidate.
+- Different edition (format/filetype differs, or the title text names a
+  distinct edition) → **separate** candidate.
 
 Return a ranked list of **unique** candidates (the "in case there are editions"
 requirement).
@@ -193,9 +199,14 @@ Applied to the acquired bytes:
 
 - **Always**: if the file is a PDF, run `pdf` compress (object streams + strip
   metadata).
-- **On request** (`convert:"pdf"`): if `kind=document` (docx/txt/epub/html/…),
-  convert to PDF first (via `convert`/`pdf`), then compress. Non-convertible
-  kinds returned as-is.
+- **On request** (`convert:"pdf"`): only for **html and plain-text** content —
+  convert via `pdf`'s existing `kind: "html"|"text"` support, then compress.
+  (Correction: an earlier draft of this line claimed docx/epub conversion too.
+  Grounding the implementation plan found no docx/epub converter anywhere in
+  the codebase — `pdf.ts`'s `kind` enum is only `pdf|png|jpg|text|html|
+  markdown|auto`. docx/epub and any other non-convertible kind are returned
+  as-is even when `convert:"pdf"` is requested; the return shape's
+  `converted: boolean` field tells the caller which happened.)
 
 ## Destinations (optional)
 
@@ -211,29 +222,34 @@ does accept a PDF URL directly, but that path is `summarize`'s concern, not
 ## Interface (draft)
 
 ```
-get(input, kind?, convert?, as?, download?, store?, summarize?, limit?, strategies?, include_domains?, deliver?)
+get(input, kind?, convert?, as?, download?, store?, summarize?, limit?, include_domains?, deliver?)
 
   input            string — a URL (→ URL mode) or a query / file(k,q) DSL (→ query mode)
   kind             pdf | document | ebook | code | docs | artifact | reference | any   (default any; query mode — see Lens catalog)
-  convert          "pdf" | none                            (default none)
+  convert          "pdf" | none                            (default none; html/text only — see Normalize)
   as               "pdf" | "archive"                       (URL mode; default pdf)
   download         bool — false = return ranked links only, skip fetch/normalize (query mode; default true)
   store            "vault" | "dropbox" | "r2" | none       (default none)
   summarize        bool — vault store only                 (default false)
   limit            int — cap merged candidates             (default 10)
-  strategies       string[] — override the fan-out set
   include_domains  string[] — extra domains to scope
   deliver          "inline" | "url"                        (deliverBytes; default per size)
 ```
+
+> `strategies?: string[]` (an override-the-fan-out-set escape hatch) was cut
+> during plan-writing — YAGNI, since `kind` → the fixed lens/operator table
+> already fully determines the fan-out and there's no near-term caller for an
+> override on top of it.
 
 ## Return shape
 
 ```jsonc
 {
-  "file":     { /* deliverBytes: inline base64 or /s/<uuid> URL */ },
-  "editions": [ { "title": "...", "url": "...", "host": "...", "filetype": "pdf", "rank": 1 } ],
-  "picked":   0,               // index into editions that was downloaded
-  "stored":   { "where": "vault", "ref": "..." }   // present only when store != none
+  "file":      { /* deliverBytes: inline base64 or /s/<uuid> URL */ },
+  "editions":  [ { "title": "...", "url": "...", "host": "...", "filetype": "pdf", "rank": 1 } ],
+  "picked":    0,               // index into editions that was downloaded
+  "converted": false,           // true only when convert:"pdf" actually converted html/text
+  "stored":    { "where": "vault", "ref": "..." }   // present only when store != none
 }
 ```
 
