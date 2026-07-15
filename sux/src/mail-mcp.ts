@@ -201,18 +201,21 @@ class NotFound extends Error {}
 
 /** Property-set for a cal_update/task_update/task_complete rewrite. DTSTAMP (and, for a COMPLETED
  *  task, the COMPLETED stamp) are stamped fresh here — call it at write time, never at stage, so the
- *  timestamps aren't baked into the payload the commit_token is bound to. `null` deletes a property. */
-function buildCalSets(a: any, comp: "VEVENT" | "VTODO"): Record<string, string | null> {
+ *  timestamps aren't baked into the payload the commit_token is bound to. `null` deletes a property.
+ *  `tz` carries the CURRENT TZID (if any) of DTSTART/DTEND/DUE on the stored object — passed in only
+ *  at commit time (after the GET), so a rewritten start/end/due re-anchors to the SAME zone instead of
+ *  silently collapsing a zoned property to a bare UTC stamp (§ zonedStamp). */
+function buildCalSets(a: any, comp: "VEVENT" | "VTODO", tz: Record<string, string | null> = {}): Record<string, string | null> {
 	const clear = (v: unknown) => String(v) === "";
 	const sets: Record<string, string | null> = { DTSTAMP: dateProp("DTSTAMP", new Date().toISOString()) };
 	if (a?.summary !== undefined) sets.SUMMARY = textProp("SUMMARY", String(a.summary));
 	if (a?.description !== undefined) sets.DESCRIPTION = clear(a.description) ? null : textProp("DESCRIPTION", String(a.description));
 	if (comp === "VEVENT") {
-		if (a?.start !== undefined) sets.DTSTART = dateProp("DTSTART", String(a.start));
-		if (a?.end !== undefined) sets.DTEND = clear(a.end) ? null : dateProp("DTEND", String(a.end));
+		if (a?.start !== undefined) sets.DTSTART = dateProp("DTSTART", String(a.start), tz.DTSTART);
+		if (a?.end !== undefined) sets.DTEND = clear(a.end) ? null : dateProp("DTEND", String(a.end), tz.DTEND);
 		if (a?.location !== undefined) sets.LOCATION = clear(a.location) ? null : textProp("LOCATION", String(a.location));
 	} else {
-		if (a?.due !== undefined) sets.DUE = clear(a.due) ? null : dateProp("DUE", String(a.due));
+		if (a?.due !== undefined) sets.DUE = clear(a.due) ? null : dateProp("DUE", String(a.due), tz.DUE);
 		if (a?.status !== undefined) sets.STATUS = textProp("STATUS", String(a.status));
 		if (String(a?.status ?? "").toUpperCase() === "COMPLETED") {
 			sets.COMPLETED = dateProp("COMPLETED", new Date().toISOString());
@@ -250,7 +253,11 @@ async function calPatch(env: RtEnv, a: any, comp: "VEVENT" | "VTODO"): Promise<T
 		const cur = await caldavFetch(env, "GET", href);
 		if (cur.status === 404) throw new NotFound(`no ${noun} at '${href}' — list it with ${comp === "VTODO" ? "task_list" : "cal_events"}.`);
 		if (!cur.ok) throw new Error(`fetch-for-update failed: HTTP ${cur.status}`);
-		const body = replaceProps(cur.text, comp, buildCalSets(a, comp));
+		// Read back the stored object's current TZID (if any) on the properties we're about to
+		// rewrite, so a start/end/due change re-anchors to the SAME zone instead of dropping it.
+		const curComp = parseICal(cur.text).find((c) => c.component === comp);
+		const tz = { DTSTART: curComp?.params?.DTSTART?.TZID ?? null, DTEND: curComp?.params?.DTEND?.TZID ?? null, DUE: curComp?.params?.DUE?.TZID ?? null };
+		const body = replaceProps(cur.text, comp, buildCalSets(a, comp, tz));
 		const ifMatch = a?.etag ? String(a.etag) : (cur.etag ?? undefined);
 		const r = await caldavFetch(env, "PUT", href, { body, contentType: "text/calendar; charset=utf-8", ...(ifMatch ? { ifMatch } : {}) });
 		if (!r.ok) throw new Error(`${noun} update failed: HTTP ${r.status} ${r.text.slice(0, 200)}`);

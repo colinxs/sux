@@ -125,10 +125,33 @@ export function textProp(name: string, value: string): string {
 	return `${name}:${escapeText(value)}`;
 }
 
-/** One unfolded date/date-time property line: `NAME:20260711T090000Z` or `NAME;VALUE=DATE:20261225`. */
-export function dateProp(name: string, iso: string): string {
+/** One unfolded date/date-time property line: `NAME:20260711T090000Z`, `NAME;VALUE=DATE:20261225`,
+ *  or — when `tz` is given (re-anchoring an existing TZID-bearing property) — `NAME;TZID=<tz>:<wall-stamp>`,
+ *  DST-aware via `zonedStamp`. A date-only `iso` ignores `tz` (all-day has no zone). */
+export function dateProp(name: string, iso: string, tz?: string | null): string {
+	if (tz && !/^\d{4}-\d{2}-\d{2}$/.test(iso)) {
+		try {
+			return `${name};TZID=${tz}:${zonedStamp(iso, tz)}`;
+		} catch {
+			/* unrecognized zone — fall through to the UTC stamp rather than fail the whole update */
+		}
+	}
 	const { value, dateOnly } = icalStamp(iso);
 	return dateOnly ? `${name};VALUE=DATE:${value}` : `${name}:${value}`;
+}
+
+/** An absolute instant (any Date-parseable ISO-8601 form) rendered as iCal wall-clock digits
+ *  (`YYYYMMDDTHHMMSS`, no trailing Z) AS OBSERVED IN `tz` — DST-aware via the runtime's tz database
+ *  (Workers ship full ICU). Used to re-anchor a TZID-bearing DTSTART/DTEND/DUE without collapsing it
+ *  to UTC (the bug this fixes: rewriting a zoned property used to always emit a bare Z stamp, silently
+ *  discarding the TZID — correct at the instant of the edit but wrong for how a recurring event's future
+ *  occurrences track DST). */
+export function zonedStamp(iso: string, tz: string): string {
+	const d = new Date(iso);
+	if (Number.isNaN(d.getTime())) throw new Error(`invalid date-time '${iso}' (want ISO-8601).`);
+	const parts = new Intl.DateTimeFormat("en-US", { timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).formatToParts(d);
+	const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "00";
+	return `${get("year")}${get("month")}${get("day")}T${get("hour")}${get("minute")}${get("second")}`;
 }
 
 /** ISO-8601 → iCal UTC stamp (20260711T090000Z). A date-only value stays a VALUE=DATE. */
