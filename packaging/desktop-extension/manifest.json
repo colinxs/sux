@@ -6,7 +6,7 @@
   "description": "Bridges the remote OAuth-gated sux MCP server (residential caching web-fetch engine) to Claude Desktop via mcp-remote over stdio. OAuth runs in your browser on first use.",
   "author": {
     "name": "Colin Summers",
-    "url": "https://github.com/colinxs/sux-mcp"
+    "url": "https://github.com/SuxOS/sux"
   },
   "homepage": "https://suxos.net",
   "server": {
