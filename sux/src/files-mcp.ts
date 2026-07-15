@@ -2,6 +2,7 @@ import { checkArgs, FN_DEADLINE_MS, withDeadline } from "./index";
 import { type JsonRpc, sseResponse } from "./mcp-util";
 import { fail, failWith, type RtEnv, type ToolResult } from "./registry";
 import { dropbox } from "./fns/dropbox";
+import { TEXT_EXT } from "./fns/_dropbox-core";
 import { deleteFull, hasDropboxFull, hasDropboxFullWrite, listFull, moveFull, operateFull, readFull, searchFull, transformFull, writeBytes, writeFull } from "./fns/_dropbox-full";
 import { fingerprint, ledger } from "./ledger";
 import { staged } from "./stage";
@@ -37,6 +38,19 @@ async function dbx(env: RtEnv, args: Record<string, unknown>): Promise<any> {
 	const r = await dropbox.run(env, args);
 	const body = r.content?.[0]?.text ?? "";
 	if (r.isError) throw new Error(body);
+	// op=get on a textual path returns the file's RAW TEXT (a bare string), not JSON — so
+	// JSON.parsing it would reshape a .json/.md/.csv whose content is valid JSON into the parsed
+	// value. Wrap it as {path,text} to mirror Mode B's readFull shape. The oversize branch still
+	// returns JSON metadata (too_large_to_inline), so pass a parsed object with that flag through.
+	if (String(args?.op) === "get" && TEXT_EXT.test(String(args?.path ?? ""))) {
+		try {
+			const parsed = JSON.parse(body);
+			if (parsed && typeof parsed === "object" && parsed.too_large_to_inline) return parsed;
+		} catch {
+			/* not JSON — it's the raw text body, wrapped below */
+		}
+		return { path: String(args?.path ?? ""), text: body };
+	}
 	try {
 		return JSON.parse(body);
 	} catch {
@@ -57,11 +71,12 @@ const gateModeBWrite = (env: RtEnv): ToolResult | null => {
 
 // The write firewall flags only mean something for whole-Dropbox (Mode B) writes. In the
 // app-folder (Mode A) — where the /Apps scope IS the wall and writes are unblocked — the
-// dropbox fn always overwrites, so a supplied dry_run/overwrite/rev/backup would be silently
-// dropped and a requested guardrail would become a real clobber. Reject them instead.
+// dropbox fn always overwrites, so a supplied dry_run/overwrite/rev/backup OR a stage-guard
+// flag (stage/commit_token/force) would be silently dropped and a requested guardrail (e.g.
+// stage:true to preview) would become a real clobber. Reject them instead.
 const rejectModeBFlags = (a: any): ToolResult | null =>
-	["dry_run", "overwrite", "rev", "backup"].some((k) => a?.[k] !== undefined)
-		? failWith("bad_input", "dry_run/overwrite/rev/backup apply only to whole-Dropbox writes (full:true). App-folder writes are unblocked — the /Apps scope is the wall.")
+	["dry_run", "overwrite", "rev", "backup", "stage", "commit_token", "force"].some((k) => a?.[k] !== undefined)
+		? failWith("bad_input", "dry_run/overwrite/rev/backup and the stage guard (stage/commit_token/force) apply only to whole-Dropbox writes (full:true). App-folder writes are unblocked — the /Apps scope is the wall.")
 		: null;
 
 type FileTool = { name: string; description: string; inputSchema: unknown; run: (env: RtEnv, args: any) => Promise<ToolResult> };

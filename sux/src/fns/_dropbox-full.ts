@@ -71,7 +71,8 @@ export async function searchFull(env: RtEnv, opts: { query: string; path_prefix?
 		r = await fullRpc(env, "/files/search/continue_v2", { cursor: opts.cursor });
 	} else {
 		const options: Record<string, unknown> = { max_results: Math.min(1000, Math.max(1, opts.max_results ?? 100)), file_status: "active", filename_only: false };
-		if (opts.path_prefix) options.path = normFull(opts.path_prefix); // omit → whole account
+		const pp = normFull(opts.path_prefix); // normalize FIRST — '/' → '' means whole account, so omit it
+		if (pp) options.path = pp; // omit (incl. '/') → whole account; Dropbox rejects options.path:''
 		if (opts.ext?.length) options.file_extensions = opts.ext.map((e) => String(e).replace(/^\./, ""));
 		r = await fullRpc(env, "/files/search_v2", { query: opts.query, options });
 	}
@@ -170,7 +171,9 @@ export async function writeFull(env: RtEnv, opts: { path: string; bytes: Uint8Ar
 		return { action: "write", scope: "full-dropbox", path: p, exists, will_overwrite: exists, bytes: opts.bytes.length, rev_condition: opts.rev ?? null, ...(willBackup ? { backup_to: TRASH_ROOT } : {}), note: "DRY RUN — nothing written. Re-call with dry_run:false to apply." };
 	}
 	const backup = willBackup ? await copyToTrash(env, p, stampNow()) : undefined;
-	const mode = opts.rev ? { ".tag": "update", update: opts.rev } : exists ? "overwrite" : "add";
+	// `update` conditions on an existing revision — only valid when the file EXISTS. A rev supplied
+	// for a missing path (e.g. a stale handle) must fall back to `add`, not build a doomed update.
+	const mode = opts.rev && exists ? { ".tag": "update", update: opts.rev } : exists ? "overwrite" : "add";
 	const resp = await fullFetch(env, `${CONTENT}/files/upload`, (t) => ({
 		method: "POST",
 		headers: { Authorization: `Bearer ${t}`, "Content-Type": "application/octet-stream", "Dropbox-API-Arg": headerSafeJson({ path: p, mode, autorename: false, mute: true }) },
@@ -237,8 +240,11 @@ export async function operateFull(
 		paths = paths.slice(0, max);
 		truncated = true;
 	}
-	if (opts.action === "move" && !opts.dest) throw new Error("operate move needs a `dest` folder.");
+	// Normalize the dest FIRST — a raw '/' is truthy but normFull('/') === '', so guarding on
+	// `!opts.dest` lets it slip through and every file lands at the account root. Guard on the
+	// normalized value so an empty/root dest is refused.
 	const dest = opts.dest ? normFull(opts.dest) : "";
+	if (opts.action === "move" && !dest) throw new Error("operate move needs a `dest` folder.");
 
 	if (!opts.apply) {
 		return {
