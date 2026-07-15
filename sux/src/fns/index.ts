@@ -48,6 +48,7 @@ import { imageConvert } from "./image_convert";
 import { recall } from "./recall";
 import { ace } from "./ace";
 import { advise } from "./advise";
+import { agenda } from "./agenda";
 import { amazon } from "./amazon";
 import { arxiv } from "./arxiv";
 import { autonomy_status } from "./autonomy_status";
@@ -164,6 +165,7 @@ export const FUNCTIONS: Fn[] = [
 	recall,
 	ace,
 	advise,
+	agenda,
 	amazon,
 	arxiv,
 	autonomy_status,

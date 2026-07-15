@@ -628,6 +628,18 @@ async function briefingTick(env: RtEnv): Promise<unknown> {
 	return mod.runBriefing(env, {}, deps);
 }
 
+// One daily agenda cycle (the "figure out what to do" loop) on the same Cron Trigger.
+// FAIL-CLOSED: no-op unless AGENDA_ENABLED. Detects life 'drops' across mail+calendar,
+// records a reversible Todoist-task PROPOSAL for each (nothing acts until Colin approves),
+// appends a digest to the Daily note, and mails it to him when AGENDA_EMAIL is also set.
+// Dynamically imported so the cron path pulls in the mail/cal surface only when armed.
+async function agendaTick(env: RtEnv): Promise<unknown> {
+	const mod = await import("./fns/_agenda");
+	if (!mod.hasAgenda(env)) return { dormant: true };
+	const deps = await mod.defaultDeps();
+	return mod.runAgenda(env, {}, deps);
+}
+
 // Constant-time string compare (avoids leaking the token via early-exit timing).
 function tokenEq(a: string, b: string): boolean {
 	if (a.length !== b.length) return false;
@@ -653,6 +665,7 @@ async function maintenanceTick(env: RtEnv, ctx: ExecutionContext): Promise<void>
 	await runSubJob(env, "weekly_recall", () => weeklyRecallTick(env));
 	await runSubJob(env, "consolidate", () => consolidateTick(env));
 	await runSubJob(env, "briefing", () => briefingTick(env));
+	await runSubJob(env, "agenda", () => agendaTick(env));
 	// Rebuild the cosmetic-adblock engine blob in R2 — staleness-gated, so the
 	// daily cron only does network work ≈ weekly (see _adblock.refreshAdblockEngine).
 	await runSubJob(env, "adblock", async () => {
@@ -759,9 +772,10 @@ export default {
 					if (job === "mail-triage") out = await mailTriageTick(env);
 					else if (job === "weekly-recall") out = await weeklyRecallTick(env);
 					else if (job === "briefing") out = await briefingTick(env);
+					else if (job === "agenda") out = await agendaTick(env);
 					else if (job === "self-improve") out = await selfImproveTick(env);
 					else if (job === "maintenance") { await maintenanceTick(env, ctx); out = { ok: true }; }
-					else return new Response(JSON.stringify({ error: "unknown job", jobs: ["mail-triage", "weekly-recall", "briefing", "self-improve", "maintenance"] }), { status: 400, headers: { "content-type": "application/json" } });
+					else return new Response(JSON.stringify({ error: "unknown job", jobs: ["mail-triage", "weekly-recall", "briefing", "agenda", "self-improve", "maintenance"] }), { status: 400, headers: { "content-type": "application/json" } });
 					return new Response(JSON.stringify({ ok: true, job, result: out }, null, 2), { headers: { "content-type": "application/json" } });
 				} catch (e) {
 					return new Response(JSON.stringify({ error: String((e as Error)?.message ?? e) }), { status: 500, headers: { "content-type": "application/json" } });

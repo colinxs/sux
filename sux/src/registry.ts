@@ -220,6 +220,16 @@ export type RtEnv = Env &
 		// clamped to [1, 20]; unset/invalid ⇒ default 5. Set via `wrangler secret`.
 		BRIEFING_MAX_DRAFTS?: string;
 
+		// Agenda loop (fns/_agenda.ts + the daily cron) — the "figure out what to do" engine.
+		// Same two-stage fail-closed gate: AGENDA_ENABLED must be truthy for the detect→propose→
+		// digest loop to run at all (unset → total no-op). AGENDA_EMAIL must ALSO be truthy before
+		// the digest is mailed to Colin's own address (otherwise it's appended to the Daily note
+		// only). Both default OFF. Every proposal it records is a REVERSIBLE Todoist add gated
+		// behind Colin's approval (the W1 proposal kernel); the loop itself never sends to a third
+		// party, never moves/deletes, never auto-approves.
+		AGENDA_ENABLED?: string;
+		AGENDA_EMAIL?: string;
+
 		// Manual ops trigger for the daily cron ticks (POST /admin/tick?job=…), bearer-gated
 		// by this token. Unset ⇒ the endpoint 404s (feature off). Lets an operator run a
 		// mail-triage / self-improve / maintenance cycle on demand instead of waiting for cron.
@@ -468,7 +478,7 @@ export const FRONT_VERBS = new Set<string>([
 	"search", "scrape", "shop",
 	"ingest", "recall", "oracle",
 	"pipe", "batch",
-	"store", "preferences", "issue", "proposals",
+	"store", "preferences", "issue", "proposals", "agenda",
 	"vault", "mail", "files", "calendar", "contact",
 ]);
 

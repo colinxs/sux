@@ -6,6 +6,7 @@ import { canAutoMerge, canOpenPr, hasSelfImprove, isKilled } from "./_self_impro
 import { hasBriefing, hasBriefingStageDrafts } from "./_briefing";
 import { hasWeeklyRecall } from "./_weekly_recall";
 import { hasConsolidate } from "./_consolidate";
+import { hasAgenda, hasAgendaEmail } from "./_agenda";
 
 // "What can act on my behalf right now" — a single read-only mirror of the Worker-side
 // autonomy gates. Several consequential surfaces (mail-triage, Mode-B Dropbox writes,
@@ -43,6 +44,8 @@ export const autonomy_status: Fn = {
 		const briefingDrafts = hasBriefingStageDrafts(env);
 		const weeklyRecall = hasWeeklyRecall(env);
 		const consolidateOn = hasConsolidate(env);
+		const agendaOn = hasAgenda(env);
+		const agendaEmail = hasAgendaEmail(env);
 
 		const surfaces: Surface[] = [
 			{
@@ -93,6 +96,13 @@ export const autonomy_status: Fn = {
 				mode: consolidateOn ? "armed (detection-only, appends a weekly digest note)" : "dormant",
 				reversible: true,
 				consequence: "scans the vault once a week for stale/duplicate-candidate notes and appends a findings digest — detection only, never merges, deletes, or patches a note. git-reversible like any vault append.",
+			},
+			{
+				surface: "agenda",
+				armed: agendaOn,
+				mode: !agendaOn ? "dormant" : agendaEmail ? "armed (records reversible task proposals + emails you the digest)" : "armed (records reversible task proposals; digest to vault note only)",
+				reversible: true,
+				consequence: "scans mail+calendar for life 'drops' and RECORDS a reversible Todoist-task proposal for each — nothing acts until you approve via the `proposals` verb. Appends a digest to the Daily note; when AGENDA_EMAIL is set, ALSO mails the digest to your OWN address (the only send — never a third party). Never moves/deletes/auto-approves.",
 			},
 		];
 
