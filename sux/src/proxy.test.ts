@@ -350,6 +350,24 @@ describe("direct-fetch redirect chasing (SSRF-safe)", () => {
 		await expect(smartFetch({}, "https://example.com/loop", {}, "direct")).rejects.toThrow(/exceeded \d+ redirect hops/i);
 	});
 
+	it("does not carry the GitHub token across a redirect to a non-GitHub-allow-listed host", async () => {
+		// api.github.com's zipball/tarball endpoints redirect to codeload.github.com,
+		// which isn't in isGithubHost's allow-list — the token must not ride along.
+		const fetchMock = vi.fn(async (u: string | URL, init?: RequestInit) => {
+			if (String(u) === "https://api.github.com/repos/o/r/zipball/main") {
+				expect((init?.headers as Record<string, string>)?.Authorization).toBe("Bearer tok");
+				return new Response(null, { status: 302, headers: { location: "https://codeload.github.com/o/r/zip/main" } });
+			}
+			expect(String(u)).toBe("https://codeload.github.com/o/r/zip/main");
+			expect((init?.headers as Record<string, string>)?.Authorization).toBeUndefined();
+			return new Response("ziplike", { status: 200 });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		const resp = await smartFetch({ GITHUB_TOKEN: "tok" }, "https://api.github.com/repos/o/r/zipball/main", {}, "direct");
+		expect(await resp.text()).toBe("ziplike");
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
 	it("a residential-proxy redirect falls back to a direct chase that still refuses a malicious hop", async () => {
 		// The proxy's own redirect is unusable (node can't follow it) and triggers the
 		// direct fallback — which independently re-fetches the origin and hits the

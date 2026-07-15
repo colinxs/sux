@@ -428,7 +428,6 @@ export async function smartFetch(
 	}
 	tallyRoute(directRoute);
 	const callerHeaders = init.headers instanceof Headers ? Object.fromEntries(init.headers) : (init.headers ?? {});
-	const headers = { ...ghAuth, ...callerHeaders };
 	// Same 30s bound as the proxy path — a hung origin must not hang the Worker.
 	// One bounded retry on transient failure (network/timeout throw or 502/503/504):
 	// a flaky site or a momentary hiccup shouldn't fail the whole tool call. Each
@@ -437,17 +436,18 @@ export async function smartFetch(
 	//
 	// redirect:"manual"/"error" is an explicit low-level ask (the `redirects` tracer
 	// re-enters smartFetch per hop itself, so isBlockedTarget already re-runs on each
-	// one) — pass it straight to fetch unchanged. Anything else (undefined/"follow")
-	// must NOT hand redirect-chasing to the native fetch: an origin at an
-	// already-vetted public url could 302 a caller straight at a private/loopback/
-	// metadata target, and native "follow" would connect there without ever
-	// re-checking isBlockedTarget on the new host (the security-review finding that
-	// motivated this — the empty/redirect proxy fallback above newly makes this
-	// reachable for redirects the residential node itself can't chase).
+	// one) — pass it straight to fetch unchanged, with ghAuth (computed once, for
+	// this single non-chased url) merged in. Anything else (undefined/"follow") must
+	// NOT hand redirect-chasing to the native fetch: an origin at an already-vetted
+	// public url could 302 a caller straight at a private/loopback/metadata target,
+	// and native "follow" would connect there without ever re-checking
+	// isBlockedTarget on the new host (the security-review finding that motivated
+	// this — the empty/redirect proxy fallback above newly makes this reachable for
+	// redirects the residential node itself can't chase).
 	const resp =
 		init.redirect === "manual" || init.redirect === "error"
-			? await withRetry(() => fetch(url, { method: init.method, headers, body: init.body, redirect: init.redirect, signal: AbortSignal.timeout(30_000) }))
-			: await fetchDirectFollowingRedirects(url, { method: init.method, headers, body: init.body });
+			? await withRetry(() => fetch(url, { method: init.method, headers: { ...ghAuth, ...callerHeaders }, body: init.body, redirect: init.redirect, signal: AbortSignal.timeout(30_000) }))
+			: await fetchDirectFollowingRedirects(env, url, { method: init.method, headers: callerHeaders, body: init.body });
 	auditEgress(env, url, directRoute, false, resp.status);
 	return resp;
 }
@@ -462,12 +462,21 @@ const MAX_REDIRECT_HOPS = 20;
  * automatically: those are every direct caller in this codebase, and reimplementing
  * fetch's method-downgrade/body-carry rules for POST/PUT redirects isn't worth the
  * risk of getting them subtly wrong — any other method just returns the raw 3xx.
+ *
+ * `githubAuthHeaders` is recomputed fresh for EACH hop's url, never carried over
+ * from the previous one: a GitHub PAT attached because the original host was
+ * github.com/api.github.com must not ride along to whatever host a redirect lands
+ * on (e.g. api.github.com's zipball/tarball 302s to codeload.github.com, which
+ * isn't itself in the allow-list) — that's a credential leak to any host an
+ * allow-listed origin happens to redirect to, exactly the boundary
+ * githubAuthHeaders exists to enforce in the first place.
  */
-async function fetchDirectFollowingRedirects(url: string, init: { method?: string; headers?: Record<string, string>; body?: string }): Promise<Response> {
+async function fetchDirectFollowingRedirects(env: TailscaleEnv, url: string, init: { method?: string; headers?: Record<string, string>; body?: string }): Promise<Response> {
 	const chaseable = !init.method || /^(GET|HEAD)$/i.test(init.method);
 	let current = url;
 	for (let hop = 0; hop < MAX_REDIRECT_HOPS; hop++) {
-		const resp = await withRetry(() => fetch(current, { method: init.method, headers: init.headers, body: init.body, redirect: "manual", signal: AbortSignal.timeout(30_000) }));
+		const headers = { ...githubAuthHeaders(env, current), ...init.headers };
+		const resp = await withRetry(() => fetch(current, { method: init.method, headers, body: init.body, redirect: "manual", signal: AbortSignal.timeout(30_000) }));
 		if (!chaseable || resp.status < 300 || resp.status >= 400) return resp;
 		const loc = resp.headers.get("location");
 		if (!loc) return resp;
