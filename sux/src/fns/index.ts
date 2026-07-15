@@ -83,6 +83,7 @@ import { linkedin } from "./linkedin";
 import { lowes } from "./lowes";
 import { mail } from "./mail";
 import { mail_sieve } from "./mail_sieve";
+import { mail_sieve_backfill } from "./mail_sieve_backfill";
 import { mail_triage } from "./mail_triage";
 import { markdown } from "./markdown";
 import { monarch } from "./monarch";
@@ -202,6 +203,7 @@ export const FUNCTIONS: Fn[] = [
 	lowes,
 	mail,
 	mail_sieve,
+	mail_sieve_backfill,
 	mail_triage,
 	markdown,
 	monarch,
