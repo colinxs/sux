@@ -56,6 +56,7 @@ import { runStrategies } from "./get";
 import { fetchAndNormalize } from "./get";
 import { acquireFromUrl } from "./get";
 import { storeResult } from "./get";
+import { get } from "./get";
 
 describe("isUrlInput", () => {
 	it("recognizes absolute http(s) URLs", () => {
@@ -266,5 +267,62 @@ describe("storeResult", () => {
 		putBlobMock.mockResolvedValueOnce({ uuid: "u3", url: "https://sux.example/s/u3", key: "cas/ghi", sha256: "ghi", size: 1, content_type: "application/pdf" });
 		ingestRun.mockResolvedValueOnce({ isError: true, content: [{ text: "vault not configured" }] });
 		await expect(storeResult({} as any, new Uint8Array([1]), "application/pdf", "vault", false)).rejects.toThrow(/vault not configured/);
+	});
+});
+
+describe("get.run", () => {
+	it("query mode: fans out, dedupes to unique editions, downloads+normalizes the top one, returns file+editions+picked", async () => {
+		kagiSession.mockResolvedValueOnce([{ title: "Understanding ML", url: "https://archive.org/a/understanding-ml.pdf" }]);
+		kagiTool.mockResolvedValueOnce({ content: [{ text: "### [Understanding ML](https://mirror.edu/understanding-ml.pdf)\nsnippet" }] });
+		const pdfBytes = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
+		loadBytesMock.mockResolvedValueOnce({ bytes: pdfBytes, contentType: "application/pdf" });
+		pdfRun.mockResolvedValueOnce({ content: [{ text: '{"mime":"application/pdf","size":4,"base64":"JVBR"}' }] });
+
+		const r = await get.run({ KAGI_SESSION: "tok", KAGI_API_KEY: "k" } as any, { input: "understanding machine learning", kind: "pdf" });
+		expect(r.isError).toBeFalsy();
+		const parsed = JSON.parse(r.content[0].text);
+		expect(parsed.editions.length).toBe(1); // same title+filetype mirrored -> one edition
+		expect(parsed.picked).toBe(0);
+		expect(parsed.file.base64).toBe("JVBR");
+	});
+
+	it("query mode with download:false returns only ranked editions, no file/network fetch", async () => {
+		kagiSession.mockResolvedValueOnce([{ title: "A Book", url: "https://a.com/a.pdf" }]);
+		const r = await get.run({ KAGI_SESSION: "tok" } as any, { input: "a book", kind: "pdf", download: false });
+		expect(r.isError).toBeFalsy();
+		const parsed = JSON.parse(r.content[0].text);
+		expect(parsed.editions.length).toBe(1);
+		expect(parsed.file).toBeUndefined();
+		expect(parsed.picked).toBeNull();
+		expect(loadBytesMock).not.toHaveBeenCalled();
+	});
+
+	it("query mode returns a clear failure when no editions are found", async () => {
+		kagiSession.mockResolvedValueOnce([]);
+		const r = await get.run({ KAGI_SESSION: "tok" } as any, { input: "nonexistent thing", kind: "pdf" });
+		expect(r.isError).toBe(true);
+	});
+
+	it("url mode: acquires via render(as:pdf) and normalizes, no editions in the result", async () => {
+		renderRun.mockResolvedValueOnce({ content: [{ text: '{"mime":"application/pdf","size":4,"base64":"JVBERg=="}' }] });
+		pdfRun.mockResolvedValueOnce({ content: [{ text: '{"mime":"application/pdf","size":4,"base64":"JVBR2"}' }] });
+		const r = await get.run({} as any, { input: "https://example.com/article" });
+		expect(r.isError).toBeFalsy();
+		const parsed = JSON.parse(r.content[0].text);
+		expect(parsed.editions).toBeUndefined();
+		expect(parsed.file.base64).toBe("JVBR2");
+	});
+
+	it("stores the result when store is requested", async () => {
+		kagiSession.mockResolvedValueOnce([{ title: "A Book", url: "https://a.com/a.pdf" }]);
+		const pdfBytes = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
+		loadBytesMock.mockResolvedValueOnce({ bytes: pdfBytes, contentType: "application/pdf" });
+		pdfRun.mockResolvedValueOnce({ content: [{ text: '{"mime":"application/pdf","size":4,"base64":"JVBR"}' }] });
+		putBlobMock.mockResolvedValueOnce({ uuid: "u1", url: "https://sux.example/s/u1", key: "cas/abc", sha256: "abc", size: 4, content_type: "application/pdf" });
+		ingestRun.mockResolvedValueOnce({ content: [{ text: '{"path":"Inbox/x.md"}' }] });
+
+		const r = await get.run({ KAGI_SESSION: "tok" } as any, { input: "a book", kind: "pdf", store: "vault" });
+		const parsed = JSON.parse(r.content[0].text);
+		expect(parsed.stored.where).toBe("vault");
 	});
 });
