@@ -7,7 +7,7 @@ name: Fixer
 
 on:
   schedule:
-    - cron: "17 8 * * *" # daily, off-minute; proposals queue behind triage/build throughput — 3x/day just built backlog
+    - cron: "*/15 * * * *" # every 15min; budget-governor's check-throttle still defers at yellow/red, so this only raises how fast a green window gets used, not the spend cap
   workflow_dispatch:
 
 jobs:
