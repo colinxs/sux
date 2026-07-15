@@ -1,10 +1,11 @@
 name: Issue build
 
-# Collate + build stage: clusters queued-for-build issues (n issues -> m PRs, never n->1;
-# confidence-pure), fans out one build session + PR per cluster. confidence:high clusters get
-# `automerge`, the rest `needs-review`. Fires when queued-for-build is applied (by triage.yml
-# or a human); workflow_dispatch drains the queue on demand. Runs on the Claude Pro/Max
-# subscription (CLAUDE_CODE_OAUTH_TOKEN). PRs flow into the existing automerge/merge-queue.
+# Builder stage: selects buildable open issues directly (no queued-for-build label gate —
+# the separate triage stage and confidence:high/medium/low taxonomy are gone as of the
+# three-loop rework), clusters them (n issues -> m PRs, never n->1), fans out one build
+# session + PR per cluster. Every PR flows into the normal auto-merge path (automerge.yml
+# arms it on green; add `hold` to stop that). Batched schedule + workflow_dispatch drains
+# the backlog on demand. Runs on the Claude Pro/Max subscription (CLAUDE_CODE_OAUTH_TOKEN).
 # Reusable workflow: SuxOS/.github/.github/workflows/issue-build.yml
 
 on:

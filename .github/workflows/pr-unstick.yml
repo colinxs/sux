@@ -1,0 +1,27 @@
+name: PR unstick
+
+# Loop-3 mechanism: for stuck-but-salvageable PRs (behind main, failing check, or idle after
+# green), retries a bounded number of cycles (rebase/re-run/nudge) with a cooldown between
+# attempts before giving up and flagging for human attention. Slow daily mechanism; not
+# event-driven. Never merges.
+# Reusable workflow: SuxOS/.github/.github/workflows/pr-unstick.yml
+
+on:
+  schedule:
+    - cron: "37 9 * * *" # daily (offset minute to dodge the top-of-hour rush)
+  workflow_dispatch: # allow manual "Run workflow" from the Actions tab
+
+jobs:
+  unstick:
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      checks: read
+      statuses: read
+      actions: read
+    uses: SuxOS/.github/.github/workflows/pr-unstick.yml@main
+    with:
+      cooldown-hours: "24"
+      max-cycles: "3"
+    secrets: inherit
