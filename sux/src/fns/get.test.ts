@@ -311,6 +311,24 @@ describe("get.run", () => {
 		expect(r.isError).toBe(true);
 	});
 
+	it("query mode fails loudly on a 0-byte download instead of returning a phantom empty file", async () => {
+		kagiSession.mockResolvedValueOnce([{ title: "A Book", url: "https://a.com/a.pdf" }]);
+		loadBytesMock.mockResolvedValueOnce({ bytes: new Uint8Array(0), contentType: "application/pdf" });
+		const r = await get.run({ KAGI_SESSION: "tok" } as any, { input: "a book", kind: "pdf" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/0 bytes/i);
+		expect(pdfRun).not.toHaveBeenCalled(); // never normalized/stored an empty download
+	});
+
+	it("url mode fails loudly on a 0-byte acquisition", async () => {
+		// as:archive → no wayback snapshot → scrape returns an empty page.
+		waybackRun.mockResolvedValueOnce({ content: [{ text: '{"available":false}' }] });
+		scrapeRun.mockResolvedValueOnce({ content: [{ text: "" }] });
+		const r = await get.run({} as any, { input: "https://example.com/empty", as: "archive" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/0 bytes/i);
+	});
+
 	it("url mode: acquires via render(as:pdf) and normalizes, no editions in the result", async () => {
 		renderRun.mockResolvedValueOnce({ content: [{ text: '{"mime":"application/pdf","size":4,"base64":"JVBERg=="}' }] });
 		pdfRun.mockResolvedValueOnce({ content: [{ text: '{"mime":"application/pdf","size":4,"base64":"JVBR2"}' }] });
