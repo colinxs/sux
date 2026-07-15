@@ -758,6 +758,19 @@ describe("mail_* ergonomic tools", () => {
 		expect(putCall![1].headers["If-Match"]).toBe('"cur"'); // concurrency guard from the GET etag
 	});
 
+	it("cal_update rewriting `start` on a TZID event re-anchors the zone instead of collapsing to UTC (§3)", async () => {
+		const e = calEnv();
+		const { put } = installCalPatch(STORED_EVENT);
+		// Original DTSTART is 09:00 America/New_York; move it an hour later (10:00 NY = 14:00Z).
+		const st = parse(await tool("cal_update").run(e, { href: "/dav/cal/evt-keep.ics", start: "2026-07-11T14:00:00Z", stage: true }));
+		const done = parse(await tool("cal_update").run(e, { href: "/dav/cal/evt-keep.ics", start: "2026-07-11T14:00:00Z", commit_token: st.commit_token }));
+		expect(done).toMatchObject({ updated: true });
+		const body = put();
+		expect(body).toContain("DTSTART;TZID=America/New_York:20260711T100000"); // zone preserved, NOT a bare UTC Z stamp
+		expect(body).not.toMatch(/DTSTART:\d{8}T\d{6}Z/); // never silently collapsed to Z
+		expect(body).toContain("BEGIN:VALARM"); // untouched sibling data still intact
+	});
+
 	it("task_complete sets STATUS:COMPLETED + COMPLETED stamp + PERCENT-COMPLETE (§3)", async () => {
 		const e = calEnv();
 		const { put } = installCalPatch(STORED_TASK);

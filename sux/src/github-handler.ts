@@ -364,6 +364,15 @@ export function redactPublicHealth(h: Record<string, unknown>): Record<string, u
 			delete node.tailscaleIPs;
 		}
 	}
+	// Same policy as /metrics dropping last_error: a cron sub-job's raw error text
+	// can carry echoed input or an upstream API's error body and must not reach
+	// anonymous callers. Keep only the ok/stale/age_ms signal.
+	const cron = clone.cron;
+	if (cron && typeof cron === "object") {
+		for (const job of Object.values(cron)) {
+			if (job && typeof job === "object" && "error" in (job as any)) delete (job as any).error;
+		}
+	}
 	return clone;
 }
 
@@ -456,7 +465,7 @@ async function handleAuthorizePost(request: Request, env: HandlerEnv): Promise<R
 	} catch (error: any) {
 		console.error("POST /authorize error:", error);
 		if (error instanceof OAuthError) return error.toResponse();
-		return text(`Internal server error: ${error.message}`, 500);
+		return text("Internal server error", 500);
 	}
 }
 

@@ -102,9 +102,10 @@ describe("handleRpc (index.ts dispatch)", () => {
 		expect(names).toContain("search");
 		// …leaves hidden from the list (still reachable via `fn` or by name).
 		expect(names).not.toContain("hash");
-		// The list stays legible — far short of the full ~95-fn surface.
+		// The list stays legible — far short of the full ~110-fn surface. (Headroom for the
+		// agent front verbs `proposals`/`agenda`; still a small legible subset.)
 		expect(out.result.tools.length).toBeLessThan(FUNCTIONS.length);
-		expect(out.result.tools.length).toBeLessThan(20);
+		expect(out.result.tools.length).toBeLessThanOrEqual(24);
 	});
 
 	it("unknown tool name → JSON-RPC error -32601", async () => {

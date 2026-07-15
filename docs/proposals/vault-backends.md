@@ -24,6 +24,20 @@ Grounding: `sux/src/fns/obsidian.ts` (457 lines, 3 backends today), `sux/src/vau
 
 ---
 
+## Reality check — 2026-07-14 (external-research pass)
+
+> Todoist has consolidated onto a single unified **API v1**, replacing the deprecated
+> REST v2 / Sync v9 (legacy shutting down ~early 2026). A new sux integration must
+> target v1 — breaking changes vs. old APIs (lowercase endpoints, base32 IDs, new task
+> URLs, new pagination). `item_add` / `item_complete` Sync commands batch up to **100
+> per POST to `/api/v1/sync`** (one billed request) — this is the mechanism for the
+> 3-way create/complete reconciliation below. **Auth model is UNCONFIRMED**: a claimed
+> OAuth2 Bearer + mandatory 1hr token-refresh loop was REFUTED on verification — don't
+> assume it; check personal-token vs. OAuth directly against
+> https://developer.todoist.com/api/v1/ before building.
+
+---
+
 ## 0. The one rule that shapes every verb — references, not payloads (LOCKED)
 
 Every vault verb passes **handles**, never bytes:

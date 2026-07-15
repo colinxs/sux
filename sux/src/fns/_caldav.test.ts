@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { buildVEvent, buildVTodo, caldavFetch, dateProp, hasCalDav, icalDateToIso, icalStamp, listCalendars, parseICal, replaceProps, reportObjects, textProp } from "./_caldav";
+import { buildVEvent, buildVTodo, caldavFetch, dateProp, hasCalDav, icalDateToIso, icalStamp, listCalendars, parseICal, replaceProps, reportObjects, textProp, zonedStamp } from "./_caldav";
 
 const octets = (s: string) => new TextEncoder().encode(s).length;
 
@@ -12,6 +12,19 @@ describe("_caldav iCal build/parse", () => {
 		expect(icalStamp("2026-07-11T09:00:00Z")).toEqual({ value: "20260711T090000Z", dateOnly: false });
 		expect(icalStamp("2026-07-11")).toEqual({ value: "20260711", dateOnly: true });
 		expect(() => icalStamp("not-a-date")).toThrow(/invalid/);
+	});
+
+	it("zonedStamp renders an absolute instant as wall-clock digits in tz, DST-aware", () => {
+		expect(zonedStamp("2026-07-11T13:00:00Z", "America/New_York")).toBe("20260711T090000"); // EDT (UTC-4)
+		expect(zonedStamp("2026-01-11T13:00:00Z", "America/New_York")).toBe("20260111T080000"); // EST (UTC-5)
+		expect(() => zonedStamp("not-a-date", "America/New_York")).toThrow(/invalid/);
+	});
+
+	it("dateProp with a tz re-anchors to TZID instead of collapsing to a UTC Z stamp", () => {
+		expect(dateProp("DTSTART", "2026-07-11T13:00:00Z", "America/New_York")).toBe("DTSTART;TZID=America/New_York:20260711T090000");
+		expect(dateProp("DTSTART", "2026-07-11T13:00:00Z")).toBe("DTSTART:20260711T130000Z"); // no tz → unchanged Z behavior
+		expect(dateProp("DTSTART", "2026-12-25", "America/New_York")).toBe("DTSTART;VALUE=DATE:20261225"); // all-day ignores tz
+		expect(dateProp("DTSTART", "2026-07-11T13:00:00Z", "Not/AZone")).toBe("DTSTART:20260711T130000Z"); // unrecognized zone falls back, never throws
 	});
 
 	it("buildVEvent emits a valid VCALENDAR/VEVENT with escaping", () => {
@@ -152,6 +165,16 @@ describe("_caldav replaceProps", () => {
 		const ical = ["BEGIN:VCALENDAR", "BEGIN:VEVENT", "UID:x", "SUMMARY:s", "LOCATION:gone", "END:VEVENT", "END:VCALENDAR"].join("\r\n");
 		const out = replaceProps(ical, "VEVENT", { LOCATION: null });
 		expect(parseICal(out)[0].props.LOCATION).toBeUndefined();
+	});
+
+	it("rewriting DTSTART itself keeps the TZID (re-anchors, doesn't collapse to UTC) — the bug this fixes", () => {
+		const ical = ["BEGIN:VCALENDAR", "BEGIN:VEVENT", "UID:z", "DTSTART;TZID=America/New_York:20260711T090000", "SUMMARY:Standup", "END:VEVENT", "END:VCALENDAR"].join("\r\n");
+		// Caller moves it an hour later: the same NY wall-clock day, 10:00 instead of 9:00 → 14:00Z.
+		const out = replaceProps(ical, "VEVENT", { DTSTART: dateProp("DTSTART", "2026-07-11T14:00:00Z", "America/New_York") });
+		const [comp] = parseICal(out);
+		expect(out).toContain("DTSTART;TZID=America/New_York:20260711T100000"); // zone preserved, not a bare Z stamp
+		expect(comp.tz).toBe("America/New_York");
+		expect(comp.start).toBe("2026-07-11T10:00:00");
 	});
 });
 

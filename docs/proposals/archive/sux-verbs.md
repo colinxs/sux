@@ -1,10 +1,10 @@
 ---
 title: sux verb vocabulary
-status: designed
+status: shipped
 cluster: namespaces
 type: proposal
 summary: "Collapses ~90 leaf fns into ten front-door verbs + batch/pipe; handle discipline (references-not-payloads) makes the shared fan-out/reduce cheap."
-tags: [sux, namespaces, designed]
+tags: [sux, namespaces, shipped]
 updated: 2026-07-09
 ---
 

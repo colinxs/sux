@@ -7,10 +7,12 @@ audience: future Claude sessions — reuse these instead of re-deriving them
 # How sux is built — the cheat-sheet
 
 sux is one Cloudflare Worker: an MCP server exposing ~95 edge functions ("fns") plus the
-personal-data namespaces (vault / mail / files / cal / contact), fronted by `/mcp` and the
-per-namespace `/<domain>/mcp` connectors. This file distills the recurring code patterns so a
-fresh session writes in the grain of the codebase. Everything below is grounded in the live
-source (paths + line numbers as of this writing).
+personal-data namespaces (vault / mail / files / cal / contact), all fronted by the single
+`/mcp` connector as ordinary front verbs (`vault_`/`mail_`/`files_`/`cal_`/`contact_`) — the
+old per-namespace `/<domain>/mcp` connectors are fully retired (#105), not just dormant. This
+file distills the recurring code patterns so a fresh session writes in the grain of the
+codebase. Everything below is grounded in the live source (paths + line numbers as of this
+writing).
 
 Companion docs: the product vision is `docs/design/north-star.md`; the working rules (git/CI/
 review, sessions, model selection) are `CLAUDE.md`. Deep architecture lives in Claude memory

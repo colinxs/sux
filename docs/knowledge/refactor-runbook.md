@@ -18,7 +18,7 @@ A GitHub transfer moves the repo but NOT its secrets or branch protection. Two d
 
 ## Current inventory (what's in colinxs/sux)
 - `sux/` — the Worker: `src/` (index + fns + registry + ai + proxy + namespaces), `wrangler.jsonc` (name `sux`, OAUTH_KV, R2 `sux-mcp`, rate limiters), `grafana/`, `mac-render/`, `mcp-gate/`, `scripts/`, `docs/`.
-- `sux/node/` (`server.mjs`, `openwrt/`) — REVIEW: referenced by `sux/src/proxy.ts`, so not purely dead; decide keep-vs-slim-vs-move-to-owl-tegu-luci before splitting.
+- `sux/node/` (`server.mjs`, `openwrt/`) — REVIEW: referenced by `sux/src/proxy.ts`, so not purely dead; decide keep-vs-slim-vs-move-to-suxrouter before splitting.
 - `docs/` — `design/`, `knowledge/` (this knowledge base, travels with SuxOS/sux), `wiki/`.
 - `.github/workflows/` — 14 workflows (the pipeline).
 - `packaging/` — distribution: `claude-code-plugin`, `desktop-extension`, `skill`. Stays with sux (or its own repo later).
@@ -45,11 +45,11 @@ A GitHub transfer moves the repo but NOT its secrets or branch protection. Two d
 ## Phase 3 — Connector repointing
 Update the MCP connector configs (Code/CLI/Cowork/Desktop) from `sux.colinxs.workers.dev/*` to `suxos.net/*`. Both resolve during the transition, so do it deliberately, verify each surface, then retire the workers.dev references in docs.
 
-## Phase 4 — owl-tegu-luci alignment
-Decide whether owl-tegu-luci moves into SuxOS (then it inherits org secrets + the reusable pipeline via caller stubs) or stays under colinxs with its own secrets. Either is fine; coordinate via the router session.
+## Phase 4 — suxrouter alignment
+The router repo moved into SuxOS as `SuxOS/suxrouter` (DONE) — it inherits org secrets + the reusable pipeline via caller stubs.
 
 ## Phase 5 — Sessions + cleanup
-- Spin one focused session per repo (SuxOS/sux, SuxOS/.github, owl-tegu-luci); this meta session tracks the whole.
+- Spin one focused session per repo (SuxOS/sux, SuxOS/.github, SuxOS/suxrouter); this meta session tracks the whole.
 - Sweep merged branches + stale worktrees (`npm run branches --prune`).
 - Repoint the scheduled tasks (`sux-continuous-audit`, `sux-knowledge-refresh`) to `SuxOS/sux`.
 

@@ -12,8 +12,8 @@ updated: 2026-07-09
 
 **Status:** proposal · **Scope:** the cross-cutting operations layer that ties the four
 namespaces (**sux · vault · files · mail**) into one write/act algebra
-**Grounds on:** `docs/proposals/sux-verbs.md`, `docs/proposals/vault-backends.md`,
-`docs/proposals/files.md`, `docs/proposals/mail.md` — the **only** verb designs cited here.
+**Grounds on:** `docs/proposals/archive/sux-verbs.md`, `docs/proposals/vault-backends.md`,
+`docs/proposals/archive/files.md`, `docs/proposals/archive/mail.md` — the **only** verb designs cited here.
 **Companion:** the READ half is already built — sux `oracle` (server-side fan-out across
 vault + files + mail + web, cite per source). This doc is its WRITE/ACT mirror and does
 **not** redesign it.

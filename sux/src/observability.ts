@@ -160,7 +160,12 @@ export async function handleObservability(url: URL, request: Request, env: RtEnv
 		const kind: FeedbackKind | undefined = t === "issue" || t === "suggest" ? t : undefined;
 		const limit = Math.min(Number(url.searchParams.get("limit")) || 50, 500);
 		const items = await readFeedback(env, kind, limit, url.searchParams.get("tool") ?? undefined);
-		return json({ count: items.length, items: items.map((e) => ({ ...e, at: new Date(e.at).toISOString() })) });
+		// Explicit allowlist, NOT a spread — same policy as /logs above, so any future
+		// FeedbackEntry field can't silently leak to this unauthenticated view.
+		return json({
+			count: items.length,
+			items: items.map((e) => ({ kind: e.kind, text: e.text, at: new Date(e.at).toISOString(), ...(e.tool ? { tool: e.tool } : {}) })),
+		});
 	}
 
 	return null;

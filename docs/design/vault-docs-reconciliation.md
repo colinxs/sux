@@ -104,7 +104,7 @@ gets it through the *already-built* sux vault MCP — not a filesystem symlink.
 - **Phase 2 — verify + document the repo-side path.** Confirm the sux vault MCP
   is the sanctioned way to touch the vault from the repo; add a short "editing the
   personal vault from the repo" note. Fix the `colinxs/vault` →
-  `colinxs/obsidian-vault` naming drift in `docs/proposals/architecture.md` +
+  `colinxs/obsidian-vault` naming drift in `docs/proposals/archive/architecture.md` +
   `vault-backends.md`.
 - **Phase 3 — (park) one-way cloud projection** of the public wiki into
   `obsidian-vault/sux-docs/` via CI, only if Colin wants sux docs reachable through the mobile

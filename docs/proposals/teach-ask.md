@@ -14,6 +14,16 @@ Post-tournament synthesis: the winning agentic-acquisition design with every jud
 
 ---
 
+## Reality check — 2026-07-14 (external-research pass)
+
+External research pass (2026-07-14) into the 2025–2026 agent-memory landscape, as input to any future decision to un-park this proposal:
+
+- The mature reference architecture for temporal/evolving knowledge memory in 2026 is a **temporal knowledge graph**: Zep's **Graphiti** engine builds a graph where every edge carries validity windows (when a fact became true / was superseded) — directly matching this proposal's oracle-supersession framing (R9). Graphiti/Zep leads temporal-reasoning benchmarks (LongMemEval ~63.8% vs Mem0 ~49.0%); Mem0 is vector-first, graph only in its Pro tier.
+- **Caveat / tension with this design:** Graphiti is Neo4j-backed — a heavyweight graph DB that does not fit a stateless Cloudflare Worker cheaply. teach/ask's own design here is deliberately per-topic KV, not a graph, so the decision isn't "adopt Graphiti" but whether the KV design should borrow its *temporal-validity* modeling (fact valid-from/superseded-by) without taking on a graph DB. Cloudflare's own "Agent Memory" primitive is worth evaluating as the on-platform option.
+- Sources: [Mem0 vs Zep](https://vectorize.io/articles/mem0-vs-zep), [Zep/Graphiti temporal-KG paper](https://arxiv.org/html/2501.13956v1).
+
+---
+
 ## Resolved decisions
 
 | # | Decision | Resolution (and what it supersedes) |

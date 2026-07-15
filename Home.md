@@ -49,10 +49,11 @@ vs `parked`; when reality moves, a note's `status:` flips and `npm run wiki`
 regenerates. That discipline is what makes this wiki *living* — see
 [[wiki-protocol]].
 
-## In flight
+## Shipped (formerly "in flight")
 
-- **This work** — the four-namespace design pass ([[three-mcps]], [[sux-verbs]],
-  [[vault-backends]], [[files]], [[mail]], [[enterprise-ops]]) is `designed`; the
-  vault slice is `shipped` ([[vault-stack]]).
-- **[[mychart|MyChart / Epic FHIR + Apple Health]]** — a separate `draft`
-  proposal (open PR #31), health-data integration. Not started.
+- **The four-namespace design pass** ([[three-mcps]], [[sux-verbs]],
+  [[vault-backends]], [[files]], [[mail]], [[enterprise-ops]]) has fully
+  shipped: the per-domain connectors [[three-mcps]] proposed are retired,
+  collapsed into ordinary front verbs on the one `/mcp` connector.
+- **[[mychart|MyChart / Epic FHIR + Apple Health]]** — shipped (PR #31, #342,
+  #382), health-data integration is live.
