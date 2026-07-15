@@ -111,7 +111,7 @@ async function googleDirect(env: any, q: string, limit: number, _route: Route): 
 // Spend-cap enforcement is out of scope for this file (needs quota-tracking infra
 // this fn doesn't have) — set a budget alert/cap on the Brave account itself.
 async function brave(env: any, q: string, limit: number, _route: Route): Promise<Hit[]> {
-	const resp = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(q)}&count=${limit}`, {
+	const resp = await smartFetch(env, `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(q)}&count=${limit}`, {
 		headers: { "X-Subscription-Token": env.BRAVE_API_KEY, Accept: "application/json" },
 	});
 	if (!resp.ok) throw new Error(`Brave HTTP ${resp.status}`);

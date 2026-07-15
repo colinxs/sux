@@ -1,3 +1,4 @@
+import { smartFetch } from "../proxy";
 import { type Fn, fail, failWith, ok } from "../registry";
 import { oj } from "./_util";
 
@@ -33,7 +34,7 @@ export const find_similar: Fn = {
 		const endpoint = url ? "https://api.exa.ai/findSimilar" : "https://api.exa.ai/search";
 		const body = url ? { url, numResults } : { query, numResults, type: "neural" };
 
-		const resp = await fetch(endpoint, {
+		const resp = await smartFetch(env, endpoint, {
 			method: "POST",
 			headers: { "x-api-key": env.EXA_API_KEY, "Content-Type": "application/json" },
 			body: JSON.stringify(body),

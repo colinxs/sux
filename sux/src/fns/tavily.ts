@@ -1,3 +1,4 @@
+import { smartFetch } from "../proxy";
 import { type Fn, fail, failWith, ok } from "../registry";
 import { errMsg, oj } from "./_util";
 
@@ -42,7 +43,7 @@ export const tavily: Fn = {
 		const depth = args?.depth === "advanced" ? "advanced" : "basic";
 
 		try {
-			const resp = await fetch(API, {
+			const resp = await smartFetch(env, API, {
 				method: "POST",
 				headers: { "Content-Type": "application/json", Accept: "application/json" },
 				body: JSON.stringify({ api_key: env.TAVILY_API_KEY, query, max_results: maxResults, include_answer: true, search_depth: depth }),

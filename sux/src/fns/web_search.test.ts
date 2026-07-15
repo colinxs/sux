@@ -187,12 +187,11 @@ describe("web_search", () => {
 	});
 
 	it("calls Brave when the key is present", async () => {
-		const fetchMock = vi.fn(async (_u?: any, _i?: any) => new Response(JSON.stringify({ web: { results: [{ title: "B", url: "https://b.com", description: "brave desc" }] } }), { status: 200 }));
-		vi.stubGlobal("fetch", fetchMock);
+		smartFetch.mockResolvedValueOnce(new Response(JSON.stringify({ web: { results: [{ title: "B", url: "https://b.com", description: "brave desc" }] } }), { status: 200 }));
 		const r = await webSearch.run({ BRAVE_API_KEY: "k" } as any, { query: "x", engine: "brave" });
 		expect(r.isError).toBeFalsy();
 		expect(r.content[0].text).toContain("1. B");
-		expect((fetchMock.mock.calls[0][1] as any).headers["X-Subscription-Token"]).toBe("k");
+		expect((smartFetch.mock.calls[0][2] as any).headers["X-Subscription-Token"]).toBe("k");
 	});
 
 	it("gates brave without the key", async () => {
