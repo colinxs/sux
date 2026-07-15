@@ -1,3 +1,4 @@
+# TODO: consolidate onto SuxOS/.github reusable once it supports merge_group (tracked).
 name: Security review (no-dumb-shit bot)
 
 # Every PR gets a focused SECURITY review before it can merge — the standing net for
@@ -85,7 +86,7 @@ jobs:
         # step fail visibly in the log but keep going so Gate's existing logic decides the
         # outcome from the (here, empty) verdict, same as any other no-verdict case.
         continue-on-error: true
-        uses: anthropics/claude-code-action@e90deca47693f9457b72f2b53c17d7c445a87342 # v1
+        uses: anthropics/claude-code-action@f1bd27ca5b54584506e40e17884d90bdaaa1a9b3 # v1
         env:
           # 1-hour prompt-cache TTL (default is 5 min). The autofix→CI→re-review loop and
           # back-to-back PR reviews span >5 min, so the stable prefix (system prompt + tools
