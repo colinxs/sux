@@ -525,8 +525,8 @@ export async function handleAppleHealth(url: URL, request: Request, env: RtEnv):
 	// jittery Background-App-Refresh retries HAE makes; fall back to a content hash so
 	// identical bodies still collapse to one object. Header-driven so a retry lands on
 	// the SAME key and R2's put overwrites in place (never assume completeness — §2c).
-	const automationId = request.headers.get("x-automation-id") || request.headers.get("automation-id") || "";
-	const period = request.headers.get("x-period") || request.headers.get("period") || "";
+	const automationId = (request.headers.get("x-automation-id") || request.headers.get("automation-id") || "").slice(0, 128);
+	const period = (request.headers.get("x-period") || request.headers.get("period") || "").slice(0, 128);
 	const digest = await crypto.subtle.digest("SHA-256", bytes);
 	const hash = Array.from(new Uint8Array(digest)).slice(0, 8).map((b) => b.toString(16).padStart(2, "0")).join("");
 	// The date directory MUST be derived from the PAYLOAD, never the server clock: a
