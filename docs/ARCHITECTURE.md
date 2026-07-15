@@ -49,12 +49,12 @@ One Cloudflare Worker (`sux/`) serves **four MCP connectors on one OAuth provide
 
 | Path | Name | Plugin | Advertised | What it is |
 |---|---|---|---|---|
-| `/mcp` | sux | `sux-router` | yes | Public front door — ~103 `Fn` leaves, only ~13 advertised as front verbs |
-| `/vault/mcp` | vault | `sux-vault` | no | Git-backed Obsidian vault (`colinxs/vault`) |
-| `/mail/mcp` | mail | `sux-mail` | no | Ergonomic Fastmail (JMAP + CalDAV) surface |
-| `/files/mcp` | files | `sux-files` | no | Dropbox blob workspace (Mode A app-folder / Mode B whole-account) |
+| `/mcp` | sux | `sux` | yes | Public front door — ~103 `Fn` leaves, only ~13 advertised as front verbs; vault/mail/files/cal/contact ride the same connector as ordinary front verbs |
+| `/vault/mcp` | vault | — | no | Retired per-domain route, dormant for back-compat (dispatched via `vault_` front verbs) |
+| `/mail/mcp` | mail | — | no | Retired per-domain route, dormant for back-compat (dispatched via `mail_` front verbs) |
+| `/files/mcp` | files | — | no | Retired per-domain route, dormant for back-compat (dispatched via `files_` front verbs) |
 
-All four share **one** GitHub-OAuth gate, **one** KV namespace (`OAUTH_KV`), **one** rate limiter (`MCP_RATE_LIMITER`), and **one** deploy. Adding a namespace costs a route + a plugin manifest, not new infrastructure. The `/mcp` front door is the **stateless query/compute plane** (holds no durable state so it can run anywhere); the three personal namespaces are stateful, each with its own verb vocabulary and **handle discipline** (list/search return references; exactly one deliberate read returns bytes).
+All four routes share **one** GitHub-OAuth gate, **one** KV namespace (`OAUTH_KV`), **one** rate limiter (`MCP_RATE_LIMITER`), and **one** deploy — but only `/mcp` is the live, advertised connector; the other three are retired routes kept dormant for back-compat, not separate plugins. The `/mcp` front door is the **stateless query/compute plane** (holds no durable state so it can run anywhere); the three personal namespaces are stateful, each with its own verb vocabulary and **handle discipline** (list/search return references; exactly one deliberate read returns bytes).
 
 ```
 Cloudflare Worker "sux"  (sux/src/index.ts = default export)
@@ -65,12 +65,11 @@ Cloudflare Worker "sux"  (sux/src/index.ts = default export)
 │
 └─ @cloudflare/workers-oauth-provider   (GitHub OAuth, single-user allowlist)
      defaultHandler = GitHubHandler   → /authorize /callback /register /token
-     apiRoute       = CONNECTOR_PATHS → ["/mcp","/vault/mcp","/mail/mcp","/files/mcp"]
+     apiRoute       = CONNECTOR_PATHS → ["/mcp"]
      apiHandler     = rtServer.fetch  → login allowlist → rate limit → path routing
-                        ├─ /mcp        → handleRpc         (registry.ts FUNCTIONS)
-                        ├─ /vault/mcp  → handleVaultRpc    (vault-mcp.ts)
-                        ├─ /mail/mcp   → handleMailRpc     (mail-mcp.ts)
-                        └─ /files/mcp  → handleFilesRpc    (files-mcp.ts)
+                        └─ /mcp        → handleRpc         (registry.ts FUNCTIONS;
+                                                             vault_/mail_/files_/cal_/contact_
+                                                             ship as ordinary front verbs here)
 
 Bindings (wrangler.jsonc): OAUTH_KV (state+cache) · AI (Workers AI) ·
 IMAGES · R2 (bucket sux-mcp) · BROWSER (headless Chromium) ·
@@ -91,7 +90,7 @@ MCP_RATE_LIMITER (120/60s) · daily Cron 0 13 * * *
 
 1. **`isAllowedLogin(ctx.props?.login, env.ALLOWED_GITHUB_LOGIN)`** — single-user allowlist; 403 on any other GitHub login. This is what makes the whole surface single-user *on every request*, not just at token-mint time.
 2. **`MCP_RATE_LIMITER.limit({key: login})`** — base 1 token/request, 429 on deny.
-3. **Path routing** (exact or trailing-slash prefix against `CONNECTOR_PATHS`): `/mcp/connectors` or `/connectors` → discovery manifest; `/vault/mcp` → dynamic import + `handleVaultRpc`; `/mail/mcp` → `handleMailRpc`; `/files/mcp` → `handleFilesRpc`; else (`/mcp`) → `weightedRateLimit` then `handleRpc`.
+3. **Path routing** (exact or trailing-slash prefix against `CONNECTOR_PATHS`, now just `["/mcp"]`): `/mcp/connectors` or `/connectors` → discovery manifest; else (`/mcp`) → `weightedRateLimit` then `handleRpc`. (The old per-domain `handleVaultRpc`/`handleMailRpc`/`handleFilesRpc` RPC shells still exist in `vault-mcp.ts`/`mail-mcp.ts`/`files-mcp.ts` with their own tests, but nothing in `index.ts` calls them anymore — dead code candidates, not wired routes.)
 
 ### The front-door dispatcher (`handleRpc`, exported so it is testable without a real `Request`/OAuthProvider)
 
@@ -465,7 +464,7 @@ The recurring blind spot (per memory + `session-knowledge.md`): verify against l
 | Server info name | `research-tools` | `handleRpc` |
 | Front-door functions | ~103 (~101 tested) | `FUNCTIONS.md` header |
 | `FRONT_VERBS` advertised | 13 (`sux, fn, search, scrape, shop, ingest, recall, oracle, pipe, batch, store, preferences, issue`) | `registry.ts` |
-| `CONNECTOR_PATHS` | 4: `["/mcp","/vault/mcp","/mail/mcp","/files/mcp"]` | `connectors.ts` (asserted in test) |
+| `CONNECTOR_PATHS` | 1: `["/mcp"]` | `connectors.ts` (asserted in test) |
 | `FN_DEADLINE_MS` | 60 000 | `index.ts` |
 | `MAX_OUTPUT_CHARS` | 1 000 000 | `index.ts` |
 | `MAX_ARG_BYTES` | 256 000 | `index.ts` (`checkArgs`) |
@@ -525,7 +524,7 @@ The recurring blind spot (per memory + `session-knowledge.md`): verify against l
 | `sux/wrangler.jsonc` | Bindings (`OAUTH_KV`, `AI`, `IMAGES`, `R2`, `BROWSER`, `MCP_RATE_LIMITER`), cron, vars |
 | `sux/scripts/gen-index.mjs`, `gen-docs.mjs`, `importance.mjs` | Registry + `FUNCTIONS.md` generators (CI-enforced) + ordering source |
 | `sux/node/server.mjs`, `sux/mac-render/render_server.py` | Off-Worker Tailscale fetch node + patchright/CapSolver render node |
-| `.claude-plugin/marketplace.json` | Plugin marketplace: `sux-router` (the `/mcp` connector + `sux` skill), `sux-life` (memory-only skill) |
+| `.claude-plugin/marketplace.json` | Plugin marketplace: one `sux` plugin (the `/mcp` connector + the `sux` routing skill + the `life` memory skill) |
 | `sux/docs/architecture.md` | Existing shorter deep-dive (consistent with this doc) |
 
 ---

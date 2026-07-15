@@ -220,6 +220,16 @@ export type RtEnv = Env &
 		// clamped to [1, 20]; unset/invalid ⇒ default 5. Set via `wrangler secret`.
 		BRIEFING_MAX_DRAFTS?: string;
 
+		// Agenda loop (fns/_agenda.ts + the daily cron) — the "figure out what to do" engine.
+		// Same two-stage fail-closed gate: AGENDA_ENABLED must be truthy for the detect→propose→
+		// digest loop to run at all (unset → total no-op). AGENDA_EMAIL must ALSO be truthy before
+		// the digest is mailed to Colin's own address (otherwise it's appended to the Daily note
+		// only). Both default OFF. Every proposal it records is a REVERSIBLE Todoist add gated
+		// behind Colin's approval (the W1 proposal kernel); the loop itself never sends to a third
+		// party, never moves/deletes, never auto-approves.
+		AGENDA_ENABLED?: string;
+		AGENDA_EMAIL?: string;
+
 		// Manual ops trigger for the daily cron ticks (POST /admin/tick?job=…), bearer-gated
 		// by this token. Unset ⇒ the endpoint 404s (feature off). Lets an operator run a
 		// mail-triage / self-improve / maintenance cycle on demand instead of waiting for cron.
@@ -242,6 +252,15 @@ export type RtEnv = Env &
 		RECOVERY_HMAC_SECRET?: string;
 		RECOVERY_CMD_SECRET?: string;
 		RECOVERY_ADMIN_SECRET?: string;
+
+		// Life-learning living wiki (fns/_life_wiki.ts + the daily cron). A single fail-closed
+		// toggle var (NOT a credential — the vault/AI creds gate what can be gathered; this arms
+		// the autonomous synthesis). Declared in wrangler.jsonc vars, default "0" = OFF: unset or
+		// falsy ("0"/"false"/"off"/empty) ⇒ the fn and the cron tick are a total no-op, reading
+		// nothing and writing nothing. When truthy it regenerates a two-audience wiki ONLY inside
+		// the sandboxed vault subdir (sux/wiki/), non-destructive by construction — never touches
+		// the user's own notes. Flip to "1" to arm; the sandbox subdir is deletable with zero impact.
+		LIFE_WIKI_ENABLED?: string;
 
 
 		TAVILY_API_KEY?: string;
@@ -314,6 +333,16 @@ export type RtEnv = Env &
 export const FAIL_CODES = ["not_configured", "blocked", "timeout", "rate_limited", "not_found", "upstream_error", "bad_input", "layout_change"] as const;
 export type FailCode = (typeof FAIL_CODES)[number];
 
+// NOTE on MCP Apps (SEP-1865) content: the base ToolResult.content type stays
+// `{ type:"text"; text:string }` — the shape every existing call site already
+// narrows on without a `.type` check (`content[0].text`). Widening it to a
+// discriminated union here would force a `.type === "text"` guard onto every
+// one of those call sites across the repo, which is exactly the large,
+// speculative blast radius this pilot is meant to avoid. Instead the one
+// UI-resource content part (`{ type:"resource", resource:{...} }`, the MCP
+// base-spec embedded-resource shape) is appended by `fns/_ui.ts`'s
+// `withUiResource`, which owns the (locally contained) cast — see that file
+// for the wire format and rationale.
 export type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean; noCache?: boolean; errorCode?: FailCode };
 export const ok = (text: string): ToolResult => ({ content: [{ type: "text", text }] });
 export const fail = (text: string): ToolResult => ({ content: [{ type: "text", text }], isError: true });
@@ -373,6 +402,13 @@ export type Fn = {
 	// better at the fn's own site.
 	annotations?: ToolAnnotations;
 
+	// Tool-definition `_meta`, advertised verbatim on the tools/list entry (MCP
+	// base spec: an implementation-specific bag on any tool/resource/prompt).
+	// The one live consumer is the MCP Apps extension's `_meta.ui.resourceUri`
+	// (see `fns/_ui.ts`'s `uiMeta`), naming which `ui://` template this fn's
+	// result renders into — but the field is generic, not apps-specific.
+	meta?: Record<string, unknown>;
+
 	run: (env: RtEnv, args: any) => Promise<ToolResult>;
 };
 
@@ -414,12 +450,19 @@ export const TOOL_ANNOTATIONS: Record<string, ToolAnnotations> = {
 	...Object.fromEntries(["store", "ingest", "dropbox", "kv_put", "kv_delete"].map((n) => [n, WRITE_DESTRUCTIVE])),
 };
 
-export function toolList(fns: Fn[]): Array<{ name: string; description: string; inputSchema: unknown; annotations?: ToolAnnotations }> {
+export function toolList(
+	fns: Fn[],
+): Array<{ name: string; description: string; inputSchema: unknown; annotations?: ToolAnnotations; _meta?: Record<string, unknown> }> {
 	return fns.map((f) => {
 		const annotations = f.annotations ?? TOOL_ANNOTATIONS[f.name];
-		return annotations
-			? { name: f.name, description: f.description, inputSchema: f.inputSchema, annotations }
-			: { name: f.name, description: f.description, inputSchema: f.inputSchema };
+		const base: { name: string; description: string; inputSchema: unknown; annotations?: ToolAnnotations; _meta?: Record<string, unknown> } = {
+			name: f.name,
+			description: f.description,
+			inputSchema: f.inputSchema,
+		};
+		if (annotations) base.annotations = annotations;
+		if (f.meta) base._meta = f.meta;
+		return base;
 	});
 }
 
@@ -444,7 +487,7 @@ export const FRONT_VERBS = new Set<string>([
 	"search", "scrape", "shop",
 	"ingest", "recall", "oracle",
 	"pipe", "batch",
-	"store", "preferences", "issue",
+	"store", "preferences", "issue", "proposals", "agenda",
 	"vault", "mail", "files", "calendar", "contact",
 ]);
 
@@ -459,7 +502,9 @@ export function isFrontVerb(f: Fn): boolean {
  * (the `sux` map), so nothing is lost — the surface is just legible. Preserves the
  * importance ordering of the input.
  */
-export function frontToolList(fns: Fn[]): Array<{ name: string; description: string; inputSchema: unknown; annotations?: ToolAnnotations }> {
+export function frontToolList(
+	fns: Fn[],
+): Array<{ name: string; description: string; inputSchema: unknown; annotations?: ToolAnnotations; _meta?: Record<string, unknown> }> {
 	return toolList(fns.filter(isFrontVerb));
 }
 

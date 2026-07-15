@@ -188,7 +188,7 @@ Source of truth = **`sux/FUNCTIONS.md`** (`npm run docs` regenerates it). 88 wor
   wrap an overly-verbose public connector for gross efficiency (F13), never for volume.
 - **Conventions:** 1 test · 1 file · 1 function. Test quality bar = the `dns` suite
   (validation + happy + edge + error).
-- **Observability (Bosman): logging + metrics, NO dashboard UI.** Serving `/health`,
+- **Observability (Bosman): logging + metrics; a Cloudflare-Access-gated WAN dashboard shipped later (#389, `dashboard.ts`).** Serving `/health`,
   `/metrics` (JSON + Prometheus), `/logs` (rolling call log w/ metric fields). Each call
   emits one structured Workers-Logs line.
 - **Compression defaults:** highest ratio everywhere — `compress` = brotli(q11)/zstd(L19)/
@@ -401,8 +401,9 @@ curated private MCP surface. Exactly what sux did to Kagi. **Long-term: a local 
   Candidates: PubMed ✓, ClinicalTrials ✓, then e.g. arXiv, Semantic Scholar, USPTO, SEC EDGAR,
   data.gov, OpenAlex — NOT lean/well-shaped APIs.
 
-### F14 — Logging + metrics (NO dashboard for now)
-Bosman: no dashboard UI. Keep **logging with metrics** only:
+### F14 — Logging + metrics (dashboard shipped later, #389)
+Bosman's original call was no dashboard UI; a Cloudflare-Access-gated WAN dashboard
+(`dashboard.ts`) shipped later anyway. Keep **logging with metrics**:
 - `/metrics` — aggregate JSON (+ Prometheus): per-tool calls/errors/cache/latency.
 - `/logs` — rolling call log (last 50) with metric fields; `?tool=` / `?limit=`.
 - One structured `sux {…}` line per call → Workers Logs (`wrangler tail`).

@@ -48,6 +48,7 @@ import { imageConvert } from "./image_convert";
 import { recall } from "./recall";
 import { ace } from "./ace";
 import { advise } from "./advise";
+import { agenda } from "./agenda";
 import { amazon } from "./amazon";
 import { arxiv } from "./arxiv";
 import { autonomy_status } from "./autonomy_status";
@@ -77,10 +78,12 @@ import { jmap } from "./jmap";
 import { json } from "./json";
 import { kroger } from "./kroger";
 import { learn } from "./learn";
+import { life_wiki } from "./life_wiki";
 import { linkedin } from "./linkedin";
 import { lowes } from "./lowes";
 import { mail } from "./mail";
 import { mail_sieve } from "./mail_sieve";
+import { mail_sieve_backfill } from "./mail_sieve_backfill";
 import { mail_triage } from "./mail_triage";
 import { markdown } from "./markdown";
 import { monarch } from "./monarch";
@@ -95,6 +98,7 @@ import { pipe } from "./pipe";
 import { places } from "./places";
 import { preferences } from "./preferences";
 import { product_search } from "./product_search";
+import { proposals } from "./proposals";
 import { put } from "./put";
 import { reddit } from "./reddit";
 import { render } from "./render";
@@ -164,6 +168,7 @@ export const FUNCTIONS: Fn[] = [
 	recall,
 	ace,
 	advise,
+	agenda,
 	amazon,
 	arxiv,
 	autonomy_status,
@@ -193,10 +198,12 @@ export const FUNCTIONS: Fn[] = [
 	json,
 	kroger,
 	learn,
+	life_wiki,
 	linkedin,
 	lowes,
 	mail,
 	mail_sieve,
+	mail_sieve_backfill,
 	mail_triage,
 	markdown,
 	monarch,
@@ -211,6 +218,7 @@ export const FUNCTIONS: Fn[] = [
 	places,
 	preferences,
 	product_search,
+	proposals,
 	put,
 	reddit,
 	render,

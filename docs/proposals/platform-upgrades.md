@@ -23,6 +23,14 @@ Travel is **not** covered here beyond this pointer: its authoritative design is 
 
 ---
 
+## Reality check — 2026-07-14 (external-research pass)
+
+The scheduler-drain primitive below (`job`, §1/§4) should be built on **Durable Object Alarms**, not Workers Cron Triggers. Cloudflare's own recommendation for this exact shape — one DO per scheduled request, isolated storage + its own alarm — is DO Alarms: programmatic `setAlarm(msSinceEpoch)` (ms granularity), guaranteed at-least-once execution with automatic exponential-backoff retry (2s initial, up to 6 retries), and **unlimited per account**. Workers Cron Triggers, by contrast, cap out at **3 per Worker**, are only configurable via dashboard/API (not programmatically), and are limited to 1-minute granularity — a poor fit for a per-schedule-record drain.
+**Caveat:** alarm auto-retry gives up after 6 attempts — for indefinite reliability the `alarm()` handler must catch its own errors and reschedule itself.
+Refs: [DO Alarms](https://developers.cloudflare.com/durable-objects/api/alarms/), [Building a scheduling system with Workers + DOs](https://blog.cloudflare.com/building-scheduling-system-with-workers-and-durable-objects/).
+
+---
+
 ## Resolved decisions
 
 | # | Decision | Rationale |

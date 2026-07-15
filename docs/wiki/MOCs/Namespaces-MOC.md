@@ -57,4 +57,4 @@ The blob namespace, live via the `files_*` verbs on `/mcp`: a synced workspace +
 
 ## Health (draft)
 
-- [[mychart]] — MyChart / Epic FHIR + Apple Health (separate proposal, PR #31)
+- [[mychart]] — MyChart / Epic FHIR + Apple Health (shipped, PR #31/#342/#382)

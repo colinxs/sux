@@ -16,7 +16,7 @@ The top-level prioritized roadmap. Detailed execution lives in `org-structure-an
 ## Repo decomposition (chosen shape — minimal, grows as needed)
 - **`SuxOS/sux`** — core Worker + fns + namespaces (vault/mail/files) + recall + the knowledge base. The product. [transfer `colinxs/sux`]
 - **`SuxOS/.github`** — the reusable autonomous pipeline (review/fix/merge/audit) + org profile; every repo inherits via thin stubs + org secrets.
-- **`SuxOS/suxrouter`** — the router, EVENTUALLY: rename/move `owl-tegu-luci` → `SuxOS/suxrouter` (coordinate with the router session; not now — it's mid-work).
+- **`SuxOS/suxrouter`** — the router. Renamed/moved into the org as `SuxOS/suxrouter` (DONE).
 - **`SuxOS/suxlib`** — HOLD. Extract a shared lib only when a SECOND TS consumer exists; today `sux` is the only one, so a lib repo would have one consumer = premature.
 - `packaging/` (plugin/desktop-extension/skill) + `plugins/` — stay in `sux`; split only if they earn their own release cadence.
 
@@ -27,7 +27,7 @@ The top-level prioritized roadmap. Detailed execution lives in `org-structure-an
 2. Transfer `colinxs/sux → SuxOS/sux`; re-apply branch protection + deploy secrets (runbook).
 3. Repoint the MCP connectors → `suxos.net`.
 4. Extract `SuxOS/.github` reusable pipeline; thin the per-repo stubs.
-5. Move `owl-tegu-luci → SuxOS/suxrouter` (coordinate router session).
+5. Move the router repo → `SuxOS/suxrouter` — DONE.
 6. Per-repo sessions; sweep branches/worktrees.
 
 ### B · Product (the assistant gets more useful)

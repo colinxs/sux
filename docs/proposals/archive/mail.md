@@ -20,6 +20,13 @@ The whole surface is a **superset of JMAP + the Fastmail API**: full coverage of
 
 ---
 
+## Reality check — 2026-07-14 (external-research pass)
+
+> **New capability, not a defect.** [RFC 9661 (JMAP for Sieve Scripts)](https://datatracker.ietf.org/doc/html/rfc9661.html), Standards Track since Sept 2024, standardizes exactly the surface **W9 (Sieve compilation)** needs: a `SieveScript` object with `/get`, `/set`, `/query`, `/validate`, activation via `onSuccessActivateScript` on `/set`, advertised under capability URN `urn:ietf:params:jmap:sieve`. Gate W9 on that URN's presence in Fastmail's JMAP Session `capabilities` ([fastmail.com/dev](https://www.fastmail.com/dev/)) rather than assuming support.
+> For **W10 (event-driven triage)**: base `PushSubscription` (RFC 8620 core) is the standard push mechanism available today — build on it. The filtered-delivery `urn:ietf:params:jmap:emailpush` extension is still an Internet-Draft ([draft-ietf-jmap-emailpush](https://datatracker.ietf.org/doc/draft-ietf-jmap-emailpush/), -03 as of late 2025), not a finalized RFC — track it as a future upgrade, don't design W10 around it yet.
+
+---
+
 ## 0. The cross-cutting rule this whole surface is built to (LOCKED)
 
 **Verbs pass REFERENCES, not payloads.** This is the load-bearing constraint, applied to every verb in Layer A:

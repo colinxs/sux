@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ALL_SIEVE_CATEGORIES, compileSieve, tryCompileSieve } from "./_mail_sieve";
+import { ALL_SIEVE_CATEGORIES, compileSieve, matchCoarseCategories, tryCompileSieve } from "./_mail_sieve";
 
 // Safety invariant this whole module exists to guarantee: every rule ADDS an IMAP keyword and
 // NOTHING ELSE. If any of these verbs ever creep into the generator, a message could vanish from
@@ -94,5 +94,44 @@ describe("tryCompileSieve — non-throwing wrapper", () => {
 		const res = tryCompileSieve(["bogus"]);
 		expect(res.ok).toBe(false);
 		if (!res.ok) expect(res.error).toMatch(/unknown sieve categor/i);
+	});
+});
+
+describe("matchCoarseCategories — backfill's JS mirror of the Sieve rules", () => {
+	it("matches a junk-subject cue", () => {
+		expect(matchCoarseCategories({ subject: "You WON the lottery! Claim your prize now" })).toContain("junk");
+	});
+
+	it("matches a bulk-sender mailing-list cue from `from`", () => {
+		expect(matchCoarseCategories({ from: "newsletter@substack.com", subject: "Weekly roundup" })).toContain("mailing-list");
+	});
+
+	it("never sets the List-Unsubscribe rule without hasListUnsubscribe (no headers in a search preview)", () => {
+		const flags = matchCoarseCategories({ from: "someone@example.com", subject: "hi" });
+		expect(flags).not.toContain("mailing-list");
+		expect(matchCoarseCategories({ from: "someone@example.com", subject: "hi", hasListUnsubscribe: true })).toContain("mailing-list");
+	});
+
+	it("matches each known service sender to its own flag", () => {
+		expect(matchCoarseCategories({ from: "notifications@github.com" })).toContain("gh");
+		expect(matchCoarseCategories({ from: "bot@gitlab.com" })).toContain("gitlab");
+		expect(matchCoarseCategories({ from: "noreply@vercel.com" })).toContain("vercel");
+		expect(matchCoarseCategories({ from: "ci@circleci.com" })).toContain("ci");
+	});
+
+	it("matches the generic notify-from catch-all", () => {
+		expect(matchCoarseCategories({ from: "no-reply@somesaas.example" })).toContain("notification");
+	});
+
+	it("returns no flags for an unremarkable personal message", () => {
+		expect(matchCoarseCategories({ from: "friend@gmail.com", subject: "lunch tomorrow?" })).toEqual([]);
+	});
+
+	it("respects a narrowed `categories` filter", () => {
+		expect(matchCoarseCategories({ subject: "you won the lottery", from: "newsletter@x.com" }, ["junk"])).toEqual(["junk"]);
+	});
+
+	it("throws on an unknown category, same as compileSieve", () => {
+		expect(() => matchCoarseCategories({}, ["bogus"])).toThrow(/unknown sieve categor/i);
 	});
 });

@@ -3,6 +3,7 @@ import { isAllowedLogin } from "./utils";
 import { type CacheMeta, cacheKey, deferCacheWrite, type JsonRpc, parseJsonRpc, sseResponse } from "./mcp-util";
 import { unpackFromCache } from "./cache-codec";
 import { findFn, frontToolList, type RtEnv, type ToolResult, unwrapFnCall } from "./registry";
+import { MCP_UI_MIME } from "./fns/_ui";
 import { buildManifest, CONNECTOR_PATHS } from "./connectors";
 import { singleFlight } from "./single-flight";
 import { weightedRateLimit } from "./rate-limit";
@@ -170,6 +171,19 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 					// per-tool via tools/list's execution.taskSupport), and supports
 					// tasks/list + tasks/cancel for any task it created. See src/tasks.ts.
 					tasks: { list: {}, cancel: {}, requests: { tools: { call: {} } } },
+					// MCP Apps (SEP-1865, ratified 2026-01-26) support signal. Per the
+					// ratified spec this `extensions` capability is primarily how a
+					// CLIENT/host announces it can render `ui://` resources; sux mirrors
+					// the same shape server-side as an explicit "I can emit these"
+					// signal, since a server has no other standard place to advertise it.
+					// sux does not yet read the CLIENT's own declared `extensions`
+					// capability before attaching a UI resource (see `fns/_ui.ts` and the
+					// product_search pilot) — every caller gets the extra content block
+					// regardless of whether their host understands it. Harmless (an
+					// unrecognized content part is ignored) but real capability
+					// negotiation is left for a follow-up once more than one fn adopts
+					// this. See https://modelcontextprotocol.io/extensions/apps/overview.
+					extensions: { "io.modelcontextprotocol/ui": { mimeTypes: [MCP_UI_MIME] } },
 				},
 				serverInfo: { name: "research-tools", version: "0.1.0" },
 			},
@@ -614,6 +628,18 @@ async function briefingTick(env: RtEnv): Promise<unknown> {
 	return mod.runBriefing(env, {}, deps);
 }
 
+// One daily agenda cycle (the "figure out what to do" loop) on the same Cron Trigger.
+// FAIL-CLOSED: no-op unless AGENDA_ENABLED. Detects life 'drops' across mail+calendar,
+// records a reversible Todoist-task PROPOSAL for each (nothing acts until Colin approves),
+// appends a digest to the Daily note, and mails it to him when AGENDA_EMAIL is also set.
+// Dynamically imported so the cron path pulls in the mail/cal surface only when armed.
+async function agendaTick(env: RtEnv): Promise<unknown> {
+	const mod = await import("./fns/_agenda");
+	if (!mod.hasAgenda(env)) return { dormant: true };
+	const deps = await mod.defaultDeps();
+	return mod.runAgenda(env, {}, deps);
+}
+
 // Constant-time string compare (avoids leaking the token via early-exit timing).
 function tokenEq(a: string, b: string): boolean {
 	if (a.length !== b.length) return false;
@@ -631,6 +657,19 @@ const METRICS_CRON = "*/5 * * * *";
 // Each sub-job runs via runSubJob: swallows failures (a bad one never blocks the
 // rest) and stamps a {ok,at,error?} heartbeat into KV, so gatherHealth can surface
 // last-success + staleness for the unattended cron parts on the public status page.
+// One living-wiki synthesis, driven by the same Cron Trigger. FAIL-CLOSED: early-returns
+// doing nothing unless LIFE_WIKI_ENABLED is set (the cron fires daily regardless, but is a
+// total no-op — reading nothing, writing nothing — until Colin flips the flag). When armed
+// it regenerates the wiki ONLY inside the sandboxed vault subdir (sux/wiki/), never touching
+// the user's own notes. Dynamically imported so the cron path pulls the retrieval+synthesis
+// surface in only when armed; self-bounds nothing beyond recall's own per-facet failures.
+async function lifeWikiTick(env: RtEnv): Promise<void> {
+	const mod = await import("./fns/_life_wiki");
+	if (!mod.hasLifeWiki(env)) return;
+	const deps = await mod.defaultDeps();
+	await mod.runLifeWiki(env, {}, deps);
+}
+
 async function maintenanceTick(env: RtEnv, ctx: ExecutionContext): Promise<void> {
 	await runSubJob(env, "kroger_token", () => refreshKrogerToken(env));
 	// Keep the Epic refresh grant alive (some orgs expire it on inactivity) — a pure
@@ -639,12 +678,14 @@ async function maintenanceTick(env: RtEnv, ctx: ExecutionContext): Promise<void>
 	await runSubJob(env, "weekly_recall", () => weeklyRecallTick(env));
 	await runSubJob(env, "consolidate", () => consolidateTick(env));
 	await runSubJob(env, "briefing", () => briefingTick(env));
+	await runSubJob(env, "agenda", () => agendaTick(env));
 	// Rebuild the cosmetic-adblock engine blob in R2 — staleness-gated, so the
 	// daily cron only does network work ≈ weekly (see _adblock.refreshAdblockEngine).
 	await runSubJob(env, "adblock", async () => {
 		const { refreshAdblockEngine } = await import("./fns/_adblock");
 		await refreshAdblockEngine(env);
 	});
+	await runSubJob(env, "life_wiki", () => lifeWikiTick(env));
 	try {
 		// Push the pre-aggregated metrics snapshot to Grafana Cloud Prometheus. Self-
 		// contained + idempotent: a pure no-op unless the GRAFANA_PROM_* secrets are set,
@@ -745,9 +786,10 @@ export default {
 					if (job === "mail-triage") out = await mailTriageTick(env);
 					else if (job === "weekly-recall") out = await weeklyRecallTick(env);
 					else if (job === "briefing") out = await briefingTick(env);
+					else if (job === "agenda") out = await agendaTick(env);
 					else if (job === "self-improve") out = await selfImproveTick(env);
 					else if (job === "maintenance") { await maintenanceTick(env, ctx); out = { ok: true }; }
-					else return new Response(JSON.stringify({ error: "unknown job", jobs: ["mail-triage", "weekly-recall", "briefing", "self-improve", "maintenance"] }), { status: 400, headers: { "content-type": "application/json" } });
+					else return new Response(JSON.stringify({ error: "unknown job", jobs: ["mail-triage", "weekly-recall", "briefing", "agenda", "self-improve", "maintenance"] }), { status: 400, headers: { "content-type": "application/json" } });
 					return new Response(JSON.stringify({ ok: true, job, result: out }, null, 2), { headers: { "content-type": "application/json" } });
 				} catch (e) {
 					return new Response(JSON.stringify({ error: String((e as Error)?.message ?? e) }), { status: 500, headers: { "content-type": "application/json" } });

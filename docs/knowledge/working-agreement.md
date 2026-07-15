@@ -81,4 +81,4 @@ Full detail in `docs/knowledge/auth-github-ci.md`; the essentials:
 ## Key infra Colin owns (sux-relevant)
 - **Residential proxy** node (Tailscale, `router@100.98.238.70`) — sux's scrape/render escalation ladder routes through it; `TAILSCALE_PROXY_SECRET` rotatable. See `tailscale-api-access` facts.
 - **Digital-life spine**: four namespaces (sux/vault/mail/files) + recall, all live; Mode B whole-Dropbox READ live (secretless PKCE).
-- Router work is DECOUPLED into the `owl-tegu-luci` repo — not sux's concern anymore.
+- Router work is DECOUPLED into the `SuxOS/suxrouter` repo — not sux's concern anymore.

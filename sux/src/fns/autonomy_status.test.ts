@@ -12,7 +12,7 @@ describe("autonomy_status — read-only gate mirror", () => {
 		const j = await run();
 		expect(j.armed_count).toBe(0);
 		expect(j.armed).toEqual([]);
-		expect(j.surfaces.map((s: any) => s.surface)).toEqual(["mail_triage", "dropbox_full_write", "self_improve", "cron_trigger", "briefing", "weekly_recall", "consolidate"]);
+		expect(j.surfaces.map((s: any) => s.surface)).toEqual(["mail_triage", "dropbox_full_write", "self_improve", "cron_trigger", "briefing", "weekly_recall", "consolidate", "agenda"]);
 		for (const s of j.surfaces) expect(s.armed).toBe(false);
 	});
 

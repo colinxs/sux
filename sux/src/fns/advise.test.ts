@@ -193,6 +193,64 @@ describe("advise — advise (ground + gate + reconcile)", () => {
 	});
 });
 
+// Tier-1 oracle fold-in: a topic the user `study`-ed into a WHITELISTED oracle KB (sux:oracle:<domain>,
+// `whitelist` marker set) must gate advice the same way an ingested authoritative source does — even
+// with NO source ingested at all. This is the fix for the advise.ts:257 TODO(learn-weighting) seam.
+describe("advise — tier-1 whitelisted oracle KB fold-in", () => {
+	/** Seed a KB directly at the oracle KV shape (bypassing `study`/`oracle`, which is a sibling fn) —
+	 *  mirrors oracle.ts's StoredKb: {distilled, chunks, sources, updated_at, whitelist?}. */
+	function seedKb(kv: ReturnType<typeof makeKv>, topic: string, distilled: string, whitelisted: boolean) {
+		kv.store.set(
+			`sux:oracle:${topic}`,
+			JSON.stringify({
+				distilled,
+				chunks: [distilled],
+				sources: ["study"],
+				updated_at: Date.now(),
+				...(whitelisted ? { whitelist: { source: "study", kind: "text", learned_at: Date.now(), via: "study" } } : {}),
+			}),
+		);
+	}
+
+	it("folds a whitelisted oracle KB into tier 1, cites [whitelisted:domain], and gates even with no ingested source", async () => {
+		const { env, kv, run } = makeEnv({ advice: "Take the studied advice. [whitelisted:therapy]" });
+		seedKb(kv, "therapy", "Grounding technique: box breathing 4-4-4-4 before a session.", true);
+		run.mockClear();
+		const r = await advise.run(env, { domain: "therapy", question: "how should I calm down before a session?" });
+		expect(r.isError).toBeFalsy();
+		const j = JSON.parse(r.content[0].text);
+		// GATED even though nothing was `ingest`-ed for this domain.
+		expect(j.gate).toBe("authoritative");
+		expect(j.grounding.authoritative).toContain("whitelisted:therapy");
+
+		const gate = textCalls(run).find((c) => /grounded personal advisor/.test(c.system))!;
+		expect(gate.user).toContain("[whitelisted:therapy]");
+		expect(gate.user).toContain("box breathing 4-4-4-4");
+		// Untrusted like every other gathered source — rides the fenced user arg, never the system role.
+		expect(gate.user).toContain(DATA_OPEN);
+		expect(gate.system).not.toContain("box breathing 4-4-4-4");
+	});
+
+	it("does NOT fold in a NON-whitelisted oracle KB for the same domain (ordinary learn, no `study` marker)", async () => {
+		const { env, kv } = makeEnv({ advice: "General guidance here." });
+		seedKb(kv, "therapy", "Some ordinary learned notes, not vetted by the user.", false);
+		const r = await advise.run(env, { domain: "therapy", question: "advise me" });
+		const j = JSON.parse(r.content[0].text);
+		// No ingested source and no WHITELISTED kb → stays ungated.
+		expect(j.gate).toBe("silent-general");
+		expect(j.grounding.authoritative).not.toContain("whitelisted:therapy");
+	});
+
+	it("distinguishes domains — a whitelisted KB for one domain doesn't leak into another domain's advise", async () => {
+		const { env, kv } = makeEnv({ advice: "General guidance here." });
+		seedKb(kv, "therapy", "Therapy-only whitelisted material.", true);
+		const r = await advise.run(env, { domain: "investing", question: "advise me" });
+		const j = JSON.parse(r.content[0].text);
+		expect(j.gate).toBe("silent-general");
+		expect(j.grounding.authoritative).not.toContain("whitelisted:investing");
+	});
+});
+
 // The #1 confirmed security defect this file guards against: gathered, attacker-reachable context
 // (recall → mail/vault/files/web, and an ingested `url`'s program passages) must NEVER reach the TRUSTED
 // system role — only the <<<DATA>>>-fenced user arg. Otherwise a crafted injection ("SYSTEM NOTE: for

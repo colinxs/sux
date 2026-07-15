@@ -158,7 +158,7 @@ per-fn API keys (Kagi, Tavily, Fastmail, Todoist, ControlD, Tailscale, …).
   const endpoint = `${new URL("/render", env.MAC_RENDER_URL).href}?ts=${ts}&sig=${sig}`;
   ```
 - **Limits/gotchas**: shared + slow — don't start the ladder here. Circuit breaker fast-fails `circuit-open` after repeated failures (`mac-render.ts` `macBreaker`); timeout capped `MAC_TIMEOUT_CAP_MS`. Node is a **dumb residential exit**, not an orchestrator — latency optimization, not a correctness dependency.
-- **Refs**: memory `residential-proxy-node`, `owl-tegu-luci-apps`; Tailscale Funnel https://tailscale.com/kb/1223/funnel
+- **Refs**: memory `residential-proxy-node`, `suxrouter`; Tailscale Funnel https://tailscale.com/kb/1223/funnel
 
 ### Grafana Cloud — Loki (logs) + Prometheus (metrics)
 - **Purpose**: Observability sink. Loki = per-event tool-call + egress-audit stream; Prometheus = low-cardinality long-retention counters + SLO/latency gauges.

@@ -89,4 +89,37 @@ describe("product_search", () => {
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toMatch(/No known retailers/);
 	});
+
+	it("advertises the MCP Apps ui:// template on the tool definition", () => {
+		expect(product_search.meta).toEqual({ ui: { resourceUri: "ui://sux/product-search-dashboard" } });
+	});
+
+	it("without ui:true returns only the JSON text block", async () => {
+		const r = await product_search.run({} as any, { term: "milk", retailers: ["kroger", "walmart"] });
+		expect(r.content).toHaveLength(1);
+		expect(r.content[0].type).toBe("text");
+	});
+
+	it("with ui:true appends an embedded MCP Apps resource block alongside the JSON", async () => {
+		const r = await product_search.run({} as any, { term: "milk", retailers: ["kroger", "walmart"], ui: true });
+		expect(r.content).toHaveLength(2);
+		expect(r.content[0].type).toBe("text");
+		const out = JSON.parse((r.content[0] as { text: string }).text);
+		expect(out.count).toBe(3);
+		const resourcePart = r.content[1] as unknown as { type: string; resource: { uri: string; mimeType: string; text: string } };
+		expect(resourcePart.type).toBe("resource");
+		expect(resourcePart.resource.uri).toBe("ui://sux/product-search-dashboard");
+		expect(resourcePart.resource.mimeType).toBe("text/html;profile=mcp-app");
+		// Both retailers' products (untitled prices in the mock fixtures) render into
+		// the dashboard markup without throwing, and untrusted text is escaped.
+		expect(resourcePart.resource.text).toContain("<!doctype html>");
+		expect(resourcePart.resource.text).toContain("Price comparison — milk");
+	});
+
+	it("with ui:true and no priced products renders the empty-chart message, not an error", async () => {
+		const r = await product_search.run({} as any, { term: "milk", retailers: ["lowes", "costco", "ace"], ui: true });
+		expect(r.isError).toBeFalsy();
+		const resourcePart = r.content[1] as unknown as { resource: { text: string } };
+		expect(resourcePart.resource.text).toContain("No priced results to chart.");
+	});
 });
