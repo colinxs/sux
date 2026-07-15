@@ -40,6 +40,44 @@ exist — no duplicated plumbing).
 The `file(kind, …)` DSL applies to **query mode only**. A URL is passed to `get`
 bare (no `file(url)` wrapper — that was rejected as awkward).
 
+## Lens catalog & `kind` → lens map
+
+One-time Kagi account setup (done 2026-07-15) created 5 custom lenses to give
+`get` targeted file-acquisition strategies, alongside the relevant built-ins.
+Full ID↔name mapping, all read directly from `kagi.com/settings/lenses`
+edit-link hrefs (`/settings/update_lens?id=<N>`):
+
+| Lens | `lens_id` | Kind | Scope |
+|------|-----------|------|-------|
+| PDFs | `3` | built-in | PDF files anywhere |
+| Usenet/Archive | `5648` | built-in | Usenet + archive.org non-web collections |
+| Academic | `2` | built-in | .edu domains (papers) |
+| Document Hosts | `31362` | custom | scribd, academia.edu, researchgate, docs.google, drive.google, slideshare, issuu, vdoc.pub, docslib, coursehero |
+| Code Search | `31363` | custom | github, gitlab, sr.ht, bitbucket, npmjs, pypi, crates.io, pkg.go.dev, rubygems, sourcegraph |
+| Tech Docs | `31364` | custom | devdocs.io, MDN, docs.python, learn.microsoft, developer.apple, docs.aws, cloud.google, docs.rs, readthedocs, docs.oracle |
+| Artifacts | `31365` | custom | f-droid, apkmirror, sourceforge, hub.docker, quay.io, nuget, repo1.maven, pkgs.org, launchpad, github |
+| Wikis/Notes | `31366` | custom | en.wikipedia, wikisource, wikibooks, wiki.archlinux, fandom, notion.site, publish.obsidian.md, gitbook.io, gist.github, wikimedia |
+
+`get`'s `kind` arg selects which lens(es) the fan-out uses — each selected lens
+is one metered call, so a `kind` maps to **≤2 lenses** to keep spend bounded:
+
+| `kind` | Lens(es) | Also runs (free operators) |
+|--------|----------|----------------------------|
+| `pdf` | PDFs (3) | `filetype:pdf` |
+| `document` | Document Hosts (31362) + PDFs (3) | `filetype:pdf`, `filetype:docx` |
+| `ebook` | Usenet/Archive (5648) + Document Hosts (31362) | `filetype:epub`, `site:archive.org` |
+| `code` | Code Search (31363) | — |
+| `docs` | Tech Docs (31364) | — |
+| `artifact` | Artifacts (31365) | — |
+| `reference` | Wikis/Notes (31366) | — |
+| `any` (default) | PDFs (3) + Usenet/Archive (5648) | `filetype:pdf`, `site:archive.org` |
+
+> These are account-scoped IDs, not global Kagi constants (the 8 built-ins
+> happen to share default IDs across accounts, but the custom 31362–31366 are
+> unique to this account). If the account's lenses are rebuilt, re-read the
+> mapping the same way. The IDs live in one `const LENSES` table in the `get`
+> implementation — never scattered — so a re-verify touches one place.
+
 ## Query mode — the exhaustive search
 
 Fan out concurrent search strategies, then merge. Strategies split across two
@@ -166,7 +204,7 @@ does accept a PDF URL directly, but that path is `summarize`'s concern, not
 get(input, kind?, convert?, as?, download?, store?, summarize?, limit?, strategies?, include_domains?, deliver?)
 
   input            string — a URL (→ URL mode) or a query / file(k,q) DSL (→ query mode)
-  kind             document | pdf | text | ebook | any     (default any; query mode)
+  kind             pdf | document | ebook | code | docs | artifact | reference | any   (default any; query mode — see Lens catalog)
   convert          "pdf" | none                            (default none)
   as               "pdf" | "archive"                       (URL mode; default pdf)
   download         bool — false = return ranked links only, skip fetch/normalize (query mode; default true)
