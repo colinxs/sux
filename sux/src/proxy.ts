@@ -470,12 +470,32 @@ const MAX_REDIRECT_HOPS = 20;
  * isn't itself in the allow-list) — that's a credential leak to any host an
  * allow-listed origin happens to redirect to, exactly the boundary
  * githubAuthHeaders exists to enforce in the first place.
+ *
+ * The CALLER's own headers (init.headers — a Kagi session Cookie, a caller-set
+ * Authorization, an arbitrary API key via the generic `proxy` fn) get the same
+ * treatment: forwarded only while a hop stays same-origin as the original url,
+ * dropped entirely the moment a redirect crosses to a different origin. Native
+ * fetch's redirect:"follow" strips Authorization (and similar) cross-origin per
+ * the Fetch spec; this hand-rolled chase doesn't get that for free, so it has to
+ * replicate the origin boundary itself rather than blindly resending every header
+ * to every host a 3xx happens to name.
  */
+function sameOrigin(a: string, b: string): boolean {
+	try {
+		const ua = new URL(a);
+		const ub = new URL(b);
+		return ua.protocol === ub.protocol && ua.hostname === ub.hostname && ua.port === ub.port;
+	} catch {
+		return false;
+	}
+}
+
 async function fetchDirectFollowingRedirects(env: TailscaleEnv, url: string, init: { method?: string; headers?: Record<string, string>; body?: string }): Promise<Response> {
 	const chaseable = !init.method || /^(GET|HEAD)$/i.test(init.method);
 	let current = url;
 	for (let hop = 0; hop < MAX_REDIRECT_HOPS; hop++) {
-		const headers = { ...githubAuthHeaders(env, current), ...init.headers };
+		const callerHeaders = sameOrigin(current, url) ? init.headers : undefined;
+		const headers = { ...githubAuthHeaders(env, current), ...callerHeaders };
 		const resp = await withRetry(() => fetch(current, { method: init.method, headers, body: init.body, redirect: "manual", signal: AbortSignal.timeout(30_000) }));
 		if (!chaseable || resp.status < 300 || resp.status >= 400) return resp;
 		const loc = resp.headers.get("location");

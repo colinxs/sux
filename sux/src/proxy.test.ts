@@ -350,6 +350,34 @@ describe("direct-fetch redirect chasing (SSRF-safe)", () => {
 		await expect(smartFetch({}, "https://example.com/loop", {}, "direct")).rejects.toThrow(/exceeded \d+ redirect hops/i);
 	});
 
+	it("does not carry caller-supplied headers (Cookie/Authorization/API keys) across a cross-origin redirect", async () => {
+		const fetchMock = vi.fn(async (u: string | URL, init?: RequestInit) => {
+			if (String(u) === "https://a.example.com/start") {
+				expect((init?.headers as Record<string, string>)?.Cookie).toBe("session=secret");
+				return new Response(null, { status: 302, headers: { location: "https://b.other.com/final" } });
+			}
+			expect(String(u)).toBe("https://b.other.com/final");
+			expect((init?.headers as Record<string, string>)?.Cookie).toBeUndefined();
+			return new Response("landed", { status: 200 });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		const resp = await smartFetch({}, "https://a.example.com/start", { headers: { Cookie: "session=secret" } }, "direct");
+		expect(await resp.text()).toBe("landed");
+	});
+
+	it("keeps forwarding caller-supplied headers across a same-origin redirect (path-only hop)", async () => {
+		const fetchMock = vi.fn(async (u: string | URL, init?: RequestInit) => {
+			expect((init?.headers as Record<string, string>)?.Cookie).toBe("session=secret");
+			return String(u) === "https://a.example.com/start"
+				? new Response(null, { status: 302, headers: { location: "https://a.example.com/final" } })
+				: new Response("landed", { status: 200 });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		const resp = await smartFetch({}, "https://a.example.com/start", { headers: { Cookie: "session=secret" } }, "direct");
+		expect(await resp.text()).toBe("landed");
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
 	it("does not carry the GitHub token across a redirect to a non-GitHub-allow-listed host", async () => {
 		// api.github.com's zipball/tarball endpoints redirect to codeload.github.com,
 		// which isn't in isGithubHost's allow-list — the token must not ride along.
