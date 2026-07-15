@@ -368,9 +368,14 @@ async function resolveBinaries(env: RtEnv, base: string, doc: any): Promise<Arra
 // ---------------- Public routes ----------------
 
 const PAGE_HEADERS = { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" };
+// Error/status responses that interpolate caller- or upstream-supplied values are
+// served as text/plain so an echoed `error`/`error_description` can NEVER execute as
+// HTML on the prod origin (reflected-XSS class), even if a future edit forgets to
+// escape a new field. Only the fixed success page is HTML.
+const TEXT_HEADERS = { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" };
 
-/** Escape a value for safe interpolation into a text/html response body (defeats
- * reflected XSS via OAuth error params, upstream error_description, patient ids). */
+/** Escape a value for safe interpolation into a text/html response body — the one
+ * remaining HTML page (the success page) interpolates the patient id with this. */
 export function escapeHtml(s: unknown): string {
 	return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
@@ -403,7 +408,7 @@ export async function handleMychartRoutes(url: URL, request: Request, env: RtEnv
 			auth.searchParams.set("aud", fhirBase(env));
 			auth.searchParams.set("code_challenge", challenge);
 			auth.searchParams.set("code_challenge_method", "S256");
-			return new Response(null, { status: 302, headers: { location: auth.toString(), "cache-control": "no-store" } });
+			return new Response(null, { status: 302, headers: { location: auth.toString(), "cache-control": "no-store", "referrer-policy": "no-referrer" } });
 		} catch (e) {
 			return new Response(`MyChart connect failed: ${String((e as Error)?.message ?? e)}`, { status: 502 });
 		}
@@ -414,7 +419,7 @@ export async function handleMychartRoutes(url: URL, request: Request, env: RtEnv
 		const code = url.searchParams.get("code");
 		const state = url.searchParams.get("state") ?? "";
 		const err = url.searchParams.get("error");
-		if (err) return new Response(`MyChart authorization error: ${escapeHtml(err)}`, { status: 400, headers: PAGE_HEADERS });
+		if (err) return new Response(`MyChart authorization error: ${err}`, { status: 400, headers: TEXT_HEADERS });
 		if (!code || !state) return new Response("Missing code/state.", { status: 400, headers: PAGE_HEADERS });
 		const stored = await env.OAUTH_KV?.get(pkceKey(state));
 		if (!stored) return new Response("Invalid or expired state (CSRF check failed).", { status: 400, headers: PAGE_HEADERS });
@@ -434,7 +439,7 @@ export async function handleMychartRoutes(url: URL, request: Request, env: RtEnv
 				client_id: String(env.EPIC_CLIENT_ID),
 			});
 			if (status >= 400 || !json?.access_token) {
-				return new Response(`Token exchange failed: HTTP ${status} ${escapeHtml(json?.error_description ?? json?.error ?? "")}`.trim(), { status: 502, headers: PAGE_HEADERS });
+				return new Response(`Token exchange failed: HTTP ${status} ${json?.error_description ?? json?.error ?? ""}`.trim(), { status: 502, headers: TEXT_HEADERS });
 			}
 			if (typeof json.refresh_token === "string" && json.refresh_token) {
 				const grant: MychartGrant = { refresh_token: json.refresh_token, patient: json.patient, scope: json.scope, issued_at: Date.now() };
@@ -443,11 +448,11 @@ export async function handleMychartRoutes(url: URL, request: Request, env: RtEnv
 			await cacheAccessToken(env, String(json.access_token), json.expires_in);
 			const hasRefresh = Boolean(json.refresh_token);
 			return new Response(
-				`<!doctype html><meta charset=utf-8><title>MyChart connected</title><body style="font-family:system-ui;padding:2rem"><h1>MyChart connected</h1><p>Patient <code>${escapeHtml(json.patient ?? "(unknown)")}</code> linked.${hasRefresh ? "" : " <strong>No refresh token was issued</strong> — pulls will need re-login (the org may not have provisioned offline_access)."}</p><p>You can close this tab. Run <code>mychart op:\"pull\"</code> to sync.</p></body>`,
+				`<!doctype html><meta charset=utf-8><title>MyChart connected</title><body style="font-family:system-ui;padding:2rem"><h1>MyChart connected</h1><p>Patient <code>${escapeHtml(String(json.patient ?? "(unknown)"))}</code> linked.${hasRefresh ? "" : " <strong>No refresh token was issued</strong> — pulls will need re-login (the org may not have provisioned offline_access)."}</p><p>You can close this tab. Run <code>mychart op:\"pull\"</code> to sync.</p></body>`,
 				{ status: 200, headers: PAGE_HEADERS },
 			);
 		} catch (e) {
-			return new Response(`MyChart callback failed: ${escapeHtml((e as Error)?.message ?? e)}`, { status: 502, headers: PAGE_HEADERS });
+			return new Response(`MyChart callback failed: ${String((e as Error)?.message ?? e)}`, { status: 502, headers: TEXT_HEADERS });
 		}
 	}
 

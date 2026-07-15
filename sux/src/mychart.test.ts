@@ -89,6 +89,15 @@ describe("mychart OAuth callback (PKCE round-trip)", () => {
 		expect(env.OAUTH_KV.map.has("sux:mychart:pkce:STATE1")).toBe(false);
 	});
 
+	it("serves the reflected `error` param as text/plain (no HTML execution)", async () => {
+		const env = baseEnv();
+		const xss = "<script>alert(1)</script>";
+		const u = `https://suxos.net/mychart/callback?error=${encodeURIComponent(xss)}`;
+		const resp = await handleMychartRoutes(new URL(u), new Request(u), env);
+		expect(resp?.status).toBe(400);
+		expect(resp!.headers.get("content-type")).toMatch(/text\/plain/);
+	});
+
 	it("refuses an unknown/expired state (CSRF check)", async () => {
 		const env = baseEnv();
 		const resp = await handleMychartRoutes(new URL("https://suxos.net/mychart/callback?code=X&state=NOPE"), new Request("https://suxos.net/mychart/callback?code=X&state=NOPE"), env);
