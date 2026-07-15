@@ -329,6 +329,12 @@ export async function cfRender(env: RtEnv, spec: CfRenderSpec): Promise<CfRender
 			}
 		}
 
+		if ((residential || blockResources) && (as === "screenshot" || as === "pdf")) {
+			// Navigation is already done; drop CDP Fetch-domain interception before
+			// the capture call so it can't race Page.printToPDF/Page.captureScreenshot.
+			await page.setRequestInterception(false);
+		}
+
 		if (as === "screenshot") {
 			const shot = await page.screenshot({ fullPage });
 			const bytes = shot instanceof Uint8Array ? shot : new Uint8Array(shot as ArrayBuffer);

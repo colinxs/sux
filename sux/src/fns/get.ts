@@ -141,27 +141,53 @@ async function findFn(name: string): Promise<{ run: (env: any, args: any) => Pro
 
 const isPdfMagic = (b: Uint8Array): boolean => b.length >= 4 && b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46;
 
-async function normalizeBytes(env: RtEnv, bytes: Uint8Array, contentType: string, convertToPdf: boolean, deliver: "inline" | "url" | undefined): Promise<{ result: ToolResult; converted: boolean }> {
+async function normalizeBytes(
+	env: RtEnv,
+	bytes: Uint8Array,
+	contentType: string,
+	convertToPdf: boolean,
+	deliver: "inline" | "url" | undefined,
+): Promise<{ result: ToolResult; converted: boolean; bytes: Uint8Array; contentType: string }> {
 	const ct = contentType ?? "";
-	const asArg = deliver === "url" ? "url" : "base64";
+	const deliverUrl = deliver === "url" ? "url" : undefined;
+
+	const deliverNormalized = async (normBytes: Uint8Array, normContentType: string, converted: boolean) => ({
+		result: await deliverBytes(env, normBytes, normContentType, deliverUrl, () => inlineB64(normBytes, normContentType)),
+		converted,
+		bytes: normBytes,
+		contentType: normContentType,
+	});
 
 	if (isPdfMagic(bytes)) {
 		const pdfFn = await findFn("pdf");
-		return { result: await pdfFn.run(env, { data: toB64(bytes), compress: true, as: asArg }), converted: false };
+		const r = await pdfFn.run(env, { data: toB64(bytes), compress: true, as: "base64" });
+		if (r?.isError) return { result: r, converted: false, bytes, contentType: ct };
+		const parsed = JSON.parse(r.content?.[0]?.text ?? "{}") as { mime?: string; base64?: string };
+		if (!parsed.base64) return { result: r, converted: false, bytes, contentType: ct };
+		return deliverNormalized(fromB64(parsed.base64), parsed.mime ?? "application/pdf", false);
 	}
 
 	const convertibleKind = /html/i.test(ct) ? "html" : /^text\//i.test(ct) ? "text" : null;
 	if (convertToPdf && convertibleKind) {
 		const pdfFn = await findFn("pdf");
-		return { result: await pdfFn.run(env, { data: toB64(bytes), kind: convertibleKind, compress: true, as: asArg }), converted: true };
+		const r = await pdfFn.run(env, { data: toB64(bytes), kind: convertibleKind, compress: true, as: "base64" });
+		if (r?.isError) return { result: r, converted: false, bytes, contentType: ct };
+		const parsed = JSON.parse(r.content?.[0]?.text ?? "{}") as { mime?: string; base64?: string };
+		if (!parsed.base64) return { result: r, converted: false, bytes, contentType: ct };
+		return deliverNormalized(fromB64(parsed.base64), parsed.mime ?? "application/pdf", true);
 	}
 
 	// No converter for this content — deliver the fetched bytes as-is, respecting `deliver`.
 	const mime = ct || "application/octet-stream";
-	return { result: await deliverBytes(env, bytes, mime, deliver === "url" ? "url" : undefined, () => inlineB64(bytes, mime)), converted: false };
+	return { result: await deliverBytes(env, bytes, mime, deliverUrl, () => inlineB64(bytes, mime)), converted: false, bytes, contentType: mime };
 }
 
-export async function fetchAndNormalize(env: RtEnv, url: string, convertToPdf: boolean, deliver: "inline" | "url" | undefined): Promise<{ result: ToolResult; converted: boolean }> {
+export async function fetchAndNormalize(
+	env: RtEnv,
+	url: string,
+	convertToPdf: boolean,
+	deliver: "inline" | "url" | undefined,
+): Promise<{ result: ToolResult; converted: boolean; bytes: Uint8Array; contentType: string }> {
 	const { bytes, contentType } = await loadBytes(env, { url });
 	return normalizeBytes(env, bytes, contentType ?? "", convertToPdf, deliver);
 }
@@ -249,9 +275,9 @@ export const get: Fn = {
 				const as = args?.as === "archive" ? "archive" : "pdf";
 				const { bytes, contentType } = await acquireFromUrl(env, input, as);
 				if (!bytes.length) return fail(`Fetched 0 bytes from ${input} — the source is empty or the fetch was blocked; nothing to return.`);
-				const { result: normalized, converted } = await normalizeBytes(env, bytes, contentType, convertToPdf, deliver);
+				const { result: normalized, converted, bytes: normBytes, contentType: normContentType } = await normalizeBytes(env, bytes, contentType, convertToPdf, deliver);
 				const out: Record<string, unknown> = { file: JSON.parse(normalized.content?.[0]?.text ?? "{}"), converted };
-				if (args?.store && args.store !== "none") out.stored = await storeResult(env, bytes, contentType, args.store, args?.summarize === true);
+				if (args?.store && args.store !== "none") out.stored = await storeResult(env, normBytes, normContentType, args.store, args?.summarize === true);
 				return ok(JSON.stringify(out));
 			}
 
@@ -267,9 +293,9 @@ export const get: Fn = {
 			const top = editions[0];
 			const { bytes, contentType } = await loadBytesFromUrl(env, top.url);
 			if (!bytes.length) return fail(`Downloaded 0 bytes from the top edition (${top.url}) — it's empty or the fetch was blocked. Retry, or use download:false to pick another edition.`);
-			const { result: normalized, converted } = await normalizeBytes(env, bytes, contentType, convertToPdf, deliver);
+			const { result: normalized, converted, bytes: normBytes, contentType: normContentType } = await normalizeBytes(env, bytes, contentType, convertToPdf, deliver);
 			const out: Record<string, unknown> = { file: JSON.parse(normalized.content?.[0]?.text ?? "{}"), editions, picked: 0, converted };
-			if (args?.store && args.store !== "none") out.stored = await storeResult(env, bytes, contentType, args.store, args?.summarize === true);
+			if (args?.store && args.store !== "none") out.stored = await storeResult(env, normBytes, normContentType, args.store, args?.summarize === true);
 			return ok(JSON.stringify(out));
 		} catch (e) {
 			return fail(`get failed: ${String((e as Error).message ?? e)}`);

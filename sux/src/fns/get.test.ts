@@ -57,6 +57,7 @@ import { fetchAndNormalize } from "./get";
 import { acquireFromUrl } from "./get";
 import { storeResult } from "./get";
 import { get } from "./get";
+import { fromB64 } from "./_util";
 
 describe("isUrlInput", () => {
 	it("recognizes absolute http(s) URLs", () => {
@@ -197,7 +198,7 @@ describe("fetchAndNormalize", () => {
 	it("compresses a PDF via the pdf fn and reports converted:false", async () => {
 		const pdfBytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34]); // %PDF-1.4
 		loadBytesMock.mockResolvedValueOnce({ bytes: pdfBytes, contentType: "application/pdf" });
-		pdfRun.mockResolvedValueOnce({ content: [{ type: "text", text: '{"mime":"application/pdf","size":8,"base64":"x"}' }] });
+		pdfRun.mockResolvedValueOnce({ content: [{ type: "text", text: '{"mime":"application/pdf","size":8,"base64":"JVBR"}' }] });
 		const { result, converted } = await fetchAndNormalize({} as any, "https://a.com/doc.pdf", false, "inline");
 		expect(converted).toBe(false);
 		expect(pdfRun).toHaveBeenCalledWith({}, expect.objectContaining({ compress: true, as: "base64" }));
@@ -207,7 +208,7 @@ describe("fetchAndNormalize", () => {
 	it("converts html to PDF via the pdf fn when convertToPdf is true, reports converted:true", async () => {
 		const html = new TextEncoder().encode("<html><body>hi</body></html>");
 		loadBytesMock.mockResolvedValueOnce({ bytes: html, contentType: "text/html; charset=utf-8" });
-		pdfRun.mockResolvedValueOnce({ content: [{ type: "text", text: '{"mime":"application/pdf","size":8,"base64":"x"}' }] });
+		pdfRun.mockResolvedValueOnce({ content: [{ type: "text", text: '{"mime":"application/pdf","size":8,"base64":"JVBR"}' }] });
 		const { converted } = await fetchAndNormalize({} as any, "https://a.com/page.html", true, "inline");
 		expect(converted).toBe(true);
 		expect(pdfRun).toHaveBeenCalledWith({}, expect.objectContaining({ kind: "html", compress: true }));
@@ -331,12 +332,12 @@ describe("get.run", () => {
 
 	it("url mode: acquires via render(as:pdf) and normalizes, no editions in the result", async () => {
 		renderRun.mockResolvedValueOnce({ content: [{ text: '{"mime":"application/pdf","size":4,"base64":"JVBERg=="}' }] });
-		pdfRun.mockResolvedValueOnce({ content: [{ text: '{"mime":"application/pdf","size":4,"base64":"JVBR2"}' }] });
+		pdfRun.mockResolvedValueOnce({ content: [{ text: '{"mime":"application/pdf","size":4,"base64":"JVBR"}' }] });
 		const r = await get.run({} as any, { input: "https://example.com/article" });
 		expect(r.isError).toBeFalsy();
 		const parsed = JSON.parse(r.content[0].text);
 		expect(parsed.editions).toBeUndefined();
-		expect(parsed.file.base64).toBe("JVBR2");
+		expect(parsed.file.base64).toBe("JVBR");
 	});
 
 	it("stores the result when store is requested", async () => {
@@ -350,5 +351,18 @@ describe("get.run", () => {
 		const r = await get.run({ KAGI_SESSION: "tok" } as any, { input: "a book", kind: "pdf", store: "vault" });
 		const parsed = JSON.parse(r.content[0].text);
 		expect(parsed.stored.where).toBe("vault");
+		expect(putBlobMock).toHaveBeenCalledWith({ KAGI_SESSION: "tok" }, fromB64("JVBR"), "application/pdf");
+	});
+
+	it("stores the normalized (compressed/converted) bytes, not the pre-normalization original", async () => {
+		kagiSession.mockResolvedValueOnce([{ title: "A Book", url: "https://a.com/a.pdf" }]);
+		const rawPdfBytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x99, 0x99, 0x99, 0x99]);
+		loadBytesMock.mockResolvedValueOnce({ bytes: rawPdfBytes, contentType: "application/pdf" });
+		pdfRun.mockResolvedValueOnce({ content: [{ text: '{"mime":"application/pdf","size":2,"base64":"eA=="}' }] });
+		putBlobMock.mockResolvedValueOnce({ uuid: "u1", url: "https://sux.example/s/u1", key: "cas/abc", sha256: "abc", size: 1, content_type: "application/pdf" });
+		ingestRun.mockResolvedValueOnce({ content: [{ text: '{"path":"Inbox/x.md"}' }] });
+
+		await get.run({ KAGI_SESSION: "tok" } as any, { input: "a book", kind: "pdf", store: "vault" });
+		expect(putBlobMock).toHaveBeenCalledWith({ KAGI_SESSION: "tok" }, fromB64("eA=="), "application/pdf");
 	});
 });
