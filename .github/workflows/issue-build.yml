@@ -14,9 +14,12 @@ on:
   schedule:
     - cron: "*/15 * * * *" # TEMP 15min (bug-drain push), revert in 1h
   workflow_dispatch:
+  issues:
+    types: [labeled]  # event-driven: fires when fixer files a typed issue; reusable concurrency group serializes runs (no Opus fan-out)
 
 jobs:
   issue-build:
+    if: github.event_name != 'issues' || contains(fromJSON('["bug","enhancement","documentation"]'), github.event.label.name)
     # Grant exactly what issue-build.yml needs (default token is read-only → reusable would startup-fail).
     permissions:
       contents: write
@@ -26,6 +29,7 @@ jobs:
       id-token: write
     uses: SuxOS/.github/.github/workflows/issue-build.yml@main
     with:
+      model-hint: sonnet  # sonnet only, no Opus escalation (operator directive)
       gates-summary: |
         npm run type-check · npm test · npm run check:node ·
         npm run gen:index (commit the regenerated index.ts) ·
