@@ -34,6 +34,12 @@ export const json: Fn = {
 		const indent = args?.indent === undefined ? 2 : Math.max(0, Math.min(8, Number(args.indent)));
 		try {
 			const value = parseSource(data, src, { delimiter: args?.delimiter });
+			// Auto-detect falls through to YAML for unstructured input (e.g. plain
+			// prose), which parses to an empty map. Returning "{}" would silently
+			// discard the input, so surface the mis-detection as an error instead.
+			if (from === "auto" && src === "yaml" && value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 0) {
+				return fail("Could not detect the source format (parsed to empty). Pass an explicit `from` (json/yaml/csv/xml).");
+			}
 			return ok(JSON.stringify(value, null, indent));
 		} catch (e) {
 			return fail(`json (from ${src}) failed: ${String((e as Error).message ?? e)}`);

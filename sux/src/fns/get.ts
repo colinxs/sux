@@ -274,6 +274,7 @@ export const get: Fn = {
 			if (isUrlInput(input)) {
 				const as = args?.as === "archive" ? "archive" : "pdf";
 				const { bytes, contentType } = await acquireFromUrl(env, input, as);
+				if (!bytes.length) return fail(`Fetched 0 bytes from ${input} — the source is empty or the fetch was blocked; nothing to return.`);
 				const { result: normalized, converted, bytes: normBytes, contentType: normContentType } = await normalizeBytes(env, bytes, contentType, convertToPdf, deliver);
 				const out: Record<string, unknown> = { file: JSON.parse(normalized.content?.[0]?.text ?? "{}"), converted };
 				if (args?.store && args.store !== "none") out.stored = await storeResult(env, normBytes, normContentType, args.store, args?.summarize === true);
@@ -291,6 +292,7 @@ export const get: Fn = {
 
 			const top = editions[0];
 			const { bytes, contentType } = await loadBytesFromUrl(env, top.url);
+			if (!bytes.length) return fail(`Downloaded 0 bytes from the top edition (${top.url}) — it's empty or the fetch was blocked. Retry, or use download:false to pick another edition.`);
 			const { result: normalized, converted, bytes: normBytes, contentType: normContentType } = await normalizeBytes(env, bytes, contentType, convertToPdf, deliver);
 			const out: Record<string, unknown> = { file: JSON.parse(normalized.content?.[0]?.text ?? "{}"), editions, picked: 0, converted };
 			if (args?.store && args.store !== "none") out.stored = await storeResult(env, normBytes, normContentType, args.store, args?.summarize === true);

@@ -31,6 +31,9 @@ const MAILBOXES = [
 	{ id: "mb-drafts", name: "Drafts", role: "drafts", unreadEmails: 0, totalEmails: 1 },
 	{ id: "mb-sent", name: "Sent", role: "sent", unreadEmails: 0, totalEmails: 50 },
 	{ id: "mb-arch", name: "Archive", role: "archive", unreadEmails: 0, totalEmails: 500 },
+	// A real, roleless mailbox whose id the Mailbox/set mock refuses to destroy ("nonempty") — so the
+	// non-empty-folder rejection path can be exercised against a mailbox that actually resolves.
+	{ id: "mb-nonempty", name: "Bulk", role: null, unreadEmails: 0, totalEmails: 12 },
 ];
 const EMAIL = { id: "e1", threadId: "t1", subject: "Hello", from: [{ email: "a@b.com", name: "A" }], to: [{ email: "me@fastmail.com" }], receivedAt: "2026-07-09T00:00:00Z", preview: "hi there", keywords: { $seen: true, $flagged: true }, mailboxIds: { "mb-inbox": true }, textBody: [{ partId: "p1", type: "text/plain" }], bodyValues: { p1: { value: "Full body text." } } };
 
@@ -58,8 +61,11 @@ function answer([method, args]: any): any {
 		const created = args?.create ? Object.fromEntries(Object.keys(args.create).map((k) => [k, { id: "mb-new", name: args.create[k]?.name, parentId: args.create[k]?.parentId ?? null }])) : undefined;
 		const notCreated = undefined;
 		const updateKeys = args?.update ? Object.keys(args.update) : [];
-		const updated = Object.fromEntries(updateKeys.filter((k) => !k.includes("bad")).map((k) => [k, null]));
-		const notUpdated = Object.fromEntries(updateKeys.filter((k) => k.includes("bad")).map((k) => [k, { type: "notFound" }]));
+		// A server-side rejection is simulated by an id OR a new name containing "bad" (the latter lets
+		// a REAL, resolvable mailbox exercise the notUpdated path now that a bogus id can't reach here).
+		const rejectUpdate = (k: string) => k.includes("bad") || String(args.update[k]?.name ?? "").includes("bad");
+		const updated = Object.fromEntries(updateKeys.filter((k) => !rejectUpdate(k)).map((k) => [k, null]));
+		const notUpdated = Object.fromEntries(updateKeys.filter((k) => rejectUpdate(k)).map((k) => [k, { type: "notFound" }]));
 		const destroyIds: string[] = args?.destroy ?? [];
 		const destroyed = destroyIds.filter((id: string) => !id.includes("nonempty"));
 		const notDestroyed = Object.fromEntries(destroyIds.filter((id: string) => id.includes("nonempty")).map((id: string) => [id, { type: "mailboxHasEmail" }]));
@@ -141,7 +147,7 @@ describe("mail_* ergonomic tools", () => {
 	it("mail_mailboxes shapes the folder list with counts", async () => {
 		installFetch();
 		const out = parse(await tool("mail_mailboxes").run(env(), {}));
-		expect(out.count).toBe(4);
+		expect(out.count).toBe(5);
 		expect(out.mailboxes.find((m: any) => m.role === "inbox")).toMatchObject({ id: "mb-inbox", unread: 3 });
 	});
 
@@ -234,6 +240,24 @@ describe("mail_* ergonomic tools", () => {
 		expect(sub.identityId).toBe("id2"); // matched the *@colinxs.com wildcard, not a "not verified" throw
 	});
 
+	it("mail_send send-as-any: a *@domain wildcard sends From the CONCRETE address, never the literal *@domain (§1a)", async () => {
+		const f = installFetch();
+		const out = parse(await tool("mail_send").run(env(), { to: ["x@y.com"], subject: "s", text: "t", from: "probe@colinxs.com", force: true }));
+		expect(out).toMatchObject({ sent: true });
+		const body = f.mock.calls.map((c: any) => (c[1]?.body ? JSON.parse(c[1].body) : {})).find((b: any) => (b.methodCalls ?? []).some((mc: any) => mc[0] === "Email/set"));
+		const draft = body.methodCalls.find((mc: any) => mc[0] === "Email/set")[1].create.draft;
+		expect(draft.from).toEqual([{ email: "probe@colinxs.com", name: "Domain" }]); // NOT "*@colinxs.com"
+	});
+
+	it("scheduled send-as-any: the FUTURERELEASE mailFrom is the concrete address, not the *@domain wildcard (§1a)", async () => {
+		const f = installFetch();
+		const out = parse(await tool("mail_send").run(env(), { to: ["x@y.com"], subject: "s", text: "t", from: "probe@colinxs.com", send_at: "2999-01-01T00:00:00Z", force: true }));
+		expect(out).toMatchObject({ scheduled: true });
+		const body = f.mock.calls.map((c: any) => (c[1]?.body ? JSON.parse(c[1].body) : {})).find((b: any) => (b.methodCalls ?? []).some((mc: any) => mc[0] === "EmailSubmission/set"));
+		const sub = body.methodCalls.find((mc: any) => mc[0] === "EmailSubmission/set")[1].create.sub;
+		expect(sub.envelope.mailFrom.email).toBe("probe@colinxs.com"); // SMTP MAIL FROM must be a real address
+	});
+
 	it("mail_send now STAGES BY DEFAULT (no stage/force) — returns a preview, sends nothing (smart-guard default-on)", async () => {
 		const f = installFetch();
 		const out = parse(await tool("mail_send").run(env(), { to: ["x@y.com"], subject: "Hi", text: "yo" }));
@@ -318,6 +342,14 @@ describe("mail_* ergonomic tools", () => {
 		expect(d.cc).toEqual([{ email: "team@corp.com" }]); // original Cc kept; me@fastmail.com (self) dropped
 	});
 
+	it("reply-all stage preview reflects the auto-expanded Cc (the blast-radius the human approves = what's sent)", async () => {
+		installReplyFetch(SRC);
+		const st = parse(await tool("mail_send").run(env(), { mode: "reply-all", reply_to: "e1", text: "hi all", stage: true }));
+		expect(st).toMatchObject({ staged: true, kind: "mail_send" });
+		expect(st.preview.to).toEqual(["boss@corp.com"]);
+		expect(st.preview.cc).toEqual(["team@corp.com"]); // the derived Cc is visible in the preview, not hidden
+	});
+
 	it("mail_send mode=forward prefixes Fwd:, needs explicit to, includes the forwarded block, no threading", async () => {
 		const draftOf = installReplyFetch(SRC);
 		const out = parse(await tool("mail_send").run(env(), { mode: "forward", reply_to: "e1", to: ["fwd@x.com"], text: "fyi", force: true }));
@@ -393,6 +425,32 @@ describe("mail_* ergonomic tools", () => {
 		installFetch(); // base SESSION has no maxDelayedSend → 0 → don't clamp
 		const out = parse(await tool("mail_send").run(env(), { to: ["x@y.com"], subject: "s", text: "t", send_at: "2999-01-01T00:00:00Z", force: true }));
 		expect(out).toMatchObject({ scheduled: true });
+	});
+
+	it("a JMAP error in a batch is attributed to the call that actually failed, not the method being read", async () => {
+		// The send batch is [Email/set 'c', EmailSubmission/set 's']. Simulate Email/set ('c') erroring;
+		// the old message read the result of 's' and wrongly blamed "EmailSubmission/set".
+		global.fetch = vi.fn(async (input: any, init?: any) => {
+			const url = String(input?.url ?? input);
+			if (url.includes("/jmap/session")) return json(SESSION);
+			if (url.includes("/jmap/api")) {
+				const body = init?.body ? JSON.parse(init.body) : {};
+				const methodResponses = (body.methodCalls ?? []).map((c: any) => {
+					const [m, , id] = c;
+					if (m === "Mailbox/get") return [m, { list: MAILBOXES }, id];
+					if (m === "Identity/get") return [m, { list: [{ id: "id1", name: "Me", email: "me@fastmail.com" }] }, id];
+					if (m === "Email/set") return ["error", { type: "serverFail", description: "boom" }, id]; // 'c' fails
+					return [m, {}, id];
+				});
+				return json({ methodResponses, sessionState: "s1" });
+			}
+			return json({}, 404);
+		}) as any;
+		const r = await tool("mail_send").run(env(), { to: ["x@y.com"], subject: "s", text: "t", force: true });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toContain("serverFail"); // the real error surfaces
+		expect(r.content[0].text).toContain("call 'c'"); // attributed to the failed call 'c' (Email/set)
+		expect(r.content[0].text).not.toContain("EmailSubmission/set"); // NOT mislabeled as the call we were reading
 	});
 
 	it("mail_scheduled lists pending sends; mail_unschedule cancels one (idempotent)", async () => {
@@ -473,9 +531,9 @@ describe("mail_* ergonomic tools", () => {
 		expect(r).toMatchObject({ renamed: "mb-arch", name: "Old Mail" });
 	});
 
-	it("mail_mailbox rename surfaces a notUpdated failure", async () => {
+	it("mail_mailbox rename surfaces a notUpdated failure (server rejects a resolvable mailbox)", async () => {
 		installFetch();
-		const r = await tool("mail_mailbox").run(env(), { action: "rename", mailbox: "bad-id", name: "X" });
+		const r = await tool("mail_mailbox").run(env(), { action: "rename", mailbox: "archive", name: "bad name" });
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toMatch(/rename failed/);
 	});
@@ -493,6 +551,32 @@ describe("mail_* ergonomic tools", () => {
 		const r = await tool("mail_mailbox").run(env(), { action: "delete", mailbox: "mb-nonempty", force: true });
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toMatch(/move its mail out first with mail_move/);
+	});
+
+	it("mail_mailbox rename of a nonexistent mailbox fails not_found — no bogus id shipped to JMAP", async () => {
+		const f = installFetch();
+		const r = await tool("mail_mailbox").run(env(), { action: "rename", mailbox: "ghost-box", name: "X" });
+		expect(r.isError).toBe(true);
+		expect(r.errorCode).toBe("not_found");
+		expect(r.content[0].text).toMatch(/no mailbox matching 'ghost-box'/);
+		// The guard fires before any Mailbox/set — the unresolved name never reaches the server.
+		const setCall = f.mock.calls.some((c: any) => c[1]?.body && JSON.parse(c[1].body).methodCalls?.some((mc: any) => mc[0] === "Mailbox/set"));
+		expect(setCall).toBe(false);
+	});
+
+	it("mail_mailbox delete of a nonexistent mailbox fails not_found (guard is live, not dead code)", async () => {
+		installFetch();
+		const r = await tool("mail_mailbox").run(env(), { action: "delete", mailbox: "no-such-box", force: true });
+		expect(r.isError).toBe(true);
+		expect(r.errorCode).toBe("not_found");
+		expect(r.content[0].text).toMatch(/no mailbox matching 'no-such-box'/);
+	});
+
+	it("mail_move to a nonexistent mailbox fails bad_input, not a bogus-id JMAP write", async () => {
+		installFetch();
+		const r = await tool("mail_move").run(env(), { ids: ["e1"], mailbox: "ghost-box" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/unknown mailbox 'ghost-box'/);
 	});
 
 	it("mail_push status reports no subscription until one exists", async () => {

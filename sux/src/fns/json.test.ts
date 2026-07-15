@@ -24,6 +24,18 @@ describe("json (to JSON, dispatched on source)", () => {
 	it("errors on empty data and unsupported source", async () => {
 		expect((await json.run({} as any, { data: "  " })).isError).toBe(true);
 	});
+
+	it("errors instead of silently returning {} when auto-detect swallows plain prose", async () => {
+		// Prose has no structure; auto-detect falls through to YAML, which parses it
+		// to an empty map. Returning "{}" would silently discard the input, so an
+		// empty auto-detected YAML parse of non-empty input must surface as an error.
+		const res = await json.run({} as any, { data: "Just some prose without any structure at all" });
+		expect(res.isError).toBe(true);
+	});
+
+	it("still passes a genuine empty JSON object through", async () => {
+		expect(await jrun({ data: "{}" })).toBe("{}");
+	});
 });
 
 describe("json/yaml compose (bidirectionality)", () => {

@@ -7,7 +7,7 @@ name: Fixer
 
 on:
   schedule:
-    - cron: "*/15 * * * *" # every 15min; budget-governor's check-throttle still defers at yellow/red, so this only raises how fast a green window gets used, not the spend cap
+    - cron: "17 8 * * *" # feat proposer: 1/day (bug-drain push keeps issue-build/pr-sweeps at 15min)
   workflow_dispatch:
 
 jobs:

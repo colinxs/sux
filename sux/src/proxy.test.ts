@@ -258,6 +258,159 @@ describe("binary safety through the proxied path", () => {
 	});
 });
 
+describe("proxy empty-body and redirect fallbacks", () => {
+	const toProxy = (u: string | URL) => String(u).startsWith("https://x.ts.net/");
+
+	it("refetches direct when the proxy returns a body-expected status with an empty body", async () => {
+		// A broken curl-impersonate on the node reports a 200 but writes no body.
+		const fetchMock = vi.fn(async (u: string | URL) =>
+			toProxy(u)
+				? proxyEnvelope({ status: 200, headers: { "content-type": "text/html" }, bytes: 0, body: "", bodyEncoding: "base64" })
+				: new Response("<h1>real</h1>", { status: 200, headers: { "content-type": "text/html" } }),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		const resp = await smartFetch(ON, "https://example.com/doc");
+		expect(await resp.text()).toBe("<h1>real</h1>");
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(String(fetchMock.mock.calls[1][0])).toBe("https://example.com/doc");
+	});
+
+	it("refetches direct on a proxied redirect (the node's --no-location can't follow; a direct fetch does)", async () => {
+		const fetchMock = vi.fn(async (u: string | URL) =>
+			toProxy(u)
+				? proxyEnvelope({ status: 302, headers: { "content-type": "text/html", location: "https://cdn.example.com/final.pdf" }, bytes: 0, body: "", bodyEncoding: "base64" })
+				: new Response("PDFDATA", { status: 200, headers: { "content-type": "application/pdf" } }),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		const resp = await smartFetch(ON, "https://archive.org/download/x.pdf");
+		expect(await resp.text()).toBe("PDFDATA");
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(String(fetchMock.mock.calls[1][0])).toBe("https://archive.org/download/x.pdf");
+	});
+
+	it("returns a proxied redirect as-is when the caller observes hops (redirect:manual) — the `redirects` tracer's contract", async () => {
+		const fetchMock = vi.fn(async () =>
+			proxyEnvelope({ status: 302, headers: { "content-type": "text/html", location: "https://example.com/next" }, bytes: 0, body: "", bodyEncoding: "base64" }),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		const resp = await smartFetch(ON, "https://example.com/", { redirect: "manual" });
+		expect(resp.status).toBe(302);
+		expect(resp.headers.get("location")).toBe("https://example.com/next");
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not treat a genuinely body-less 204 as a proxy failure", async () => {
+		const fetchMock = vi.fn(async () => proxyEnvelope({ status: 204, headers: {}, bytes: 0, body: "", bodyEncoding: "base64" }));
+		vi.stubGlobal("fetch", fetchMock);
+		const resp = await smartFetch(ON, "https://example.com/ping");
+		expect(resp.status).toBe(204);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("direct-fetch redirect chasing (SSRF-safe)", () => {
+	it("follows a public-to-public redirect itself, revalidating the hop", async () => {
+		const fetchMock = vi.fn(async (u: string | URL, _init?: RequestInit) =>
+			String(u) === "https://example.com/start"
+				? new Response(null, { status: 302, headers: { location: "https://example.com/final" } })
+				: new Response("landed", { status: 200 }),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		const resp = await smartFetch({}, "https://example.com/start", {}, "direct");
+		expect(await resp.text()).toBe("landed");
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		// Each hop is fetched with redirect:"manual" — we chase it ourselves, never native "follow".
+		expect(fetchMock.mock.calls[0][1]?.redirect).toBe("manual");
+		expect(fetchMock.mock.calls[1][1]?.redirect).toBe("manual");
+	});
+
+	it("refuses a redirect that points at a private/metadata target instead of connecting to it", async () => {
+		const fetchMock = vi.fn(async (u: string | URL) =>
+			String(u) === "https://example.com/evil"
+				? new Response(null, { status: 302, headers: { location: "http://169.254.169.254/latest/meta-data/" } })
+				: new Response("should never be reached"),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		await expect(smartFetch({}, "https://example.com/evil", {}, "direct")).rejects.toThrow(/blocked redirect target/i);
+		// Never connects to the blocked hop.
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not auto-chase a redirect for a non-GET/HEAD method — returns the raw 3xx", async () => {
+		const fetchMock = vi.fn(async () => new Response(null, { status: 307, headers: { location: "https://example.com/final" } }));
+		vi.stubGlobal("fetch", fetchMock);
+		const resp = await smartFetch({}, "https://example.com/submit", { method: "POST", body: "x" }, "direct");
+		expect(resp.status).toBe(307);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("bounds the hop count instead of chasing a redirect loop forever", async () => {
+		const fetchMock = vi.fn(async () => new Response(null, { status: 302, headers: { location: "https://example.com/loop" } }));
+		vi.stubGlobal("fetch", fetchMock);
+		await expect(smartFetch({}, "https://example.com/loop", {}, "direct")).rejects.toThrow(/exceeded \d+ redirect hops/i);
+	});
+
+	it("does not carry caller-supplied headers (Cookie/Authorization/API keys) across a cross-origin redirect", async () => {
+		const fetchMock = vi.fn(async (u: string | URL, init?: RequestInit) => {
+			if (String(u) === "https://a.example.com/start") {
+				expect((init?.headers as Record<string, string>)?.Cookie).toBe("session=secret");
+				return new Response(null, { status: 302, headers: { location: "https://b.other.com/final" } });
+			}
+			expect(String(u)).toBe("https://b.other.com/final");
+			expect((init?.headers as Record<string, string>)?.Cookie).toBeUndefined();
+			return new Response("landed", { status: 200 });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		const resp = await smartFetch({}, "https://a.example.com/start", { headers: { Cookie: "session=secret" } }, "direct");
+		expect(await resp.text()).toBe("landed");
+	});
+
+	it("keeps forwarding caller-supplied headers across a same-origin redirect (path-only hop)", async () => {
+		const fetchMock = vi.fn(async (u: string | URL, init?: RequestInit) => {
+			expect((init?.headers as Record<string, string>)?.Cookie).toBe("session=secret");
+			return String(u) === "https://a.example.com/start"
+				? new Response(null, { status: 302, headers: { location: "https://a.example.com/final" } })
+				: new Response("landed", { status: 200 });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		const resp = await smartFetch({}, "https://a.example.com/start", { headers: { Cookie: "session=secret" } }, "direct");
+		expect(await resp.text()).toBe("landed");
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
+	it("does not carry the GitHub token across a redirect to a non-GitHub-allow-listed host", async () => {
+		// api.github.com's zipball/tarball endpoints redirect to codeload.github.com,
+		// which isn't in isGithubHost's allow-list — the token must not ride along.
+		const fetchMock = vi.fn(async (u: string | URL, init?: RequestInit) => {
+			if (String(u) === "https://api.github.com/repos/o/r/zipball/main") {
+				expect((init?.headers as Record<string, string>)?.Authorization).toBe("Bearer tok");
+				return new Response(null, { status: 302, headers: { location: "https://codeload.github.com/o/r/zip/main" } });
+			}
+			expect(String(u)).toBe("https://codeload.github.com/o/r/zip/main");
+			expect((init?.headers as Record<string, string>)?.Authorization).toBeUndefined();
+			return new Response("ziplike", { status: 200 });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		const resp = await smartFetch({ GITHUB_TOKEN: "tok" }, "https://api.github.com/repos/o/r/zipball/main", {}, "direct");
+		expect(await resp.text()).toBe("ziplike");
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
+	it("a residential-proxy redirect falls back to a direct chase that still refuses a malicious hop", async () => {
+		// The proxy's own redirect is unusable (node can't follow it) and triggers the
+		// direct fallback — which independently re-fetches the origin and hits the
+		// SAME malicious redirect. The per-hop guard must catch it there too, not
+		// just on the (unused) Location the proxy happened to report.
+		const fetchMock = vi.fn(async (u: string | URL) =>
+			String(u).startsWith("https://x.ts.net/")
+				? proxyEnvelope({ status: 302, headers: { "content-type": "text/html", location: "http://127.0.0.1:6379/" }, bytes: 0, body: "", bodyEncoding: "base64" })
+				: new Response(null, { status: 302, headers: { location: "http://127.0.0.1:6379/" } }),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		await expect(smartFetch(ON, "https://archive.org/download/evil.pdf")).rejects.toThrow(/blocked redirect target/i);
+	});
+});
+
 describe("smartFetch direct-path timeout", () => {
 	it("passes an AbortSignal to the direct/fallback fetch (30s bound)", async () => {
 		const fetchMock = vi.fn(async (_url: string | URL, _init?: RequestInit) => new Response("ok", { status: 200 }));

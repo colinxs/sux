@@ -35,6 +35,23 @@ describe("files_* tools", () => {
 		expect(out).toMatchObject({ op: "get", path: "a.pdf" });
 	});
 
+	it("files_read returns a textual body as {path,text} — never JSON.parses the file's own content", async () => {
+		// The raw dropbox fn returns BARE TEXT for a textual (.json/.md/…) get. A .json file whose
+		// contents are valid JSON must come back as {path,text} (mirroring Mode B's readFull shape),
+		// not the parsed value — otherwise the caller gets a reshaped object instead of the file.
+		runMock.mockImplementationOnce(async () => ({ content: [{ type: "text", text: '{"k":1}' }] }));
+		const out = parse(await tool("files_read").run(env(), { path: "config.json" }));
+		expect(out).toEqual({ path: "config.json", text: '{"k":1}' });
+	});
+
+	it("files_read still passes an oversize textual file's link-metadata through (JSON, not wrapped as text)", async () => {
+		// The oversize branch of op:get returns JSON metadata (too_large_to_inline + link), even for a
+		// .md path. The text-wrap must not swallow it — it stays a structured object.
+		runMock.mockImplementationOnce(async () => ({ content: [{ type: "text", text: JSON.stringify({ path: "/big.md", size: 9e9, too_large_to_inline: true, url: "https://x" }) }] }));
+		const out = parse(await tool("files_read").run(env(), { path: "big.md" }));
+		expect(out).toMatchObject({ too_large_to_inline: true, url: "https://x" });
+	});
+
 	it("files_write forwards op:put with text data", async () => {
 		const out = parse(await tool("files_write").run(env(), { path: "note.txt", text: "hi" }));
 		expect(out).toMatchObject({ op: "put", path: "note.txt", data: "hi" });
@@ -47,6 +64,20 @@ describe("files_* tools", () => {
 		expect(runMock).not.toHaveBeenCalled();
 		const okd = parse(await tool("files_write").run(env(), { path: "a.txt", text: "x" })); // plain write still works
 		expect(okd).toMatchObject({ op: "put", path: "a.txt", data: "x" });
+	});
+
+	it("app-folder write/upload reject the Mode-B stage-guard flags (stage/commit_token/force) — no silent immediate write", async () => {
+		// rejectModeBFlags must also fence the stage guard: without full:true these flags do nothing,
+		// so files_write({path,text,stage:true}) would overwrite immediately instead of previewing.
+		for (const f of [{ stage: true }, { commit_token: "t" }, { force: true }] as const) {
+			for (const name of ["files_write", "files_upload"] as const) {
+				const base = name === "files_write" ? { path: "a.txt", text: "x" } : { path: "a.bin", base64: "AAAA" };
+				const r = await tool(name).run(env(), { ...base, ...f });
+				expect(r.isError, `${name} ${JSON.stringify(f)}`).toBe(true);
+				expect(r.errorCode, `${name} ${JSON.stringify(f)}`).toBe("bad_input");
+			}
+		}
+		expect(runMock).not.toHaveBeenCalled();
 	});
 
 	it("files_upload forwards op:put with base64", async () => {

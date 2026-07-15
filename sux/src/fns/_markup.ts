@@ -15,9 +15,17 @@ export function decodeEntities(s: string): string {
 		.replace(/&gt;/gi, ">")
 		.replace(/&quot;/gi, '"')
 		.replace(/&apos;/gi, "'")
-		.replace(/&#x([0-9a-f]+);/gi, (_m, h) => String.fromCodePoint(parseInt(h, 16)))
-		.replace(/&#(\d+);/g, (_m, d) => String.fromCodePoint(parseInt(d, 10)))
+		.replace(/&#x([0-9a-f]+);/gi, (m, h) => fromCodePointSafe(parseInt(h, 16), m))
+		.replace(/&#(\d+);/g, (m, d) => fromCodePointSafe(parseInt(d, 10), m))
 		.replace(/&amp;/gi, "&");
+}
+
+// String.fromCodePoint throws RangeError for values > U+10FFFF (or negative), which
+// would abort the whole decode over a single malformed entity. Fall back to the raw
+// entity text so one bad numeric entity can't take down the conversion.
+function fromCodePointSafe(cp: number, raw: string): string {
+	if (!Number.isInteger(cp) || cp < 0 || cp > 0x10ffff) return raw;
+	return String.fromCodePoint(cp);
 }
 
 function encodeEntities(s: string): string {

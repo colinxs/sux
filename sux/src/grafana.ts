@@ -50,8 +50,8 @@ export function shipToLoki(env: RtEnv, ctx: { waitUntil(p: Promise<unknown>): vo
 
 	ctx.waitUntil(
 		fetch(url, { method: "POST", headers: { "content-type": "application/json", authorization }, body })
-			.then((r) => {
-				if (!r.ok) console.warn(`grafana loki push HTTP ${r.status}`);
+			.then(async (r) => {
+				if (!r.ok) console.warn(`grafana loki push HTTP ${r.status}: ${clipErr(await r.text())}`);
 			})
 			.catch((err) => console.warn(`grafana loki push failed: ${String((err as Error)?.message ?? err)}`)),
 	);
@@ -111,8 +111,8 @@ export function shipEgress(env: LokiEnv, ctx: { waitUntil(p: Promise<unknown>): 
 
 		ctx.waitUntil(
 			fetch(url, { method: "POST", headers: { "content-type": "application/json", authorization }, body })
-				.then((r) => {
-					if (!r.ok) console.warn(`grafana egress push HTTP ${r.status}`);
+				.then(async (r) => {
+					if (!r.ok) console.warn(`grafana egress push HTTP ${r.status}: ${clipErr(await r.text())}`);
 				})
 				.catch((err) => console.warn(`grafana egress push failed: ${String((err as Error)?.message ?? err)}`)),
 		);
@@ -193,8 +193,8 @@ export async function shipMetricsSnapshot(env: RtEnv, ctx: { waitUntil(p: Promis
 
 	ctx.waitUntil(
 		fetch(url, { method: "POST", headers: { "content-type": "text/plain", authorization }, body })
-			.then((r) => {
-				if (!r.ok) console.warn(`grafana metrics push HTTP ${r.status}`);
+			.then(async (r) => {
+				if (!r.ok) console.warn(`grafana metrics push HTTP ${r.status}: ${clipErr(await r.text())}`);
 			})
 			.catch((err) => console.warn(`grafana metrics push failed: ${String((err as Error)?.message ?? err)}`)),
 	);

@@ -160,6 +160,22 @@ describe("csvToRows (duplicate header names)", () => {
 		// Two columns named `a` must not collapse to one; the second becomes `a_2`.
 		expect(csvToRows("a,a\n1,2\n", ",")).toEqual([{ a: "1", a_2: "2" }]);
 	});
+
+	it("keeps the suffixed name unique when a generated suffix already exists", () => {
+		// `a, a, a_2`: naively renaming the 2nd `a` -> `a_2` collides with the real
+		// third column, and Object.fromEntries then drops one. The suffix must climb
+		// until it is unique against the already-emitted names.
+		expect(csvToRows("a,a,a_2\n1,2,3\n", ",")).toEqual([{ a: "1", a_2: "2", a_2_2: "3" }]);
+	});
+});
+
+describe("toCsv (delimiter that is a regex-metachar)", () => {
+	it("quotes a cell containing a '-' delimiter without throwing a RangeError", () => {
+		// esc() builds a char class `["<delim>\r\n]`; an unescaped '-' delimiter
+		// forms an out-of-order range ('"'..'\r') that throws, failing the whole
+		// conversion. The delimiter must be treated as a literal.
+		expect(toCsv([{ a: "x-y" }], "-")).toBe('a\n"x-y"');
+	});
 });
 
 describe("toCsv (spreadsheet formula-injection guard)", () => {

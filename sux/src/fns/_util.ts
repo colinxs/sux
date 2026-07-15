@@ -446,11 +446,13 @@ export function stripHtml(html: string): string {
 		.replace(/<style[\s\S]*?<\/style>/gi, " ")
 		.replace(/<[^>]+>/g, " ")
 		.replace(/&nbsp;/g, " ")
-		.replace(/&amp;/g, "&")
 		.replace(/&lt;/g, "<")
 		.replace(/&gt;/g, ">")
 		.replace(/&quot;/g, '"')
 		.replace(/&#39;/g, "'")
+		// `&amp;` decodes LAST — mirroring _markup.decodeEntities — so a double-escaped
+		// `&amp;lt;` yields the literal text `&lt;` rather than collapsing to `<`.
+		.replace(/&amp;/g, "&")
 		.replace(/\s+/g, " ")
 		.trim();
 }

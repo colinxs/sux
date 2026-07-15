@@ -6,7 +6,7 @@
 // declared per fn via Fn.cost (default 1 = no extra).
 
 import { FUNCTIONS } from "./fns";
-import { MAX_GET_STRATEGIES } from "./fns/get";
+import { KIND_PLANS, parseStrategies } from "./fns/get";
 import type { JsonRpc } from "./mcp-util";
 import { findFn, type RtEnv, unwrapFnCall } from "./registry";
 
@@ -93,9 +93,12 @@ export function requestCost(name: string, args: unknown): number {
 		if (/^https?:\/\//i.test(input.trim())) {
 			total = a.as === "archive" ? extraCost("wayback") + extraCost("scrape") : extraCost("render");
 		} else {
-			const clauseCount = (input.match(/file\(\s*\w+\s*,/gi) ?? []).length;
-			const strategyCount = Math.min(clauseCount || 1, MAX_GET_STRATEGIES);
-			total = strategyCount * extraCost("search");
+			// Price each parsed strategy by its ACTUAL metered lens-call count — kinds
+			// document/ebook/any run 2 lensIds (→ 2 kagiTool calls), not 1 — reusing
+			// get.ts's own parser/plans so the charge tracks runStrategies exactly and
+			// can't drift (a flat strategyCount × search under-charged those kinds by 2×).
+			const kindArg = typeof a.kind === "string" ? a.kind : undefined;
+			total = parseStrategies(input, kindArg).reduce((sum, s) => sum + KIND_PLANS[s.kind].lensIds.length * extraCost("search"), 0);
 		}
 		if (a.store && a.store !== "none") total += extraCost("ingest");
 		return total;

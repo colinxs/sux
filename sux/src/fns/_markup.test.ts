@@ -23,4 +23,14 @@ describe("decodeEntities (canonical HTML/XML entity decoder)", () => {
 	it("decodes &amp; LAST so a double-escaped &amp;lt; stays literal '&lt;' text, not '<'", () => {
 		expect(decodeEntities("a &amp;lt; b")).toBe("a &lt; b");
 	});
+
+	it("leaves an out-of-range numeric entity intact instead of throwing RangeError", () => {
+		// > U+10FFFF is not a valid code point; String.fromCodePoint throws. The
+		// decoder must survive it (leaving the raw entity) so one bad entity can't
+		// abort the whole conversion.
+		expect(decodeEntities("a &#x110000; b")).toBe("a &#x110000; b");
+		expect(decodeEntities("a &#1114112; b")).toBe("a &#1114112; b");
+		// A valid neighbour still decodes.
+		expect(decodeEntities("&#x27;&#x110000;")).toBe("'&#x110000;");
+	});
 });

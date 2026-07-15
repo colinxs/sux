@@ -271,12 +271,19 @@ export function csvToRows(text: string, delim: string): Record<string, string>[]
 	if (!rows.length) return [];
 	// Dedupe duplicate header names so Object.fromEntries doesn't silently
 	// collapse repeated columns (last-column-wins). Repeats get an _N suffix:
-	// [a, a, a] -> [a, a_2, a_3].
-	const seen = new Map<string, number>();
+	// [a, a, a] -> [a, a_2, a_3]. The suffix climbs until unique against names
+	// already emitted, so [a, a, a_2] -> [a, a_2, a_2_2] instead of colliding.
+	const used = new Set<string>();
 	const headers = rows[0].map((h) => {
-		const n = (seen.get(h) ?? 0) + 1;
-		seen.set(h, n);
-		return n === 1 ? h : `${h}_${n}`;
+		if (!used.has(h)) {
+			used.add(h);
+			return h;
+		}
+		let n = 2;
+		let name = `${h}_${n}`;
+		while (used.has(name)) name = `${h}_${++n}`;
+		used.add(name);
+		return name;
 	});
 	return rows.slice(1).map((r) => Object.fromEntries(headers.map((h, i) => [h, r[i] ?? ""])));
 }
@@ -292,7 +299,9 @@ export function toCsv(arr: unknown[], delim: string): string {
 		// string values with a single quote so the spreadsheet treats them as text.
 		// Genuine numbers/booleans arrive non-string and are never neutralised.
 		if (typeof v === "string" && /^[=+\-@\t\r]/.test(s)) s = `'${s}`;
-		return new RegExp(`["${delim.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\r\\n]`).test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+		// Escape every char-class metachar in `delim` — including `-`, which would
+		// otherwise form an out-of-order range (e.g. `["-\r\n]`) and throw.
+		return new RegExp(`["${delim.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&")}\\r\\n]`).test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 	};
 	// Escape the header row too — a key containing the delimiter/quote/newline (e.g. "a,b")
 	// would otherwise split into extra columns, misaligning every data row and breaking round-trip.

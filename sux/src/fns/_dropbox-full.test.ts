@@ -124,6 +124,15 @@ describe("searchFull — whole-account, references only", () => {
 		expect(r.has_more).toBe(false);
 	});
 
+	it("omits the path for a path_prefix of '/' (it normalizes to '') rather than sending options.path:'' which Dropbox rejects", async () => {
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
+			expect(String(u)).toContain("/files/search_v2");
+			expect(JSON.parse(init.body).options.path).toBeUndefined(); // whole account, not ""
+			return new Response(JSON.stringify({ matches: [], has_more: false }), { status: 200 });
+		}));
+		await searchFull(tokenEnv(), { query: "x", path_prefix: "/" });
+	});
+
 	it("omits the path when no prefix is given (whole account) and paginates via continue_v2", async () => {
 		const env = tokenEnv();
 		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
@@ -312,6 +321,22 @@ describe("Mode B write firewall — dry-run default, fence, backup, rev-conditio
 		expect(r).toMatchObject({ ok: true, rev: "aa" });
 	});
 
+	it("writeFull with a rev for a NON-existent path uploads mode:add (never a doomed update on a missing file)", async () => {
+		// A rev supplied for a path that doesn't exist must fall back to `add`, not build an
+		// `update` upload (which Dropbox rejects — there's no revision to condition on).
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
+			const url = String(u);
+			if (url.endsWith("/files/get_metadata")) return new Response(JSON.stringify({ error_summary: "path/not_found/" }), { status: 409 });
+			if (url.endsWith("/files/upload")) {
+				expect(JSON.parse(init.headers["Dropbox-API-Arg"]).mode).toBe("add");
+				return new Response(JSON.stringify({ path_display: "/new.txt", size: 2, rev: "r1" }), { status: 200 });
+			}
+			throw new Error(url);
+		}));
+		const r = await writeFull(tokenEnv(), { path: "/new.txt", bytes: new TextEncoder().encode("hi"), rev: "ghost", dryRun: false });
+		expect(r).toMatchObject({ ok: true, rev: "r1" });
+	});
+
 	it("writeFull refuses to overwrite a folder with a file", async () => {
 		vi.stubGlobal("fetch", vi.fn(async (u: string | URL) => {
 			if (String(u).endsWith("/files/get_metadata")) return new Response(JSON.stringify({ ".tag": "folder" }), { status: 200 });
@@ -414,6 +439,15 @@ describe("operateFull — find→plan→apply over the gated primitives", () => 
 			throw new Error(url);
 		}));
 		expect(await operateFull(tokenEnv(), { find: { query: "x" }, action: "delete", apply: true, confirm: true })).toMatchObject({ applied: 1, action: "delete" });
+	});
+
+	it("move with dest '/' is refused — it normalizes to '' and must not silently target the account root", async () => {
+		// '/' is truthy but normFull('/') === '', so a `!opts.dest` guard lets it through and every
+		// file lands at the account root. The guard must run on the NORMALIZED dest.
+		vi.stubGlobal("fetch", vi.fn(async () => {
+			throw new Error("no network expected — the dest guard must reject before any search/move");
+		}));
+		await expect(operateFull(tokenEnv(), { handles: ["/Docs/a.pdf"], action: "move", dest: "/", apply: false })).rejects.toThrow(/needs a .?dest.? folder/);
 	});
 
 	it("accepts explicit handles and requires a query-or-handles", async () => {

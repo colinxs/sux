@@ -8,7 +8,7 @@ name: PR unstick
 
 on:
   schedule:
-    - cron: "37 9 * * *" # daily (offset minute to dodge the top-of-hour rush)
+    - cron: "*/15 * * * *" # TEMP 15min (bug-drain push), revert in 1h
   workflow_dispatch: # allow manual "Run workflow" from the Actions tab
 
 jobs:

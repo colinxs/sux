@@ -278,6 +278,14 @@ describe("_util", () => {
 		expect(stripHtml("<p>a &amp; <b>b</b></p><script>x()</script>")).toBe("a & b");
 	});
 
+	it("stripHtml decodes &amp; last so a double-escaped entity survives one pass", () => {
+		// Source "&amp;lt;" displays the literal text "&lt;"; decoding &amp; first
+		// would collapse it to "<". &amp; must decode after &lt;/&gt;.
+		expect(stripHtml("&amp;lt;")).toBe("&lt;");
+		expect(stripHtml("&amp;gt;")).toBe("&gt;");
+		expect(stripHtml("a &amp;amp; b")).toBe("a &amp; b");
+	});
+
 	it("oj serializes compactly (no pretty whitespace) and round-trips", () => {
 		const x = { a: 1, b: [2, 3], c: { d: "e" } };
 		const s = oj(x);

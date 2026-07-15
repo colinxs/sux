@@ -272,7 +272,7 @@ export async function withRetry(fn: () => Promise<Response>): Promise<Response> 
 //   direct          — never tried the proxy (disabled, direct host, or forced)
 //   proxy_fallback  — proxy errored, refetched direct
 //   binary_refetch  — legacy proxy mangled a binary body, refetched direct
-export type FetchRoute = "proxied" | "direct" | "proxy_fallback" | "binary_refetch";
+export type FetchRoute = "proxied" | "direct" | "proxy_fallback" | "binary_refetch" | "redirect_fallback" | "empty_fallback";
 
 let routeTally: Partial<Record<FetchRoute, number>> = {};
 
@@ -393,14 +393,34 @@ export async function smartFetch(
 			const callerHeaders = init.headers instanceof Headers ? Object.fromEntries(init.headers) : (init.headers ?? {});
 			const headers = { ...ghAuth, ...callerHeaders };
 			const p = await fetchViaTailscale(env, url, { method: init.method, headers, body: init.body, redirect: init.redirect });
-			if (p.bodyEncoding === "base64" || isTextualContentType(new Headers(p.headers).get("content-type"))) {
+			// Two proxied answers aren't usable and must fall through to a direct
+			// fetch (which follows redirects natively and actually returns bytes):
+			//   • a redirect the caller means to follow — the node pins curl with
+			//     --no-location (an SSRF guard) so it never chases the hop itself;
+			//   • a body-expected status returned with an empty body — a broken
+			//     curl-impersonate on the node reports the status but writes nothing.
+			// redirect:"manual"/"error" callers (the `redirects` tracer) still get the
+			// raw hop; genuinely body-less statuses (204/205/304) are left alone.
+			const isRedirect = p.status >= 300 && p.status < 400;
+			const wantFollow = init.redirect !== "manual" && init.redirect !== "error";
+			const emptyBody = !p.body && ![204, 205, 304].includes(p.status);
+			const unusable = (isRedirect && wantFollow) || (!isRedirect && emptyBody);
+			if (!unusable && (p.bodyEncoding === "base64" || isTextualContentType(new Headers(p.headers).get("content-type")))) {
 				tallyRoute("proxied");
 				auditEgress(env, url, "proxied", true, p.status);
 				return proxiedToResponse(p);
 			}
-			// Corrupt bytes are worse than a datacenter-IP fetch: fall through.
-			directRoute = "binary_refetch";
-			console.warn(`smartFetch: proxy returned a stringly binary body for ${url} — refetching direct for byte fidelity`);
+			if (isRedirect && wantFollow) {
+				directRoute = "redirect_fallback";
+				console.warn(`smartFetch: proxy returned a ${p.status} redirect for ${url} (node can't follow) — refetching direct`);
+			} else if (emptyBody) {
+				directRoute = "empty_fallback";
+				console.warn(`smartFetch: proxy returned an empty ${p.status} body for ${url} — refetching direct`);
+			} else {
+				// Corrupt bytes are worse than a datacenter-IP fetch: fall through.
+				directRoute = "binary_refetch";
+				console.warn(`smartFetch: proxy returned a stringly binary body for ${url} — refetching direct for byte fidelity`);
+			}
 		} catch (e) {
 			directRoute = "proxy_fallback";
 			console.warn(`smartFetch: proxy failed, falling back to direct — ${String((e as Error).message ?? e)}`);
@@ -408,15 +428,88 @@ export async function smartFetch(
 	}
 	tallyRoute(directRoute);
 	const callerHeaders = init.headers instanceof Headers ? Object.fromEntries(init.headers) : (init.headers ?? {});
-	const headers = { ...ghAuth, ...callerHeaders };
 	// Same 30s bound as the proxy path — a hung origin must not hang the Worker.
 	// One bounded retry on transient failure (network/timeout throw or 502/503/504):
 	// a flaky site or a momentary hiccup shouldn't fail the whole tool call. Each
 	// attempt gets a fresh 30s signal; the retry is an ADDITIONAL layer over the
 	// proxy→direct fallback above, not a replacement for it.
-	const resp = await withRetry(() => fetch(url, { method: init.method, headers, body: init.body, redirect: init.redirect, signal: AbortSignal.timeout(30_000) }));
+	//
+	// redirect:"manual"/"error" is an explicit low-level ask (the `redirects` tracer
+	// re-enters smartFetch per hop itself, so isBlockedTarget already re-runs on each
+	// one) — pass it straight to fetch unchanged, with ghAuth (computed once, for
+	// this single non-chased url) merged in. Anything else (undefined/"follow") must
+	// NOT hand redirect-chasing to the native fetch: an origin at an already-vetted
+	// public url could 302 a caller straight at a private/loopback/metadata target,
+	// and native "follow" would connect there without ever re-checking
+	// isBlockedTarget on the new host (the security-review finding that motivated
+	// this — the empty/redirect proxy fallback above newly makes this reachable for
+	// redirects the residential node itself can't chase).
+	const resp =
+		init.redirect === "manual" || init.redirect === "error"
+			? await withRetry(() => fetch(url, { method: init.method, headers: { ...ghAuth, ...callerHeaders }, body: init.body, redirect: init.redirect, signal: AbortSignal.timeout(30_000) }))
+			: await fetchDirectFollowingRedirects(env, url, { method: init.method, headers: callerHeaders, body: init.body });
 	auditEgress(env, url, directRoute, false, resp.status);
 	return resp;
+}
+
+const MAX_REDIRECT_HOPS = 20;
+
+/**
+ * Direct-fetch a URL, chasing redirects ourselves hop-by-hop instead of handing
+ * that to native fetch's redirect:"follow" — each Location is revalidated against
+ * isBlockedTarget before we connect, mirroring `redirects.ts`'s deliberate
+ * per-hop guard (see the comment at its call site above). Only GET/HEAD chase
+ * automatically: those are every direct caller in this codebase, and reimplementing
+ * fetch's method-downgrade/body-carry rules for POST/PUT redirects isn't worth the
+ * risk of getting them subtly wrong — any other method just returns the raw 3xx.
+ *
+ * `githubAuthHeaders` is recomputed fresh for EACH hop's url, never carried over
+ * from the previous one: a GitHub PAT attached because the original host was
+ * github.com/api.github.com must not ride along to whatever host a redirect lands
+ * on (e.g. api.github.com's zipball/tarball 302s to codeload.github.com, which
+ * isn't itself in the allow-list) — that's a credential leak to any host an
+ * allow-listed origin happens to redirect to, exactly the boundary
+ * githubAuthHeaders exists to enforce in the first place.
+ *
+ * The CALLER's own headers (init.headers — a Kagi session Cookie, a caller-set
+ * Authorization, an arbitrary API key via the generic `proxy` fn) get the same
+ * treatment: forwarded only while a hop stays same-origin as the original url,
+ * dropped entirely the moment a redirect crosses to a different origin. Native
+ * fetch's redirect:"follow" strips Authorization (and similar) cross-origin per
+ * the Fetch spec; this hand-rolled chase doesn't get that for free, so it has to
+ * replicate the origin boundary itself rather than blindly resending every header
+ * to every host a 3xx happens to name.
+ */
+function sameOrigin(a: string, b: string): boolean {
+	try {
+		const ua = new URL(a);
+		const ub = new URL(b);
+		return ua.protocol === ub.protocol && ua.hostname === ub.hostname && ua.port === ub.port;
+	} catch {
+		return false;
+	}
+}
+
+async function fetchDirectFollowingRedirects(env: TailscaleEnv, url: string, init: { method?: string; headers?: Record<string, string>; body?: string }): Promise<Response> {
+	const chaseable = !init.method || /^(GET|HEAD)$/i.test(init.method);
+	let current = url;
+	for (let hop = 0; hop < MAX_REDIRECT_HOPS; hop++) {
+		const callerHeaders = sameOrigin(current, url) ? init.headers : undefined;
+		const headers = { ...githubAuthHeaders(env, current), ...callerHeaders };
+		const resp = await withRetry(() => fetch(current, { method: init.method, headers, body: init.body, redirect: "manual", signal: AbortSignal.timeout(30_000) }));
+		if (!chaseable || resp.status < 300 || resp.status >= 400) return resp;
+		const loc = resp.headers.get("location");
+		if (!loc) return resp;
+		let next: string;
+		try {
+			next = new URL(loc, current).href;
+		} catch {
+			return resp; // malformed Location — surface the redirect itself rather than throw
+		}
+		if (isBlockedTarget(next)) throw new Error(`smartFetch: refusing blocked redirect target ${next} (private/loopback/link-local/metadata host)`);
+		current = next;
+	}
+	throw new Error(`smartFetch: exceeded ${MAX_REDIRECT_HOPS} redirect hops for ${url}`);
 }
 
 /**

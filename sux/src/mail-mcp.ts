@@ -38,7 +38,9 @@ async function jmapCall(env: RtEnv, args: Record<string, unknown>): Promise<{ me
 function resultFor(resp: { methodResponses: any[] }, method: string, callId?: string): any {
 	for (const mr of resp.methodResponses ?? []) {
 		if (mr[0] === method && (callId === undefined || mr[2] === callId)) return mr[1];
-		if (mr[0] === "error" && (callId === undefined || mr[2] === callId)) throw new Error(`JMAP ${method} error: ${mr[1]?.type ?? "unknown"}${mr[1]?.description ? " — " + mr[1].description : ""}`);
+		// Attribute the failure to the call that actually errored (its own callId), not to `method` we
+		// happened to be looking for — in a batch those differ, and the old message named the wrong call.
+		if (mr[0] === "error" && (callId === undefined || mr[2] === callId)) throw new Error(`JMAP error (call '${mr[2] ?? method}'): ${mr[1]?.type ?? "unknown"}${mr[1]?.description ? " — " + mr[1].description : ""}`);
 	}
 	return null;
 }
@@ -418,10 +420,15 @@ async function mailboxMap(env: RtEnv): Promise<MailboxMap> {
 	return map;
 }
 
-/** Resolve a mailbox arg (a role like "inbox", a display name, or a raw id) to an id. */
-function resolveMailboxId(map: { byRole: Record<string, string>; byName: Record<string, string> }, mailbox: string): string | undefined {
+/** Resolve a mailbox arg (a role like "inbox", a display name, or a raw id) to an id, or
+ *  undefined when nothing matches. A raw id passes only when it's a REAL mailbox — an unrecognized
+ *  role/name/id returns undefined so the callers' not_found/bad_input guards fire instead of
+ *  shipping a bogus id to JMAP (which turned "no such mailbox" into an opaque server error). */
+function resolveMailboxId(map: MailboxMap, mailbox: string): string | undefined {
 	const key = mailbox.toLowerCase();
-	return map.byRole[key] ?? map.byName[key] ?? mailbox; // fall through: treat as a raw id
+	if (map.byRole[key]) return map.byRole[key];
+	if (map.byName[key]) return map.byName[key];
+	return map.list.some((m: any) => m?.id === mailbox) ? mailbox : undefined;
 }
 
 /** Build an Email/query filter from ergonomic args. */
@@ -434,7 +441,9 @@ async function buildFilter(env: RtEnv, a: any): Promise<Record<string, unknown>>
 	if (a?.before) conds.before = String(a.before);
 	if (a?.mailbox) {
 		const map = await mailboxMap(env);
-		conds.inMailbox = resolveMailboxId(map, String(a.mailbox));
+		// Search stays lenient: an unresolved mailbox falls back to the literal string (an unknown
+		// id just yields no matches) — only the mutating verbs (move/rename/delete) hard-fail on it.
+		conds.inMailbox = resolveMailboxId(map, String(a.mailbox)) ?? String(a.mailbox);
 	}
 	if (a?.unread === true) {
 		// unread = NOT $seen. JMAP composes with an operator node.
@@ -1276,10 +1285,14 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 			identity = identities[0];
 		}
 		if (!identity) return fail("no sending identity found.");
+		// A *@domain wildcard identity's `.email` is the literal "*@domain" — never a sendable
+		// address. When one matched, send FROM the caller's concrete `from` (its `identity.id` still
+		// authorizes submission); otherwise the identity's own address (§1a).
+		const fromEmail = String(identity.email).startsWith("*@") ? String(a.from) : identity.email;
 
 		if (mode === "reply-all" && src) {
 			// Everyone on the original (To + Cc) except ourself and the primary To → Cc.
-			const seen = new Set([String(identity.email).toLowerCase(), ...to.map((x) => x.toLowerCase()), ...cc.map((x) => x.toLowerCase())]);
+			const seen = new Set([String(fromEmail).toLowerCase(), ...to.map((x) => x.toLowerCase()), ...cc.map((x) => x.toLowerCase())]);
 			for (const e of [...emailsOf(src.to), ...emailsOf(src.cc)]) {
 				const k = e.toLowerCase();
 				if (!seen.has(k)) {
@@ -1296,7 +1309,7 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 		const draft: Record<string, unknown> = {
 			mailboxIds: { [draftsId]: true },
 			keywords: { $draft: true },
-			from: [{ email: identity.email, name: identity.name }],
+			from: [{ email: fromEmail, name: identity.name }],
 			to: addrs(to),
 			...(cc.length ? { cc: addrs(cc) } : {}),
 			...(bcc.length ? { bcc: addrs(bcc) } : {}),
@@ -1359,7 +1372,7 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 			const subCreate: Record<string, unknown> = { emailId: "#draft", identityId: identity.id };
 			if (holdFor > 0) {
 				subCreate.envelope = {
-					mailFrom: { email: identity.email, parameters: { HOLDFOR: String(holdFor) } },
+					mailFrom: { email: fromEmail, parameters: { HOLDFOR: String(holdFor) } },
 					rcptTo: [...to, ...cc, ...bcc].map((e) => ({ email: String(e) })),
 				};
 			}
@@ -1370,8 +1383,8 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 			return holdFor > 0 ? { scheduled: true, send_at: String(a.send_at), ...base, note: "held via FUTURERELEASE — cancel with mail_unschedule." } : { sent: true, ...base };
 		};
 		const attDesc = attachDescriptors(atts);
-		const payload = { from: identity.email, to, cc: cc.length ? cc : null, bcc: a?.bcc ?? null, subject: String(subject), text: bodyText, send_at: a?.send_at ?? null, attachments: attDesc };
-		const preview = { action: holdFor > 0 ? "scheduled_send" : "send", from: identity.email, to, ...(cc.length ? { cc } : {}), ...(a?.bcc ? { bcc: a.bcc } : {}), subject: String(subject), body_chars: bodyText.length, ...(attDesc.length ? { attachments: attDesc } : {}), ...(holdFor > 0 ? { send_at: String(a.send_at) } : {}) };
+		const payload = { from: fromEmail, to, cc: cc.length ? cc : null, bcc: bcc.length ? bcc : null, subject: String(subject), text: bodyText, send_at: a?.send_at ?? null, attachments: attDesc };
+		const preview = { action: holdFor > 0 ? "scheduled_send" : "send", from: fromEmail, to, ...(cc.length ? { cc } : {}), ...(bcc.length ? { bcc } : {}), subject: String(subject), body_chars: bodyText.length, ...(attDesc.length ? { attachments: attDesc } : {}), ...(holdFor > 0 ? { send_at: String(a.send_at) } : {}) };
 		const out = await staged(env, "mail_send", gateArgs(a), payload, preview, doSend);
 		return ok("stageResult" in out ? out.stageResult : out.result);
 	} catch (e) {

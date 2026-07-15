@@ -62,6 +62,13 @@ describe("dashboard", () => {
 		expect(body).toContain("/dashboard/api/notes");
 	});
 
+	it("sets a Content-Security-Policy on the HTML shell that still permits its inline script/style", async () => {
+		const env = fakeEnv();
+		const res = await get(env, "/dashboard");
+		const csp = res!.headers.get("content-security-policy");
+		expect(csp).toBe("default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'");
+	});
+
 	it("serves a metrics snapshot derived from the same store /metrics reads", async () => {
 		const env = fakeEnv();
 		const m = emptyMetrics(0);
@@ -89,6 +96,32 @@ describe("dashboard", () => {
 		expect(body.notes).toEqual([
 			{ path: "Daily/2026-07-13.md", excerpt: "Took the dog out." },
 			{ path: "Inbox/2026-07-12 idea.md", excerpt: "Build a dashboard." },
+		]);
+	});
+
+	it("strips a leading OBSIDIAN_VAULT_DIR prefix before reading (list paths are dir-prefixed; read re-applies the dir)", async () => {
+		const env = fakeEnv();
+		env.OBSIDIAN_VAULT_DIR = "notes";
+		const readPaths: string[] = [];
+		// list returns REPO-relative paths that already carry the OBSIDIAN_VAULT_DIR prefix;
+		// obsidian `read` re-applies the dir, so feeding a listed path straight in double-prefixes
+		// into a 404 → empty excerpt. The read mock only answers the STRIPPED, vault-relative path.
+		obsidianState.run = async (_env, args) => {
+			if (args.action === "list" && args.path === "Daily") return ok(JSON.stringify({ notes: ["notes/Daily/2026-07-13.md"] }));
+			if (args.action === "list" && args.path === "Inbox") return ok(JSON.stringify({ notes: ["notes/Inbox/2026-07-12 idea.md"] }));
+			if (args.action === "read") {
+				readPaths.push(args.path);
+				if (args.path === "Daily/2026-07-13.md") return ok("---\ntype: daily\n---\n\nWalked the dog.");
+				if (args.path === "Inbox/2026-07-12 idea.md") return ok("---\ntype: capture\n---\n\nShip the fix.");
+				return err(`double-prefixed read 404: ${args.path}`);
+			}
+			return err("unexpected call");
+		};
+		const body = await getJson(env, "/dashboard/api/notes?limit=2");
+		expect(readPaths).toEqual(["Daily/2026-07-13.md", "Inbox/2026-07-12 idea.md"]);
+		expect(body.notes).toEqual([
+			{ path: "Daily/2026-07-13.md", excerpt: "Walked the dog." },
+			{ path: "Inbox/2026-07-12 idea.md", excerpt: "Ship the fix." },
 		]);
 	});
 
