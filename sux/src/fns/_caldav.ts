@@ -79,9 +79,13 @@ export function multistatusResponses(xml: string): string[] {
 	return [...xml.matchAll(tagAll("response"))].map((m) => m[1]);
 }
 
+const cdata = /^<!\[CDATA\[([\s\S]*)\]\]>$/;
+
 function firstTag(block: string, name: string): string | null {
 	const m = block.match(tag(name));
-	return m ? m[1].trim() : null;
+	if (!m) return null;
+	const raw = m[1].trim();
+	return raw.match(cdata)?.[1].trim() ?? raw;
 }
 
 export type CalendarRef = { href: string; name: string; description?: string; isTasks: boolean };

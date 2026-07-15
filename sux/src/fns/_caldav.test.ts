@@ -198,7 +198,7 @@ const MULTISTATUS_CALS = `<?xml version="1.0"?>
   <d:response><d:href>/dav/calendars/user/me@fastmail.com/</d:href>
     <d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop></d:propstat></d:response>
   <d:response><d:href>/dav/calendars/user/me@fastmail.com/personal/</d:href>
-    <d:propstat><d:prop><d:displayname>Personal</d:displayname>
+    <d:propstat><d:prop><d:displayname><![CDATA[Personal]]></d:displayname>
       <d:resourcetype><d:collection/><c:calendar/></d:resourcetype>
       <c:supported-calendar-component-set><c:comp name="VEVENT"/></c:supported-calendar-component-set></d:prop></d:propstat></d:response>
   <d:response><d:href>/dav/calendars/user/me@fastmail.com/tasks/</d:href>
