@@ -4,7 +4,7 @@ import { kagiSession, parseKagiMarkdown, withOperators } from "./web_search";
 import { kagiTool } from "../kagi";
 import type { Route } from "../proxy";
 import type { RtEnv, ToolResult } from "../registry";
-import { inlineB64, loadBytes, toB64 } from "./_util";
+import { deliverBytes, inlineB64, loadBytes, toB64 } from "./_util";
 
 export type Kind = "pdf" | "document" | "ebook" | "code" | "docs" | "artifact" | "reference" | "any";
 
@@ -149,9 +149,7 @@ export async function fetchAndNormalize(env: RtEnv, url: string, convertToPdf: b
 		return { result: await pdfFn.run(env, { data: toB64(bytes), kind: convertibleKind, compress: true, as: asArg }), converted: true };
 	}
 
-	// No converter for this content — deliver the fetched bytes as-is. URL-vs-inline
-	// delivery for the non-convertible case is a later task's job (storeResult); here
-	// we always inline so this fn has no R2-store dependency of its own.
+	// No converter for this content — deliver the fetched bytes as-is, respecting `deliver`.
 	const mime = ct || "application/octet-stream";
-	return { result: inlineB64(bytes, mime), converted: false };
+	return { result: await deliverBytes(env, bytes, mime, deliver === "url" ? "url" : undefined, () => inlineB64(bytes, mime)), converted: false };
 }

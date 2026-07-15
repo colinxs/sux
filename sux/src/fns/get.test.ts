@@ -18,6 +18,21 @@ vi.mock("./_util", async (importOriginal) => {
 
 afterEach(() => vi.clearAllMocks());
 
+function blobEnv() {
+	const r2 = new Map<string, Uint8Array>();
+	const kv = new Map<string, string>();
+	return {
+		R2: {
+			put: async (k: string, v: any) => void r2.set(k, new Uint8Array(v)),
+			get: async (k: string) => {
+				const b = r2.get(k);
+				return b ? { size: b.length, arrayBuffer: async () => b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength), text: async () => new TextDecoder().decode(b) } : null;
+			},
+		},
+		OAUTH_KV: { put: async (k: string, v: string) => void kv.set(k, v), get: async (k: string) => kv.get(k) ?? null },
+	} as any;
+}
+
 import { isUrlInput, parseStrategies } from "./get";
 import { KIND_PLANS, LENSES } from "./get";
 import { dedupeEditions } from "./get";
@@ -171,12 +186,14 @@ describe("fetchAndNormalize", () => {
 		expect(pdfRun).toHaveBeenCalledWith({}, expect.objectContaining({ kind: "html", compress: true }));
 	});
 
-	it("delivers a non-convertible binary (e.g. epub) as-is even when convertToPdf is true", async () => {
+	it("delivers a non-convertible binary (e.g. epub) as-is, respecting deliver:url via the real content-addressed store", async () => {
 		const bytes = new Uint8Array([1, 2, 3, 4]);
 		loadBytesMock.mockResolvedValueOnce({ bytes, contentType: "application/epub+zip" });
-		const { result, converted } = await fetchAndNormalize({} as any, "https://a.com/book.epub", true, "url");
+		const { result, converted } = await fetchAndNormalize(blobEnv(), "https://a.com/book.epub", true, "url");
 		expect(converted).toBe(false);
 		expect(pdfRun).not.toHaveBeenCalled();
 		expect(result.isError).toBeFalsy();
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.url).toMatch(/^https:\/\/suxos\.net\/s\//);
 	});
 });
