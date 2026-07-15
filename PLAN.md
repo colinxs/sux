@@ -14,16 +14,19 @@ A fast, cheap, hard-to-block search/commerce engine that emulates the best of
 Bing / Google / Wikipedia / store sites — with lossless efficiency and a clean,
 always-available simple path.
 
-## Architecture — two services
+## Architecture — two services (Service 1 is stale, slated for decommission)
 
-**Service 1 · `kagi-mcp` (core) — the simple option, always kept**
+**Service 1 · `kagi-mcp` (core) — legacy, slated for decommission (not "always kept")**
 ```
 Claude ──OAuth──▶ CF (OAuthProvider) ──▶ KV (state/cache) ──▶ Worker ──▶ public Kagi MCP
 ```
-Transparent OAuth→Kagi proxy. KV cache · tool curation · audit · rate-limit ·
-observability · QUIC. No scraping, no proxy. Stays lean & reliable.
+Transparent OAuth→Kagi proxy that predates `sux`. There's no root `wrangler.jsonc`
+left in this repo (`deploy.yml` only deploys `sux/wrangler.jsonc`), so this worker
+is unmanaged by CI. Per `sux/README.md` § Future directions, `docs/proposals/mail.md`,
+and `docs/proposals/jmap.md`: decommission it, don't build against it. Service 2's
+`smartFetch` direct-fetch fallback is the simple path now.
 
-**Service 2 · `sux` — the engine (general functions in the cloud)**
+**Service 2 · `sux` — the engine (general functions in the cloud), the sole live service**
 ```
 Claude ──MCP──▶ sux Worker  (all work here: parse, render, ocr, transform, cache)
                      │ smartFetch — EVERY outbound query (direct fallback = simple option)
@@ -32,8 +35,8 @@ Claude ──MCP──▶ sux Worker  (all work here: parse, render, ocr, transf
                      ▼
               { Kagi, Google, Home Depot, Costco, any URL }
 ```
-Same qualities as core (KV cache · rate-limit · observability · QUIC). OAuth-gated.
-Residential node is a pure fetch pass-through (HMAC + SSRF guard + host allowlist).
+KV cache · rate-limit · observability · QUIC. OAuth-gated. Residential node is a
+pure fetch pass-through (HMAC + SSRF guard + host allowlist).
 
 ## Design — Julia-inspired (generic functions + multiple dispatch)
 The tool layer is built like Julia's standard library: a **small set of generic
@@ -180,9 +183,9 @@ zillow/redfin · flights/hotels · jobs · social · reviews.
 fewer tokens to the agent) and compose in front of every other verb. Then `search`
 #47 → `compress`/`shrink(bytes)`/`optimize` #31-34 → `archive` #32 → rest.
 
-## Status (live): **93 functions built** · type-checked · 364 tests green
-Source of truth = **`sux/FUNCTIONS.md`** (`npm run docs` regenerates it). 88 working +
-5 planned stubs (pdf/office/image — need Browser Rendering / WASM).
+## Status (live): **113 functions built** · type-checked · 2048 tests green
+Source of truth = **`sux/FUNCTIONS.md`** (`npm run docs` regenerates it). 107 of the
+113 have a dedicated test file.
 - **Quality gate (Bosman):** *"the 101st function exists only because the first 100 are
   perfect."* Stop padding count — perfect the set. New functions justified ONLY when they
   wrap an overly-verbose public connector for gross efficiency (F13), never for volume.
