@@ -52,6 +52,13 @@ design pass the issue explicitly asked for. Pre-route these to a design-decision
 (a doc under `docs/design/`) or label them `needs-human`, the same way #219/#220 were, before
 they reach a builder.
 
+Same treatment for an issue whose only remaining action is **credential provisioning** —
+registering an external API key/account or setting a production `wrangler secret put` — since
+neither is achievable from an unattended build session (no external account access, no
+secrets-store access). Left as plain `bug`/`enhancement`, it gets silently re-picked-up and
+re-fails every cycle instead of surfacing once. Label it `needs-human` at triage/fixer time (or
+self-label and stop if a builder rediscovers it), the same way #328/#329/#419/#533 were.
+
 ## The workflows
 
 | File | Trigger | Does |
