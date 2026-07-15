@@ -1,7 +1,7 @@
 import { type Fn, fail, ok } from "../registry";
 import { smartFetch } from "../proxy";
 import { extractRpcFromText } from "../mcp-util";
-import { fromB64, toB64, oj } from "./_util";
+import { cfOriginHint, fromB64, toB64, oj } from "./_util";
 
 // Work with Obsidian markdown notes across two backends:
 //   git    (default) — a git-backed vault via the GitHub API (async, versioned).
@@ -255,7 +255,7 @@ async function runRemote(env: any, action: string, args: any) {
 		if (action === "list") {
 			const dir = String(args?.path ?? "").replace(/^\/+|\/+$/g, "");
 			const resp = await remoteFetch(env, `/vault/${dir ? `${encPath(dir)}/` : ""}`);
-			if (resp.status >= 400) return fail(`Obsidian remote error listing: HTTP ${resp.status}`);
+			if (resp.status >= 400) return fail(`Obsidian remote error listing: HTTP ${resp.status}.${cfOriginHint(resp.status)}`);
 			const j = (await resp.json().catch(() => null)) as any;
 			const files = j?.files ?? [];
 			return ok(oj({ dir: dir || "/", count: files.length, files }));
@@ -275,10 +275,10 @@ async function runRemote(env: any, action: string, args: any) {
 			if (!resp || resp.status >= 500) {
 				const hit = await cacheGet(env, remoteNoteKey(p));
 				if (typeof hit?.body === "string") return ok(hit.body);
-				return fail(`obsidian remote unreachable (${reason || `HTTP ${resp?.status}`}) and no cached copy of ${p} — try backend:'git'.`);
+				return fail(`obsidian remote unreachable (${reason || `HTTP ${resp?.status}`}) and no cached copy of ${p} — try backend:'git'.${resp ? cfOriginHint(resp.status) : ""}`);
 			}
 			if (resp.status === 404) return fail(`Note not found: ${p}`);
-			if (resp.status >= 400) return fail(`Obsidian remote error reading: HTTP ${resp.status}`);
+			if (resp.status >= 400) return fail(`Obsidian remote error reading: HTTP ${resp.status}.${cfOriginHint(resp.status)}`);
 			const text = await resp.text();
 			await cachePut(env, remoteNoteKey(p), { body: text, sha: null, at: Date.now(), src: "remote" });
 			return ok(text);
@@ -287,7 +287,7 @@ async function runRemote(env: any, action: string, args: any) {
 			const q = String(args?.query ?? "").trim();
 			if (!q) return fail("action=search requires a `query`.");
 			const resp = await remoteFetch(env, `/search/simple/?query=${encodeURIComponent(q)}&contextLength=100`, { method: "POST" });
-			if (resp.status >= 400) return fail(`Obsidian remote search error: HTTP ${resp.status}`);
+			if (resp.status >= 400) return fail(`Obsidian remote search error: HTTP ${resp.status}.${cfOriginHint(resp.status)}`);
 			const j = (await resp.json().catch(() => null)) as any;
 			const hits = (Array.isArray(j) ? j : []).slice(0, 20).map((h: any) => ({ path: h?.filename, score: h?.score }));
 			return ok(oj({ query: q, count: hits.length, hits }));
@@ -298,7 +298,7 @@ async function runRemote(env: any, action: string, args: any) {
 			if (!p) return fail("action=append requires a `path`.");
 			if (!content) return fail("action=append requires `content`.");
 			const resp = await remoteFetch(env, `/vault/${encPath(p)}`, { method: "POST", headers: { "Content-Type": "text/markdown" }, body: content });
-			if (resp.status >= 400) return fail(`Obsidian remote write error: HTTP ${resp.status}`);
+			if (resp.status >= 400) return fail(`Obsidian remote write error: HTTP ${resp.status}.${cfOriginHint(resp.status)}`);
 			await cacheDel(env, remoteNoteKey(p)); // merged body lives server-side; next read refills
 			return ok(oj({ ok: true, path: p, bytes: content.length }));
 		}
@@ -308,7 +308,7 @@ async function runRemote(env: any, action: string, args: any) {
 			if (!p) return fail("action=write requires a `path`.");
 			if (!content) return fail("action=write requires `content`.");
 			const resp = await remoteFetch(env, `/vault/${encPath(p)}`, { method: "PUT", headers: { "Content-Type": "text/markdown" }, body: content });
-			if (resp.status >= 400) return fail(`Obsidian remote write error: HTTP ${resp.status}`);
+			if (resp.status >= 400) return fail(`Obsidian remote write error: HTTP ${resp.status}.${cfOriginHint(resp.status)}`);
 			await cachePut(env, remoteNoteKey(p), { body: content, sha: null, at: Date.now(), src: "remote" });
 			return ok(oj({ ok: true, path: p, bytes: content.length }));
 		}
@@ -319,11 +319,11 @@ async function runRemote(env: any, action: string, args: any) {
 			if (!find) return fail("action=edit requires `find` (the exact text to replace).");
 			const cur = await remoteFetch(env, `/vault/${encPath(p)}`, { headers: { Accept: "text/markdown" } });
 			if (cur.status === 404) return fail(`Note not found: ${p}`);
-			if (cur.status >= 400) return fail(`Obsidian remote error reading: HTTP ${cur.status}`);
+			if (cur.status >= 400) return fail(`Obsidian remote error reading: HTTP ${cur.status}.${cfOriginHint(cur.status)}`);
 			const edited = applyEdit(await cur.text(), find, String(args?.replace ?? ""), args?.all === true);
 			if ("error" in edited) return fail(`${edited.error} in ${p}`);
 			const resp = await remoteFetch(env, `/vault/${encPath(p)}`, { method: "PUT", headers: { "Content-Type": "text/markdown" }, body: edited.text });
-			if (resp.status >= 400) return fail(`Obsidian remote write error: HTTP ${resp.status}`);
+			if (resp.status >= 400) return fail(`Obsidian remote write error: HTTP ${resp.status}.${cfOriginHint(resp.status)}`);
 			await cachePut(env, remoteNoteKey(p), { body: edited.text, sha: null, at: Date.now(), src: "remote" });
 			return ok(oj({ ok: true, path: p, replaced: edited.count }));
 		}
@@ -332,7 +332,7 @@ async function runRemote(env: any, action: string, args: any) {
 			if (!p) return fail("action=delete requires a `path`.");
 			const resp = await remoteFetch(env, `/vault/${encPath(p)}`, { method: "DELETE" });
 			if (resp.status === 404) return fail(`Note not found: ${p}`);
-			if (resp.status >= 400) return fail(`Obsidian remote delete error: HTTP ${resp.status}`);
+			if (resp.status >= 400) return fail(`Obsidian remote delete error: HTTP ${resp.status}.${cfOriginHint(resp.status)}`);
 			await cacheDel(env, remoteNoteKey(p));
 			return ok(oj({ ok: true, deleted: p }));
 		}

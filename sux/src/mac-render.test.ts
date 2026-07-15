@@ -122,6 +122,20 @@ describe("macRender", () => {
 		expect(await macRender(ENV, { url: "https://x" })).toEqual({ ok: false, error: expect.stringMatching(/unreadable/i) });
 	});
 
+	it("hints at a dead tunnel on a Cloudflare edge-to-origin status (530)", async () => {
+		fetchSpy.mockResolvedValueOnce(new Response("cloudflare error page", { status: 530 }));
+		const r = await macRender(ENV, { url: "https://x" });
+		expect(r.ok).toBe(false);
+		expect((r as { error: string }).error).toMatch(/HTTP 530/);
+		expect((r as { error: string }).error).toMatch(/tunnel/i);
+	});
+
+	it("omits the tunnel hint on an ordinary non-2xx status", async () => {
+		fetchSpy.mockResolvedValueOnce(macJson({}, 502));
+		const r = await macRender(ENV, { url: "https://x" });
+		expect((r as { error: string }).error).not.toMatch(/tunnel/i);
+	});
+
 	it("maps a transport throw to ok:false (never propagates)", async () => {
 		fetchSpy.mockRejectedValueOnce(new Error("tunnel down"));
 		expect(await macRender(ENV, { url: "https://x" })).toEqual({ ok: false, error: expect.stringMatching(/tunnel down/) });
