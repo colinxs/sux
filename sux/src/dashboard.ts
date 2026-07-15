@@ -231,8 +231,9 @@ async function loadNotes() {
   }
 }
 
-const SIEVE_CATEGORIES = ${JSON.stringify(ALL_SIEVE_CATEGORIES)};
+const SIEVE_CATEGORIES = ${JSON.stringify(ALL_SIEVE_CATEGORIES).replace(/</g, '\\u003c')};
 let currentSieveScript = '';
+let sieveFetchSeq = 0;
 
 function selectedSieveCategories() {
   return SIEVE_CATEGORIES.filter((c) => document.getElementById('cat-' + c).checked);
@@ -241,7 +242,7 @@ function selectedSieveCategories() {
 function renderSieveToggles() {
   const el = document.getElementById('sieve-categories');
   el.innerHTML = SIEVE_CATEGORIES
-    .map((c) => '<label><input type="checkbox" id="cat-' + c + '" checked> ' + esc(c.replace(/_/g, ' ')) + '</label>')
+    .map((c) => '<label><input type="checkbox" id="cat-' + esc(c) + '" checked> ' + esc(c.replace(/_/g, ' ')) + '</label>')
     .join('');
   for (const c of SIEVE_CATEGORIES) {
     document.getElementById('cat-' + c).addEventListener('change', () => fetchSieve());
@@ -252,11 +253,16 @@ async function fetchSieve() {
   const scriptEl = document.getElementById('sieve-script');
   const copyBtn = document.getElementById('sieve-copy');
   const cats = selectedSieveCategories();
+  // A stale in-flight request must never win over a newer one — without this,
+  // rapid checkbox toggling races two fetches and whichever resolves LAST applies
+  // its script/enables Copy, regardless of which matches the current checkboxes.
+  const seq = ++sieveFetchSeq;
+  copyBtn.disabled = true;
   if (!cats.length) {
     currentSieveScript = '';
     scriptEl.textContent = '(select at least one category)';
+    scriptEl.classList.remove('err');
     scriptEl.classList.add('loading');
-    copyBtn.disabled = true;
     return;
   }
   scriptEl.classList.add('loading');
@@ -264,11 +270,13 @@ async function fetchSieve() {
     const res = await fetch('/dashboard/api/mail-sieve?categories=' + encodeURIComponent(cats.join(',')));
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const { script } = await res.json();
+    if (seq !== sieveFetchSeq) return; // superseded by a later toggle
     currentSieveScript = script;
     scriptEl.textContent = script;
     scriptEl.classList.remove('loading', 'err');
     copyBtn.disabled = false;
   } catch (e) {
+    if (seq !== sieveFetchSeq) return;
     scriptEl.textContent = 'Failed to load script: ' + (e.message || e);
     scriptEl.classList.remove('loading');
     scriptEl.classList.add('err');
