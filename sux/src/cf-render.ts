@@ -335,6 +335,18 @@ export async function cfRender(env: RtEnv, spec: CfRenderSpec): Promise<CfRender
 			return { ok: true, contentType: "image/png", bytes };
 		}
 		if (as === "pdf") {
+			// CDP's Fetch-domain interception (residential/blockResources above) races
+			// Page.printToPDF — the print commits before the intercepted frame tree
+			// settles, producing a structurally valid PDF whose content stream is
+			// /Length 0. Navigation already completed by this point, so it's safe to
+			// drop interception before printing.
+			if (residential || blockResources) {
+				try {
+					await page.setRequestInterception(false);
+				} catch {
+					// already torn down by a teardown race — nothing to do.
+				}
+			}
 			const doc = await page.pdf({ format, landscape, printBackground } as Parameters<typeof page.pdf>[0]);
 			const bytes = doc instanceof Uint8Array ? doc : new Uint8Array(doc as ArrayBuffer);
 			return { ok: true, contentType: "application/pdf", bytes };

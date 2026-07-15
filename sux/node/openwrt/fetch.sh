@@ -178,10 +178,21 @@ fi
 
 [ "$code" = "000" ] && { emit 502 '{"error":"upstream_failed"}'; exit 0; }
 ct=$(grep -i '^content-type:' "$hdr" | tail -n1 | sed 's/^[Cc]ontent-[Tt]ype:[[:space:]]*//; s/[[:space:]]*$//')
+loc=$(grep -i '^location:' "$hdr" | tail -n1 | sed 's/^[Ll]ocation:[[:space:]]*//; s/[[:space:]]*$//')
+clen=$(grep -i '^content-length:' "$hdr" | tail -n1 | sed 's/^[Cc]ontent-[Ll]ength:[[:space:]]*//; s/[[:space:]]*$//')
 
 # Always base64 the body + flag bodyEncoding:"base64" so binary survives the
 # JSON transport and reaches the Worker's residential path (text and binary alike).
 rbytes=$(wc -c < "$resp" | tr -d ' ')
+# curl-impersonate can report a clean 2xx while writing nothing to -o (broken
+# fingerprint dep, disk full, etc.) — self-diagnose instead of masquerading that
+# as a genuinely empty response, so callers don't silently fall back forever.
+if [ "$rbytes" = "0" ] && [ "$method" != "HEAD" ] && [ "$code" -ge 200 ] 2>/dev/null && [ "$code" -lt 300 ] 2>/dev/null \
+	&& [ -n "$clen" ] && [ "$clen" != "0" ]; then
+	emit 502 '{"error":"upstream_error","detail":"empty_body_with_2xx"}'; exit 0
+fi
 b64=$(openssl base64 -A < "$resp")
-emit 200 "$(jq -n --arg status "$code" --arg ct "$ct" --arg body "$b64" --arg bytes "$rbytes" \
-	'{status:($status|tonumber? // 0), statusText:"", headers:{"content-type":$ct}, bytes:($bytes|tonumber? // 0), truncated:false, bodyEncoding:"base64", body:$body}')"
+# --no-location above means 3xx responses reach here with Location intact; forward
+# it (alongside content-type) so the Worker's redirects fn can trace hops beyond #1.
+emit 200 "$(jq -n --arg status "$code" --arg ct "$ct" --arg loc "$loc" --arg body "$b64" --arg bytes "$rbytes" \
+	'{status:($status|tonumber? // 0), statusText:"", headers:(if $loc == "" then {"content-type":$ct} else {"content-type":$ct,"location":$loc} end), bytes:($bytes|tonumber? // 0), truncated:false, bodyEncoding:"base64", body:$body}')"
