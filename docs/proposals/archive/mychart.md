@@ -1,4 +1,16 @@
+---
+title: mychart — personal health data conduit (Epic SMART on FHIR + Apple Health ingest)
+status: shipped
+cluster: namespaces
+type: proposal
+summary: "Proposal for Epic SMART-on-FHIR clinical records + Apple Health Auto Export ingest, with PHI-handling invariants. Shipped essentially as proposed (PR #342, PR #382)."
+tags: [sux, namespaces, shipped, health]
+updated: 2026-07-09
+---
+
 # `mychart` — personal health data conduit (Epic SMART on FHIR + Apple Health ingest)
+
+> **⚠️ Superseded — point-in-time design record.** This doc proposed connecting sux to Epic SMART-on-FHIR (clinical records) and Apple Health (wearable data via Health Auto Export). The design shipped essentially as proposed (PR #342, PR #382). Read this as the original research/design record; for the current shape see [[mychart]].
 
 Proposal for connecting sux to the owner's MyChart account and Apple Health data.
 Status: **design** — nothing here is built yet. Research current as of 2026-07
