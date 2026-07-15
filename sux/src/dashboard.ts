@@ -28,6 +28,7 @@
 // rate-limiting regardless of who's asking.
 
 import { verifyAccessJwt } from "./access-jwt";
+import { compileSieve } from "./fns/_mail_sieve";
 import { obsidian } from "./fns/obsidian";
 import { deriveMetrics, readMetrics, sloReport } from "./metrics";
 import { obsRateLimited } from "./observability";
@@ -133,6 +134,10 @@ const DASHBOARD_HTML = `<!doctype html>
   .err { color: #ff6b6b; font-size: 12px; }
   .breach { color: #ff6b6b; }
   .loading { color: #666; font-style: italic; }
+  pre#sieve-script { background: #15181d; border: 1px solid #262b33; border-radius: 8px; padding: 14px; overflow-x: auto; font-size: 12px; line-height: 1.5; white-space: pre; margin: 0 0 10px; }
+  button#sieve-copy { background: #1f242b; border: 1px solid #262b33; color: #e6e6e6; border-radius: 6px; padding: 6px 12px; font-size: 12px; cursor: pointer; }
+  button#sieve-copy:hover:not(:disabled) { background: #262b33; }
+  button#sieve-copy:disabled { opacity: 0.5; cursor: default; }
 </style>
 </head>
 <body>
@@ -152,6 +157,13 @@ const DASHBOARD_HTML = `<!doctype html>
 <section>
   <h2>Recent notes</h2>
   <ul class="notes" id="notes-list"><li class="loading">Loading notes…</li></ul>
+</section>
+
+<section>
+  <h2>Mail pre-filter (Sieve)</h2>
+  <div class="sub" id="sieve-sub">Coarse rung-0 tags applied at Fastmail delivery time. Text only — paste into Fastmail Settings → Rules → Custom rule (Sieve) yourself; nothing here installs it for you.</div>
+  <pre id="sieve-script" class="loading">Loading script…</pre>
+  <button id="sieve-copy" type="button" disabled>Copy script</button>
 </section>
 
 <script>
@@ -202,8 +214,34 @@ async function loadNotes() {
   }
 }
 
+async function loadSieve() {
+  const scriptEl = document.getElementById('sieve-script');
+  const copyBtn = document.getElementById('sieve-copy');
+  try {
+    const res = await fetch('/dashboard/api/mail-sieve');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const { script } = await res.json();
+    scriptEl.textContent = script;
+    scriptEl.classList.remove('loading');
+    copyBtn.disabled = false;
+    copyBtn.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(script);
+        copyBtn.textContent = 'Copied!';
+      } catch (e) {
+        copyBtn.textContent = 'Copy failed';
+      }
+      setTimeout(() => { copyBtn.textContent = 'Copy script'; }, 1500);
+    };
+  } catch (e) {
+    scriptEl.textContent = 'Failed to load script: ' + (e.message || e);
+    scriptEl.classList.add('err');
+  }
+}
+
 loadMetrics();
 loadNotes();
+loadSieve();
 </script>
 </body>
 </html>
@@ -217,7 +255,8 @@ async function dashboardRateLimited(request: Request, env: RtEnv): Promise<boole
 
 export async function handleDashboardRoutes(url: URL, request: Request, env: RtEnv): Promise<Response | null> {
 	if (request.method !== "GET") return null;
-	if (url.pathname !== "/dashboard" && url.pathname !== "/dashboard/api/metrics" && url.pathname !== "/dashboard/api/notes") return null;
+	const DASHBOARD_PATHS = new Set(["/dashboard", "/dashboard/api/metrics", "/dashboard/api/notes", "/dashboard/api/mail-sieve"]);
+	if (!DASHBOARD_PATHS.has(url.pathname)) return null;
 
 	// Access is the primary gate, but this route serves private vault notes, so it
 	// must also fail closed in code: reject unless a valid Access JWT is present,
@@ -238,6 +277,14 @@ export async function handleDashboardRoutes(url: URL, request: Request, env: RtE
 	if (url.pathname === "/dashboard/api/metrics") {
 		try {
 			return json(await metricsSnapshot(env));
+		} catch (e) {
+			return json({ error: String((e as Error)?.message ?? e) }, 500);
+		}
+	}
+
+	if (url.pathname === "/dashboard/api/mail-sieve") {
+		try {
+			return json(compileSieve());
 		} catch (e) {
 			return json({ error: String((e as Error)?.message ?? e) }, 500);
 		}

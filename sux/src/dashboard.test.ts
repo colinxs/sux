@@ -111,6 +111,7 @@ describe("dashboard", () => {
 		obsidianState.run = async () => ok(JSON.stringify({ notes: [] }));
 		expect((await get(env, "/dashboard/api/metrics"))!.status).toBe(429);
 		expect((await get(env, "/dashboard/api/notes"))!.status).toBe(429);
+		expect((await get(env, "/dashboard/api/mail-sieve"))!.status).toBe(429);
 		expect((await get(env, "/dashboard"))!.status).toBe(200);
 	});
 
@@ -120,5 +121,25 @@ describe("dashboard", () => {
 		expect((await get(env, "/dashboard"))!.status).toBe(401);
 		expect((await get(env, "/dashboard/api/metrics"))!.status).toBe(401);
 		expect((await get(env, "/dashboard/api/notes"))!.status).toBe(401);
+		expect((await get(env, "/dashboard/api/mail-sieve"))!.status).toBe(401);
+	});
+
+	it("serves the generated Sieve script (text-only, no JMAP call) at /dashboard/api/mail-sieve", async () => {
+		const env = fakeEnv();
+		const body = await getJson(env, "/dashboard/api/mail-sieve");
+		expect(body.script).toContain('require ["imap4flags"];');
+		const code = body.script
+			.split("\n")
+			.filter((l: string) => !l.trim().startsWith("#"))
+			.join("\n");
+		expect(code).not.toMatch(/fileinto|discard|reject/i);
+		expect(body.rule_count).toBeGreaterThan(0);
+	});
+
+	it("the HTML shell references the mail-sieve panel and its copy button", async () => {
+		const env = fakeEnv();
+		const body = await (await get(env, "/dashboard"))!.text();
+		expect(body).toContain("/dashboard/api/mail-sieve");
+		expect(body).toContain('id="sieve-copy"');
 	});
 });
