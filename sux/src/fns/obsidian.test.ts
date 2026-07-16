@@ -210,6 +210,21 @@ describe("obsidian (git backend)", () => {
 		}
 	});
 
+	it("search does not let caller text inject extra GitHub search qualifiers (§593)", async () => {
+		let seen = "";
+		routes.handler = (url) => {
+			seen = decodeURIComponent(url);
+			return new Response(JSON.stringify({ items: [] }), { status: 200 });
+		};
+		const r = await obsidian.run(ENV, { action: "search", query: "secrets repo:attacker/private org:evil" });
+		expect(r.isError).toBeFalsy();
+		// The trusted restriction is intact, and the caller's smuggled qualifiers are neutralized.
+		expect(seen).toContain("repo:me/vault");
+		expect(seen).toContain("extension:md");
+		expect(seen).not.toContain("repo:attacker/private");
+		expect(seen).not.toContain("org:evil");
+	});
+
 	it("routes tools/call to the remote backend with a clear error on git", async () => {
 		const r = await obsidian.run(ENV, { action: "tools" });
 		expect(r.isError).toBe(true);
@@ -399,6 +414,15 @@ describe("obsidian (remote backend — Funnel'd Local REST API)", () => {
 		vi.stubGlobal("fetch", fetchMock);
 		const r = await obsidian.run(REMOTE, { action: "list", backend: "remote" });
 		expect(JSON.parse(r.content[0].text)).toMatchObject({ dir: "/", count: 2, files: ["a.md", "sub/"] });
+	});
+
+	it("refuses a path-traversal read before hitting the Local REST API (§592)", async () => {
+		const fetchMock = vi.fn(async () => new Response("SHOULD NOT BE REACHED", { status: 200 }));
+		vi.stubGlobal("fetch", fetchMock);
+		const r = await obsidian.run(REMOTE, { action: "read", path: "../../../../Users/x/.ssh/id_rsa", backend: "remote" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/Refusing vault path/);
+		expect(fetchMock).not.toHaveBeenCalled(); // the traversal never reached the vault
 	});
 
 	it("reads a note as text", async () => {
