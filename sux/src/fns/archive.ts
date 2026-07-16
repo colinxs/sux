@@ -1,44 +1,13 @@
 import { type Fn, fail, ok } from "../registry";
-import { Gunzip, gzipSync, strFromU8, strToU8, unzipSync, zipSync } from "fflate";
+import { strToU8 } from "fflate";
+import { zipCreate, zipExtract, gzipCreate, gzipExtract, type UnpackedEntry } from "@suxos/lib";
 import { deliverBytes, fromB64, putBlob, toB64, oj } from "./_util";
 
-const MAX_TEXT = 100_000; // don't inline megabytes of decoded text per entry
-const MAX_UNPACK_BYTES = 20_000_000; // cap total decompressed output so a zip/gzip bomb can't OOM the isolate
-const MAX_ENTRIES = 2_000; // cap entry count so a many-file archive can't exhaust memory / the response
-
-/** Gunzip with a hard budget: stream-inflate and abort the moment output passes MAX_UNPACK_BYTES. */
-function gunzipCapped(bytes: Uint8Array): Uint8Array {
-	const chunks: Uint8Array[] = [];
-	let total = 0;
-	const gz = new Gunzip((chunk) => {
-		total += chunk.length;
-		if (total > MAX_UNPACK_BYTES) throw new Error(`gzip decompresses to more than ${MAX_UNPACK_BYTES} bytes (bomb guard).`);
-		chunks.push(chunk);
-	});
-	gz.push(bytes, true);
-	const out = new Uint8Array(total);
-	let off = 0;
-	for (const c of chunks) {
-		out.set(c, off);
-		off += c.length;
-	}
-	return out;
-}
-
-/** Heuristic: does this byte run decode cleanly as UTF-8 without binary control noise? */
-function looksUtf8(bytes: Uint8Array): boolean {
-	if (bytes.length === 0) return true;
-	// A non-fatal decode maps invalid UTF-8 sequences to U+FFFD; treat any such
-	// replacement char, NUL, or other C0 control byte (tab/newline/CR excepted)
-	// as a sign the payload is binary and should not be inlined as text.
-	const text = new TextDecoder().decode(bytes);
-	for (let i = 0; i < text.length; i++) {
-		const c = text.charCodeAt(i);
-		if (c === 0xfffd) return false;
-		if (c < 0x20 && c !== 0x09 && c !== 0x0a && c !== 0x0d) return false;
-	}
-	return true;
-}
+// Pack/unpack logic (bomb guards, UTF-8-vs-binary decode heuristic, fflate
+// zip/gzip calls) now lives in @suxos/lib's domain/archive.ts (absorbed there
+// from sux-fileops, itself adapted from this file) — this file keeps only the
+// Fn wrapper (schema, env/args handling) and the CAS ("as: url") delivery this
+// fn's callers depend on, both of which are sux-specific, not fileops-shared.
 
 function toBytes(f: { name?: unknown; content?: unknown; base64?: unknown }): Uint8Array {
 	if (typeof f?.base64 === "string" && f.base64) return fromB64(f.base64);
@@ -48,18 +17,8 @@ function toBytes(f: { name?: unknown; content?: unknown; base64?: unknown }): Ui
 
 type Entry = { name: string; bytes: number; text?: string; truncated?: boolean; url?: string; sha256?: string };
 
-function decodeEntry(name: string, data: Uint8Array): Entry {
-	const e: Entry = { name, bytes: data.length };
-	if (looksUtf8(data)) {
-		const text = strFromU8(data);
-		if (text.length > MAX_TEXT) {
-			e.text = text.slice(0, MAX_TEXT);
-			e.truncated = true;
-		} else {
-			e.text = text;
-		}
-	}
-	return e;
+function toEntry(e: UnpackedEntry): Entry {
+	return { name: e.name, bytes: e.bytes, text: e.text, truncated: e.truncated };
 }
 
 export const archive: Fn = {
@@ -105,45 +64,24 @@ export const archive: Fn = {
 				for (const f of files) if (!f?.name || typeof f.name !== "string") return fail("every file needs a string `name`.");
 				let out: Uint8Array;
 				if (format === "zip") {
-					const record: Record<string, Uint8Array> = {};
-					for (const f of files) record[String(f.name)] = toBytes(f);
-					out = zipSync(record, { level: 6 });
+					out = zipCreate(files.map((f) => ({ name: String(f.name), data: toBytes(f) })));
 				} else {
 					if (files.length !== 1) return fail(`gzip packs exactly one file — got ${files.length}. Use format='zip' for multiple.`);
-					out = gzipSync(toBytes(files[0]), { level: 6 });
+					out = gzipCreate(toBytes(files[0]));
 				}
 				return deliverBytes(env, out, mime, args?.as, () => ok(oj({ format, bytes: out.length, base64: toB64(out) })));
 			}
 			if (op === "unpack") {
 				if (typeof args?.base64 !== "string" || !args.base64) return fail("unpack needs `base64` (the archive bytes).");
 				const bytes = fromB64(String(args.base64));
-				const raw: Array<{ name: string; data: Uint8Array }> = [];
-				if (format === "zip") {
-					// Bound decompression before it happens: the filter runs per central-directory
-						// entry with the declared uncompressed size, so we reject bombs / entry floods
-						// up front instead of inflating everything into memory.
-						let count = 0;
-						let declared = 0;
-						const files = unzipSync(bytes, {
-							filter(f) {
-								if (++count > MAX_ENTRIES) throw new Error(`archive has more than ${MAX_ENTRIES} entries (bomb guard).`);
-								declared += f.originalSize; // fflate: originalSize = uncompressed, size = compressed
-
-								if (declared > MAX_UNPACK_BYTES) throw new Error(`archive decompresses to more than ${MAX_UNPACK_BYTES} bytes (bomb guard).`);
-								return true;
-							},
-						});
-					for (const [name, data] of Object.entries(files)) raw.push({ name, data });
-				} else {
-					raw.push({ name: "data", data: gunzipCapped(bytes) });
-				}
+				const unpacked: UnpackedEntry[] = format === "zip" ? zipExtract(bytes) : [gzipExtract(bytes)];
 				const entries: Entry[] = [];
-				for (const { name, data } of raw) {
-					const e = decodeEntry(name, data);
+				for (const u of unpacked) {
+					const e = toEntry(u);
 					// as:"url" → each entry (crucially, binary ones that get no inline
 					// text) becomes a consumable /s/<uuid> CAS ref.
 					if (args?.as === "url") {
-						const ref = await putBlob(env, data, "application/octet-stream");
+						const ref = await putBlob(env, u.data, "application/octet-stream");
 						e.url = ref.url;
 						e.sha256 = ref.sha256;
 					}

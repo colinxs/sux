@@ -3,6 +3,21 @@ import { type Fn, fail } from "../registry";
 import { deliverBytes, inlineB64, isHttpUrl, loadBytes, stripHtml, toB64 } from "./_util";
 import { ocr as ocrFn } from "./ocr";
 
+// This fn is a full "anything to PDF" builder (merge sources, OCR, TOC, form
+// fields) — far beyond @suxos/lib's domain/pdf.ts, which only covers the
+// narrower "shrink" op sux-fileops actually shipped. It stays local rather
+// than becoming a re-export.
+//
+// Tried routing the donor-PDF load below through suxlib's loadBoundedPdf (for
+// its bomb guards) and reverted it: sux and @suxos/lib each resolve their own
+// separate installed copy of pdf-lib (confirmed: the two packages' PDFDocument
+// classes are not === each other here), so a PDFDocument produced by
+// suxlib's pdf-lib instance breaks copyPages/getForm/etc. on this file's
+// pdf-lib instance — a real dual-package-hazard, not a test artifact. Revisit
+// only once pdf-lib is guaranteed deduped to one instance across sux+suxlib
+// (npm dedupe/hoisting or a shared peerDependency), not as part of this
+// absorption pass.
+
 type Kind = "pdf" | "png" | "jpg" | "text" | "html" | "markdown" | "auto";
 type Source = { data?: string; url?: string; kind?: Kind };
 type Field = { name: string; type?: "text" | "checkbox"; page?: number; x: number; y: number; width?: number; height?: number; value?: string | boolean };

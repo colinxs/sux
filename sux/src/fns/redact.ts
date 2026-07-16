@@ -1,74 +1,22 @@
 import { type Fn, fail, ok } from "../registry";
 import { oj } from "./_util";
+import { redactText, REDACT_TYPES, type RedactType } from "@suxos/lib";
 
 // PII redaction. Every match becomes [REDACTED:type]. Credit-card candidates
 // are Luhn-checked so long digit runs (IDs, order numbers) aren't clobbered.
+// The actual pattern set + scrub logic now lives in @suxos/lib's
+// domain/sanitize.ts (absorbed there from sux-fileops, which had itself ported
+// this file) — this is a thin re-export so call sites here don't break. The
+// suxlib version is a strict superset: it adds a context-gated bare-9-digit
+// SSN pattern (only fires near an "SSN"/"social security" label) that this
+// file's original pattern set didn't have.
 
-export const TYPES = ["email", "phone", "ssn", "credit_card", "ip"] as const;
-export type RedactType = (typeof TYPES)[number];
-
-const PATTERNS: Array<{ type: RedactType; re: RegExp }> = [
-	{ type: "email", re: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g },
-	// US SSN (NNN-NN-NNNN); require separators to avoid random 9-digit runs.
-	{ type: "ssn", re: /\b\d{3}[-\s]\d{2}[-\s]\d{4}\b/g },
-	// Card-shaped digit groups (13–19 digits, optional space/dash groupings).
-	{ type: "credit_card", re: /\b(?:\d[ -]?){13,19}\b/g },
-	// IPv4 + IPv6, including '::' zero-compression (2001:db8::1, ::1, ::). Runs
-	// before phone so the phone regex can't eat the leading octets of a dotted-
-	// quad (e.g. 192.168 out of 192.168.1.100). The IPv6 alternation uses
-	// lookaround boundaries because '\b' won't fire adjacent to a leading or
-	// trailing ':'.
-	{
-		type: "ip",
-		re: /\b(?:\d{1,3}\.){3}\d{1,3}\b|(?<![0-9A-Fa-f:.])(?:(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}|(?:[0-9A-Fa-f]{1,4}:){1,7}:|(?:[0-9A-Fa-f]{1,4}:){1,6}:[0-9A-Fa-f]{1,4}|(?:[0-9A-Fa-f]{1,4}:){1,5}(?::[0-9A-Fa-f]{1,4}){1,2}|(?:[0-9A-Fa-f]{1,4}:){1,4}(?::[0-9A-Fa-f]{1,4}){1,3}|(?:[0-9A-Fa-f]{1,4}:){1,3}(?::[0-9A-Fa-f]{1,4}){1,4}|(?:[0-9A-Fa-f]{1,4}:){1,2}(?::[0-9A-Fa-f]{1,4}){1,5}|[0-9A-Fa-f]{1,4}:(?::[0-9A-Fa-f]{1,4}){1,6}|:(?:(?::[0-9A-Fa-f]{1,4}){1,7}|:))(?![0-9A-Fa-f:.])/g,
-	},
-	// Phone: optional +country / (area), then grouped digits with separators, OR
-	// a contiguous 10-digit / +country E.164 run (5551234567, +15551234567). The
-	// contiguous branch is digit-boundary guarded so it can't bite into a longer
-	// run (13–19-digit card candidates stay whole for the credit_card pass).
-	{
-		type: "phone",
-		re: /(?:\+\d{1,3}[\s.-]?)?(?:\(\d{1,4}\)[\s.-]?)?\d{2,4}[\s.-]\d{3,4}(?:[\s.-]\d{3,4})?\b|(?<!\d)(?:\+\d{1,3})?\d{10}(?!\d)/g,
-	},
-];
-
-/** Luhn check on the digits of a card candidate. */
-function luhnOk(s: string): boolean {
-	const digits = s.replace(/\D/g, "");
-	if (digits.length < 13 || digits.length > 19) return false;
-	let sum = 0;
-	let alt = false;
-	for (let i = digits.length - 1; i >= 0; i--) {
-		let d = digits.charCodeAt(i) - 48;
-		if (alt) {
-			d *= 2;
-			if (d > 9) d -= 9;
-		}
-		sum += d;
-		alt = !alt;
-	}
-	return sum % 10 === 0;
-}
-
-function ipv4Ok(s: string): boolean {
-	if (s.includes(":")) return true; // IPv6 candidate — accept as matched.
-	const parts = s.split(".");
-	return parts.length === 4 && parts.every((p) => /^\d{1,3}$/.test(p) && Number(p) <= 255);
-}
+export const TYPES = REDACT_TYPES;
+export type { RedactType };
 
 /** Pure PII scrub shared by the `redact` fn and any server-side sink (e.g. the public /feedback log). */
 export function redactPII(text: string, want: Set<RedactType> | null = null): { redacted: string; counts: Record<string, number> } {
-	const counts: Record<string, number> = {};
-	for (const { type, re } of PATTERNS) {
-		if (want && !want.has(type)) continue;
-		text = text.replace(re, (m: string) => {
-			if (type === "credit_card" && !luhnOk(m)) return m;
-			if (type === "ip" && !ipv4Ok(m)) return m;
-			counts[type] = (counts[type] ?? 0) + 1;
-			return `[REDACTED:${type}]`;
-		});
-	}
-	return { redacted: text, counts };
+	return redactText(text, want ? [...want] : undefined);
 }
 
 export const redact: Fn = {
