@@ -25,7 +25,7 @@
 // engine lifetimes"); only `Promise.race`/`Promise.any` need wrapping. `map` stays
 // bounded by the op's own limiter (`node.concurrency`), matching `runInline`.
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep, type WorkflowTimeoutDuration } from "cloudflare:workers";
-import { faithfulUnion, type Caps, type Op } from "@suxos/lib";
+import { runReconcile, type Caps, type Op } from "@suxos/lib";
 import type { RtEnv } from "../registry.js";
 
 // Above this, the fan-out would blow through the per-instance step ceiling (25k) —
@@ -72,7 +72,7 @@ export async function interpretDurable(node: Op, input: any, step: WorkflowStep,
 			return out;
 		}
 		case "reconcile":
-			return step.do(`${path}:reconcile`, () => faithfulUnion(input, caps.store));
+			return step.do(`${path}:reconcile`, () => runReconcile(node.opts, input, caps.store));
 		case "sink": {
 			await Promise.all(node.targets.map((t) => step.do(`${path}:sink:${t}`, () => caps.sinks[t].write(input, caps))));
 			return input;
