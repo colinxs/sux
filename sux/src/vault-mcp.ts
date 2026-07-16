@@ -1,6 +1,4 @@
-import { checkArgs, FN_DEADLINE_MS, withDeadline } from "./index";
 import { fingerprint, ledger } from "./ledger";
-import { type JsonRpc, sseResponse } from "./mcp-util";
 import { fail, failWith, ok, type RtEnv, type ToolResult } from "./registry";
 import { ingest } from "./fns/ingest";
 import { obsidian, readGitContents, readVaultIndexBlob, type VaultCfg, vaultCfg, vaultHead, vaultPut, writeVaultIndexBlob } from "./fns/obsidian";
@@ -392,54 +390,3 @@ const TOOLS: VaultTool[] = [
 const clampCap = (v: unknown): number => Math.min(2000, Math.max(1, Number(v) || 500));
 
 export const VAULT_TOOLS = TOOLS;
-
-// Mirrors handleRpc's protocol shell (initialize / notifications / tools) with
-// the vault registry instead of FUNCTIONS. Stateless per request, like the main
-// server: the MCP session is a per-call formality, all state lives in the store.
-// Above this, refuse a tools/call body outright. The vault handler dispatches
-// tools directly (not through the main /mcp checkArgs), so it enforces its own
-// coarse ceiling — a note body can be large, but not unbounded.
-const MAX_BODY_BYTES = 2 * 1024 * 1024;
-
-export async function handleVaultRpc(env: RtEnv, _ctx: ExecutionContext, rpc: JsonRpc | undefined, bodyBytes = 0): Promise<Response> {
-	const method = rpc?.method;
-	const id = rpc?.id ?? null;
-
-	if (!method) return new Response(null, { status: 202 });
-	if (method === "tools/call" && bodyBytes > MAX_BODY_BYTES) {
-		return sseResponse({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `Request too large (${bodyBytes} bytes > ${MAX_BODY_BYTES}).` }], isError: true } });
-	}
-	if (method === "initialize") {
-		return sseResponse({
-			jsonrpc: "2.0",
-			id,
-			result: {
-				protocolVersion: "2025-06-18",
-				capabilities: { tools: { listChanged: false } },
-				serverInfo: { name: "vault", version: "0.1.0" },
-			},
-		});
-	}
-	if (method.startsWith("notifications/")) return new Response(null, { status: 202 });
-	if (method === "tools/list") {
-		return sseResponse({ jsonrpc: "2.0", id, result: { tools: TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) } });
-	}
-	if (method === "tools/call") {
-		const name = String(rpc?.params?.name ?? "");
-		const tool = TOOLS.find((t) => t.name === name);
-		if (!tool) return sseResponse({ jsonrpc: "2.0", id, error: { code: -32601, message: `unknown tool: ${name}` } });
-		const args = rpc?.params?.arguments ?? {};
-		// The same dispatch rails the main /mcp path enforces (this handler doesn't
-		// go through handleRpc): reject a pathological args blob, and never let one
-		// tool hang the isolate.
-		const argErr = checkArgs(args, MAX_BODY_BYTES, 64);
-		if (argErr) return sseResponse({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `${name} rejected: ${argErr}` }], isError: true } });
-		try {
-			const result = await withDeadline(name, FN_DEADLINE_MS, tool.run(env, args));
-			return sseResponse({ jsonrpc: "2.0", id, result });
-		} catch (e) {
-			return sseResponse({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `${name} failed: ${String((e as Error).message ?? e)}` }], isError: true } });
-		}
-	}
-	return sseResponse({ jsonrpc: "2.0", id, error: { code: -32601, message: `unknown method: ${method}` } });
-}

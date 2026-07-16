@@ -7,33 +7,21 @@ vi.mock("./proxy", () => ({
 	smartFetch: vi.fn(async (_env: any, url: string, init?: any) => routes.handler!(url, init)),
 }));
 
-import { handleVaultRpc, VAULT_TOOLS } from "./vault-mcp";
+import { VAULT_TOOLS } from "./vault-mcp";
 
 const ENV = { OBSIDIAN_VAULT_REPO: "me/vault" } as any;
-const CTX = {} as any;
 const b64 = (s: string) => Buffer.from(s, "utf8").toString("base64");
 // The vault owner's LOCAL day (default Pacific) — NOT UTC. Computing this the
 // same way the code does is the point: a UTC `date` here silently blessed the
 // evening-rollover bug the review caught.
 const date = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
 
-const rpc = (method: string, params?: any) => ({ jsonrpc: "2.0", id: 1, method, params }) as any;
-const parse = async (r: Response) => {
-	const text = await r.text();
-	const m = /data: (.*)/.exec(text);
-	return JSON.parse(m ? m[1] : text);
-};
+const tool = (name: string) => VAULT_TOOLS.find((t) => t.name === name)!;
+const parse = (r: any) => JSON.parse(r.content[0].text);
 
-describe("vault MCP server (/vault/mcp)", () => {
-	it("initializes as the 'vault' server", async () => {
-		const out = await parse(await handleVaultRpc(ENV, CTX, rpc("initialize")));
-		expect(out.result.serverInfo.name).toBe("vault");
-		expect(out.result.protocolVersion).toBe("2025-06-18");
-	});
-
-	it("lists only cloud-truth tools (no live-vault dependencies in v1)", async () => {
-		const out = await parse(await handleVaultRpc(ENV, CTX, rpc("tools/list")));
-		const names = out.result.tools.map((t: any) => t.name);
+describe("vault MCP tools", () => {
+	it("exposes only cloud-truth tools (no live-vault dependencies in v1)", () => {
+		const names = VAULT_TOOLS.map((t) => t.name);
 		expect(names).toEqual([
 			"vault_read",
 			"vault_list",
@@ -51,7 +39,7 @@ describe("vault MCP server (/vault/mcp)", () => {
 			"vault_tags",
 		]);
 		expect(names).not.toContain("vault_search"); // live-dependent — deferred to the vpc phase
-		for (const t of out.result.tools) expect(t.inputSchema).toBeDefined();
+		for (const t of VAULT_TOOLS) expect(t.inputSchema).toBeDefined();
 	});
 
 	it("vault_read serves through the git backend", async () => {
@@ -59,9 +47,8 @@ describe("vault MCP server (/vault/mcp)", () => {
 			expect(url).toContain("/contents/Inbox%2Fidea.md");
 			return new Response(JSON.stringify({ content: b64("# Idea"), sha: "s1" }), { status: 200 });
 		};
-		const out = await parse(await handleVaultRpc(ENV, CTX, rpc("tools/call", { name: "vault_read", arguments: { path: "Inbox/idea.md" } })));
-		expect(out.result.content[0].text).toBe("# Idea");
-		expect(out.result.isError).toBeFalsy();
+		const out = await tool("vault_read").run(ENV, { path: "Inbox/idea.md" });
+		expect(out.content[0].text).toBe("# Idea");
 	});
 
 	it("vault_backlinks / vault_query / vault_tags scan the git store (§4)", async () => {
@@ -77,15 +64,14 @@ describe("vault MCP server (/vault/mcp)", () => {
 			if (notes[path] === undefined) return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
 			return new Response(JSON.stringify({ content: b64(notes[path]), sha: "s1" }), { status: 200 });
 		};
-		const call = async (name: string, args: any) => JSON.parse((await parse(await handleVaultRpc(ENV, CTX, rpc("tools/call", { name, arguments: args })))).result.content[0].text);
 
-		const bl = await call("vault_backlinks", { path: "Projects/sux.md" });
+		const bl = parse(await tool("vault_backlinks").run(ENV, { path: "Projects/sux.md" }));
 		expect(bl.backlinks.map((x: any) => x.path)).toEqual(["Notes/a.md"]); // [[sux]] resolves by basename
 
-		const q = await call("vault_query", { field: "status", value: "active" });
+		const q = parse(await tool("vault_query").run(ENV, { field: "status", value: "active" }));
 		expect(q.notes.map((x: any) => x.path)).toEqual(["Projects/sux.md"]);
 
-		const t = await call("vault_tags", {});
+		const t = parse(await tool("vault_tags").run(ENV, {}));
 		expect(t.tags.map((x: any) => x.tag).sort()).toEqual(["idea", "project"]);
 	});
 
@@ -115,18 +101,17 @@ describe("vault MCP server (/vault/mcp)", () => {
 			reads.push(path);
 			return new Response(JSON.stringify({ content: b64(notes[path]), sha: head }), { status: 200 });
 		};
-		const call = async (name: string, args: any) => JSON.parse((await parse(await handleVaultRpc(env, CTX, rpc("tools/call", { name, arguments: args })))).result.content[0].text);
 
 		// First scan builds the index: reads every note once.
-		const t1 = await call("vault_tags", {});
+		const t1 = parse(await tool("vault_tags").run(env, {}));
 		expect(t1.tags.map((x: any) => x.tag).sort()).toEqual(["idea", "project"]);
 		expect(reads.length).toBe(3);
 
 		// Two more scans at the same HEAD read ZERO notes — served from the index blob.
 		reads.length = 0;
-		const q = await call("vault_query", { field: "status", value: "active" });
+		const q = parse(await tool("vault_query").run(env, { field: "status", value: "active" }));
 		expect(q.notes.map((x: any) => x.path)).toEqual(["Projects/sux.md"]);
-		const bl = await call("vault_backlinks", { path: "Projects/sux.md" });
+		const bl = parse(await tool("vault_backlinks").run(env, { path: "Projects/sux.md" }));
 		expect(bl.backlinks.map((x: any) => x.path)).toEqual(["Notes/a.md"]);
 		expect(reads.length).toBe(0);
 
@@ -135,9 +120,9 @@ describe("vault MCP server (/vault/mcp)", () => {
 		// so the next scan rebuilds BEFORE returning and reflects the new note. Never
 		// stale: a sux-driven write invalidates the index the moment it commits.
 		head = "head-2";
-		await call("vault_write", { path: "Notes/c.md", content: "---\nstatus: active\n---\nfresh" });
+		await tool("vault_write").run(env, { path: "Notes/c.md", content: "---\nstatus: active\n---\nfresh" });
 		reads.length = 0;
-		const q2 = await call("vault_query", { field: "status", value: "active" });
+		const q2 = parse(await tool("vault_query").run(env, { field: "status", value: "active" }));
 		expect(q2.notes.map((x: any) => x.path).sort()).toEqual(["Notes/c.md", "Projects/sux.md"]);
 	});
 
@@ -158,13 +143,12 @@ describe("vault MCP server (/vault/mcp)", () => {
 			if (notes[path] === undefined) return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
 			return new Response(JSON.stringify({ content: b64(notes[path]), sha: "h" }), { status: 200 });
 		};
-		const call = async (name: string, args: any) => JSON.parse((await parse(await handleVaultRpc(env, CTX, rpc("tools/call", { name, arguments: args })))).result.content[0].text);
 
-		const folder = await call("vault_tags", { folder: "Projects" });
+		const folder = parse(await tool("vault_tags").run(env, { folder: "Projects" }));
 		expect(folder.tags.map((x: any) => x.tag)).toEqual(["work"]); // Notes/c.md's #idea excluded
 		expect(folder.scanned).toBe(2);
 
-		const capped = await call("vault_tags", { cap: 1 });
+		const capped = parse(await tool("vault_tags").run(env, { cap: 1 }));
 		expect(capped.scanned).toBe(1);
 		expect(capped.total).toBe(3);
 		expect(capped.truncated).toBe(true);
@@ -186,9 +170,8 @@ describe("vault MCP server (/vault/mcp)", () => {
 			if (notes[path] === undefined) return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
 			return new Response(JSON.stringify({ content: b64(notes[path]), sha: "h" }), { status: 200 });
 		};
-		const call = async (name: string, args: any) => JSON.parse((await parse(await handleVaultRpc(env, CTX, rpc("tools/call", { name, arguments: args })))).result.content[0].text);
 
-		const folder = await call("vault_tags", { folder: "Projects" });
+		const folder = parse(await tool("vault_tags").run(env, { folder: "Projects" }));
 		expect(folder.tags.map((x: any) => x.tag)).toEqual(["in"]); // ProjectsArchive/b.md's #out excluded
 		expect(folder.scanned).toBe(1);
 	});
@@ -207,9 +190,8 @@ describe("vault MCP server (/vault/mcp)", () => {
 			if (notes[path] === undefined) return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
 			return new Response(JSON.stringify({ content: b64(notes[path]), sha: "h" }), { status: 200 });
 		};
-		const call = async (name: string, args: any) => JSON.parse((await parse(await handleVaultRpc(env, CTX, rpc("tools/call", { name, arguments: args })))).result.content[0].text);
 
-		const t = await call("vault_tags", {});
+		const t = parse(await tool("vault_tags").run(env, {}));
 		expect(t.tags.map((x: any) => x.tag)).toEqual(["project"]);
 		expect(t.scanned).toBe(1); // not silently dropped to 0 by a double-prefixed read 404
 	});
@@ -232,16 +214,14 @@ describe("vault MCP server (/vault/mcp)", () => {
 			if (body[path] === undefined) return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
 			return new Response(JSON.stringify({ content: b64(body[path]), sha: "h" }), { status: 200 });
 		};
-		const call = async (name: string, args: any) => JSON.parse((await parse(await handleVaultRpc(env, CTX, rpc("tools/call", { name, arguments: args })))).result.content[0].text);
-		const all = await call("vault_tags", {});
+		const all = parse(await tool("vault_tags").run(env, {}));
 		expect(all.scanned).toBe(2); // b.md dropped from the index
 		expect(all.truncated).toBe(true); // incompleteness flagged, not a confident undercount
-		const folder = await call("vault_tags", { folder: "Projects" });
+		const folder = parse(await tool("vault_tags").run(env, { folder: "Projects" }));
 		expect(folder.truncated).toBe(true); // propagates under folder scoping too
 	});
 
 	it("vault_query JsonLogic filter + vault_patch on the git backend (§obsidian)", async () => {
-		const call = async (name: string, args: any) => JSON.parse((await parse(await handleVaultRpc(ENV, CTX, rpc("tools/call", { name, arguments: args })))).result.content[0].text);
 		const notes: Record<string, string> = {
 			"P/a.md": "---\ntype: project\nstatus: active\n---\n# Log\nold",
 			"P/b.md": "---\ntype: note\nstatus: active\n---\nx",
@@ -258,10 +238,10 @@ describe("vault MCP server (/vault/mcp)", () => {
 			if (notes[path] === undefined) return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
 			return new Response(JSON.stringify({ content: b64(notes[path]), sha: "s1" }), { status: 200 });
 		};
-		const q = await call("vault_query", { filter: { and: [{ "==": ["type", "project"] }, { "==": ["status", "active"] }] } });
+		const q = parse(await tool("vault_query").run(ENV, { filter: { and: [{ "==": ["type", "project"] }, { "==": ["status", "active"] }] } }));
 		expect(q.notes.map((x: any) => x.path)).toEqual(["P/a.md"]); // only a.md is a project AND active
 
-		const p = await call("vault_patch", { path: "P/a.md", heading: "Log", mode: "replace", content: "new entry" });
+		const p = parse(await tool("vault_patch").run(ENV, { path: "P/a.md", heading: "Log", mode: "replace", content: "new entry" }));
 		expect(p.changed).toBe(true);
 		expect(putBody).toContain("# Log\nnew entry"); // section body replaced, heading kept
 	});
@@ -278,20 +258,20 @@ describe("vault MCP server (/vault/mcp)", () => {
 			if (path === "P/a.md") return new Response(JSON.stringify({ content: b64("---\ntype: project\n---\n# Log\nold"), sha: "read-sha" }), { status: 200 });
 			return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
 		};
-		const out = await parse(await handleVaultRpc(ENV, CTX, rpc("tools/call", { name: "vault_patch", arguments: { path: "P/a.md", heading: "Log", content: "new" } })));
+		const out = await tool("vault_patch").run(ENV, { path: "P/a.md", heading: "Log", content: "new" });
 		expect(putSha).toBe("read-sha"); // the sha threaded from the read, not a re-fetched HEAD-at-write
-		expect(out.result.isError).toBe(true);
-		expect(out.result.content[0].text).toMatch(/changed since read/);
+		expect(out.isError).toBe(true);
+		expect(out.content[0].text).toMatch(/changed since read/);
 	});
 
 	it("codes the obvious error buckets via failWith ([bad_input]/[not_found])", async () => {
 		routes.handler = () => new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
-		const bad = await parse(await handleVaultRpc(ENV, CTX, rpc("tools/call", { name: "vault_query", arguments: {} })));
-		expect(bad.result.isError).toBe(true);
-		expect(bad.result.content[0].text).toMatch(/^\[bad_input\]/); // missing field/filter
-		const gone = await parse(await handleVaultRpc(ENV, CTX, rpc("tools/call", { name: "vault_patch", arguments: { path: "missing.md", heading: "H", content: "x" } })));
-		expect(gone.result.isError).toBe(true);
-		expect(gone.result.content[0].text).toMatch(/^\[not_found\]/); // patch a note that isn't there
+		const bad = await tool("vault_query").run(ENV, {});
+		expect(bad.isError).toBe(true);
+		expect(bad.content[0].text).toMatch(/^\[bad_input\]/); // missing field/filter
+		const gone = await tool("vault_patch").run(ENV, { path: "missing.md", heading: "H", content: "x" });
+		expect(gone.isError).toBe(true);
+		expect(gone.content[0].text).toMatch(/^\[not_found\]/); // patch a note that isn't there
 	});
 
 	it("vault_daily_append targets today's daily note", async () => {
@@ -303,22 +283,22 @@ describe("vault MCP server (/vault/mcp)", () => {
 			}
 			return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
 		};
-		const out = await parse(await handleVaultRpc(ENV, CTX, rpc("tools/call", { name: "vault_daily_append", arguments: { content: "- [ ] task" } })));
-		expect(out.result.isError).toBeFalsy();
+		const out = await tool("vault_daily_append").run(ENV, { content: "- [ ] task" });
+		expect(out.isError).toBeFalsy();
 		expect(putPath).toBe(`Daily/${date}.md`);
 	});
 
 	it("vault_delete refuses without confirm:true", async () => {
-		const out = await parse(await handleVaultRpc(ENV, CTX, rpc("tools/call", { name: "vault_delete", arguments: { path: "old.md" } })));
-		expect(out.result.isError).toBe(true);
-		expect(out.result.content[0].text).toMatch(/confirm:true/);
+		const out = await tool("vault_delete").run(ENV, { path: "old.md" });
+		expect(out.isError).toBe(true);
+		expect(out.content[0].text).toMatch(/confirm:true/);
 	});
 
 	it("vault_edit rides the surgical find/replace (unique-match contract)", async () => {
 		routes.handler = () => new Response(JSON.stringify({ content: b64("x y x"), sha: "s" }), { status: 200 });
-		const out = await parse(await handleVaultRpc(ENV, CTX, rpc("tools/call", { name: "vault_edit", arguments: { path: "d.md", find: "x", replace: "z" } })));
-		expect(out.result.isError).toBe(true);
-		expect(out.result.content[0].text).toMatch(/matches 2 times/);
+		const out = await tool("vault_edit").run(ENV, { path: "d.md", find: "x", replace: "z" });
+		expect(out.isError).toBe(true);
+		expect(out.content[0].text).toMatch(/matches 2 times/);
 	});
 
 	it("vault_capture writes a provenance note via ingest", async () => {
@@ -331,26 +311,17 @@ describe("vault MCP server (/vault/mcp)", () => {
 			}
 			return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
 		};
-		const out = await parse(await handleVaultRpc(ENV, CTX, rpc("tools/call", { name: "vault_capture", arguments: { text: "quick thought", title: "Thought" } })));
-		expect(out.result.isError).toBeFalsy();
-		const note = JSON.parse(out.result.content[0].text);
+		const out = await tool("vault_capture").run(ENV, { text: "quick thought", title: "Thought" });
+		expect(out.isError).toBeFalsy();
+		const note = parse(out);
 		expect(note.note).toBe(`Inbox/${date} thought.md`);
 		expect(puts[note.note]).toContain("type: capture");
 	});
 
 	it("path guards still bite through the MCP surface", async () => {
-		const out = await parse(await handleVaultRpc(ENV, CTX, rpc("tools/call", { name: "vault_write", arguments: { path: ".github/workflows/pwn.yml", content: "x" } })));
-		expect(out.result.isError).toBe(true);
-		expect(out.result.content[0].text).toMatch(/Refusing vault path/);
-	});
-
-	it("rejects unknown tools and methods; ignores notifications", async () => {
-		const bad = await parse(await handleVaultRpc(ENV, CTX, rpc("tools/call", { name: "nope" })));
-		expect(bad.error.code).toBe(-32601);
-		const meth = await parse(await handleVaultRpc(ENV, CTX, rpc("resources/list")));
-		expect(meth.error.code).toBe(-32601);
-		const note = await handleVaultRpc(ENV, CTX, rpc("notifications/initialized"));
-		expect(note.status).toBe(202);
+		const out = await tool("vault_write").run(ENV, { path: ".github/workflows/pwn.yml", content: "x" });
+		expect(out.isError).toBe(true);
+		expect(out.content[0].text).toMatch(/Refusing vault path/);
 	});
 
 	it("every tool schema is closed (additionalProperties: false)", () => {
@@ -368,7 +339,7 @@ describe("vault MCP server (/vault/mcp)", () => {
 			}
 			return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
 		};
-		await handleVaultRpc(ENV, CTX, rpc("tools/call", { name: "vault_daily_append", arguments: { content: "x" } }));
+		await tool("vault_daily_append").run(ENV, { content: "x" });
 		const pacific = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
 		expect(putPath).toBe(`Daily/${pacific}.md`);
 	});
@@ -384,25 +355,8 @@ describe("vault MCP server (/vault/mcp)", () => {
 		};
 		// `path: Home.md` is NOT in vault_capture's schema; it must be dropped, so the
 		// capture lands in Inbox/, never overwriting the Home MOC.
-		await handleVaultRpc(ENV, CTX, rpc("tools/call", { name: "vault_capture", arguments: { text: "jot", title: "Jot", path: "Home.md" } }));
+		await tool("vault_capture").run(ENV, { text: "jot", title: "Jot", path: "Home.md" });
 		expect(putPath).toMatch(/^Inbox\//);
 		expect(putPath).not.toBe("Home.md");
-	});
-
-	it("rejects an over-large tools/call body", async () => {
-		const r = await handleVaultRpc(ENV, CTX, rpc("tools/call", { name: "vault_read", arguments: { path: "x.md" } }), 5 * 1024 * 1024);
-		const out = await parse(r);
-		expect(out.result.isError).toBe(true);
-		expect(out.result.content[0].text).toMatch(/too large/);
-	});
-
-	it("rejects multi-byte-UTF-8 args whose byte size exceeds the cap even though its UTF-16 code-unit length reads under it", async () => {
-		// 750k CJK chars: ~750k UTF-16 code units (under the 2MB cap by length) but
-		// ~2.25MB of UTF-8 bytes (over it) — the exact gap String.length misses.
-		const junk = "国".repeat(750_000);
-		const r = await handleVaultRpc(ENV, CTX, rpc("tools/call", { name: "vault_read", arguments: { path: "x.md", junk } }));
-		const out = await parse(r);
-		expect(out.result.isError).toBe(true);
-		expect(out.result.content[0].text).toMatch(/too large/);
 	});
 });
