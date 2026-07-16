@@ -195,6 +195,7 @@ describe("reddit — oauth mode (creds set)", () => {
 		expect(j.comments[0]).toMatchObject({ id: "c1", author: "bob", body: "top-level comment", score: 5, created_utc: 1700000100 });
 		expect(j.comments[0].replies).toHaveLength(1);
 		expect(j.comments[0].replies[0]).toMatchObject({ id: "c2", author: "carol", body: "a reply" });
+		expect(j.truncated).toBe(2);
 	});
 
 	it("user returns normalized about info", async () => {
@@ -300,6 +301,7 @@ describe("reddit — keyless mode (no creds)", () => {
 		expect(j.comments[0]).toMatchObject({ id: "c1", author: "bob", body: "top-level comment" });
 		expect(j.comments[0].replies).toHaveLength(1);
 		expect(j.comments[0].replies[0]).toMatchObject({ id: "c2", author: "carol", body: "a reply" });
+		expect(j.truncated).toBe(2);
 	});
 
 	it("user: fetches /user/<name>/about.json and normalizes about info", async () => {

@@ -205,13 +205,35 @@ function normComments(j: any): RedditComment[] {
 		.filter((c): c is RedditComment => c !== null);
 }
 
+/**
+ * Count comments Reddit truncated into `kind: "more"` stubs instead of inlining —
+ * recurses into every `t1` node's `replies` so nested "load more" stubs (deep
+ * threads) are counted too, not just the top-level ones. A `more` stub's
+ * `data.children` lists the truncated comment ids when present; falls back to 1
+ * (the stub itself represents at least one hidden comment) when Reddit omits it.
+ */
+function countTruncated(j: any): number {
+	const children = j?.data?.children;
+	if (!Array.isArray(children)) return 0;
+	let count = 0;
+	for (const c of children) {
+		if (c?.kind === "more") {
+			const hidden = c?.data?.children;
+			count += Array.isArray(hidden) && hidden.length ? hidden.length : 1;
+		} else if (c?.kind === "t1") {
+			count += countTruncated(c?.data?.replies);
+		}
+	}
+	return count;
+}
+
 export const reddit: Fn = {
 	name: "reddit",
 	description:
 		"Reddit read-only API — search posts, browse a subreddit, read a post's comments, or look up a user. " +
 		"Works KEYLESS by default: fetches Reddit's public `.json` endpoints through the residential proxy (Reddit blocks datacenter IPs, so the residential exit is what makes this work) — no credentials needed. " +
 		"Auto-upgrades to app-only OAuth (higher rate limits) when REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET are set. " +
-		"`action`: search (posts matching `q`, optionally scoped to `subreddit`), subreddit (listing for `subreddit` by `sort`), comments (post in `items` + its comment tree in `comments`, for `article_id`), user (about for `username`). Returns normalized JSON.",
+		"`action`: search (posts matching `q`, optionally scoped to `subreddit`), subreddit (listing for `subreddit` by `sort`), comments (post in `items` + its comment tree in `comments`, plus `truncated` — the count of comments Reddit dropped as 'more' stubs rather than inlining, top-level and nested — for `article_id`), user (about for `username`). Returns normalized JSON.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -253,7 +275,8 @@ export const reddit: Fn = {
 				const commentsListing = Array.isArray(j) ? j[1] : undefined;
 				const items = normListing(postListing);
 				const comments = normComments(commentsListing);
-				return ok(oj({ service: "reddit", action, count: items.length, items, comments }));
+				const truncated = countTruncated(commentsListing);
+				return ok(oj({ service: "reddit", action, count: items.length, items, comments, truncated }));
 			}
 
 			if (action === "user") {
