@@ -1,6 +1,6 @@
 import { withRetry } from "../proxy";
 import { type FailCode, type RtEnv } from "../registry";
-import { fromB64, getBlob, putBlob, readBodyBytes, storeRefUuid, toB64 } from "./_util";
+import { errMsg, fromB64, getBlob, putBlob, readBodyBytes, storeRefUuid, toB64 } from "./_util";
 
 // _jmap.ts — the shared JMAP engine behind the `jmap` conduit fn and the ergonomic
 // `mail` surface. It owns Session discovery + KV cache + self-heal, generalized
@@ -83,7 +83,7 @@ async function discoverSession(env: RtEnv): Promise<JmapSession> {
 	try {
 		resp = await withRetry(() => fetch(url, { headers: authHeaders(env), signal: AbortSignal.timeout(20_000) }));
 	} catch (e) {
-		throw new JmapError("upstream_error", `JMAP session discovery failed: ${String((e as Error)?.message ?? e)}`);
+		throw new JmapError("upstream_error", `JMAP session discovery failed: ${errMsg(e)}`);
 	}
 	if (resp.status === 401 || resp.status === 403)
 		throw new JmapError("not_configured", "Fastmail rejected the token (401/403) — it is revoked or not a JMAP-scoped token. Mint a new one at Fastmail → Settings → Privacy & Security → API tokens.");
@@ -314,7 +314,7 @@ async function postOnce(env: RtEnv, apiUrl: string, body: unknown, remainingMs: 
 	} catch (e) {
 		const name = (e as Error)?.name ?? "";
 		if (name === "AbortError" || name === "TimeoutError") throw new JmapError("timeout", "JMAP POST exceeded its deadline.");
-		throw new JmapError("upstream_error", `JMAP POST failed: ${String((e as Error)?.message ?? e)}`);
+		throw new JmapError("upstream_error", `JMAP POST failed: ${errMsg(e)}`);
 	}
 	return interpretResponse(resp);
 }
@@ -406,7 +406,7 @@ function normalizeSentinel(e: unknown): JmapError {
 		if (e.code === ("__limit__" as FailCode)) return new JmapError("rate_limited", "JMAP request-level limit exceeded — reduce the batch/objects and retry.");
 		return e;
 	}
-	return new JmapError("upstream_error", `jmap failed: ${String((e as Error)?.message ?? e)}`);
+	return new JmapError("upstream_error", `jmap failed: ${errMsg(e)}`);
 }
 
 /** On sessionState divergence, best-effort invalidate the cache so the NEXT call re-discovers (don't block this one). */
@@ -650,7 +650,7 @@ export async function doUpload(env: RtEnv, data: string, type: string): Promise<
 	try {
 		resp = await fetch(url, { method: "POST", headers: { Authorization: `Bearer ${env.FASTMAIL_TOKEN}`, "Content-Type": type }, body: bytes as BodyInit, signal: AbortSignal.timeout(POST_TIMEOUT_MS) });
 	} catch (e) {
-		throw new JmapError("upstream_error", `blob upload failed: ${String((e as Error)?.message ?? e)}`);
+		throw new JmapError("upstream_error", `blob upload failed: ${errMsg(e)}`);
 	}
 	if (resp.status === 401 || resp.status === 403) throw new JmapError("not_configured", "Fastmail rejected the token on upload.");
 	if (!resp.ok) throw new JmapError("upstream_error", `blob upload HTTP ${resp.status}.`);
@@ -669,7 +669,7 @@ export async function downloadBlobBytes(env: RtEnv, args: { blobId: string; type
 	try {
 		resp = await fetch(url, { headers: { Authorization: `Bearer ${env.FASTMAIL_TOKEN}` }, signal: AbortSignal.timeout(POST_TIMEOUT_MS) });
 	} catch (e) {
-		throw new JmapError("upstream_error", `blob download failed: ${String((e as Error)?.message ?? e)}`);
+		throw new JmapError("upstream_error", `blob download failed: ${errMsg(e)}`);
 	}
 	if (resp.status === 404) throw new JmapError("not_found", `blob '${args.blobId}' not found.`);
 	if (!resp.ok) throw new JmapError("upstream_error", `blob download HTTP ${resp.status}.`);
@@ -678,7 +678,7 @@ export async function downloadBlobBytes(env: RtEnv, args: { blobId: string; type
 	try {
 		return { bytes: await readBodyBytes(resp, DOWNLOAD_MAX_BYTES), type };
 	} catch (e) {
-		if (/too large|exceeds/i.test(String((e as Error)?.message ?? e))) throw new JmapError("bad_input", `blob '${args.blobId}' exceeds the ${DOWNLOAD_MAX_BYTES}-byte download cap.`);
+		if (/too large|exceeds/i.test(errMsg(e))) throw new JmapError("bad_input", `blob '${args.blobId}' exceeds the ${DOWNLOAD_MAX_BYTES}-byte download cap.`);
 		throw e;
 	}
 }

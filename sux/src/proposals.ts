@@ -1,5 +1,6 @@
 import { keyedSerialize } from "./keyed-serialize";
 import { findFn, type RtEnv, type ToolResult } from "./registry";
+import { errMsg } from "./fns/_util";
 
 // The proposal kernel — the substrate for sux acting on Colin's behalf under the
 // "propose → approve → gated-act → learn" model (docs/design/personal-agent-roadmap.md,
@@ -163,7 +164,7 @@ export async function approveProposal(env: RtEnv, id: string): Promise<Proposal>
 			await putProposal(env, updated);
 			return updated;
 		} catch (e) {
-			const updated: Proposal = { ...p, status: "failed", result: String((e as Error)?.message ?? e) };
+			const updated: Proposal = { ...p, status: "failed", result: errMsg(e) };
 			await putProposal(env, updated);
 			return updated;
 		}

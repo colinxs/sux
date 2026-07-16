@@ -1,6 +1,6 @@
 import { PDFDocument, PDFHexString, PDFName, PDFNull, PDFNumber, StandardFonts } from "pdf-lib";
 import { type Fn, fail } from "../registry";
-import { deliverBytes, inlineB64, isHttpUrl, loadBytes, stripHtml, toB64 } from "./_util";
+import { deliverBytes, errMsg, inlineB64, isHttpUrl, loadBytes, stripHtml, toB64 } from "./_util";
 import { ocr as ocrFn } from "./ocr";
 
 type Kind = "pdf" | "png" | "jpg" | "text" | "html" | "markdown" | "auto";
@@ -276,7 +276,7 @@ export const pdf: Fn = {
 			const bytes = await out.save({ useObjectStreams: true });
 			return deliverBytes(env, bytes, "application/pdf", args?.as, () => inlineB64(bytes, "application/pdf"));
 		} catch (e) {
-			return fail(`pdf failed: ${String((e as Error).message ?? e)}`);
+			return fail(`pdf failed: ${errMsg(e)}`);
 		}
 	},
 };

@@ -5,7 +5,7 @@ import { kagiTool } from "../kagi";
 import type { Route } from "../proxy";
 import { type Fn, fail, ok } from "../registry";
 import type { RtEnv, ToolResult } from "../registry";
-import { deliverBytes, fromB64, inlineB64, loadBytes, putBlob, toB64 } from "./_util";
+import { deliverBytes, errMsg, fromB64, inlineB64, loadBytes, putBlob, toB64 } from "./_util";
 
 export type Kind = "pdf" | "document" | "ebook" | "code" | "docs" | "artifact" | "reference" | "any";
 
@@ -298,7 +298,7 @@ export const get: Fn = {
 			if (args?.store && args.store !== "none") out.stored = await storeResult(env, normBytes, normContentType, args.store, args?.summarize === true);
 			return ok(JSON.stringify(out));
 		} catch (e) {
-			return fail(`get failed: ${String((e as Error).message ?? e)}`);
+			return fail(`get failed: ${errMsg(e)}`);
 		}
 	},
 };

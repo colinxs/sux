@@ -1,5 +1,6 @@
 import { type Fn, fail, ok } from "../registry";
 import { htmlToMd } from "./_markup";
+import { errMsg } from "./_util";
 
 // markdown(x): convert HTML TO Markdown. Inverse of html(). Common subset:
 // headings, links, bold/em, lists, inline code, code blocks, blockquotes,
@@ -25,7 +26,7 @@ export const markdown: Fn = {
 		try {
 			return ok(htmlToMd(data));
 		} catch (e) {
-			return fail(`markdown failed: ${String((e as Error).message ?? e)}`);
+			return fail(`markdown failed: ${errMsg(e)}`);
 		}
 	},
 };

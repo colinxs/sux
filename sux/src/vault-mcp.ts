@@ -4,7 +4,7 @@ import { type JsonRpc, sseResponse } from "./mcp-util";
 import { fail, failWith, ok, type RtEnv, type ToolResult } from "./registry";
 import { ingest } from "./fns/ingest";
 import { obsidian, readGitContents, readVaultIndexBlob, type VaultCfg, vaultCfg, vaultHead, vaultPut, writeVaultIndexBlob } from "./fns/obsidian";
-import { vaultToday } from "./fns/_util";
+import { errMsg, vaultToday } from "./fns/_util";
 import { evalFilter, extractTags, extractWikilinks, type Filter, frontmatterMatches, linkResolvesTo, parseFrontmatter, patchBlockRef, patchFrontmatter, patchHeadingSection, type PatchMode } from "./vault-graph";
 
 // The vault MCP server — our rolled-own obsidian-web-mcp (prior art:
@@ -298,7 +298,7 @@ const TOOLS: VaultTool[] = [
 				const backlinks = records.filter((r) => r.path !== target && r.links.some((l) => linkResolvesTo(l, target))).map((r) => ({ path: r.path, links: r.links.filter((l) => linkResolvesTo(l, target)) }));
 				return ok(JSON.stringify({ target, count: backlinks.length, backlinks, scanned: records.length, total, truncated }, null, 2));
 			} catch (e) {
-				return fail(String((e as Error)?.message ?? e));
+				return fail(errMsg(e));
 			}
 		},
 	},
@@ -315,7 +315,7 @@ const TOOLS: VaultTool[] = [
 			try {
 				matches = filter ? (fm) => evalFilter(fm, filter) : (fm) => frontmatterMatches(fm, field!, a?.value);
 			} catch (e) {
-				return failWith("bad_input", `invalid filter: ${String((e as Error)?.message ?? e)}`);
+				return failWith("bad_input", `invalid filter: ${errMsg(e)}`);
 			}
 			try {
 				const { records, total, truncated } = await scanVault(env, a?.folder ? String(a.folder) : undefined, clampCap(a?.cap));
@@ -324,12 +324,12 @@ const TOOLS: VaultTool[] = [
 					try {
 						if (matches(r.fm)) notes.push({ path: r.path, frontmatter: r.fm });
 					} catch (e) {
-						return failWith("bad_input", `invalid filter: ${String((e as Error)?.message ?? e)}`); // a bad filter throws on the first note
+						return failWith("bad_input", `invalid filter: ${errMsg(e)}`); // a bad filter throws on the first note
 					}
 				}
 				return ok(JSON.stringify({ ...(field ? { field } : {}), ...(a?.value !== undefined ? { value: a.value } : {}), ...(filter ? { filter } : {}), count: notes.length, notes, scanned: records.length, total, truncated }, null, 2));
 			} catch (e) {
-				return fail(String((e as Error)?.message ?? e));
+				return fail(errMsg(e));
 			}
 		},
 	},
@@ -358,7 +358,7 @@ const TOOLS: VaultTool[] = [
 				else if (targets[0] === "heading") patched = patchHeadingSection(cur.body, a.heading, mode, a.content);
 				else patched = patchBlockRef(cur.body, a.block, mode, a.content);
 			} catch (e) {
-				return failWith("bad_input", `vault_patch: ${String((e as Error)?.message ?? e)}`);
+				return failWith("bad_input", `vault_patch: ${errMsg(e)}`);
 			}
 			if (!patched.changed) return ok(JSON.stringify({ ok: true, path, changed: false, note: "target already holds this value" }, null, 2));
 			const wrote = await vaultPut(env, cfg, path, patched.content, `sux: patch ${path}`, { sha: cur.sha });
@@ -383,7 +383,7 @@ const TOOLS: VaultTool[] = [
 				const tags = Object.entries(counts).sort((a2, b2) => b2[1] - a2[1]).map(([tag, count]) => ({ tag, count }));
 				return ok(JSON.stringify({ count: tags.length, tags, scanned: records.length, total, truncated }, null, 2));
 			} catch (e) {
-				return fail(String((e as Error)?.message ?? e));
+				return fail(errMsg(e));
 			}
 		},
 	},
@@ -438,7 +438,7 @@ export async function handleVaultRpc(env: RtEnv, _ctx: ExecutionContext, rpc: Js
 			const result = await withDeadline(name, FN_DEADLINE_MS, tool.run(env, args));
 			return sseResponse({ jsonrpc: "2.0", id, result });
 		} catch (e) {
-			return sseResponse({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `${name} failed: ${String((e as Error).message ?? e)}` }], isError: true } });
+			return sseResponse({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `${name} failed: ${errMsg(e)}` }], isError: true } });
 		}
 	}
 	return sseResponse({ jsonrpc: "2.0", id, error: { code: -32601, message: `unknown method: ${method}` } });

@@ -1,7 +1,7 @@
 import { type Fn, fail, ok } from "../registry";
 import { smartFetch } from "../proxy";
 import { extractRpcFromText } from "../mcp-util";
-import { cfOriginHint, fromB64, toB64, oj } from "./_util";
+import { cfOriginHint, errMsg, fromB64, oj, safeParseJson, toB64 } from "./_util";
 
 // Work with Obsidian markdown notes across two backends:
 //   git    (default) — a git-backed vault via the GitHub API (async, versioned).
@@ -66,7 +66,7 @@ const remoteNoteKey = (p: string) => `cache:vault:remote:note:${normPath(p)}`;
 async function cacheGet(env: any, key: string): Promise<any | null> {
 	try {
 		const raw = await env.OAUTH_KV?.get(key);
-		return raw ? JSON.parse(raw) : null;
+		return safeParseJson(raw, null);
 	} catch {
 		return null;
 	}
@@ -270,7 +270,7 @@ async function runRemote(env: any, action: string, args: any) {
 			try {
 				resp = await remoteFetch(env, `/vault/${encPath(p)}`, { headers: { Accept: "text/markdown" } });
 			} catch (e) {
-				reason = String((e as Error).message ?? e);
+				reason = errMsg(e);
 			}
 			if (!resp || resp.status >= 500) {
 				const hit = await cacheGet(env, remoteNoteKey(p));
@@ -338,7 +338,7 @@ async function runRemote(env: any, action: string, args: any) {
 		}
 		return fail(`Unknown action '${action}'. Use list | read | search | append | write | edit | delete | tools | call.`);
 	} catch (e) {
-		return fail(`obsidian remote (${action}) failed: ${String((e as Error).message ?? e)}`);
+		return fail(`obsidian remote (${action}) failed: ${errMsg(e)}`);
 	}
 }
 
@@ -488,7 +488,7 @@ export const obsidian: Fn = {
 			}
 			return fail(`Unknown action '${action}'. Use list | read | search | append | write | edit | delete.`);
 		} catch (e) {
-			return fail(`obsidian (${action}) failed: ${String((e as Error).message ?? e)}`);
+			return fail(`obsidian (${action}) failed: ${errMsg(e)}`);
 		}
 	},
 };

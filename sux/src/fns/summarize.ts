@@ -2,6 +2,7 @@ import { type Fn, fail, ok } from "../registry";
 import { hasAI, llm, textFromUrlOr } from "../ai";
 import { kagiTool } from "../kagi";
 import { readability } from "./readability";
+import { errMsg } from "./_util";
 
 /** YouTube URLs — Kagi's summarizer pulls the transcript; the local path has no transcript
  *  access and would only see the page's HTML chrome, so these stay routed to Kagi. */
@@ -62,7 +63,7 @@ export const summarize: Fn = {
 				}
 				console.warn(`summarize: Kagi returned ${r?.isError ? `an error — ${text || "(no detail)"}` : "an empty summary"}, falling back to Workers AI — ${u}`);
 			} catch (e) {
-				console.warn(`summarize: Kagi failed, falling back to Workers AI — ${String((e as Error).message ?? e)}`);
+				console.warn(`summarize: Kagi failed, falling back to Workers AI — ${errMsg(e)}`);
 			}
 			return null;
 		};
@@ -87,7 +88,7 @@ export const summarize: Fn = {
 						return ok(out);
 					}
 				} catch (e) {
-					console.warn(`summarize: local extraction summarize failed, trying Kagi — ${String((e as Error).message ?? e)}`);
+					console.warn(`summarize: local extraction summarize failed, trying Kagi — ${errMsg(e)}`);
 				}
 			}
 			if (env.KAGI_API_KEY) {
@@ -110,7 +111,7 @@ export const summarize: Fn = {
 			console.log(`summarize: backend=workers-ai${url ? ` url=${url}` : ""}`);
 			return ok(out);
 		} catch (e) {
-			return fail(String((e as Error).message ?? e));
+			return fail(errMsg(e));
 		}
 	},
 };

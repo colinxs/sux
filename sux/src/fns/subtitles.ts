@@ -1,4 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
+import { errMsg } from "./_util";
 
 const TIMING = /(\d{1,2}:\d{2}:\d{2}|\d{2}:\d{2})[.,](\d{3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}|\d{2}:\d{2})[.,](\d{3})(.*)$/;
 
@@ -71,7 +72,7 @@ export const subtitles: Fn = {
 		try {
 			return ok(direction === "vtt_to_srt" ? vttToSrt(data) : srtToVtt(data));
 		} catch (e) {
-			return fail(`${direction} failed: ${String((e as Error).message ?? e)}`);
+			return fail(`${direction} failed: ${errMsg(e)}`);
 		}
 	},
 };

@@ -15,7 +15,7 @@ import { type FeedbackKind, readFeedback } from "./fns/_feedback";
 import { maybeDecompress } from "./fns/_gzip";
 import { FUNCTIONS } from "./fns/index";
 import { renderOverview } from "./fns/_surface";
-import { isExpired } from "./fns/_util";
+import { errMsg, isExpired } from "./fns/_util";
 import { readMetrics, sloReport, toPrometheus } from "./metrics";
 import { PHI_PREFIX } from "./mychart";
 import type { RtEnv } from "./registry";
@@ -42,7 +42,7 @@ export async function obsRateLimited(request: Request, env: RtEnv): Promise<bool
 		const { success } = await env.OBS_RATE_LIMITER.limit({ key: request.headers.get("cf-connecting-ip") || "anon" });
 		return !success;
 	} catch (e) {
-		console.warn(`obs rate limiter threw, failing open: ${String((e as Error)?.message ?? e)}`);
+		console.warn(`obs rate limiter threw, failing open: ${errMsg(e)}`);
 		return false;
 	}
 }

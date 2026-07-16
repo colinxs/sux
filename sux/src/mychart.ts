@@ -15,6 +15,7 @@
 // and never enter the generic KV result cache (the mychart fn is cacheable:false).
 
 import type { RtEnv } from "./registry";
+import { errMsg, safeParseJson } from "./fns/_util";
 
 export const PHI_PREFIX = "phi/";
 
@@ -91,12 +92,8 @@ export async function challengeFor(verifier: string): Promise<string> {
  * not share a simple suffix with the FHIR base, so discovery is the robust path. */
 export async function smartConfig(env: RtEnv): Promise<SmartConfig> {
 	const cached = await env.OAUTH_KV?.get(SMART_CFG_KEY);
-	if (cached) {
-		try {
-			const c = JSON.parse(cached);
-			if (c?.authorization_endpoint && c?.token_endpoint) return c;
-		} catch {}
-	}
+	const c = safeParseJson<Partial<SmartConfig>>(cached, {});
+	if (c?.authorization_endpoint && c?.token_endpoint) return c as SmartConfig;
 	const resp = await fetch(`${fhirBase(env)}/.well-known/smart-configuration`, {
 		headers: { Accept: "application/json" },
 		signal: AbortSignal.timeout(20_000),
@@ -414,7 +411,7 @@ export async function handleMychartRoutes(url: URL, request: Request, env: RtEnv
 			// but escapeHtml + an explicit content-type keep this catch consistent with every
 			// other error response in this flow the moment its error surface gains attacker-
 			// influenced content (matches the reflected-XSS fix applied to the callback route).
-			return new Response(escapeHtml(String((e as Error)?.message ?? e)), { status: 502, headers: TEXT_HEADERS });
+			return new Response(escapeHtml(errMsg(e)), { status: 502, headers: TEXT_HEADERS });
 		}
 	}
 
@@ -456,7 +453,7 @@ export async function handleMychartRoutes(url: URL, request: Request, env: RtEnv
 				{ status: 200, headers: PAGE_HEADERS },
 			);
 		} catch (e) {
-			return new Response(`MyChart callback failed: ${String((e as Error)?.message ?? e)}`, { status: 502, headers: TEXT_HEADERS });
+			return new Response(`MyChart callback failed: ${errMsg(e)}`, { status: 502, headers: TEXT_HEADERS });
 		}
 	}
 
@@ -542,7 +539,7 @@ export async function handleAppleHealth(url: URL, request: Request, env: RtEnv):
 		const stored = await putPhi(env, key, bytes, "application/json");
 		return new Response(JSON.stringify({ ok: true, key: stored, bytes: bytes.length }), { status: 200, headers: { "content-type": "application/json" } });
 	} catch (e) {
-		return new Response(JSON.stringify({ error: String((e as Error)?.message ?? e) }), { status: 500, headers: { "content-type": "application/json" } });
+		return new Response(JSON.stringify({ error: errMsg(e) }), { status: 500, headers: { "content-type": "application/json" } });
 	}
 }
 

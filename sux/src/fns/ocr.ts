@@ -1,6 +1,6 @@
 import { type Fn, fail, ok } from "../registry";
 import { hasAI, MODELS } from "../ai";
-import { fromB64, loadBytes } from "./_util";
+import { errMsg, fromB64, loadBytes } from "./_util";
 
 export const ocr: Fn = {
 	name: "ocr",
@@ -28,13 +28,13 @@ export const ocr: Fn = {
 				bytes = Array.from((await loadBytes(env, { url: String(args.url) })).bytes);
 			} else return fail("Provide `url` or `image`.");
 		} catch (e) {
-			return fail(`Could not load image: ${String((e as Error).message ?? e)}`);
+			return fail(`Could not load image: ${errMsg(e)}`);
 		}
 		try {
 			const r = await (env as any).AI.run(MODELS.vision, { image: bytes, prompt: String(args?.prompt ?? "Transcribe all text in this image exactly."), max_tokens: 1024 });
 			return ok(String(r?.description ?? r?.response ?? "").trim() || "(no text found)");
 		} catch (e) {
-			return fail(`ocr failed: ${String((e as Error).message ?? e)}`);
+			return fail(`ocr failed: ${errMsg(e)}`);
 		}
 	},
 };

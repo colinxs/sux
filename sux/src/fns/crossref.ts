@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { oj } from "./_util";
+import { errMsg, oj } from "./_util";
 
 // CrossRef Works API (api.crossref.org) — keyless, free scholarly metadata keyed
 // on DOIs. No residential proxy: a public bibliographic endpoint with no bot wall,
@@ -49,7 +49,7 @@ export const crossref: Fn = {
 		try {
 			resp = await fetch(`${API}?${p}`, { signal: AbortSignal.timeout(20_000) });
 		} catch (e) {
-			return fail(`CrossRef fetch failed: ${String((e as Error)?.message ?? e)}`);
+			return fail(`CrossRef fetch failed: ${errMsg(e)}`);
 		}
 		if (!resp.ok) return fail(`CrossRef API HTTP ${resp.status}.`);
 		const j: any = await resp.json();

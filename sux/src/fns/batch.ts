@@ -1,7 +1,7 @@
 import { hasAI, llm } from "../ai";
 import { normalizeArgs, normalizeText } from "../normalize";
 import { type Fn, fail, ok } from "../registry";
-import { FANOUT_BUDGET_MS, pool, oj } from "./_util";
+import { FANOUT_BUDGET_MS, errMsg, oj, pool } from "./_util";
 
 // Map-reduce: MAP one sux tool over many argument sets, then optionally REDUCE
 // the successful results into one value. FUNCTIONS is imported dynamically
@@ -198,7 +198,7 @@ export const batch: Fn = {
 				const text = r.content?.[0]?.text ?? "";
 				return r.isError ? { ok: false, error: text } : { ok: true, text: target.raw ? text : normalizeText(text) };
 			} catch (e) {
-				return { ok: false, error: String((e as Error)?.message ?? e) };
+				return { ok: false, error: errMsg(e) };
 			}
 		}, deadline);
 		// Un-run slots (time budget hit) come back undefined; surface them as skipped
@@ -226,7 +226,7 @@ export const batch: Fn = {
 				const payload = includeResults ? { tool: toolName, results, reduced, reduced_with: rTool, ...trunc } : { tool: toolName, reduced, reduced_with: rTool, ...trunc };
 				return ok(oj(payload));
 			} catch (e) {
-				return fail(`reduce_with '${rTool}' failed: ${String((e as Error)?.message ?? e)}`);
+				return fail(`reduce_with '${rTool}' failed: ${errMsg(e)}`);
 			}
 		}
 
@@ -248,7 +248,7 @@ export const batch: Fn = {
 				);
 			} catch (e) {
 				// Mirror web_search's graceful fallback: on AI failure, fall back to concat.
-				reduced = `${joined}\n\n(summarize failed, returning concat: ${String((e as Error).message ?? e)})`;
+				reduced = `${joined}\n\n(summarize failed, returning concat: ${errMsg(e)})`;
 			}
 		} else if (reduce === "summarize") {
 			// AI not configured — fall back to concat and note it.

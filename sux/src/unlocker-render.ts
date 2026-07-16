@@ -14,6 +14,7 @@
 // change (the URL the operator sets), not a code change.
 
 import type { RtEnv } from "./registry";
+import { errMsg } from "./fns/_util";
 
 // What a caller asks the unlocker to fetch. Only `url` is required; `timeout_ms`
 // lets a caller keep the rung inside the retail deadline budget (see retail-render).
@@ -51,7 +52,7 @@ export async function unlockerRender(env: RtEnv, spec: UnlockerSpec): Promise<Un
 			signal: AbortSignal.timeout(timeout),
 		});
 	} catch (e) {
-		return { ok: false, error: `unlocker failed: ${String((e as Error).message ?? e)}` };
+		return { ok: false, error: `unlocker failed: ${errMsg(e)}` };
 	}
 	if (!resp.ok) {
 		return { ok: false, error: `unlocker failed: HTTP ${resp.status}` };

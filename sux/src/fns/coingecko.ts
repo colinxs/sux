@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { oj } from "./_util";
+import { errMsg, oj } from "./_util";
 
 // CoinGecko (api.coingecko.com) — keyless free tier for crypto prices and coin
 // search. No residential proxy: a public market-data API with no bot wall. Two
@@ -42,7 +42,7 @@ export const coingecko: Fn = {
 			try {
 				r = await getJson(`${API}/simple/price?${p}`);
 			} catch (e) {
-				return fail(`CoinGecko fetch failed: ${String((e as Error)?.message ?? e)}`);
+				return fail(`CoinGecko fetch failed: ${errMsg(e)}`);
 			}
 			if (!r.ok) return fail(`CoinGecko API HTTP ${r.status}.`);
 			const prices = Object.entries(r.json ?? {}).map(([id, v]: [string, any]) => ({
@@ -60,7 +60,7 @@ export const coingecko: Fn = {
 		try {
 			r = await getJson(`${API}/search?${new URLSearchParams({ query: term })}`);
 		} catch (e) {
-			return fail(`CoinGecko fetch failed: ${String((e as Error)?.message ?? e)}`);
+			return fail(`CoinGecko fetch failed: ${errMsg(e)}`);
 		}
 		if (!r.ok) return fail(`CoinGecko API HTTP ${r.status}.`);
 		const coins = (r.json?.coins ?? []).map((c: any) => ({

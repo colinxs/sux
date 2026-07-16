@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { fetchTextOkEscalating, oj } from "./_util";
+import { errMsg, fetchTextOkEscalating, oj } from "./_util";
 
 export const grep: Fn = {
 	name: "grep",
@@ -38,7 +38,7 @@ export const grep: Fn = {
 		try {
 			re = new RegExp(pattern, args?.ignore_case === true ? "i" : "");
 		} catch (e) {
-			return fail(`Invalid regex: ${String((e as Error).message ?? e)}`);
+			return fail(`Invalid regex: ${errMsg(e)}`);
 		}
 
 		let text = typeof args?.text === "string" ? args.text : "";

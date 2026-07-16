@@ -1,6 +1,7 @@
 import { hasAI, llm } from "../ai";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { readProfile, type VoiceExample } from "./preferences";
+import { errMsg } from "./_util";
 
 // AI text-restyler. Rewrites `text` into a target `style` and/or a learned
 // preference `profile` (a distilled spec + a few-shot of writing samples kept in
@@ -135,7 +136,7 @@ export const voice: Fn = {
 			if (!out?.trim()) return failWith("upstream_error", "voice produced an empty result — retry.");
 			return ok(out);
 		} catch (e) {
-			return failWith("upstream_error", `voice failed: ${String((e as Error).message ?? e)}`);
+			return failWith("upstream_error", `voice failed: ${errMsg(e)}`);
 		}
 	},
 };

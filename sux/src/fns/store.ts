@@ -1,7 +1,7 @@
 import { type Fn, fail, ok } from "../registry";
 import { staged } from "../stage";
 import { maybeDecompress } from "./_gzip";
-import { extractStoreId, fromB64, isExpired, putBlob, STORE_KV_PREFIX, storeBase, toB64, oj } from "./_util";
+import { STORE_KV_PREFIX, errMsg, extractStoreId, fromB64, isExpired, oj, putBlob, storeBase, toB64 } from "./_util";
 
 // Object storage in sux's R2. Bytes are content-addressed (key = sha256, so
 // identical content dedupes to one immutable object — Nix-store style). Each put
@@ -134,7 +134,7 @@ export const store: Fn = {
 
 			return fail(`Unknown op '${op}'.`);
 		} catch (e) {
-			return fail(`store (${op}) failed: ${String((e as Error).message ?? e)}`);
+			return fail(`store (${op}) failed: ${errMsg(e)}`);
 		}
 	},
 };

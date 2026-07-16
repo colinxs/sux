@@ -1,6 +1,6 @@
 import { type Fn, fail, ok } from "../registry";
 import { Gunzip, gzipSync, strFromU8, strToU8, unzipSync, zipSync } from "fflate";
-import { deliverBytes, fromB64, putBlob, toB64, oj } from "./_util";
+import { deliverBytes, errMsg, fromB64, oj, putBlob, toB64 } from "./_util";
 
 const MAX_TEXT = 100_000; // don't inline megabytes of decoded text per entry
 const MAX_UNPACK_BYTES = 20_000_000; // cap total decompressed output so a zip/gzip bomb can't OOM the isolate
@@ -153,7 +153,7 @@ export const archive: Fn = {
 			}
 			return fail("op must be 'pack' or 'unpack'.");
 		} catch (e) {
-			return fail(`archive ${op} failed: ${String((e as Error).message ?? e)}`);
+			return fail(`archive ${op} failed: ${errMsg(e)}`);
 		}
 	},
 };

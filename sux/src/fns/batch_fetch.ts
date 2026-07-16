@@ -1,5 +1,5 @@
 import { type Fn, type RtEnv, fail, ok } from "../registry";
-import { type BlobRef, byteBudget, FANOUT_BUDGET_MS, FANOUT_BYTE_BUDGET, FANOUT_STORE_TTL_S, FETCH_TEXT_MAX_BYTES, fetchText, getBlob, isHttpUrl, noCacheOn4xx, noCacheOnMutation, pool, putBlob, readBodyBytes, storeRefUuid, oj } from "./_util";
+import { FANOUT_BUDGET_MS, FANOUT_BYTE_BUDGET, FANOUT_STORE_TTL_S, FETCH_TEXT_MAX_BYTES, byteBudget, errMsg, fetchText, getBlob, isHttpUrl, noCacheOn4xx, noCacheOnMutation, oj, pool, putBlob, readBodyBytes, storeRefUuid, type BlobRef } from "./_util";
 import { smartFetch } from "../proxy";
 
 // Fetch many URLs concurrently through the residential proxy (direct fallback).
@@ -62,7 +62,7 @@ export async function fetchBytes(
 	try {
 		return { status: resp.status, bytes: await readBodyBytes(resp, MAX_STORE_BYTES), contentType };
 	} catch (e) {
-		if (/too large|exceeds/i.test(String((e as Error)?.message ?? e))) return { status: resp.status, bytes: new Uint8Array(0), contentType, oversize: true };
+		if (/too large|exceeds/i.test(errMsg(e))) return { status: resp.status, bytes: new Uint8Array(0), contentType, oversize: true };
 		throw e;
 	}
 }
@@ -137,7 +137,7 @@ export const batch_fetch: Fn = {
 				// Count UTF-8 octets, not UTF-16 code units, so `bytes` matches the url branch and reality.
 				return { url, status: r.status, bytes: new TextEncoder().encode(r.text).length, text: r.text };
 			} catch (e) {
-				return { url, error: String((e as Error)?.message ?? e) };
+				return { url, error: errMsg(e) };
 			}
 		}, deadline);
 		// Un-fetched URLs (time budget hit) come back undefined; surface each as a

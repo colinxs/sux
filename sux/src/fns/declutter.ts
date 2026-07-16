@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { loadHtml, stripHtml } from "./_util";
+import { errMsg, loadHtml, stripHtml } from "./_util";
 
 // uBlock-style HTML cleaning: strip scripts/styles/iframes/ads/tracking pixels
 // and inline event handlers so downstream tools (summarize, readability, markdown)
@@ -64,7 +64,7 @@ export const declutter: Fn = {
 			const cleaned = clean(html);
 			return ok(args?.to === "text" ? stripHtml(cleaned) : cleaned);
 		} catch (e) {
-			return fail(`declutter failed: ${String((e as Error).message ?? e)}`);
+			return fail(`declutter failed: ${errMsg(e)}`);
 		}
 	},
 };

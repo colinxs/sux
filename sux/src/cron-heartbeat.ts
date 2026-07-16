@@ -1,4 +1,5 @@
 import { type RtEnv } from "./registry";
+import { errMsg } from "./fns/_util";
 
 // Per-subsystem heartbeats for the daily cron. After each unattended sub-job
 // (Kroger refresh, mail triage, adblock rebuild, self-improve) we stamp
@@ -65,7 +66,7 @@ export async function runSubJob(env: RtEnv, name: CronJob, fn: () => Promise<unk
 			await recordHeartbeat(env, name, true);
 		}
 	} catch (e) {
-		const msg = String((e as Error)?.message ?? e);
+		const msg = errMsg(e);
 		console.warn(`sux scheduled ${name} skipped: ${msg}`);
 		await recordHeartbeat(env, name, false, msg);
 	}

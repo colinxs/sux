@@ -21,6 +21,7 @@
 import puppeteer from "@cloudflare/puppeteer";
 import { smartFetch } from "./proxy";
 import type { RtEnv } from "./registry";
+import { errMsg } from "./fns/_util";
 
 const BLOCKED_RESOURCE_TYPES = new Set(["image", "media", "font", "stylesheet"]);
 
@@ -363,7 +364,7 @@ export async function cfRender(env: RtEnv, spec: CfRenderSpec): Promise<CfRender
 				: await page.content();
 		return { ok: true, contentType: as === "text" ? "text/plain" : "text/html", body: content };
 	} catch (e) {
-		return { ok: false, error: `render failed: ${String((e as Error).message ?? e)}` };
+		return { ok: false, error: `render failed: ${errMsg(e)}` };
 	} finally {
 		if (browser) await browser.close();
 	}

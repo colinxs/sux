@@ -1,6 +1,6 @@
 import { normalizeArgs, normalizeText } from "../normalize";
 import { type Fn, fail, ok } from "../registry";
-import { clampBytes, FANOUT_BUDGET_MS, oj } from "./_util";
+import { FANOUT_BUDGET_MS, clampBytes, errMsg, oj } from "./_util";
 
 // Compose: chain sux tools so each step's text output feeds the next step's args
 // — the server-side derivation graph that pairs with the content-addressed store.
@@ -154,7 +154,7 @@ export const pipe: Fn = {
 				results.push({ step: i, tool: toolName, ok: true, text: clampBytes(text, STEP_PREVIEW_BYTES) });
 				prev = text;
 			} catch (e) {
-				results.push({ step: i, tool: toolName, ok: false, error: String((e as Error)?.message ?? e) });
+				results.push({ step: i, tool: toolName, ok: false, error: errMsg(e) });
 				return ok(oj({ steps: results, output: null, stopped_at: i }));
 			}
 		}

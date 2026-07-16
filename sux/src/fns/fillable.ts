@@ -1,6 +1,6 @@
 import { PDFDocument } from "pdf-lib";
 import { type Fn, fail } from "../registry";
-import { deliverBytes, inlineB64, isHttpUrl, loadBytes } from "./_util";
+import { deliverBytes, errMsg, inlineB64, isHttpUrl, loadBytes } from "./_util";
 
 type FieldSpec = {
 	name: string;
@@ -67,7 +67,7 @@ export const fillable: Fn = {
 		try {
 			({ bytes } = await loadBytes(env, { base64: args?.pdf, url: args?.url }));
 		} catch (e) {
-			return fail(`Could not read source PDF: ${String((e as Error).message ?? e)}`);
+			return fail(`Could not read source PDF: ${errMsg(e)}`);
 		}
 
 		try {
@@ -109,7 +109,7 @@ export const fillable: Fn = {
 			const out = await doc.save();
 			return deliverBytes(env, out, "application/pdf", args?.as, () => inlineB64(out, "application/pdf"));
 		} catch (e) {
-			return fail(`fillable failed: ${String((e as Error).message ?? e)}`);
+			return fail(`fillable failed: ${errMsg(e)}`);
 		}
 	},
 };

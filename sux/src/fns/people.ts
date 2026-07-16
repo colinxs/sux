@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { oj } from "./_util";
+import { errMsg, oj } from "./_util";
 import { kagiTool } from "../kagi";
 import { smartFetch } from "../proxy";
 
@@ -86,7 +86,7 @@ export const people: Fn = {
 			}
 			return ok(oj({ source: "web", query, count: hits.length, hits, ...(contacts ? { contacts } : {}) }));
 		} catch (e) {
-			return fail(`people (${source}) failed: ${String((e as Error).message ?? e)}`);
+			return fail(`people (${source}) failed: ${errMsg(e)}`);
 		}
 	},
 };

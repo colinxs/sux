@@ -13,6 +13,7 @@ import { hmacHex, isTailscaleConfigured, proxyEnabled, smartFetch, type Tailscal
 import { deriveMetrics, readMetrics } from "./metrics";
 import { readHeartbeats } from "./cron-heartbeat";
 import type { RtEnv } from "./registry";
+import { errMsg, safeParseJson } from "./fns/_util";
 
 type HandlerEnv = Env &
 	TailscaleEnv & { OAUTH_PROVIDER: OAuthHelpers } & {
@@ -100,7 +101,7 @@ async function nodeStatus(env: HandlerEnv): Promise<Record<string, unknown>> {
 			peersOnline: peers.filter((p: any) => p?.Online).length,
 		};
 	} catch (e) {
-		return { available: false, reason: String((e as Error).message ?? e) };
+		return { available: false, reason: errMsg(e) };
 	}
 }
 
@@ -116,7 +117,7 @@ export async function probeBindings(env: RtEnv): Promise<Record<string, unknown>
 			await fn();
 			return { ok: true, ms: Date.now() - t };
 		} catch (e) {
-			return { ok: false, ms: Date.now() - t, reason: String((e as Error).message ?? e) };
+			return { ok: false, ms: Date.now() - t, reason: errMsg(e) };
 		}
 	};
 	const probeKey = "sux:health:probe"; // never written; a miss is a successful roundtrip
@@ -385,12 +386,13 @@ const HEALTH_CACHE_KEY = "sux:health:public";
 const HEALTH_CACHE_TTL = 60;
 
 async function handleHealth(url: URL, env: HandlerEnv): Promise<Response> {
+	// cache read is best-effort — a miss or parse failure falls through to a live gather
 	let h: Record<string, unknown> | undefined;
 	try {
 		const cached = await env.OAUTH_KV.get(HEALTH_CACHE_KEY);
-		if (cached) h = JSON.parse(cached) as Record<string, unknown>;
+		h = safeParseJson<Record<string, unknown> | undefined>(cached, undefined);
 	} catch {
-		// cache read is best-effort — fall through to a live gather
+		h = undefined;
 	}
 	if (!h) {
 		h = redactPublicHealth(await gatherHealth(env));

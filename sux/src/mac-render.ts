@@ -15,7 +15,7 @@
 
 import { hmacHex } from "./proxy";
 import type { RtEnv } from "./registry";
-import { cfOriginHint } from "./fns/_util";
+import { cfOriginHint, errMsg } from "./fns/_util";
 
 // What a caller asks the Mac service to render. Only `url` is required; the rest
 // mirror the render fn's knobs and default sensibly for HTML extraction.
@@ -132,7 +132,7 @@ export async function macRender(env: RtEnv, spec: MacRenderSpec): Promise<MacRen
 		});
 	} catch (e) {
 		macBreakerOnFailure();
-		return { ok: false, error: `mac render failed: ${String((e as Error).message ?? e)}` };
+		return { ok: false, error: `mac render failed: ${errMsg(e)}` };
 	}
 	// The node answered (even a non-2xx or `{error}` body), so it is alive — clear
 	// the breaker regardless of how the response body ultimately maps.

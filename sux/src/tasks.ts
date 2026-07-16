@@ -1,6 +1,7 @@
 import { recordCall } from "./metrics";
 import { shipToLoki } from "./grafana";
 import type { RtEnv, ToolResult } from "./registry";
+import { errMsg, safeParseJson } from "./fns/_util";
 
 // MCP "Tasks" primitive (spec 2025-11-25, still experimental as of the
 // 2026-07-28 release candidate) — durable state for long-running tool calls,
@@ -84,12 +85,7 @@ async function putTask(env: RtEnv, rec: TaskRecord): Promise<void> {
 
 export async function getTask(env: RtEnv, taskId: string): Promise<TaskRecord | null> {
 	const raw = await env.OAUTH_KV.get(taskKey(taskId));
-	if (!raw) return null;
-	try {
-		return JSON.parse(raw) as TaskRecord;
-	} catch {
-		return null;
-	}
+	return safeParseJson<TaskRecord | null>(raw, null);
 }
 
 export function isTerminal(status: TaskStatus): boolean {
@@ -146,12 +142,12 @@ export function createTask(env: RtEnv, ctx: ExecutionContext, tool: string, ttlR
 					(result) => finishTask(env, ctx, rec.taskId, tool, startedAt, result),
 					(e) =>
 						finishTask(env, ctx, rec.taskId, tool, startedAt, {
-							content: [{ type: "text", text: `Tool execution threw: ${String((e as Error)?.message ?? e)}` }],
+							content: [{ type: "text", text: `Tool execution threw: ${errMsg(e)}` }],
 							isError: true,
 						}),
 				),
 			)
-			.catch((e) => console.warn(`sux task ${rec.taskId} (${tool}) failed to persist its finish: ${String((e as Error)?.message ?? e)}`)),
+			.catch((e) => console.warn(`sux task ${rec.taskId} (${tool}) failed to persist its finish: ${errMsg(e)}`)),
 	);
 	return rec;
 }

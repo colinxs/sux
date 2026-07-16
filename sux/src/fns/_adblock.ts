@@ -11,6 +11,7 @@
 import { FiltersEngine } from "@ghostery/adblocker";
 import { parse as parseUrl } from "tldts-experimental";
 import type { RtEnv } from "../registry";
+import { errMsg } from "./_util";
 
 // The serialized-engine blob key in the R2 store (`R2` binding, bucket `sux-mcp`).
 export const ADBLOCK_R2_KEY = "adblock/engine.bin";
@@ -119,7 +120,7 @@ export async function getAdblockEngine(env: RtEnv): Promise<FiltersEngine | null
 		cached = { engine, at: Date.now() };
 		return engine;
 	} catch (e) {
-		console.warn(`adblock: engine unavailable (R2 error or stale/corrupt blob), skipping cosmetic strip: ${String((e as Error)?.message ?? e)}`);
+		console.warn(`adblock: engine unavailable (R2 error or stale/corrupt blob), skipping cosmetic strip: ${errMsg(e)}`);
 		return null;
 	}
 }
@@ -172,7 +173,7 @@ export async function stripCosmetic(env: RtEnv, html: string, url: string): Prom
 	} catch (e) {
 		// A selector HTMLRewriter rejected despite htmlRewriterSafe would otherwise
 		// silently no-op the whole page — log so it's diagnosable, not invisible.
-		console.warn(`adblock: HTMLRewriter transform failed for ${url}, returning html unchanged: ${String((e as Error)?.message ?? e)}`);
+		console.warn(`adblock: HTMLRewriter transform failed for ${url}, returning html unchanged: ${errMsg(e)}`);
 		return html;
 	}
 }

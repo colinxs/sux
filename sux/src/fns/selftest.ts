@@ -1,5 +1,5 @@
 import { type Fn, ok } from "../registry";
-import { oj } from "./_util";
+import { errMsg, oj } from "./_util";
 import { isTailscaleConfigured, smartFetch } from "../proxy";
 import { macRender } from "../mac-render";
 
@@ -27,7 +27,7 @@ const MAX_TIMEOUT_MS = 30_000;
 type Rung = { ok: boolean; status?: number; skipped?: boolean; reason?: string; error?: string };
 
 function msg(e: unknown): string {
-	return String((e as Error)?.message ?? e);
+	return errMsg(e);
 }
 
 // Run `fn` under an AbortSignal.timeout, racing the work against the signal's abort

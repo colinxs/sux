@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { oj } from "./_util";
+import { errMsg, oj } from "./_util";
 
 // ClinicalTrials.gov API v2 (clinicaltrials.gov/api/v2) — keyless, free registry of
 // clinical studies. No residential proxy: a public government API with no bot wall.
@@ -44,7 +44,7 @@ export const clinical_trials: Fn = {
 		try {
 			resp = await fetch(`${API}?${p}`, { signal: AbortSignal.timeout(20_000) });
 		} catch (e) {
-			return fail(`ClinicalTrials.gov fetch failed: ${String((e as Error)?.message ?? e)}`);
+			return fail(`ClinicalTrials.gov fetch failed: ${errMsg(e)}`);
 		}
 		if (!resp.ok) return fail(`ClinicalTrials.gov API HTTP ${resp.status}.`);
 		const j: any = await resp.json();

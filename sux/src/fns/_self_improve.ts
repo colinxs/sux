@@ -53,6 +53,7 @@ import { TOOL_ANNOTATIONS } from "../registry";
 import { type FeedbackEntry, type FeedbackKind, readFeedback } from "./_feedback";
 import { cappedKvLog } from "./_capped_kv_log";
 import { githubAuthHeaders } from "../github-auth";
+import { errMsg } from "./_util";
 
 // ── Gate predicates (pure env, fail-closed) ──────────────────────────────────
 
@@ -552,13 +553,13 @@ export async function selfImproveTick(env: RtEnv, deps: { github?: GithubClient 
 				budget.openSlots = Math.max(0, MAX_OPEN_SELF_IMPROVE_PRS - (await github.openSelfImprovePrCount()));
 			} catch (e) {
 				budget.openSlots = 0;
-				console.warn(`sux self-improve: open-PR count failed, opening no PRs this tick: ${String((e as Error)?.message ?? e)}`);
+				console.warn(`sux self-improve: open-PR count failed, opening no PRs this tick: ${errMsg(e)}`);
 			}
 			try {
 				budget.issueSlots = Math.max(0, MAX_OPEN_SELF_IMPROVE_ISSUES - (await github.openSelfImproveIssueCount()));
 			} catch (e) {
 				budget.issueSlots = 0;
-				console.warn(`sux self-improve: open-issue count failed, opening no issues this tick: ${String((e as Error)?.message ?? e)}`);
+				console.warn(`sux self-improve: open-issue count failed, opening no issues this tick: ${errMsg(e)}`);
 			}
 		}
 
@@ -583,7 +584,7 @@ export async function selfImproveTick(env: RtEnv, deps: { github?: GithubClient 
 				await routeFinding(env, finding, github, result, budget);
 			} catch (e) {
 				result.failed++;
-				lastFailure = `entry '${String(entry.text ?? "").slice(0, 60)}' failed: ${String((e as Error)?.message ?? e)}`;
+				lastFailure = `entry '${String(entry.text ?? "").slice(0, 60)}' failed: ${errMsg(e)}`;
 				console.warn(`sux self-improve: ${lastFailure}`);
 			}
 			result.processed++;
@@ -597,7 +598,7 @@ export async function selfImproveTick(env: RtEnv, deps: { github?: GithubClient 
 		if (lastFailure) result.error = result.failed > 1 ? `${result.failed} entries failed; last: ${lastFailure}` : lastFailure;
 	} catch (e) {
 		// Never throw out of the tick — it rides ctx.waitUntil beside maintenanceTick.
-		result.error = String((e as Error)?.message ?? e);
+		result.error = errMsg(e);
 		console.warn(`sux self-improve tick error: ${result.error}`);
 	} finally {
 		// Release the lease so the next scheduled tick isn't blocked; the TTL is only a

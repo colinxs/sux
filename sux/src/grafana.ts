@@ -1,6 +1,7 @@
 import { clipErr, type CallEvent, deriveMetrics, type Metrics, readMetrics, sloReport } from "./metrics";
 import type { FetchRoute } from "./proxy";
 import type { RtEnv } from "./registry";
+import { errMsg } from "./fns/_util";
 
 // Only the Loki push secrets decide configured-or-not. A structural (all-optional)
 // shape so a caller holding a narrower env than RtEnv — proxy.ts's TailscaleEnv,
@@ -53,7 +54,7 @@ export function shipToLoki(env: RtEnv, ctx: { waitUntil(p: Promise<unknown>): vo
 			.then(async (r) => {
 				if (!r.ok) console.warn(`grafana loki push HTTP ${r.status}: ${clipErr(await r.text())}`);
 			})
-			.catch((err) => console.warn(`grafana loki push failed: ${String((err as Error)?.message ?? err)}`)),
+			.catch((err) => console.warn(`grafana loki push failed: ${errMsg(err)}`)),
 	);
 }
 
@@ -114,11 +115,11 @@ export function shipEgress(env: LokiEnv, ctx: { waitUntil(p: Promise<unknown>): 
 				.then(async (r) => {
 					if (!r.ok) console.warn(`grafana egress push HTTP ${r.status}: ${clipErr(await r.text())}`);
 				})
-				.catch((err) => console.warn(`grafana egress push failed: ${String((err as Error)?.message ?? err)}`)),
+				.catch((err) => console.warn(`grafana egress push failed: ${errMsg(err)}`)),
 		);
 	} catch (err) {
 		// Never let audit bookkeeping throw into the hot fetch path.
-		console.warn(`grafana egress ship failed: ${String((err as Error)?.message ?? err)}`);
+		console.warn(`grafana egress ship failed: ${errMsg(err)}`);
 	}
 }
 
@@ -196,6 +197,6 @@ export async function shipMetricsSnapshot(env: RtEnv, ctx: { waitUntil(p: Promis
 			.then(async (r) => {
 				if (!r.ok) console.warn(`grafana metrics push HTTP ${r.status}: ${clipErr(await r.text())}`);
 			})
-			.catch((err) => console.warn(`grafana metrics push failed: ${String((err as Error)?.message ?? err)}`)),
+			.catch((err) => console.warn(`grafana metrics push failed: ${errMsg(err)}`)),
 	);
 }

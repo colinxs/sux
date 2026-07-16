@@ -1,5 +1,6 @@
 import { maybeDecompressString } from "./_gzip";
 import { type Fn, fail, ok } from "../registry";
+import { errMsg } from "./_util";
 
 // All user-facing KV keys live under a fixed "kv:" namespace so tool writes can
 // never collide with internal cache:/sux:/oauth keys. A user key is rejected if,
@@ -43,7 +44,7 @@ export const kv_get: Fn = {
 			// A corrupt/truncated `\0gz:` frame or the decompression-bomb guard tripping
 			// throws — turn it into a clean fail() (mirrors dropbox/store) instead of an
 			// uncaught rejection surfacing as a generic dispatcher error.
-			return fail(`key '${String(args.key).trim()}' could not be decompressed: ${String((e as Error)?.message ?? e)}`);
+			return fail(`key '${String(args.key).trim()}' could not be decompressed: ${errMsg(e)}`);
 		}
 	},
 };

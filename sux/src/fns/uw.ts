@@ -1,6 +1,6 @@
 import { type Fn, failWith, ok } from "../registry";
 import { smartFetch } from "../proxy";
-import { oj } from "./_util";
+import { errMsg, oj } from "./_util";
 
 // UW person lookup — directory.uw.edu scrape (works today, no secret) with an
 // optional PWS mutual-TLS tier behind the UW_PWS_CERT binding.
@@ -210,7 +210,7 @@ export const uw: Fn = {
 			if (!sess) return failWith("layout_change", "directory.uw.edu did not set the expected session cookie — the form may have changed.");
 			cookie = sess;
 		} catch (e) {
-			return failWith("upstream_error", `directory.uw.edu unreachable: ${String((e as Error)?.message ?? e)}`);
+			return failWith("upstream_error", `directory.uw.edu unreachable: ${errMsg(e)}`);
 		}
 
 		const body = new URLSearchParams({
@@ -235,7 +235,7 @@ export const uw: Fn = {
 			if (resp.status >= 400) return failWith("upstream_error", `directory.uw.edu search returned HTTP ${resp.status}.`);
 			html = await resp.text();
 		} catch (e) {
-			return failWith("upstream_error", `directory.uw.edu search failed: ${String((e as Error)?.message ?? e)}`);
+			return failWith("upstream_error", `directory.uw.edu search failed: ${errMsg(e)}`);
 		}
 
 		if (isStudentGated(html, wantStudents)) {

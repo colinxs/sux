@@ -1,7 +1,7 @@
 import { DROPBOX_API as API, DROPBOX_CONTENT as CONTENT, type DropboxScope, dropboxFetch, dropboxRpc, headerSafeJson, MAX_INLINE_BYTES, scopeConfigured, TEXT_EXT } from "./_dropbox-core";
 import { type Fn, fail, ok, type RtEnv } from "../registry";
 import { maybeDecompress } from "./_gzip";
-import { fromB64, toB64, oj } from "./_util";
+import { errMsg, fromB64, oj, toB64 } from "./_util";
 
 // Dropbox as the human-facing blob store (R2 `store` is the machine-facing
 // twin). The token belongs to an App-folder-scoped app: it structurally cannot
@@ -185,7 +185,7 @@ export const dropbox: Fn = {
 			}
 			return fail(`Unknown op '${op}'. Use put | get | list | delete | share.`);
 		} catch (e) {
-			return fail(`dropbox (${op}) failed: ${String((e as Error).message ?? e)}`);
+			return fail(`dropbox (${op}) failed: ${errMsg(e)}`);
 		}
 	},
 };

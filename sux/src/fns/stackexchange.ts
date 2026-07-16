@@ -1,5 +1,5 @@
 import { type Fn, fail, ok, type RtEnv } from "../registry";
-import { oj } from "./_util";
+import { errMsg, oj } from "./_util";
 
 // Stack Exchange search (api.stackexchange.com) — keyless advanced search over any
 // site in the network (Stack Overflow, Super User, Server Fault, …). No residential
@@ -64,7 +64,7 @@ export const stackexchange: Fn = {
 		try {
 			resp = await fetch(`${API}?${p}`, { signal: AbortSignal.timeout(20_000) });
 		} catch (e) {
-			return fail(`Stack Exchange fetch failed: ${String((e as Error)?.message ?? e)}`);
+			return fail(`Stack Exchange fetch failed: ${errMsg(e)}`);
 		}
 		if (!resp.ok) {
 			const hint =

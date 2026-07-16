@@ -9,6 +9,7 @@ import { FUNCTIONS } from "./fns";
 import { KIND_PLANS, parseStrategies } from "./fns/get";
 import type { JsonRpc } from "./mcp-util";
 import { findFn, type RtEnv, unwrapFnCall } from "./registry";
+import { errMsg } from "./fns/_util";
 
 const rateLimited = (): Response =>
 	new Response(JSON.stringify({ error: "rate_limited" }), { status: 429, headers: { "content-type": "application/json", "retry-after": "10" } });
@@ -129,7 +130,7 @@ export async function weightedRateLimit(env: RtEnv, login: string, rpc: JsonRpc 
 		try {
 			success = (await env.MCP_RATE_LIMITER.limit({ key: login })).success;
 		} catch (e) {
-			console.warn(`weighted rate limiter threw, failing open: ${String((e as Error)?.message ?? e)}`);
+			console.warn(`weighted rate limiter threw, failing open: ${errMsg(e)}`);
 			break;
 		}
 		if (!success) return rateLimited();

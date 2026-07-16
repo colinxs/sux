@@ -1,5 +1,6 @@
 import { type Fn, fail, ok } from "../registry";
 import { hasAI, llm } from "../ai";
+import { errMsg } from "./_util";
 
 export const classify: Fn = {
 	name: "classify",
@@ -41,7 +42,7 @@ export const classify: Fn = {
 			}
 			return ok(out);
 		} catch (e) {
-			return fail(String((e as Error).message ?? e));
+			return fail(errMsg(e));
 		}
 	},
 };

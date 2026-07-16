@@ -1,5 +1,5 @@
 import { type Fn, fail, failWith, ok } from "../registry";
-import { fetchTextOk, isHttpUrl, sha256Hex, oj } from "./_util";
+import { errMsg, fetchTextOk, isHttpUrl, oj, sha256Hex } from "./_util";
 import { select } from "./select";
 
 /** SHA-256 hex of a UTF-8 string. */
@@ -98,7 +98,7 @@ export const watch: Fn = {
 			result.noCache = true; // stateful: the stored hash mutates each check
 			return result;
 		} catch (e) {
-			return fail(`watch failed: ${String((e as Error)?.message ?? e)}`);
+			return fail(`watch failed: ${errMsg(e)}`);
 		}
 	},
 };

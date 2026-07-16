@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { fromB64, toB64 } from "./_util";
+import { errMsg, fromB64, toB64 } from "./_util";
 
 export const encode: Fn = {
 	name: "encode",
@@ -38,7 +38,7 @@ export const encode: Fn = {
 			}
 			return fail("codec must be base64 | hex | url");
 		} catch (e) {
-			return fail(`${decode ? "decode" : "encode"} failed: ${String((e as Error).message ?? e)}`);
+			return fail(`${decode ? "decode" : "encode"} failed: ${errMsg(e)}`);
 		}
 	},
 };

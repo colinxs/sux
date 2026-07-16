@@ -1,6 +1,6 @@
 import { type Fn, fail, ok } from "../registry";
 import { htmlToMd } from "./_markup";
-import { clampBytes, loadBytes, putBlob, vaultToday, oj } from "./_util";
+import { clampBytes, errMsg, loadBytes, oj, putBlob, vaultToday } from "./_util";
 import { dropboxPut, hasDropbox } from "./dropbox";
 import { type VaultCfg, vaultCfg, vaultPut } from "./obsidian";
 
@@ -220,7 +220,7 @@ export const ingest: Fn = {
 			if (!w.ok) return fail(w.error);
 			return ok(oj({ ok: true, note: notePath, created: w.created, commit: w.commit, source, ...(pass ? { pass } : {}), ...(blob ? { blob } : {}) }));
 		} catch (e) {
-			return fail(`ingest failed: ${String((e as Error).message ?? e)}`);
+			return fail(`ingest failed: ${errMsg(e)}`);
 		}
 	},
 };

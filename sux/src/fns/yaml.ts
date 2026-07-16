@@ -1,5 +1,6 @@
 import { type Fn, fail, ok } from "../registry";
 import { isEmptyJsonData, resolveJsonData, toYaml } from "./_convert";
+import { errMsg } from "./_util";
 
 // yaml(x): serialize a JSON document TO YAML. Inverse of json(); compose as
 // yaml(...) over json(...) to round-trip. Practical common subset (scalars,
@@ -23,7 +24,7 @@ export const yaml: Fn = {
 		try {
 			return ok(toYaml(resolveJsonData(args?.data)));
 		} catch (e) {
-			return fail(`yaml failed: ${String((e as Error).message ?? e)}`);
+			return fail(`yaml failed: ${errMsg(e)}`);
 		}
 	},
 };

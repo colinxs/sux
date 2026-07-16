@@ -1,5 +1,6 @@
 import { type Fn, fail, ok } from "../registry";
 import { detectFormat, type Format, parseSource } from "./_convert";
+import { errMsg } from "./_util";
 
 // json(x): convert a source document TO JSON, dispatching on the source format
 // (auto-detected, or forced with `from`). The inverse converters are yaml()/csv()
@@ -53,7 +54,7 @@ export const json: Fn = {
 			}
 			return ok(JSON.stringify(value, null, indent));
 		} catch (e) {
-			return fail(`json (from ${src}) failed: ${String((e as Error).message ?? e)}`);
+			return fail(`json (from ${src}) failed: ${errMsg(e)}`);
 		}
 	},
 };

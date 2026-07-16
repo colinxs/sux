@@ -1,5 +1,5 @@
 import { type Fn, fail } from "../registry";
-import { deliverBytes, inlineB64, isHttpUrl, loadBytes } from "./_util";
+import { deliverBytes, errMsg, inlineB64, isHttpUrl, loadBytes } from "./_util";
 
 const MIME: Record<string, string> = { png: "image/png", jpeg: "image/jpeg", webp: "image/webp", avif: "image/avif" };
 
@@ -51,7 +51,7 @@ export const imageConvert: Fn = {
 		try {
 			({ bytes } = await loadBytes(env, { base64: args?.image, url: args?.url }));
 		} catch (e) {
-			return fail(`Could not read source image: ${String((e as Error).message ?? e)}`);
+			return fail(`Could not read source image: ${errMsg(e)}`);
 		}
 
 		if (looksLikeVideo(bytes)) {
@@ -75,7 +75,7 @@ export const imageConvert: Fn = {
 			const resultBytes = new Uint8Array(await result.response().arrayBuffer());
 			return deliverBytes(env, resultBytes, MIME[to], args?.as, () => inlineB64(resultBytes, MIME[to]));
 		} catch (e) {
-			return fail(`image_convert failed: ${String((e as Error).message ?? e)}`);
+			return fail(`image_convert failed: ${errMsg(e)}`);
 		}
 	},
 };

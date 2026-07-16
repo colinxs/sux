@@ -1,6 +1,6 @@
 import { type Fn, failWith, ok } from "../registry";
 import { smartFetch } from "../proxy";
-import { FETCH_BYTES_MAX_BYTES, isHttpUrl, noCacheOn4xx, noCacheOnMutation, readBodyBytes, toB64 } from "./_util";
+import { FETCH_BYTES_MAX_BYTES, errMsg, isHttpUrl, noCacheOn4xx, noCacheOnMutation, readBodyBytes, toB64 } from "./_util";
 
 export const proxyFn: Fn = {
 	name: "proxy",
@@ -35,7 +35,7 @@ export const proxyFn: Fn = {
 		try {
 			buf = await readBodyBytes(resp, maxBytes);
 		} catch (e) {
-			return failWith("upstream_error", `Fetch failed: ${String((e as Error).message ?? e)}`);
+			return failWith("upstream_error", `Fetch failed: ${errMsg(e)}`);
 		}
 		const hdrs = Object.fromEntries([...resp.headers]);
 		const body = String(args?.as ?? "text") === "base64" ? toB64(buf) : new TextDecoder().decode(buf);

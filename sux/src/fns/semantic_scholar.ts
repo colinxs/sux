@@ -1,5 +1,5 @@
 import { type Fn, fail, ok, type RtEnv } from "../registry";
-import { oj } from "./_util";
+import { errMsg, oj } from "./_util";
 
 // Semantic Scholar Academic Graph (api.semanticscholar.org) — keyless paper search
 // across ~200M papers. No residential proxy: a public academic API with no bot
@@ -50,7 +50,7 @@ export const semantic_scholar: Fn = {
 		try {
 			resp = await fetch(`${API}?${p}`, { headers, signal: AbortSignal.timeout(20_000) });
 		} catch (e) {
-			return fail(`Semantic Scholar fetch failed: ${String((e as Error)?.message ?? e)}`);
+			return fail(`Semantic Scholar fetch failed: ${errMsg(e)}`);
 		}
 		if (!resp.ok) return fail(`Semantic Scholar API HTTP ${resp.status}.`);
 		const j: any = await resp.json();

@@ -12,6 +12,7 @@ import {
 	sessionDump,
 	validateCalls,
 } from "./_jmap";
+import { errMsg } from "./_util";
 
 // jmap — the full JMAP protocol (RFC 8620/8621 + Fastmail MaskedEmail) as ONE typed
 // conduit to Fastmail. The caller sends a raw JMAP batch; sux injects the Bearer
@@ -43,7 +44,7 @@ function toFail(e: unknown) {
 		if (code.startsWith("__")) return failWith("upstream_error", e.message);
 		return failWith(e.code, e.message);
 	}
-	return failWith("upstream_error", `jmap failed: ${String((e as Error)?.message ?? e)}`);
+	return failWith("upstream_error", `jmap failed: ${errMsg(e)}`);
 }
 
 export const jmap: Fn = {

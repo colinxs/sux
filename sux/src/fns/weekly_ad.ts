@@ -1,5 +1,5 @@
 import { type Fn, failWith, ok } from "../registry";
-import { oj } from "./_util";
+import { errMsg, oj } from "./_util";
 import { normalizeMoney, type RetailProduct } from "./_retail";
 
 // Flipp (backflipp.wishabi.com) — keyless, free backend powering the Flipp
@@ -70,7 +70,7 @@ export const weekly_ad: Fn = {
 		try {
 			resp = await fetch(`${API}?${p}`, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(20_000) });
 		} catch (e) {
-			return failWith("upstream_error", `Flipp fetch failed: ${String((e as Error)?.message ?? e)}`);
+			return failWith("upstream_error", `Flipp fetch failed: ${errMsg(e)}`);
 		}
 		if (!resp.ok) return failWith("upstream_error", `Flipp API HTTP ${resp.status}.`);
 		const j: any = await resp.json();

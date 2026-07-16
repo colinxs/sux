@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { oj } from "./_util";
+import { errMsg, oj } from "./_util";
 
 // arXiv API (export.arxiv.org) — keyless, free, returns Atom XML. No residential
 // proxy: this is a public academic endpoint with no bot wall, so a plain fetch is
@@ -82,7 +82,7 @@ export const arxiv: Fn = {
 		try {
 			resp = await fetch(`${API}?${p}`, { signal: AbortSignal.timeout(20_000) });
 		} catch (e) {
-			return fail(`arXiv fetch failed: ${String((e as Error)?.message ?? e)}`);
+			return fail(`arXiv fetch failed: ${errMsg(e)}`);
 		}
 		if (!resp.ok) return fail(`arXiv API HTTP ${resp.status}.`);
 		const xml = await resp.text();

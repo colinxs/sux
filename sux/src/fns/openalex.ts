@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { oj } from "./_util";
+import { errMsg, oj } from "./_util";
 
 // OpenAlex (api.openalex.org) — keyless, free, open scholarly graph (250M+ works).
 // Single JSON endpoint: /works?search=<term>. No residential proxy: a public,
@@ -50,7 +50,7 @@ export const openalex: Fn = {
 		try {
 			resp = await fetch(`${API}?${p}`, { signal: AbortSignal.timeout(20_000) });
 		} catch (e) {
-			return fail(`OpenAlex fetch failed: ${String((e as Error)?.message ?? e)}`);
+			return fail(`OpenAlex fetch failed: ${errMsg(e)}`);
 		}
 		if (!resp.ok) return fail(`OpenAlex API HTTP ${resp.status}.`);
 		const j: any = await resp.json();

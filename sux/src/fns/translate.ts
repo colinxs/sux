@@ -1,5 +1,6 @@
 import { type Fn, fail, ok } from "../registry";
 import { hasAI, MODELS } from "../ai";
+import { errMsg } from "./_util";
 
 export const translate: Fn = {
 	name: "translate",
@@ -42,7 +43,7 @@ export const translate: Fn = {
 			if (!out) return fail("translate produced an empty result — retry (transient model hiccup or unsupported language pair).");
 			return ok(out);
 		} catch (e) {
-			return fail(`translate failed: ${String((e as Error).message ?? e)}`);
+			return fail(`translate failed: ${errMsg(e)}`);
 		}
 	},
 };

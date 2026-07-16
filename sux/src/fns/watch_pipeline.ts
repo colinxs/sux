@@ -1,5 +1,5 @@
 import { type Fn, fail, failWith, ok } from "../registry";
-import { fetchTextOk, isHttpUrl, sha256Hex, oj } from "./_util";
+import { errMsg, fetchTextOk, isHttpUrl, oj, sha256Hex } from "./_util";
 
 /** SHA-256 hex of a UTF-8 string. */
 async function sha256Text(s: string): Promise<string> {
@@ -77,7 +77,7 @@ async function fetchPipelineState(owner: string, repo: string, token?: string): 
 			// Actions not available or disabled
 		}
 	} catch (e) {
-		return { success: false, error: `Failed to fetch pipeline state: ${String((e as Error)?.message ?? e)}` };
+		return { success: false, error: `Failed to fetch pipeline state: ${errMsg(e)}` };
 	}
 
 	// Serialize to consistent JSON string for hashing
@@ -149,7 +149,7 @@ export const watch_pipeline: Fn = {
 			response.noCache = true; // stateful: the stored hash mutates each check
 			return response;
 		} catch (e) {
-			return fail(`watch_pipeline failed: ${String((e as Error)?.message ?? e)}`);
+			return fail(`watch_pipeline failed: ${errMsg(e)}`);
 		}
 	},
 };

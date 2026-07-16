@@ -1,5 +1,6 @@
 import { type Fn, fail, ok } from "../registry";
 import { isEmptyJsonData, resolveJsonData, toCsv } from "./_convert";
+import { errMsg } from "./_util";
 
 // csv(x): serialize a JSON array of objects TO CSV. Inverse of json(from:'csv').
 // Compose json({from:'csv'}) then csv(...) to round-trip a spreadsheet.
@@ -32,7 +33,7 @@ export const csv: Fn = {
 				return fail("csv expects a JSON array of objects; found a non-object element.");
 			return ok(toCsv(arr, delim));
 		} catch (e) {
-			return fail(`csv failed: ${String((e as Error).message ?? e)}`);
+			return fail(`csv failed: ${errMsg(e)}`);
 		}
 	},
 };

@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { oj } from "./_util";
+import { errMsg, oj } from "./_util";
 import { smartFetch } from "../proxy";
 
 export const redirects: Fn = {
@@ -23,7 +23,7 @@ export const redirects: Fn = {
 				// bounds every attempt (30s) and falls back to direct if the node is down.
 				resp = await smartFetch(env, url, { method: "GET", redirect: "manual" });
 			} catch (e) {
-				return fail(`Fetch failed at ${url}: ${String((e as Error).message ?? e)}`);
+				return fail(`Fetch failed at ${url}: ${errMsg(e)}`);
 			}
 			const loc = resp.headers.get("location") ?? undefined;
 			chain.push({ status: resp.status, url, location: loc });

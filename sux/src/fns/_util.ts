@@ -9,6 +9,18 @@ import { maybeCompress, maybeDecompress } from "./_gzip";
 /** An Error/thrown value → its message string (the `catch (e)` idiom every fn shares). */
 export const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);
 
+/** Parse `raw` as JSON, returning `fallback` instead of throwing on missing/malformed
+ * input — the shared shape for a KV-cache-read that ~55 sites here reimplement one at
+ * a time as `try { JSON.parse(...) } catch { ...fallback... }`. */
+export function safeParseJson<T>(raw: string | null | undefined, fallback: T): T {
+	if (!raw) return fallback;
+	try {
+		return JSON.parse(raw) as T;
+	} catch {
+		return fallback;
+	}
+}
+
 /** Compact JSON for LLM-facing fn output — no pretty indentation (a model reads
  * the structure fine and pays for every whitespace token). The one serializer
  * every fn's text envelope goes through; browser-rendered surfaces (observability

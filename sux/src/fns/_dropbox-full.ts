@@ -1,6 +1,6 @@
 import { DROPBOX_CONTENT as CONTENT, type DropboxScope, dropboxFetch, dropboxRpc, headerSafeJson, MAX_INLINE_BYTES, scopeConfigured, TEXT_EXT } from "./_dropbox-core";
 import { type RtEnv } from "../registry";
-import { FANOUT_BUDGET_MS, fromB64, toB64 } from "./_util";
+import { FANOUT_BUDGET_MS, errMsg, fromB64, toB64 } from "./_util";
 import { pdf } from "./pdf";
 
 // Full-Dropbox (Mode B) client — READ/SEARCH and (separately armed) WRITE over the WHOLE
@@ -279,7 +279,7 @@ export async function operateFull(
 				results.push(await deleteFull(env, { path: p, dryRun: false }));
 			}
 		} catch (e) {
-			results.push({ path: p, error: String((e as Error)?.message ?? e).slice(0, 150) });
+			results.push({ path: p, error: errMsg(e).slice(0, 150) });
 		}
 	}
 	// Distinct truncation causes: `truncated` (input side — more matches than `max`

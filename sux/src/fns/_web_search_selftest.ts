@@ -7,6 +7,7 @@
 
 import { type RtEnv } from "../registry";
 import { webSearch } from "./web_search";
+import { errMsg } from "./_util";
 
 // Guaranteed to have results and cheap to parse — a 0-hit response is unambiguous
 // drift, never a query that legitimately has no answer.
@@ -36,7 +37,7 @@ async function probeEngine(env: RtEnv, engine: string, deps: WebSearchSelftestDe
 		if (res.isError) return { engine, ok: false, error: res.content?.[0]?.text ?? "no results" };
 		return { engine, ok: true };
 	} catch (e) {
-		return { engine, ok: false, error: String((e as Error)?.message ?? e) };
+		return { engine, ok: false, error: errMsg(e) };
 	}
 }
 

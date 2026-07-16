@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { oj } from "./_util";
+import { errMsg, oj } from "./_util";
 
 // Facebook Graph API (official) wrapper. Key-gated on FACEBOOK_TOKEN — a Graph
 // API access token with the scopes for whatever you're reading (pages, posts,
@@ -40,7 +40,7 @@ export const facebook: Fn = {
 			if (!resp.ok) return fail(`Facebook Graph error: ${j?.error?.message ?? `HTTP ${resp.status}`}`);
 			return ok(oj(j));
 		} catch (e) {
-			return fail(`facebook failed: ${String((e as Error).message ?? e)}`);
+			return fail(`facebook failed: ${errMsg(e)}`);
 		}
 	},
 };

@@ -2,7 +2,7 @@ import { type Fn, fail, ok } from "../registry";
 import { hasAI, llm } from "../ai";
 import { kagiTool } from "../kagi";
 import { type Route, smartFetch } from "../proxy";
-import { renderHtml, stripHtml } from "./_util";
+import { errMsg, renderHtml, stripHtml } from "./_util";
 
 export type Hit = { title: string; url: string; snippet?: string };
 
@@ -374,7 +374,7 @@ export const webSearch: Fn = {
 			);
 			return ok(`${header}${summary}\n\n— Sources —\n${body}`);
 		} catch (e) {
-			return ok(`${header}${body}\n\n(summary failed: ${String((e as Error).message ?? e)})`);
+			return ok(`${header}${body}\n\n(summary failed: ${errMsg(e)})`);
 		}
 	},
 };
