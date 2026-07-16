@@ -123,6 +123,7 @@ import { fontcase } from "./fontcase";
 import { recall } from "./recall";
 import { get } from "./get";
 import { uw } from "./uw";
+import { run } from "./run";
 
 export const FUNCTIONS: Fn[] = [
 	search,
@@ -244,4 +245,5 @@ export const FUNCTIONS: Fn[] = [
 	recall,
 	get,
 	uw,
+	run,
 ];

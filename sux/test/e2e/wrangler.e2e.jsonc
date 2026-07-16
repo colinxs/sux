@@ -11,5 +11,8 @@
 	// and browser/AI would otherwise need real remote access to spin up.
 	"kv_namespaces": [{ "binding": "OAUTH_KV", "id": "d0dadc11fdd64598992f4a84a958bafb" }],
 	"r2_buckets": [{ "binding": "R2", "bucket_name": "sux-mcp-e2e" }],
+	// Durable op runtime — the cluster-E tracer bullet's Tier-2 e2e drives a real
+	// OpWorkflow instance on local workerd (miniflare implements waitForEvent/sendEvent).
+	"workflows": [{ "name": "op-workflow", "binding": "OP_WORKFLOW", "class_name": "OpWorkflow" }],
 	"dev": { "port": 18790, "local_protocol": "http" }
 }

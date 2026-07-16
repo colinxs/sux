@@ -727,6 +727,11 @@ export function oauthErrorResponse(e: unknown): Response {
 	});
 }
 
+// The durable op runtime's Workflow entrypoint, bound as OP_WORKFLOW (wrangler.jsonc).
+// wrangler resolves `class_name: "OpWorkflow"` from the worker entry's exports, so it
+// must be re-exported here alongside the default fetch/scheduled handler.
+export { OpWorkflow } from "./op-engine/durable.js";
+
 // The OAuth library throws on malformed requests (e.g. an unregistered
 // redirect_uri), which Cloudflare surfaces as a raw 1101 error page. Wrap it so
 // those become clean JSON errors: 400 for client mistakes, 500 otherwise.

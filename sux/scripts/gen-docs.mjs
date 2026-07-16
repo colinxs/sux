@@ -19,7 +19,7 @@ const CATEGORIES = [
 	["Compress / encode / data", ["compress", "encode", "hash", "archive"]],
 	["Token optimization", ["pack", "declutter"]],
 	["Text / AI", ["summarize", "translate", "classify", "ocr", "entities", "redact", "voice", "fontcase"]],
-	["Batching / composition", ["batch", "batch_fetch", "pipe"]],
+	["Batching / composition", ["batch", "batch_fetch", "pipe", "run"]],
 	["Storage", ["kv_get", "kv_put", "kv_list", "kv_delete", "store", "put", "dropbox"]],
 	["Web search / query", ["search", "web_search", "tavily", "find_similar", "wayback", "get"]],
 	["Retail / shopping", ["shop", "product_search", "amazon", "walmart", "homedepot", "lowes", "bestbuy", "ebay", "costco", "kroger", "ace", "weekly_ad"]],

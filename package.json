@@ -35,6 +35,7 @@
     "@cloudflare/puppeteer": "^1.1.0",
     "@cloudflare/workers-oauth-provider": "^0.8.1",
     "@ghostery/adblocker": "^2.18.1",
+    "@suxos/lib": "file:../suxlib",
     "fflate": "^0.8.3",
     "pdf-lib": "^1.17.1",
     "tldts-experimental": "^7.4.8"

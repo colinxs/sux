@@ -33,6 +33,29 @@ jobs:
           node-version: 22
           cache: npm
 
+      # package.json depends on "@suxos/lib": "file:../suxlib" — a PRIVATE sibling
+      # repo, not a submodule of this one, so a clean runner has no ../suxlib and
+      # `npm ci` fails resolving the file: dep. Mint a token scoped to just that
+      # repo (read-only) from the same App identity automerge.yml already uses.
+      - name: Mint app token for suxlib (private sibling dependency)
+        id: suxlib-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.SUX_BOT_APP_ID }}
+          private-key: ${{ secrets.SUX_BOT_PRIVATE_KEY }}
+          owner: SuxOS
+          repositories: suxlib
+          permission-contents: read
+
+      # $GITHUB_WORKSPACE is .../work/sux/sux, so ../suxlib lands at .../work/sux/suxlib
+      # — exactly where npm's file:../suxlib resolution looks.
+      - name: Clone suxlib (private sibling dependency)
+        env:
+          SUXLIB_TOKEN: ${{ steps.suxlib-token.outputs.token }}
+        run: |
+          git clone --depth 1 --branch main "https://x-access-token:${SUXLIB_TOKEN}@github.com/SuxOS/suxlib.git" ../suxlib
+          npm --prefix ../suxlib ci --omit=dev   # install suxlib's own deps (fflate) so sux's tsc can resolve them through the file: dep
+
       - name: Install dependencies
         run: npm ci
 

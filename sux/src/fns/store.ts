@@ -138,7 +138,7 @@ export const store: Fn = {
 				// Drop any phi/ keys from the listing — the private PHI prefix must never be
 				// enumerable through store, so `list prefix:"phi/"` returns empty and an
 				// unprefixed list omits them (same boundary observability.ts enforces on /s/).
-				return ok(oj({ objects: res.objects.filter((o) => !o.key.startsWith(PHI_PREFIX)).map((o) => ({ key: o.key, size: o.size, uploaded: o.uploaded })), truncated: Boolean(res.truncated), cursor: res.cursor }));
+				return ok(oj({ objects: res.objects.filter((o) => !o.key.startsWith(PHI_PREFIX)).map((o) => ({ key: o.key, size: o.size, uploaded: o.uploaded })), truncated: Boolean(res.truncated), cursor: res.truncated ? res.cursor : undefined }));
 			}
 
 			return fail(`Unknown op '${op}'.`);

@@ -479,7 +479,7 @@ export function toolList(
 //   sux — the capability map    · fn — call any leaf by name
 //   search/scrape — web in      · shop — retail fan-out
 //   ingest/recall/oracle — memory in, cited answers out
-//   pipe/batch — compose leaves server-side
+//   pipe/batch — compose leaves server-side · run — durable op runtime
 //   store — blob storage        · preferences/issue — tell sux what you want / what broke
 //   vault/mail/files/calendar/contact — the personal-data namespaces, dispatched into the
 //     existing VAULT_TOOLS/MAIL_TOOLS/FILES_TOOLS handlers so the whole digital-life
@@ -490,7 +490,7 @@ export const FRONT_VERBS = new Set<string>([
 	"sux", "fn",
 	"search", "scrape", "shop",
 	"ingest", "recall", "oracle",
-	"pipe", "batch",
+	"pipe", "batch", "run",
 	"store", "preferences", "issue", "proposals", "agenda",
 	"vault", "mail", "files", "calendar", "contact",
 ]);

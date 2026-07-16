@@ -19,6 +19,10 @@
 	"images": { "binding": "IMAGES" },
 	// R2 object storage for `store` (content-addressed blobs; KV maps uuid→object).
 	"r2_buckets": [{ "binding": "R2", "bucket_name": "sux-mcp" }],
+	// Durable op runtime — the `run` front-verb starts OpWorkflow instances that
+	// interpret a suxlib Op tree step-by-step, so a run survives isolate eviction,
+	// step retries, and multi-day human (ask) pauses. See src/op-engine/durable.ts.
+	"workflows": [{ "name": "op-workflow", "binding": "OP_WORKFLOW", "class_name": "OpWorkflow" }],
 	// Browser Run (Cloudflare renamed "Browser Rendering" -> "Browser Run" Apr 2026 —
 	// same `browser` binding shape and `@cloudflare/puppeteer` package, purely additive:
 	// CDP endpoint, WebMCP, session recordings, 30->120 concurrency) — headless Chromium
