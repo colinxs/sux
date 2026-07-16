@@ -9,7 +9,7 @@ vi.mock("./fns/dropbox", () => ({
 	},
 }));
 
-import { FILES_TOOLS, handleFilesRpc } from "./files-mcp";
+import { FILES_TOOLS } from "./files-mcp";
 import { dropbox } from "./fns/dropbox";
 
 const env = () => ({}) as any;
@@ -293,38 +293,3 @@ describe("full-Dropbox (Mode B) gating — dormant without DROPBOX_FULL_*", () =
 	});
 });
 
-describe("handleFilesRpc protocol shell", () => {
-	const call = (rpc: any) => handleFilesRpc(env(), {} as any, rpc, 0);
-	const sseJson = async (r: Response) => {
-		const t = await r.text();
-		const line = t.split("\n").find((l) => l.startsWith("data:")) ?? t;
-		return JSON.parse(line.replace(/^data:\s*/, ""));
-	};
-
-	it("initialize announces the files server", async () => {
-		const body = await sseJson(await call({ jsonrpc: "2.0", id: 1, method: "initialize" }));
-		expect(body.result.serverInfo.name).toBe("files");
-	});
-
-	it("tools/list includes files_* and the raw dropbox hatch", async () => {
-		const body = await sseJson(await call({ jsonrpc: "2.0", id: 2, method: "tools/list" }));
-		const names = body.result.tools.map((t: any) => t.name);
-		expect(names).toContain("files_list");
-		expect(names).toContain("files_search");
-		expect(names).toContain("dropbox");
-	});
-
-	it("rejects an unknown tool", async () => {
-		const body = await sseJson(await call({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "nope" } }));
-		expect(body.error.code).toBe(-32601);
-	});
-
-	it("rejects multi-byte-UTF-8 args whose byte size exceeds the cap even though its UTF-16 code-unit length reads under it", async () => {
-		// 750k CJK chars: ~750k UTF-16 code units (under the 2MB cap by length) but
-		// ~2.25MB of UTF-8 bytes (over it) — the exact gap String.length misses.
-		const junk = "国".repeat(750_000);
-		const body = await sseJson(await call({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "files_list", arguments: { junk } } }));
-		expect(body.result.isError).toBe(true);
-		expect(body.result.content[0].text).toMatch(/too large/);
-	});
-});

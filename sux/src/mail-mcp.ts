@@ -1,5 +1,3 @@
-import { checkArgs, FN_DEADLINE_MS, withDeadline } from "./index";
-import { type JsonRpc, sseResponse } from "./mcp-util";
 import { fail, failWith, type RtEnv, type ToolResult } from "./registry";
 import { staged } from "./stage";
 import { jmap } from "./fns/jmap";
@@ -1456,38 +1454,3 @@ export async function labelMessages(env: RtEnv, ids: unknown, label: string, add
 }
 
 export const MAIL_TOOLS = TOOLS;
-
-// Mirrors handleVaultRpc: the per-request MCP protocol shell with the mail registry.
-const MAX_BODY_BYTES = 2 * 1024 * 1024;
-
-export async function handleMailRpc(env: RtEnv, _ctx: ExecutionContext, rpc: JsonRpc | undefined, bodyBytes = 0): Promise<Response> {
-	const method = rpc?.method;
-	const id = rpc?.id ?? null;
-
-	if (!method) return new Response(null, { status: 202 });
-	if (method === "tools/call" && bodyBytes > MAX_BODY_BYTES) {
-		return sseResponse({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `Request too large (${bodyBytes} bytes > ${MAX_BODY_BYTES}).` }], isError: true } });
-	}
-	if (method === "initialize") {
-		return sseResponse({ jsonrpc: "2.0", id, result: { protocolVersion: "2025-06-18", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "mail", version: "0.1.0" } } });
-	}
-	if (method.startsWith("notifications/")) return new Response(null, { status: 202 });
-	if (method === "tools/list") {
-		return sseResponse({ jsonrpc: "2.0", id, result: { tools: TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) } });
-	}
-	if (method === "tools/call") {
-		const name = String(rpc?.params?.name ?? "");
-		const tool = TOOLS.find((t) => t.name === name);
-		if (!tool) return sseResponse({ jsonrpc: "2.0", id, error: { code: -32601, message: `unknown tool: ${name}` } });
-		const args = rpc?.params?.arguments ?? {};
-		const argErr = checkArgs(args, MAX_BODY_BYTES, 64);
-		if (argErr) return sseResponse({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `${name} rejected: ${argErr}` }], isError: true } });
-		try {
-			const result = await withDeadline(name, FN_DEADLINE_MS, tool.run(env, args));
-			return sseResponse({ jsonrpc: "2.0", id, result });
-		} catch (e) {
-			return sseResponse({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `${name} failed: ${errMsg(e)}` }], isError: true } });
-		}
-	}
-	return sseResponse({ jsonrpc: "2.0", id, error: { code: -32601, message: `unknown method: ${method}` } });
-}

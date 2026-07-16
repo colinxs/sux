@@ -20,6 +20,22 @@ function cookiePair(setCookie: string): string {
 	return setCookie.split(";")[0];
 }
 
+describe("OAuthError.headers", () => {
+	it("carries optional headers through to toResponse()", async () => {
+		const err = new OAuthError("temporarily_unavailable", "rate limited", 429, { "Retry-After": "10" });
+		const res = err.toResponse();
+		expect(res.status).toBe(429);
+		expect(res.headers.get("Retry-After")).toBe("10");
+		expect(res.headers.get("Content-Type")).toBe("application/json");
+	});
+
+	it("defaults to no extra headers", async () => {
+		const err = new OAuthError("invalid_request", "bad request");
+		const res = err.toResponse();
+		expect(res.headers.get("Retry-After")).toBeNull();
+	});
+});
+
 describe("approved-clients cookie (HMAC round-trip)", () => {
 	it("accepts a cookie it just signed for the same client + secret", async () => {
 		const setCookie = await addApprovedClient(reqWithCookie(), "client-A", SECRET);
