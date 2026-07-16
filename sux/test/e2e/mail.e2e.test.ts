@@ -22,7 +22,10 @@ describe("MCP e2e: mail (real dispatch, unconfigured JMAP)", () => {
 	}, 30_000);
 
 	afterAll(async () => {
-		await h.stop();
+		// Guard against beforeAll having thrown before `h` was assigned — an unguarded
+		// `h.stop()` here would mask the real bind/boot error behind "Cannot read
+		// properties of undefined (reading 'stop')".
+		await h?.stop();
 	});
 
 	it("tools/list exposes the mail front verb with a real schema", async () => {

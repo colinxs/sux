@@ -6,29 +6,44 @@ import { join } from "node:path";
 // against the live dispatch chain, not a mocked fetch(). See e2e-worker.ts for what's
 // mounted and why (handleRpc, no OAuth wrapper).
 
-const PORT = 18790;
-const HOST = `http://127.0.0.1:${PORT}`;
 const CONFIG_PATH = join(__dirname, "wrangler.e2e.jsonc");
 const READY_TIMEOUT_MS = 30_000;
 const READY_POLL_MS = 250;
+// SIGTERM is given this long to let `wrangler dev` shut down its own workerd child
+// cleanly before stop() escalates to killing the whole process group with SIGKILL.
+const STOP_GRACE_MS = 5_000;
+
+// Each harness instance binds its own randomly-chosen port instead of one shared
+// constant. The e2e files run sequentially (fileParallelism:false in
+// vitest.e2e.config.ts), so this isn't about parallel contention — it's that
+// `wrangler dev` (npx → node → workerd) is a 3-level process tree, and a workerd
+// grandchild that's slow to exit on teardown can still hold a fixed port when the
+// next file's startHarness runs. A fresh random port per instance decouples files
+// from each other regardless of teardown timing. See stop() below for the other
+// half of the fix: actually killing that grandchild instead of leaking it forever.
+function pickPort(): number {
+	return 20000 + Math.floor(Math.random() * 20000);
+}
 
 export type Harness = {
+	host: string;
+	port: number;
 	rpc: (method: string, params?: unknown) => Promise<any>;
 	callTool: (name: string, args?: Record<string, unknown>) => Promise<{ isError?: boolean; content: Array<{ type: string; text: string }>; errorCode?: string }>;
 	stop: () => Promise<void>;
 };
 
-async function waitForReady(deadline: number): Promise<void> {
+async function waitForReady(host: string, deadline: number): Promise<void> {
 	while (Date.now() < deadline) {
 		try {
-			const r = await fetch(`${HOST}/health`);
+			const r = await fetch(`${host}/health`);
 			if (r.ok && (await r.text()) === "sux-e2e-harness-ok") return;
 		} catch {
 			// Not up yet — wrangler dev is still compiling/binding the port.
 		}
 		await new Promise((r) => setTimeout(r, READY_POLL_MS));
 	}
-	throw new Error(`e2e Worker did not become healthy within ${READY_TIMEOUT_MS}ms — is port ${PORT} already in use?`);
+	throw new Error(`e2e Worker did not become healthy within ${READY_TIMEOUT_MS}ms — is ${host} already in use?`);
 }
 
 /**
@@ -40,12 +55,19 @@ async function waitForReady(deadline: number): Promise<void> {
  */
 export async function startHarness(env: Record<string, string> = {}): Promise<Harness> {
 	const varArgs = Object.entries(env).flatMap(([k, v]) => ["--var", `${k}:${v}`]);
+	const port = pickPort();
+	const host = `http://127.0.0.1:${port}`;
 	// Spawn from the repo ROOT, not sux/ — sux/node_modules is a (pre-existing, unrelated)
 	// broken symlink, and running npx with it as cwd makes npm's local-bin resolution fail
 	// silently (wrangler exits immediately, code 194, no output).
-	const child = spawn("npx", ["wrangler", "dev", "--config", CONFIG_PATH, "--port", String(PORT), ...varArgs], {
+	// `detached: true` puts the spawned `npx` (and the `wrangler`/`workerd` it forks) in
+	// its own process group, so stop() can SIGKILL the whole group by PGID instead of
+	// only the `npx` wrapper — a plain `child.kill()` never reached the workerd
+	// grandchild, which is exactly what left the port bound for the next test file.
+	const child = spawn("npx", ["wrangler", "dev", "--config", CONFIG_PATH, "--port", String(port), ...varArgs], {
 		cwd: join(__dirname, "..", "..", ".."),
 		stdio: ["ignore", "pipe", "pipe"],
+		detached: true,
 	});
 
 	let out = "";
@@ -57,15 +79,24 @@ export async function startHarness(env: Record<string, string> = {}): Promise<Ha
 		child.once("exit", (code) => reject(new Error(`wrangler dev exited early (code ${code})\nstdout:\n${out}\nstderr:\n${err}`)));
 	});
 
+	// Negative pid targets the whole process group `detached: true` created above.
+	const killGroup = (sig: NodeJS.Signals) => {
+		try {
+			if (child.pid) process.kill(-child.pid, sig);
+		} catch {
+			// Group is already gone (e.g. workerd exited on its own) — nothing to do.
+		}
+	};
+
 	try {
-		await Promise.race([waitForReady(Date.now() + READY_TIMEOUT_MS), exited]);
+		await Promise.race([waitForReady(host, Date.now() + READY_TIMEOUT_MS), exited]);
 	} catch (e) {
-		child.kill("SIGKILL");
+		killGroup("SIGKILL");
 		throw e;
 	}
 
 	const rpc = async (method: string, params?: unknown) => {
-		const res = await fetch(`${HOST}/mcp`, {
+		const res = await fetch(`${host}/mcp`, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
@@ -82,9 +113,17 @@ export async function startHarness(env: Record<string, string> = {}): Promise<Ha
 	};
 
 	const stop = async () => {
-		child.kill("SIGTERM");
-		await new Promise((resolve) => child.once("exit", resolve));
+		const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+		killGroup("SIGTERM");
+		// wrangler/workerd don't always honor SIGTERM promptly (or at all) — escalate
+		// to SIGKILL on the whole group rather than let a wedged grandchild outlive
+		// this harness and block the next test file's port.
+		const timedOut = new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), STOP_GRACE_MS));
+		if ((await Promise.race([exited.then(() => "exited" as const), timedOut])) === "timeout") {
+			killGroup("SIGKILL");
+			await exited;
+		}
 	};
 
-	return { rpc, callTool, stop };
+	return { host, port, rpc, callTool, stop };
 }
