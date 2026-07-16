@@ -13,6 +13,7 @@ import { hmacHex, isTailscaleConfigured, proxyEnabled, smartFetch, type Tailscal
 import { deriveMetrics, readMetrics } from "./metrics";
 import { readHeartbeats } from "./cron-heartbeat";
 import type { RtEnv } from "./registry";
+import { safeParseJson } from "./fns/_util";
 
 type HandlerEnv = Env &
 	TailscaleEnv & { OAUTH_PROVIDER: OAuthHelpers } & {
@@ -385,13 +386,9 @@ const HEALTH_CACHE_KEY = "sux:health:public";
 const HEALTH_CACHE_TTL = 60;
 
 async function handleHealth(url: URL, env: HandlerEnv): Promise<Response> {
-	let h: Record<string, unknown> | undefined;
-	try {
-		const cached = await env.OAUTH_KV.get(HEALTH_CACHE_KEY);
-		if (cached) h = JSON.parse(cached) as Record<string, unknown>;
-	} catch {
-		// cache read is best-effort — fall through to a live gather
-	}
+	// cache read is best-effort — a KV or parse failure just falls through to a live gather
+	const cached = await env.OAUTH_KV.get(HEALTH_CACHE_KEY).catch(() => null);
+	let h: Record<string, unknown> | undefined = safeParseJson<Record<string, unknown> | undefined>(cached, undefined);
 	if (!h) {
 		h = redactPublicHealth(await gatherHealth(env));
 		try {
@@ -442,12 +439,14 @@ async function handleAuthorizePost(request: Request, env: HandlerEnv): Promise<R
 			return text("Missing state in form data", 400);
 		}
 
-		let state: { oauthReqInfo?: AuthRequest };
+		let decodedState: string;
 		try {
-			state = JSON.parse(atob(encodedState));
+			decodedState = atob(encodedState);
 		} catch (_e) {
 			return text("Invalid state data", 400);
 		}
+		const state = safeParseJson<{ oauthReqInfo?: AuthRequest } | null>(decodedState, null);
+		if (!state) return text("Invalid state data", 400);
 
 		if (!state.oauthReqInfo || !state.oauthReqInfo.clientId) {
 			return text("Invalid request", 400);
@@ -496,12 +495,8 @@ async function handleCallback(request: Request, url: URL, env: HandlerEnv): Prom
 	if (!storedDataJson) return text("Invalid or expired state", 400);
 	await env.OAUTH_KV.delete(`oauth:state:${stateFromQuery}`);
 
-	let oauthReqInfo: AuthRequest;
-	try {
-		oauthReqInfo = JSON.parse(storedDataJson) as AuthRequest;
-	} catch (_e) {
-		return text("Invalid state data", 500);
-	}
+	const oauthReqInfo = safeParseJson<AuthRequest | null>(storedDataJson, null);
+	if (!oauthReqInfo) return text("Invalid state data", 500);
 	if (!oauthReqInfo.clientId) return text("Invalid OAuth request data", 400);
 
 	const [accessToken, errResponse] = await fetchUpstreamAuthToken({

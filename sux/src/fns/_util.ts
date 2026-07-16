@@ -4,10 +4,10 @@
 //
 // This file is a thin barrel: the scoped concerns (byte/base64 codecs, fan-out
 // budget/pool, fetch dedup cache, cache-control mutators, HTML stripping,
-// content-addressed store refs) live under ./_util/* (#565) and are re-exported
-// below so the ~100 fns importing `from "./_util"` don't need to change. What
-// stays HERE is the fetch/render orchestration that genuinely ties those
-// concerns together (fetchText, loadBytes, loadHtml, …).
+// content-addressed store refs, JSON-parse-with-fallback) live under ./_util/*
+// (#565) and are re-exported below so the ~100 fns importing `from "./_util"`
+// don't need to change. What stays HERE is the fetch/render orchestration that
+// genuinely ties those concerns together (fetchText, loadBytes, loadHtml, …).
 
 import type { RtEnv } from "../registry";
 import { smartFetch } from "../proxy";
@@ -26,6 +26,7 @@ export * from "./_util/fanout";
 export * from "./_util/fetch-cache";
 export * from "./_util/cache-control";
 export * from "./_util/html";
+export * from "./_util/json";
 export * from "./_util/store-ref";
 
 // Cloudflare's edge-to-origin error family: the CF edge itself answered, but

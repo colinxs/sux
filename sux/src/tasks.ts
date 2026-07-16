@@ -1,6 +1,7 @@
 import { recordCall } from "./metrics";
 import { shipToLoki } from "./grafana";
 import type { RtEnv, ToolResult } from "./registry";
+import { safeParseJson } from "./fns/_util";
 
 // MCP "Tasks" primitive (spec 2025-11-25, still experimental as of the
 // 2026-07-28 release candidate) — durable state for long-running tool calls,
@@ -84,12 +85,7 @@ async function putTask(env: RtEnv, rec: TaskRecord): Promise<void> {
 
 export async function getTask(env: RtEnv, taskId: string): Promise<TaskRecord | null> {
 	const raw = await env.OAUTH_KV.get(taskKey(taskId));
-	if (!raw) return null;
-	try {
-		return JSON.parse(raw) as TaskRecord;
-	} catch {
-		return null;
-	}
+	return safeParseJson<TaskRecord | null>(raw, null);
 }
 
 export function isTerminal(status: TaskStatus): boolean {
@@ -223,11 +219,9 @@ export async function listTasks(env: RtEnv, cursor?: string, limit = 50): Promis
 	const tasks: PublicTask[] = [];
 	for (const raw of recs) {
 		if (!raw) continue;
-		try {
-			tasks.push(toPublicTask(JSON.parse(raw) as TaskRecord));
-		} catch {
-			// Corrupt/foreign entry under the prefix — skip rather than fail the list.
-		}
+		// Corrupt/foreign entry under the prefix falls back to null — skip rather than fail the list.
+		const rec = safeParseJson<TaskRecord | null>(raw, null);
+		if (rec) tasks.push(toPublicTask(rec));
 	}
 	return { tasks, nextCursor: page.list_complete ? undefined : page.cursor };
 }

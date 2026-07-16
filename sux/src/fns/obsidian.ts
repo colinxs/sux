@@ -1,7 +1,7 @@
 import { type Fn, fail, ok } from "../registry";
 import { smartFetch } from "../proxy";
 import { extractRpcFromText } from "../mcp-util";
-import { cfOriginHint, fromB64, toB64, oj } from "./_util";
+import { cfOriginHint, fromB64, toB64, oj, safeParseJson } from "./_util";
 
 // Work with Obsidian markdown notes across two backends:
 //   git    (default) — a git-backed vault via the GitHub API (async, versioned).
@@ -64,12 +64,8 @@ const gitIndexKey = (cfg: VaultCfg) => `cache:vault:git:${cfg.repo}@${cfg.branch
 const remoteNoteKey = (p: string) => `cache:vault:remote:note:${normPath(p)}`;
 
 async function cacheGet(env: any, key: string): Promise<any | null> {
-	try {
-		const raw = await env.OAUTH_KV?.get(key);
-		return raw ? JSON.parse(raw) : null;
-	} catch {
-		return null;
-	}
+	const raw = await env.OAUTH_KV?.get(key).catch(() => null);
+	return safeParseJson(raw, null);
 }
 async function cachePut(env: any, key: string, value: unknown): Promise<void> {
 	try {

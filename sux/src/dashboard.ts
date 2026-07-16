@@ -33,6 +33,7 @@ import { obsidian } from "./fns/obsidian";
 import { deriveMetrics, readMetrics, sloReport } from "./metrics";
 import { obsRateLimited } from "./observability";
 import type { RtEnv } from "./registry";
+import { safeParseJson } from "./fns/_util";
 
 const json = (obj: unknown, status = 200): Response =>
 	new Response(JSON.stringify(obj, null, 2), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
@@ -62,12 +63,9 @@ export async function recentNotes(env: RtEnv, limit: number): Promise<NoteSummar
 	const paths: string[] = [];
 	for (const r of lists) {
 		if (r.isError || !Array.isArray(r.content)) continue;
-		try {
-			const parsed = JSON.parse(r.content[0]?.text ?? "{}") as { notes?: string[] };
-			if (Array.isArray(parsed.notes)) paths.push(...parsed.notes);
-		} catch {
-			// Malformed listing for this folder — skip it, keep the rest.
-		}
+		// Malformed listing for this folder falls back to {} — skip it, keep the rest.
+		const parsed = safeParseJson<{ notes?: string[] }>(r.content[0]?.text ?? "{}", {});
+		if (Array.isArray(parsed.notes)) paths.push(...parsed.notes);
 	}
 	// Sort by basename (not the full path) so both folders interleave by date —
 	// Daily/<date>.md and Inbox/<date> <slug>.md both start with the date, but the

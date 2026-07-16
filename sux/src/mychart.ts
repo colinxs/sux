@@ -16,6 +16,7 @@
 
 import { timingSafeEqual } from "./crypto-util";
 import type { RtEnv } from "./registry";
+import { safeParseJson } from "./fns/_util";
 
 export const PHI_PREFIX = "phi/";
 
@@ -84,12 +85,8 @@ export async function challengeFor(verifier: string): Promise<string> {
  * not share a simple suffix with the FHIR base, so discovery is the robust path. */
 export async function smartConfig(env: RtEnv): Promise<SmartConfig> {
 	const cached = await env.OAUTH_KV?.get(SMART_CFG_KEY);
-	if (cached) {
-		try {
-			const c = JSON.parse(cached);
-			if (c?.authorization_endpoint && c?.token_endpoint) return c;
-		} catch {}
-	}
+	const c = safeParseJson<Partial<SmartConfig> | null>(cached, null);
+	if (c?.authorization_endpoint && c?.token_endpoint) return c as SmartConfig;
 	const resp = await fetch(`${fhirBase(env)}/.well-known/smart-configuration`, {
 		headers: { Accept: "application/json" },
 		signal: AbortSignal.timeout(20_000),
@@ -105,12 +102,7 @@ export async function smartConfig(env: RtEnv): Promise<SmartConfig> {
 
 export async function readGrant(env: RtEnv): Promise<MychartGrant | null> {
 	const raw = await env.OAUTH_KV?.get(GRANT_KEY);
-	if (!raw) return null;
-	try {
-		return JSON.parse(raw) as MychartGrant;
-	} catch {
-		return null;
-	}
+	return safeParseJson<MychartGrant | null>(raw, null);
 }
 
 // Confidential client → the token endpoint is authed with HTTP Basic client_id:secret.
