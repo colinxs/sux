@@ -66,6 +66,14 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   (or execute the code against the claimed-failing input) before filing or
   fixing** — a copy-pasted quote can silently drop bytes like `\x7f`, making a
   correct range read as two literal characters (see #587/#574).
+- **The retired `/vault|mail|files/mcp` connectors have NO route left in
+  `index.ts` at all** — front verbs dispatch straight into
+  `VAULT_TOOLS`/`MAIL_TOOLS`/`FILES_TOOLS` via `fns/_namespace.ts`, bypassing
+  `handleVaultRpc`/`handleMailRpc`/`handleFilesRpc` entirely. Those three
+  JSON-RPC-shell functions are dead in production; they're kept only as the
+  test harness their own `*-mcp.test.ts` files use to exercise the tool
+  tables' real behavior (see #596). Don't assume a "dormant back-compat
+  route" exists anywhere for them.
 
 ## House style
 
