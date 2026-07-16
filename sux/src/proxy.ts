@@ -8,6 +8,7 @@
 
 import { githubAuthHeaders, isGithubHost } from "./github-auth";
 import { type EgressEvent, shipEgress } from "./grafana";
+import { errMsg } from "./prim";
 
 // Per-tools/call egress-audit context. handleRpc (index.ts) hangs it off a
 // PER-REQUEST env clone before the fn runs, so smartFetch — reached through ~20
@@ -423,7 +424,7 @@ export async function smartFetch(
 			}
 		} catch (e) {
 			directRoute = "proxy_fallback";
-			console.warn(`smartFetch: proxy failed, falling back to direct — ${String((e as Error).message ?? e)}`);
+			console.warn(`smartFetch: proxy failed, falling back to direct — ${errMsg(e)}`);
 		}
 	}
 	tallyRoute(directRoute);
