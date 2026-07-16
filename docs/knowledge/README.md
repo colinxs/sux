@@ -14,6 +14,7 @@ source; canonical/OpenAPI/Postman links + 2026 limits are web-confirmed.
 | File | Covers |
 |---|---|
 | [working-agreement.md](working-agreement.md) | How Colin drives me: commands, autonomy/spend/deploy policy, taste, the operational lessons |
+| [master-plan.md](master-plan.md) | Top-level prioritized roadmap: locked decisions, tracks, sequencing |
 | [refactor-runbook.md](refactor-runbook.md) | Executable step-by-step for the SuxOS split: secret map, phases, fixups, rollback, risks |
 | [product-vision-and-roadmap.md](product-vision-and-roadmap.md) | The north star, the learn→research→advise assistant, the digital-life spine, mail automation, the right-size design verdict |
 | [patterns-and-conventions.md](patterns-and-conventions.md) | How sux is built: fn anatomy, front-verb routing, proxy ladder, `<<<DATA>>>` fence, caching, gzip, feature-gating, goals |

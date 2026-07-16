@@ -1,7 +1,7 @@
 # SuxOS master plan — everything we ought to do
 
-The top-level prioritized roadmap. Detailed execution lives in `org-structure-and-refactor-plan.md`
-+ `refactor-runbook.md`; the forward landscape in the deep-research report (folded in when it lands).
+The top-level prioritized roadmap. Detailed execution lives in `refactor-runbook.md`; the forward
+landscape in the deep-research report (folded in when it lands).
 
 ## Decisions locked (Colin, 2026-07)
 - **Personal-first.** Optimize for Colin's assistant + digital life. Build cleanly so it COULD

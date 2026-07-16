@@ -43,7 +43,7 @@ Algebra substrate, un-parked verb program, uw directory, unused per-store scrape
 > applied-so-far with `{truncated:true, reason:"time", skipped}`, and never abandons a
 > Mode-B mutation-set silently. **Next chunk: 01 front door** (below).
 
-> **Per-session chunk briefs live in [`chunks/`](chunks/README.md)** — one
+> **Per-session chunk briefs live in [`archive/chunks/`](archive/chunks/README.md)** — one
 > self-contained file per branch/session, sized to load into a fresh context with
 > `CLAUDE.md` + memory. The ledger + forward plan below is the map; a chunk file is
 > the territory for one session. Start a chunk: checkout its branch, read its one file, go.
@@ -69,7 +69,7 @@ Algebra substrate, un-parked verb program, uw directory, unused per-store scrape
 
 > **Note on the sins-of-omission list (line 28):** "bulk-work > 60s → Queues/Workflows" is deliberately **deferred**, not orphaned — the fanout-time-budget chunk ships the interim partial-return; the full Queues/Workflows primitive is built inside the learning-substrate chunk only *if* a real caller strains the 60s deadline.
 
-### Forward plan (per-session chunks live in [`chunks/`](chunks/README.md); land green + deploy before the next)
+### Forward plan (per-session chunks live in [`archive/chunks/`](archive/chunks/README.md); land green + deploy before the next)
 - **00 fanout-time-budget** ✅ SHIPPED (#148): the deadline check is on `operateFull`'s apply loop (applied-so-far + `{truncated:true, reason:"time"}`, never abandons a mutation-set silently). Merged + deployed.
 - **01 front door** *(independent — can run in parallel)*: land `feat/front-door`; retire mail/vault/files namespace connectors (routes stay dormant). Establishes the `surface` field as load-bearing.
 - **02 smart-guards**: **generalize the EXISTING `stage.ts` `staged()`/`enforceGates` substrate** to default-on + annotation-driven across all irreversible/outward verbs; add agent-side conscience lint. (Not greenfield — the gate already exists.)

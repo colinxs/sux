@@ -22,7 +22,7 @@ review, sessions, model selection) are `CLAUDE.md`. Deep architecture lives in C
 
 ## 1. Fn anatomy — the unit of capability
 
-**What.** Every capability is an `Fn` (`sux/src/registry.ts:284`): a plain object with a
+**What.** Every capability is an `Fn` (`sux/src/registry.ts:383`): a plain object with a
 `name`, an LLM-facing `description`, a JSON-Schema `inputSchema`, optional caching/cost metadata,
 and a `run(env, args) => Promise<ToolResult>`. One fn per file under `sux/src/fns/<name>.ts`,
 `export const <name>: Fn`.
@@ -42,13 +42,13 @@ export type Fn = {
 };
 ```
 
-**Result helpers** (`registry.ts:251`) — always return through these, never hand-build the
+**Result helpers** (`registry.ts:351-361`) — always return through these, never hand-build the
 envelope:
 
 - `ok(text)` — a success `ToolResult`.
 - `fail(text)` — an error (`isError:true`), untyped.
 - `failWith(code, text)` — an error carrying a machine-readable `FailCode` from the fixed
-  `FAIL_CODES` taxonomy (`registry.ts:248`): `not_configured | blocked | timeout | rate_limited |
+  `FAIL_CODES` taxonomy (`registry.ts:337`): `not_configured | blocked | timeout | rate_limited |
   not_found | upstream_error | bad_input | layout_change`. The code is prefixed to the text as
   `[code]` (so it flows into the Grafana `err` field) *and* attached as `errorCode`. **Prefer
   `failWith`** — it groups failures by cause in observability. See `scrape.ts` / `render.ts` for
@@ -82,7 +82,7 @@ are gitignored and regenerated on demand — never commit those.
 (by its own name, or via the `fn` escape) and still discoverable (the `sux` capability map), just
 not flooding the list.
 
-`FRONT_VERBS` (`registry.ts:375`) is the source of truth:
+`FRONT_VERBS` (`registry.ts:489`) is the source of truth:
 
 ```ts
 export const FRONT_VERBS = new Set<string>([
@@ -96,15 +96,15 @@ export const FRONT_VERBS = new Set<string>([
 ```
 
 A fn joins the front door either by being in this set or by self-declaring `surface:"front"`
-(`isFrontVerb`, `registry.ts:385`). `frontToolList` filters the advertised list; `handleRpc`'s
-`tools/list` returns `frontToolList(FUNCTIONS)` (`index.ts:162`).
+(`isFrontVerb`, `registry.ts:499`). `frontToolList` filters the advertised list; `handleRpc`'s
+`tools/list` returns `frontToolList(FUNCTIONS)` (`index.ts:189`).
 
 **The `fn` escape.** A leaf is reached with `fn({name, args})`. `unwrapFnCall`
-(`registry.ts:414`) rewrites this in place *before* findFn/cache/normalize, so a leaf reached via
+(`registry.ts:530`) rewrites this in place *before* findFn/cache/normalize, so a leaf reached via
 `fn` runs byte-identically to a direct call — same cache key, same deadline, same weighted cost.
 The inner name is resolved through the same `normalizeText` fold the dispatcher applies, so a
 fullwidth/zero-width homoglyph can't dodge the cost weighting or cache. The **same helper** is
-shared by the dispatcher (`index.ts:192`) and the rate limiter (`rate-limit.ts:32`) so the two
+shared by the dispatcher (`index.ts:253`) and the rate limiter (`rate-limit.ts:136`) so the two
 never diverge.
 
 **`sux` = the self-describing map** (`fns/sux.ts`). Skills don't sync to mobile, so on a phone
@@ -129,11 +129,11 @@ deterministic fns. `extraCost = max(0, cost-1)`.
 Cloudflare Workers egress from datacenter IPs that Akamai/PerimeterX-walled sites block. The
 answer is a **tiered fetch ladder**, cheapest rung first:
 
-1. **`smartFetch`** (`proxy.ts:355`) — the drop-in `fetch`. Routes through the **Tailscale
+1. **`smartFetch`** (`proxy.ts:371`) — the drop-in `fetch`. Routes through the **Tailscale
    residential proxy** (a home tailnet node exposed via Funnel) per `willProxy` policy, and
    **falls back to a direct fetch if the proxy errors** — so enabling the proxy can never take
    the Worker down. Used by `scrape` and ~20 other fns. Smart routing: authenticated APIs / DoH
-   resolvers (`DIRECT_HOST_RE`, `proxy.ts:85`) go direct even when the proxy is on. Signs
+   resolvers (`DIRECT_HOST_RE`, `proxy.ts:86`) go direct even when the proxy is on. Signs
    requests with HMAC-SHA256 (secret never crosses the wire), bounded retries with jitter +
    Retry-After (`withRetry`), 30s per-attempt cap, base64 binary-safe transport, and per-request
    egress-audit Loki lines.
@@ -151,7 +151,7 @@ answer is a **tiered fetch ladder**, cheapest rung first:
 private/loopback/link-local/CGNAT/ULA/metadata targets (the residential node sits *inside* the
 home LAN), and `hasUnsafeHeader` rejects CR/LF in headers (the node builds a curl config from
 them). These are **hard refusals, not fallbacks** — an internal target is never the caller's
-intent. `render` re-applies `isBlockedTarget` (defense in depth, `render.ts:141`).
+intent. `render` re-applies `isBlockedTarget` (defense in depth, `render.ts:117`).
 
 Every rung is **fail-closed on config**: absent `MAC_RENDER_*` / `UNLOCKER_*` / `TAILSCALE_*` →
 that rung no-ops and the ladder degrades, never errors.
@@ -160,7 +160,7 @@ that rung no-ops and the ladder degrades, never errors.
 
 ## 4. LLM safety — the `<<<DATA>>>` fence for untrusted material
 
-**What.** Everything `llm()` (`ai.ts:48`) processes is scraped web pages or caller text — i.e.
+**What.** Everything `llm()` (`ai.ts:60`) processes is scraped web pages or caller text — i.e.
 UNTRUSTED, and could embed "ignore your instructions and…". The defense: the trusted instruction
 rides in the **system role**; the untrusted content is **fenced as data** in the user role.
 
@@ -169,7 +169,7 @@ rides in the **system role**; the untrusted content is **fenced as data** in the
 { role: "user",   content: wrapUntrusted(user) },
 ```
 
-`wrapUntrusted` (`ai.ts:44`) wraps content in `<<<DATA>>> … <<</DATA>>>`, and `defuseMarkers`
+`wrapUntrusted` (`ai.ts:56`) wraps content in `<<<DATA>>> … <<</DATA>>>`, and `defuseMarkers`
 splices a zero-width space into any embedded sentinel so the untrusted text can't break out of
 its own fence. `guardInstruction` tells the model, in the trusted role, that anything between the
 markers is data to process, never instructions to follow. This is the zero-trust principle
@@ -187,7 +187,7 @@ write via `ctx.waitUntil` (off the response path). Caching lives entirely at the
 individual fn never touches the cache. Extras layered in at the same spot:
 
 - **`fresh:true`** in args forces a cache-read miss (recompute on live data) while still writing
-  the fresh result back — stripped before the fn sees it (`index.ts:213`).
+  the fresh result back — stripped before the fn sees it (`index.ts:313`).
 - **`summarize:true`** runs the output through Workers AI to compress it; it changes the result,
   so it namespaces the key (`::summarize`).
 - **Stale-while-revalidate** — a soft-TTL-expired entry is served immediately and refreshed in
@@ -297,7 +297,7 @@ no-op. Two idioms:
 - `npm test` → `vitest run`. Config: `vitest.config.ts`, `include: ["sux/src/**/*.test.ts",
   "sux/node/**/*.test.ts"]` — so `.claude/worktrees/*` (parallel-agent trees outside those globs)
   are never collected.
-- **Test the real path.** `handleRpc` (`index.ts:141`) is split out of `rtServer.fetch` precisely
+- **Test the real path.** `handleRpc` (`index.ts:143`) is split out of `rtServer.fetch` precisely
   so the full dispatch chain (unwrap → cache → normalize → deadline → run → finalize) runs
   end-to-end in `index.test.ts` without constructing the OAuth provider. Prefer driving a fn
   through dispatch over calling `run` in isolation.
