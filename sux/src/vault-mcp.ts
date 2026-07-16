@@ -401,6 +401,14 @@ export const VAULT_TOOLS = TOOLS;
 // coarse ceiling — a note body can be large, but not unbounded.
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 
+// Unreachable in production: the retired /vault/mcp connector never got a route
+// back in index.ts (front verbs dispatch straight into VAULT_TOOLS via
+// _namespace.ts, bypassing this JSON-RPC shell entirely). Deliberately kept
+// anyway — it's the harness vault-mcp.test.ts uses to exercise VAULT_TOOLS'
+// real run() behavior end-to-end (protocol errors, initialize, tools/list,
+// AND per-tool behavior); deleting it would mean rewriting that whole test
+// file to call each tool's .run() directly, trading real protocol-level
+// coverage for none. See #596.
 export async function handleVaultRpc(env: RtEnv, _ctx: ExecutionContext, rpc: JsonRpc | undefined, bodyBytes = 0): Promise<Response> {
 	const method = rpc?.method;
 	const id = rpc?.id ?? null;

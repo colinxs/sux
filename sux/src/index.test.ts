@@ -1,9 +1,23 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Fn, RtEnv } from "./registry";
 import { cacheKey, extractRpcFromText, type JsonRpc } from "./mcp-util";
 import { FUNCTIONS } from "./fns";
-import { handleRpc, oauthErrorResponse, rtServer } from "./index";
+import indexModule, { handleRpc, oauthErrorResponse, rtServer } from "./index";
 import { readMetrics } from "./metrics";
+import { shipMetricsSnapshot } from "./grafana";
+
+// scheduled()'s wiring test (below) observes which cron sub-jobs fire without
+// running their real bodies (KV/network work) — runSubJob is mocked to just
+// record the job name it was asked to run instead of invoking the callback.
+const cronCalls = vi.hoisted(() => ({ subJobs: [] as string[] }));
+vi.mock("./cron-heartbeat", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./cron-heartbeat")>();
+	return { ...actual, runSubJob: vi.fn(async (_env: unknown, name: string) => void cronCalls.subJobs.push(name)) };
+});
+vi.mock("./grafana", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./grafana")>();
+	return { ...actual, shipMetricsSnapshot: vi.fn(async () => undefined) };
+});
 
 // End-to-end coverage of the REAL tools/call dispatch chain in index.ts
 // (parseJsonRpc → findFn → normalizeArgs/raw bypass → run → normalizeText →
@@ -814,5 +828,46 @@ describe("MCP Tasks primitive", () => {
 
 		const page2 = await callRpc(makeEnv(kv), ctx, { jsonrpc: "2.0", id: 201, method: "tasks/list", params: { cursor: page1.result.nextCursor, limit: 2 } });
 		expect(page2.result.tasks.length).toBe(1);
+	});
+});
+
+// The scheduled() entrypoint is the only thing routing Cloudflare's two cron
+// triggers to the right work (#601): METRICS_CRON must fire shipMetricsSnapshot +
+// mail_triage on the frequent path, the daily cron must fire the maintenance
+// sub-jobs + self_improve. runSubJob/shipMetricsSnapshot are mocked (see above) so
+// this only exercises the branch/dispatch wiring, not the real tick bodies.
+describe("scheduled (cron-dispatch wiring)", () => {
+	beforeEach(() => {
+		cronCalls.subJobs.length = 0;
+		vi.mocked(shipMetricsSnapshot).mockClear();
+		vi.mocked(shipMetricsSnapshot).mockResolvedValue(undefined as never);
+	});
+
+	it("METRICS_CRON fires shipMetricsSnapshot + the mail_triage sub-job", async () => {
+		const { kv } = makeKv();
+		const { ctx, deferred } = makeCtx();
+		await indexModule.scheduled({ cron: "*/5 * * * *" } as unknown as ScheduledController, makeEnv(kv), ctx);
+		await Promise.all(deferred);
+		expect(shipMetricsSnapshot).toHaveBeenCalledTimes(1);
+		expect(cronCalls.subJobs).toEqual(["mail_triage"]);
+	});
+
+	it("a non-METRICS_CRON trigger fires the maintenance sub-jobs + self_improve, not mail_triage", async () => {
+		const { kv } = makeKv();
+		const { ctx, deferred } = makeCtx();
+		await indexModule.scheduled({ cron: "0 13 * * *" } as unknown as ScheduledController, makeEnv(kv), ctx);
+		await Promise.all(deferred);
+		// maintenanceTick ships its own metrics snapshot too, so shipMetricsSnapshot
+		// firing here is expected — the branch under test is which sub-jobs run.
+		expect(cronCalls.subJobs).toContain("self_improve");
+		expect(cronCalls.subJobs).not.toContain("mail_triage");
+	});
+
+	it("a rejected shipMetricsSnapshot promise doesn't throw out of the handler (#579)", async () => {
+		vi.mocked(shipMetricsSnapshot).mockRejectedValueOnce(new Error("boom"));
+		const { kv } = makeKv();
+		const { ctx, deferred } = makeCtx();
+		await expect(indexModule.scheduled({ cron: "*/5 * * * *" } as unknown as ScheduledController, makeEnv(kv), ctx)).resolves.toBeUndefined();
+		await expect(Promise.all(deferred)).resolves.toBeDefined();
 	});
 });

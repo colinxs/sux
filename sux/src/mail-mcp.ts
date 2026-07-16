@@ -1458,6 +1458,10 @@ export async function labelMessages(env: RtEnv, ids: unknown, label: string, add
 export const MAIL_TOOLS = TOOLS;
 
 // Mirrors handleVaultRpc: the per-request MCP protocol shell with the mail registry.
+// Unreachable in production (the retired /mail/mcp connector never got a route
+// back in index.ts) but deliberately kept as mail-mcp.test.ts's harness for
+// exercising MAIL_TOOLS' real run() behavior end-to-end. See handleVaultRpc's
+// comment and #596 for the full rationale.
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 
 export async function handleMailRpc(env: RtEnv, _ctx: ExecutionContext, rpc: JsonRpc | undefined, bodyBytes = 0): Promise<Response> {

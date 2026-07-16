@@ -405,6 +405,10 @@ const TOOLS: FileTool[] = [
 
 export const FILES_TOOLS = TOOLS;
 
+// Unreachable in production (the retired /files/mcp connector never got a route
+// back in index.ts) but deliberately kept as files-mcp.test.ts's harness for
+// exercising FILES_TOOLS' real run() behavior end-to-end. See handleVaultRpc's
+// comment in vault-mcp.ts and #596 for the full rationale.
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 
 export async function handleFilesRpc(env: RtEnv, _ctx: ExecutionContext, rpc: JsonRpc | undefined, bodyBytes = 0): Promise<Response> {
