@@ -149,7 +149,7 @@ describe("pipe", () => {
 		const r = await out([{ tool: "echo", args: { text: big } }, { tool: "upper", args: { text: "{{prev}}" } }]);
 		// steps[] carries previews only…
 		expect(r.steps[0].text.length).toBeLessThan(600);
-		expect(r.steps[0].text).toContain("truncated at 500 chars");
+		expect(r.steps[0].text).toContain("truncated at 500 bytes");
 		expect(r.steps[0].text.startsWith("z".repeat(500))).toBe(true);
 		// …but the full text still threads through {{prev}} and lands in output.
 		expect(r.output).toBe("Z".repeat(2_000));

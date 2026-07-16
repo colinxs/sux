@@ -766,7 +766,7 @@ export default {
 		// maintenance suite + self-improve (maintenanceTick pushes a snapshot too, so the
 		// daily run is also covered).
 		if (event.cron === METRICS_CRON) {
-			ctx.waitUntil(shipMetricsSnapshot(env, ctx));
+			ctx.waitUntil(shipMetricsSnapshot(env, ctx).catch((e) => console.warn(`sux scheduled metrics: snapshot push skipped: ${String((e as Error)?.message ?? e)}`)));
 			ctx.waitUntil(runSubJob(env, "mail_triage", () => mailTriageTick(env)));
 			return;
 		}

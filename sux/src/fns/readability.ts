@@ -1,5 +1,7 @@
 import { type Fn, fail, ok } from "../registry";
-import { clamp, loadHtml, stripHtml } from "./_util";
+import { clampBytes, loadHtml, stripHtml } from "./_util";
+
+const MAX_TEXT_BYTES = 100_000;
 
 /** Count the text length carried by <p> tags inside a fragment (density signal). */
 function paragraphTextLen(fragment: string): number {
@@ -68,7 +70,7 @@ export const readability: Fn = {
 
 		return ok(
 			JSON.stringify(
-				{ title: title ?? null, ...(byline ? { byline } : {}), text: clamp(text) },
+				{ title: title ?? null, ...(byline ? { byline } : {}), text: clampBytes(text, MAX_TEXT_BYTES) },
 				null,
 				2,
 			),

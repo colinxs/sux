@@ -1,6 +1,8 @@
 import { type Fn, failWith, ok } from "../registry";
 import { smartFetch } from "../proxy";
-import { clamp, isHttpUrl, noCacheOn4xx, noCacheOnMutation } from "./_util";
+import { clampBytes, isHttpUrl, noCacheOn4xx, noCacheOnMutation } from "./_util";
+
+const MAX_BODY_BYTES = 100_000;
 
 export const scrape: Fn = {
 	name: "scrape",
@@ -21,8 +23,9 @@ export const scrape: Fn = {
 		if (!isHttpUrl(url)) return failWith("bad_input", "Provide an absolute http(s) url.");
 		const resp = await smartFetch(env, url, { method: args?.method });
 		const body = await resp.text();
-		// clamp (not a bare slice): appends the truncation marker so the model knows
-		// the page was cut at the cap rather than silently ending mid-content.
-		return noCacheOnMutation(noCacheOn4xx(ok(`HTTP ${resp.status} — ${url}\n\n${clamp(body)}`), resp.status), args?.method);
+		// clampBytes (not a bare slice): appends the truncation marker so the model knows
+		// the page was cut at the cap rather than silently ending mid-content, and cuts on
+		// a genuine byte boundary rather than UTF-16 code units (#580).
+		return noCacheOnMutation(noCacheOn4xx(ok(`HTTP ${resp.status} — ${url}\n\n${clampBytes(body, MAX_BODY_BYTES)}`), resp.status), args?.method);
 	},
 };

@@ -3,7 +3,7 @@ import { type MacRenderSpec, macRender } from "../mac-render";
 import { isBlockedTarget } from "../proxy";
 import { looksBlocked } from "../retail-render";
 import { type Fn, type RtEnv, type ToolResult, failWith, ok } from "../registry";
-import { clamp, deliverBytes, fromB64, inlineB64, isHttpUrl } from "./_util";
+import { clampBytes, deliverBytes, fromB64, inlineB64, isHttpUrl } from "./_util";
 
 const WAIT_UNTIL = ["load", "domcontentloaded", "networkidle0", "networkidle2"] as const;
 
@@ -32,7 +32,7 @@ async function renderViaMac(env: RtEnv, spec: MacRenderSpec, as: string, deliver
 	if (looksBlocked(result.body)) {
 		return failWith("upstream_error", result.solverError ? `mac render blocked (bot wall); solver errored: ${result.solverError}` : "mac render blocked (bot wall)");
 	}
-	return ok(clamp(result.body, MAX_OUTPUT_BYTES));
+	return ok(clampBytes(result.body, MAX_OUTPUT_BYTES));
 }
 
 export const render: Fn = {
@@ -167,6 +167,6 @@ export const render: Fn = {
 		if ("bytes" in result) {
 			return deliverBytes(env, result.bytes, result.contentType, args?.delivery ?? "url", () => inlineB64(result.bytes, result.contentType));
 		}
-		return ok(clamp(result.body, MAX_OUTPUT_BYTES));
+		return ok(clampBytes(result.body, MAX_OUTPUT_BYTES));
 	},
 };

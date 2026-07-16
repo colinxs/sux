@@ -417,6 +417,8 @@ describe("selfImproveTick gating matrix", () => {
 		const r = await selfImproveTick(env, { github: gh });
 		expect(r.processed).toBe(1); // attempted, advanced past it
 		expect(r.prs).toBe(0);
+		expect(r.failed).toBe(1); // surfaced instead of only a console.warn
+		expect(r.error).toContain("boom");
 	});
 
 	it("fault isolation: a poison entry advances the cursor per-entry and can't wedge/replay the loop", async () => {

@@ -34,7 +34,7 @@ describe("scrape", () => {
 		const r = await scrape.run({} as any, { url: "https://example.com/big" });
 		const body = r.content[0].text.split("\n\n").slice(1).join("\n\n");
 		expect(body.startsWith("x".repeat(100_000))).toBe(true); // cut at the 100k cap
-		expect(body).toContain("[truncated at 100000 chars]"); // and signalled, not silently ended
+		expect(body).toContain("[truncated at 100000 bytes]"); // and signalled, not silently ended
 	});
 
 	it("surfaces a non-200 status from the upstream response", async () => {

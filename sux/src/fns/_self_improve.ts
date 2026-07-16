@@ -442,6 +442,7 @@ export type TickResult = {
 	armed: number;
 	comments: number;
 	skipped: number;
+	failed: number;
 	error?: string;
 };
 
@@ -514,7 +515,7 @@ async function routeFinding(env: RtEnv, finding: Finding, github: GithubClient, 
 
 // ── The tick (rides index.ts scheduled(), beside maintenanceTick) ─────────────
 export async function selfImproveTick(env: RtEnv, deps: { github?: GithubClient } = {}): Promise<TickResult> {
-	const result: TickResult = { dormant: false, reason: "", processed: 0, prs: 0, issues: 0, armed: 0, comments: 0, skipped: 0 };
+	const result: TickResult = { dormant: false, reason: "", processed: 0, prs: 0, issues: 0, armed: 0, comments: 0, skipped: 0, failed: 0 };
 	let held = false;
 	try {
 		// Kill wins over everything — checked before enable and before any feedback read.
@@ -567,17 +568,23 @@ export async function selfImproveTick(env: RtEnv, deps: { github?: GithubClient 
 		// advanced cursor and re-opens nothing.
 		const fresh = (await readFeedback(env, undefined, 500)).filter((e) => e.at > cursor).sort((a, b) => a.at - b.at);
 		let maxAt = cursor;
+		let lastFailure: string | undefined;
 		for (const entry of fresh) {
 			// Per-entry fault isolation: recordFinding AND routeFinding are inside the same
 			// try, and the cursor is persisted per-entry below — so one poison entry (a KV
 			// error, a github reject) can neither wedge the loop nor make it replay outward
-			// actions / re-open dupes on the next tick.
+			// actions / re-open dupes on the next tick. A failed entry is NOT retried (the
+			// cursor still advances past it below) — instead it's counted in result.failed and
+			// surfaced via result.error so runSubJob's heartbeat flips unhealthy, instead of the
+			// failure living only in a console.warn ('ships nowhere' per cron-heartbeat.ts).
 			try {
 				const finding = buildFinding(env, entry);
 				await recordFinding(env, finding); // review-only record — always, regardless of outward gating.
 				await routeFinding(env, finding, github, result, budget);
 			} catch (e) {
-				console.warn(`sux self-improve: entry '${String(entry.text ?? "").slice(0, 60)}' failed: ${String((e as Error)?.message ?? e)}`);
+				result.failed++;
+				lastFailure = `entry '${String(entry.text ?? "").slice(0, 60)}' failed: ${String((e as Error)?.message ?? e)}`;
+				console.warn(`sux self-improve: ${lastFailure}`);
 			}
 			result.processed++;
 			// Advance + persist past EVERY attempted entry (even a failed one) immediately,
@@ -587,6 +594,7 @@ export async function selfImproveTick(env: RtEnv, deps: { github?: GithubClient 
 				await env.OAUTH_KV.put(CURSOR_KEY, String(maxAt));
 			}
 		}
+		if (lastFailure) result.error = result.failed > 1 ? `${result.failed} entries failed; last: ${lastFailure}` : lastFailure;
 	} catch (e) {
 		// Never throw out of the tick — it rides ctx.waitUntil beside maintenanceTick.
 		result.error = String((e as Error)?.message ?? e);

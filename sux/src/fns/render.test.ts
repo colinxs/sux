@@ -213,7 +213,7 @@ describe("render", () => {
 		expect(r.isError).toBeFalsy();
 		// Clamped to the 2MB output cap (+ a short truncation marker), not 3MB.
 		expect(r.content[0].text.length).toBeLessThan(2_000_100);
-		expect(r.content[0].text).toContain("truncated at 2000000 chars");
+		expect(r.content[0].text).toContain("truncated at 2000000 bytes");
 	});
 
 	it("caps huge rendered text (as:text) too", async () => {
@@ -222,7 +222,7 @@ describe("render", () => {
 		const r = await render.run(BROWSER_ENV, { url: "https://example.com", as: "text" });
 		expect(r.isError).toBeFalsy();
 		expect(r.content[0].text.length).toBeLessThan(2_000_100);
-		expect(r.content[0].text).toContain("truncated at 2000000 chars");
+		expect(r.content[0].text).toContain("truncated at 2000000 bytes");
 	});
 
 	it("screenshot mode delivers a /s/<uuid> CAS ref by default", async () => {
