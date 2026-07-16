@@ -71,6 +71,17 @@ describe("recovery dead-drop", () => {
 		expect((await (res!.json() as any)).error).toBe("bad_signature");
 	});
 
+	it("caps the body by UTF-8 byte size, not UTF-16 length — a CJK-dense body over the byte cap is rejected (#405)", async () => {
+		// Each '好' is 1 UTF-16 code unit but 3 UTF-8 bytes, so this validly-signed body
+		// sits well under MAX_BODY_BYTES by `.length` yet blows past it in real bytes.
+		const { body, sig } = await checkinBody(env, { health: { note: "好".repeat(6000) } });
+		expect(body.length).toBeLessThan(16_000); // would slip through the old .length check
+		expect(new TextEncoder().encode(body).length).toBeGreaterThan(16_000); // but exceeds the byte cap
+		const res = await checkin(env, body, sig);
+		expect(res!.status).toBe(413);
+		expect((await (res!.json() as any)).error).toBe("body_too_large");
+	});
+
 	it("rejects a tampered body (signature no longer matches)", async () => {
 		const { body, sig } = await checkinBody(env);
 		const tampered = body.replace("owl-tegu", "attacker");

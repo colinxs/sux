@@ -120,7 +120,10 @@ async function readQueue(env: RtEnv, nodeId: string): Promise<SignedCommand[]> {
 // clear) the node's queued, pre-signed commands.
 async function handleCheckin(request: Request, env: RtEnv): Promise<Response> {
 	const raw = await request.text();
-	if (raw.length > MAX_BODY_BYTES) return json({ error: "body_too_large" }, 413);
+	// Cap the actual UTF-8 write size, not `raw.length` (UTF-16 code units): a CJK-dense
+	// body is ~3 bytes/char, so the string measure lets up to ~3× MAX_BODY_BYTES into KV,
+	// defeating the "no unbounded KV writes" invariant. Same class fixed in mychart.ts (#405).
+	if (new TextEncoder().encode(raw).length > MAX_BODY_BYTES) return json({ error: "body_too_large" }, 413);
 
 	const presented = request.headers.get("x-sux-signature") ?? "";
 	const expected = await hmacHex(env.RECOVERY_HMAC_SECRET as string, raw);
