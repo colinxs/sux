@@ -1,9 +1,22 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Fn, RtEnv } from "./registry";
 import { cacheKey, extractRpcFromText, type JsonRpc } from "./mcp-util";
 import { FUNCTIONS } from "./fns";
-import { handleRpc, oauthErrorResponse, rtServer } from "./index";
+import worker, { handleRpc, oauthErrorResponse, rtServer } from "./index";
 import { readMetrics } from "./metrics";
+
+// scheduled() wiring tests spy on shipMetricsSnapshot (never actually reaches the
+// network without GRAFANA_PROM_* secrets, but the spy lets us assert it was called on
+// both cron branches) and stub out web_search_selftest's real network probes (the only
+// daily sub-job that isn't fail-closed without config — see _web_search_selftest.ts).
+vi.mock("./grafana", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./grafana")>();
+	return { ...actual, shipMetricsSnapshot: vi.fn(actual.shipMetricsSnapshot) };
+});
+vi.mock("./fns/_web_search_selftest", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./fns/_web_search_selftest")>();
+	return { ...actual, runWebSearchSelftest: vi.fn(async () => ({ probes: [] })) };
+});
 
 // End-to-end coverage of the REAL tools/call dispatch chain in index.ts
 // (parseJsonRpc → findFn → normalizeArgs/raw bypass → run → normalizeText →
@@ -829,5 +842,57 @@ describe("MCP Tasks primitive", () => {
 
 		const page2 = await callRpc(makeEnv(kv), ctx, { jsonrpc: "2.0", id: 201, method: "tasks/list", params: { cursor: page1.result.nextCursor, limit: 2 } });
 		expect(page2.result.tasks.length).toBe(1);
+	});
+});
+
+// The two Cloudflare Cron Triggers (wrangler.jsonc) share one scheduled() entrypoint
+// that branches on event.cron. Every downstream tick is fail-closed (no-ops without its
+// own *_ENABLED flag/secrets), so driving the real handler with a minimal env is safe —
+// the heartbeats it stamps into KV (src/cron-heartbeat.ts) are the observable proof each
+// branch actually reached its sub-jobs, without needing to mock file-local functions
+// (mailTriageTick/maintenanceTick aren't exported) directly. See #601.
+const METRICS_CRON = "*/5 * * * *";
+const DAILY_CRON = "0 13 * * *";
+const heartbeatKey = (job: string) => `sux:cron:heartbeat:${job}`;
+
+describe("scheduled (cron-dispatch wiring)", () => {
+	it("METRICS_CRON fires shipMetricsSnapshot + mail_triage, not the daily maintenance jobs", async () => {
+		const { kv, store } = makeKv();
+		const { ctx, deferred } = makeCtx();
+		const { shipMetricsSnapshot } = await import("./grafana");
+		vi.mocked(shipMetricsSnapshot).mockClear();
+
+		await worker.scheduled({ cron: METRICS_CRON } as unknown as ScheduledController, makeEnv(kv), ctx);
+		await Promise.all(deferred);
+
+		expect(shipMetricsSnapshot).toHaveBeenCalledTimes(1);
+		expect(store.has(heartbeatKey("mail_triage"))).toBe(true);
+		expect(store.has(heartbeatKey("self_improve"))).toBe(false);
+		expect(store.has(heartbeatKey("kroger_token"))).toBe(false);
+	});
+
+	it("a non-METRICS_CRON event fires maintenanceTick + selfImproveTick, not mail_triage", async () => {
+		const { kv, store } = makeKv();
+		const { ctx, deferred } = makeCtx();
+		const { shipMetricsSnapshot } = await import("./grafana");
+		vi.mocked(shipMetricsSnapshot).mockClear();
+
+		await worker.scheduled({ cron: DAILY_CRON } as unknown as ScheduledController, makeEnv(kv), ctx);
+		await Promise.all(deferred);
+
+		expect(shipMetricsSnapshot).toHaveBeenCalledTimes(1);
+		expect(store.has(heartbeatKey("self_improve"))).toBe(true);
+		expect(store.has(heartbeatKey("kroger_token"))).toBe(true);
+		expect(store.has(heartbeatKey("mail_triage"))).toBe(false);
+	});
+
+	it("a rejected shipMetricsSnapshot on the frequent path is swallowed, not thrown (#579)", async () => {
+		const { kv } = makeKv();
+		const { ctx, deferred } = makeCtx();
+		const { shipMetricsSnapshot } = await import("./grafana");
+		vi.mocked(shipMetricsSnapshot).mockRejectedValueOnce(new Error("grafana push failed"));
+
+		await expect(worker.scheduled({ cron: METRICS_CRON } as unknown as ScheduledController, makeEnv(kv), ctx)).resolves.toBeUndefined();
+		await expect(Promise.all(deferred)).resolves.toBeDefined();
 	});
 });
