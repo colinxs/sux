@@ -134,3 +134,62 @@ describe("arg-size guard end-to-end (handleRpc dispatch)", () => {
 		expect([...store.keys()].some((k) => k.startsWith("cache:"))).toBe(false);
 	});
 });
+
+describe("inputSchema guard end-to-end (handleRpc dispatch, #538)", () => {
+	it("rejects hash({data:...}) — the wrong param name — instead of silently hashing an empty string", async () => {
+		const { kv } = makeKv();
+		const { ctx } = makeCtx();
+		const env = makeEnv(kv);
+		const out = await callRpc(env, ctx, {
+			jsonrpc: "2.0",
+			id: 1,
+			method: "tools/call",
+			params: { name: "hash", arguments: { data: "hello world", algo: "sha256" } },
+		});
+		expect(out.result.isError).toBe(true);
+		expect(out.result.errorCode).toBe("bad_input");
+		expect(out.result.content[0].text).toMatch(/missing required field.*text/);
+	});
+
+	it("hash({text:...}) — the correct param name — runs and hashes the real input", async () => {
+		const { kv } = makeKv();
+		const { ctx } = makeCtx();
+		const env = makeEnv(kv);
+		const out = await callRpc(env, ctx, {
+			jsonrpc: "2.0",
+			id: 1,
+			method: "tools/call",
+			params: { name: "hash", arguments: { text: "hello world", algo: "sha256" } },
+		});
+		expect(out.result.isError).toBeFalsy();
+		expect(out.result.content[0].text).toBe("b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9");
+	});
+
+	it("rejects an unexpected property under additionalProperties:false", async () => {
+		const { kv } = makeKv();
+		const { ctx } = makeCtx();
+		const env = makeEnv(kv);
+		const out = await callRpc(env, ctx, {
+			jsonrpc: "2.0",
+			id: 1,
+			method: "tools/call",
+			params: { name: "hash", arguments: { text: "hello world", bogus: 1 } },
+		});
+		expect(out.result.isError).toBe(true);
+		expect(out.result.content[0].text).toMatch(/unexpected property.*bogus/);
+	});
+
+	it("same guard applies through the fn({name,args}) escape hatch", async () => {
+		const { kv } = makeKv();
+		const { ctx } = makeCtx();
+		const env = makeEnv(kv);
+		const out = await callRpc(env, ctx, {
+			jsonrpc: "2.0",
+			id: 1,
+			method: "tools/call",
+			params: { name: "fn", arguments: { name: "hash", args: { data: "hello world" } } },
+		});
+		expect(out.result.isError).toBe(true);
+		expect(out.result.content[0].text).toMatch(/missing required field.*text/);
+	});
+});

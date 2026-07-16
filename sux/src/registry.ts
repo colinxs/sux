@@ -517,6 +517,32 @@ export function findFn(fns: Fn[], name: string): Fn | undefined {
 }
 
 /**
+ * Centrally enforce a leaf's own declared `inputSchema` — just `required` +
+ * `additionalProperties`, the two checks every fn's schema already promises but
+ * left to hand-rolled per-fn guards (or, as with `hash`, no guard at all: a wrong
+ * param name silently fell back to a default instead of erroring — see #538).
+ * Only fires for an object-typed schema; anything else (rare) is left alone.
+ * Not a full JSON-Schema validator (no `type`/`enum`/nested checks) — deliberately
+ * narrow so it can't reject an input some fn's own body already handles fine.
+ */
+export function validateInputSchema(schema: unknown, args: unknown): string | null {
+	if (!schema || typeof schema !== "object") return null;
+	const s = schema as { type?: string; required?: unknown; additionalProperties?: unknown; properties?: unknown };
+	if (s.type !== "object") return null;
+	const a: Record<string, unknown> = args && typeof args === "object" && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
+	if (Array.isArray(s.required)) {
+		const missing = s.required.filter((k): k is string => typeof k === "string" && a[k] === undefined);
+		if (missing.length) return `missing required field${missing.length > 1 ? "s" : ""}: ${missing.join(", ")}`;
+	}
+	if (s.additionalProperties === false && s.properties && typeof s.properties === "object") {
+		const allowed = new Set(Object.keys(s.properties as Record<string, unknown>));
+		const extra = Object.keys(a).filter((k) => !allowed.has(k));
+		if (extra.length) return `unexpected propert${extra.length > 1 ? "ies" : "y"}: ${extra.join(", ")}`;
+	}
+	return null;
+}
+
+/**
  * Resolve an `fn` escape call to the real leaf it targets. Returns `{name, args}`
  * of the underlying leaf when `params` is `fn({name, args})` and the inner name
  * resolves to a registered leaf (not `fn` itself); returns null otherwise (a direct

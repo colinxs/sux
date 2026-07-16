@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { FUNCTIONS } from "./fns/index";
-import { FAIL_CODES, type FailCode, failWith, FRONT_VERBS, frontToolList, type RtEnv, TOOL_ANNOTATIONS, toolList, type ToolResult, unwrapFnCall } from "./registry";
+import { FAIL_CODES, type FailCode, failWith, FRONT_VERBS, frontToolList, type RtEnv, TOOL_ANNOTATIONS, toolList, type ToolResult, unwrapFnCall, validateInputSchema } from "./registry";
 
 // Inert binding stubs: {} args should fail validation inside each fn before any
 // binding is touched, so these never need to do real work.
@@ -188,6 +188,44 @@ describe("registry conformance", () => {
 		}
 		for (const name of ["hash", "encode", "compress"]) {
 			expect(byName.get(name)?.raw, name).toBe(true);
+		}
+	});
+});
+
+describe("validateInputSchema", () => {
+	// hash's actual schema (#538): raw:true fns need this exactly as much as
+	// normalized ones — the wrong param name must never silently reach run().
+	const hashSchema = { type: "object", additionalProperties: false, required: ["text"], properties: { text: { type: "string" }, algo: { type: "string" } } };
+
+	it("flags a missing required field", () => {
+		expect(validateInputSchema(hashSchema, { data: "hello world", algo: "sha256" })).toMatch(/missing required field.*text/);
+	});
+
+	it("passes when the required field is present", () => {
+		expect(validateInputSchema(hashSchema, { text: "hello world" })).toBeNull();
+	});
+
+	it("flags an unexpected property under additionalProperties:false", () => {
+		expect(validateInputSchema(hashSchema, { text: "x", bogus: 1 })).toMatch(/unexpected property.*bogus/);
+	});
+
+	it("is a no-op for schemas that aren't type:object, or that allow extra properties", () => {
+		expect(validateInputSchema({ type: "string" }, "anything")).toBeNull();
+		expect(validateInputSchema(undefined, { anything: true })).toBeNull();
+		expect(validateInputSchema({ type: "object", additionalProperties: true, properties: { action: {} } }, { action: "x", extra: 1 })).toBeNull();
+	});
+
+	it("null args are treated as {} — required fields still reported missing", () => {
+		expect(validateInputSchema(hashSchema, null)).toMatch(/missing required field.*text/);
+		expect(validateInputSchema(hashSchema, undefined)).toMatch(/missing required field.*text/);
+	});
+
+	it("every FUNCTIONS leaf with a required field rejects {} — schemas stay enforceable", () => {
+		for (const f of FUNCTIONS) {
+			const schema = f.inputSchema as { required?: unknown } | undefined;
+			if (Array.isArray(schema?.required) && schema.required.length) {
+				expect(validateInputSchema(f.inputSchema, {}), f.name).not.toBeNull();
+			}
 		}
 	});
 });

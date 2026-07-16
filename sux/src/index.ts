@@ -3,7 +3,7 @@ import { exceedsDepth, MAX_ARG_DEPTH } from "./prim";
 import { isAllowedLogin } from "./utils";
 import { type CacheMeta, cacheKey, deferCacheWrite, type JsonRpc, parseJsonRpc, sseResponse } from "./mcp-util";
 import { unpackFromCache } from "./cache-codec";
-import { findFn, frontToolList, type RtEnv, type ToolResult, unwrapFnCall } from "./registry";
+import { failWith, findFn, frontToolList, type RtEnv, type ToolResult, unwrapFnCall, validateInputSchema } from "./registry";
 import { MCP_UI_MIME } from "./fns/_ui";
 import { buildManifest, CONNECTOR_PATHS } from "./connectors";
 import { singleFlight } from "./single-flight";
@@ -275,6 +275,8 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 			const argErr = checkArgs(rawArgs, MAX_ARG_BYTES, MAX_ARG_DEPTH);
 			if (argErr) return sseResponse({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `Tool '${name}' rejected: ${argErr}` }], isError: true } });
 			const args = fn.raw ? rawArgs : normalizeArgs(rawArgs);
+			const schemaErr = validateInputSchema(fn.inputSchema, args);
+			if (schemaErr) return sseResponse({ jsonrpc: "2.0", id, result: failWith("bad_input", schemaErr) });
 			const rtEnv: RtEnv = { ...env, _egress: { ctx, reqId: crypto.randomUUID().slice(0, 8) } };
 			const taskField = rpc.params.task as { ttl?: unknown } | null;
 			const rec = createTask(env, ctx, name, taskField && typeof taskField === "object" ? taskField.ttl : undefined, async () => {
@@ -339,6 +341,17 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 		// and strip BOM/zero-width/control chars from string inputs. Byte-exact fns
 		// (hash/encode/compress/qr/kv/…) opt out via `raw` so their bytes are untouched.
 		const args = fn.raw ? rawArgs : normalizeArgs(rawArgs);
+
+		// One central enforcement of every leaf's own declared `inputSchema` (required +
+		// additionalProperties), so a wrong/missing param name errors here instead of
+		// reaching run() and getting silently coerced (hash({data:...}) hashing "" — #538).
+		const schemaErr = validateInputSchema(fn.inputSchema, args);
+		if (schemaErr) {
+			const rejectEvent = { tool: name, ms: 0, error: true, err: schemaErr };
+			recordCall(env, ctx, rejectEvent);
+			shipToLoki(env, ctx, rejectEvent);
+			return sseResponse({ jsonrpc: "2.0", id, result: failWith("bad_input", schemaErr) });
+		}
 
 		const started = Date.now();
 		// Short per-call correlation id, threaded onto env so every downstream

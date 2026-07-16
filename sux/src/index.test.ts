@@ -531,12 +531,12 @@ describe("summarize-before-return meta-arg", () => {
 		const base = { jsonrpc: "2.0", id: 1, method: "tools/call" } as const;
 
 		// summarize:true → the AI summary is returned instead of the full conversion
-		const summ = await callRpc(env, ctx, { ...base, params: { name: "json", arguments: { data: bigData, to: "yaml", summarize: true } } });
+		const summ = await callRpc(env, ctx, { ...base, params: { name: "json", arguments: { data: bigData, summarize: true } } });
 		expect(summ.result.content[0].text).toBe("AI SUMMARY");
 		await Promise.all(deferred);
 
 		// same call without summarize → the real (long) conversion, not the summary
-		const raw = await callRpc(env, ctx, { ...base, params: { name: "json", arguments: { data: bigData, to: "yaml" } } });
+		const raw = await callRpc(env, ctx, { ...base, params: { name: "json", arguments: { data: bigData } } });
 		expect(raw.result.content[0].text).not.toBe("AI SUMMARY");
 		expect(raw.result.content[0].text).toContain("xxxx");
 		await Promise.all(deferred);
@@ -550,7 +550,7 @@ describe("summarize-before-return meta-arg", () => {
 		const { ctx } = makeCtx();
 		const env = makeEnv(kv); // no AI binding
 		const bigData = JSON.stringify({ note: "y".repeat(600) });
-		const out = await callRpc(env, ctx, { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "json", arguments: { data: bigData, to: "yaml", summarize: true } } });
+		const out = await callRpc(env, ctx, { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "json", arguments: { data: bigData, summarize: true } } });
 		expect(out.result.content[0].text).toContain("yyyy"); // unchanged
 	});
 
