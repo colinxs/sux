@@ -42,11 +42,21 @@ function r2Store(env: RtEnv): Store {
 
 function workersAiLlm(env: RtEnv): Llm {
 	return {
-		async markdownFromPdf(_bytes: Uint8Array): Promise<string> {
-			// The PDF→markdown leaf (suxlib domain `extract`) belongs to the cluster-E PDF
-			// pipeline, not this MVP's echo path. Wire it there against the real Workers-AI
-			// toMarkdown surface rather than guess an unverified API here.
-			throw new Error("run: markdownFromPdf is not wired in the MVP caps (cluster E).");
+		async markdownFromPdf(bytes: Uint8Array): Promise<string> {
+			// The PDF→markdown leaf (suxlib domain `extract`) converts each PDF via Workers-AI's
+			// document-conversion surface — `env.AI.toMarkdown`, a DISTINCT method from the text
+			// `run()` path `summarize` uses. Fail LOUD if the binding is absent, same as the
+			// store/sinks above (and ai.ts's hasAI guard) — never a silent empty conversion.
+			if (typeof env.AI?.toMarkdown !== "function") {
+				throw new Error("run: the Workers-AI binding (env.AI.toMarkdown) is missing — the PDF extract leaf needs it.");
+			}
+			// One document in ⇒ one ConversionResponse out (the single-doc toMarkdown overload).
+			const result = await env.AI.toMarkdown({ name: "document.pdf", blob: new Blob([bytes as BufferSource], { type: "application/pdf" }) });
+			// ConversionResponse is a discriminated union on `format`: the "error" branch carries
+			// no markdown (`error` instead of `data`), so surface it loudly rather than let a bad
+			// PDF slip through as an empty/garbage extraction into the reconcile → summarize chain.
+			if (result.format === "error") throw new Error(`run: Workers-AI toMarkdown could not convert the PDF: ${result.error}`);
+			return result.data;
 		},
 		async summarize(text: string): Promise<string> {
 			return llm(env, "Summarize the following content concisely and faithfully.", text, 1024, "summarize an op artifact");
