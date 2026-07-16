@@ -1,16 +1,32 @@
 // Shared helpers for the function library. Keep this tiny and dependency-free —
 // it is imported by many fns, so a bug here is a bug everywhere. Web-standard
 // APIs only (they run identically in Workers and in vitest/node).
+//
+// This file is a thin barrel: the scoped concerns (byte/base64 codecs, fan-out
+// budget/pool, fetch dedup cache, cache-control mutators, HTML stripping,
+// content-addressed store refs) live under ./_util/* (#565) and are re-exported
+// below so the ~100 fns importing `from "./_util"` don't need to change. What
+// stays HERE is the fetch/render orchestration that genuinely ties those
+// concerns together (fetchText, loadBytes, loadHtml, …).
 
 import type { RtEnv } from "../registry";
 import { smartFetch } from "../proxy";
-import { maybeCompress, maybeDecompress } from "./_gzip";
 import { errMsg, isHttpUrl, oj } from "../prim";
+import { storeRefUuid, getBlob } from "./_util/store-ref";
+import { fetchDedupActive, fetchCacheGet, fetchCacheSet, FETCH_CACHE_MAX_TEXT } from "./_util/fetch-cache";
+import { fromB64 } from "./_util/bytes";
 
 // Re-exported for the ~100 fns that import these alongside the blob-store/registry
 // helpers below — the definitions themselves live in ../prim (dependency-free,
 // so proxy.ts can import errMsg without a proxy.ts <-> fns/_util.ts cycle, #620).
 export { errMsg, isHttpUrl, oj };
+
+export * from "./_util/bytes";
+export * from "./_util/fanout";
+export * from "./_util/fetch-cache";
+export * from "./_util/cache-control";
+export * from "./_util/html";
+export * from "./_util/store-ref";
 
 // Cloudflare's edge-to-origin error family: the CF edge itself answered, but
 // couldn't reach/resolve whatever sits behind it — a dead Tunnel or broken DNS on
@@ -33,25 +49,6 @@ export function vaultToday(tz?: string): string {
 	return new Intl.DateTimeFormat("en-CA", { timeZone: tz || "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
 }
 
-/** Truncate a string, appending a length marker when it was cut. `maxChars` counts
- * UTF-16 code units (s.length/s.slice()), not bytes — multi-byte-heavy text can run
- * up to ~3x this figure in actual byte size. */
-export function clamp(s: string, maxChars = 100_000): string {
-	return s.length > maxChars ? `${s.slice(0, maxChars)}\n… [truncated at ${maxChars} chars]` : s;
-}
-
-/** Truncate a string to at most `maxBytes` of UTF-8, never splitting a multi-byte
- * character — for call sites where the bound is a genuine byte budget (e.g. a
- * vault write cap), where char-based `clamp` can run ~3x over on emoji/CJK-heavy
- * text. Encodes once, slices on the byte boundary, then decodes ignoring any
- * partial trailing sequence the slice may have cut. */
-export function clampBytes(s: string, maxBytes: number): string {
-	const bytes = new TextEncoder().encode(s);
-	if (bytes.length <= maxBytes) return s;
-	const decoded = new TextDecoder("utf-8").decode(bytes.subarray(0, maxBytes)).replace(/�+$/, "");
-	return `${decoded}\n… [truncated at ${maxBytes} bytes]`;
-}
-
 /**
  * Fetch a URL as post-JS HTML via the `render` mac backend (headed browser +
  * CapSolver). The path for sites that gate content behind JS / bot walls
@@ -68,186 +65,7 @@ export async function renderHtml(env: RtEnv, url: string, opts?: { solve?: boole
 	return r.content?.[0]?.text ?? "";
 }
 
-// Fan-out time budget. A fn.run is killed by index.ts's FN_DEADLINE_MS (60s) with
-// ZERO partials returned — so a wide batch/pipe/batch_fetch that runs long yields
-// nothing. Each fan-out site stops DISPATCHING new work at this soft budget (< the
-// 60s hard deadline, leaving headroom to reduce + serialize the collected partials)
-// and returns what it has, flagged truncated. Kept here so the sites share one number.
-export const FANOUT_BUDGET_MS = 50_000;
-
-/** Default self-expiry for the CAS handles a bulk fan-out download mints (put /
- * batch_fetch as:"url"). These are staging artifacts, not durable records — a
- * permanent handle per URL would accrete R2/KV storage forever, so they expire
- * unless the caller overrides. Reach for `store` directly when you want permanence. */
-export const FANOUT_STORE_TTL_S = 7 * 24 * 60 * 60;
-
-/** Aggregate in-flight download budget for a SINGLE fan-out run. The per-item cap
- * (MAX_STORE_BYTES) bounds ONE download; CONCURRENCY (8) of them buffered at once
- * would blow the isolate's ~128MB ceiling, so a run shares this budget across its
- * workers via byteBudget(). Sized to admit a few full-size downloads concurrently
- * while leaving isolate headroom. */
-export const FANOUT_BYTE_BUDGET = 96 * 1024 * 1024;
-
-export type ByteBudget = { acquire: (n: number) => Promise<void>; release: (n: number) => void };
-
-/**
- * A FIFO byte-budget gate for fan-out downloads: a worker `acquire()`s the bytes it
- * may buffer before starting a download and `release()`s them after storing, so the
- * concurrent downloads in one run can never sum past `cap` (the per-item cap alone
- * bounds only a single download — 8 × 25MB would OOM the isolate). A single request
- * larger than `cap` is clamped to the whole budget (it is already per-item bounded)
- * so it runs alone instead of deadlocking. FIFO ordering keeps a large reservation
- * from being starved by an endless stream of small ones. Always pair acquire(n)/
- * release(n) with the SAME n (a try/finally) so the ledger stays balanced.
- */
-export function byteBudget(cap: number): ByteBudget {
-	let available = cap;
-	const waiters: Array<{ n: number; resolve: () => void }> = [];
-	const pump = (): void => {
-		while (waiters.length && waiters[0].n <= available) {
-			const w = waiters.shift()!;
-			available -= w.n;
-			w.resolve();
-		}
-	};
-	return {
-		acquire(n: number): Promise<void> {
-			const need = Math.min(Math.max(0, n), cap);
-			// Head-of-line: a new claim only jumps the fast path when nothing is already
-			// waiting, so a queued large reservation can't be starved.
-			if (waiters.length === 0 && need <= available) {
-				available -= need;
-				return Promise.resolve();
-			}
-			return new Promise<void>((resolve) => {
-				waiters.push({ n: need, resolve });
-			});
-		},
-		release(n: number): void {
-			available = Math.min(cap, available + Math.min(Math.max(0, n), cap));
-			pump();
-		},
-	};
-}
-
-/**
- * Run `fn` over `items` with bounded concurrency, preserving input order in the
- * result. Index-claiming worker pool (was hand-rolled identically in batch and
- * batch_fetch). `fn` should handle its own per-item errors — a throw rejects the
- * whole pool.
- *
- * When `deadline` (an absolute epoch-ms timestamp) is given, workers stop CLAIMING
- * new items once `Date.now() >= deadline`, AND each in-flight leaf is raced against
- * the deadline — a single leaf that overruns must not push the whole fan-out past
- * index.ts's FN_DEADLINE_MS, where `withDeadline` drops the run promise and loses
- * ALL collected partials. On timeout the still-running leaf is abandoned (its value
- * dropped) and its slot stays `undefined`. The result array is DENSE (pre-filled),
- * so the caller can detect skipped items with `=== undefined` (a sparse-array
- * `.map`/`.filter` would silently skip holes) and report a partial/truncated result
- * instead of the whole run being abandoned at the hard deadline.
- */
-export async function pool<T, R>(items: T[], concurrency: number, fn: (item: T, index: number) => Promise<R>, deadline?: number): Promise<R[]> {
-	const results = new Array<R>(items.length).fill(undefined as R);
-	let next = 0;
-	const workers = Math.min(Math.max(1, concurrency), Math.max(1, items.length));
-	// Distinguishes "the deadline fired" from any real value `fn` may resolve.
-	const TIMED_OUT = Symbol("pool-deadline");
-	await Promise.all(
-		Array.from({ length: workers }, async () => {
-			for (;;) {
-				if (deadline !== undefined && Date.now() >= deadline) return;
-				const i = next++;
-				if (i >= items.length) return;
-				if (deadline === undefined) {
-					results[i] = await fn(items[i], i);
-					continue;
-				}
-				// Race the leaf against the deadline: abandon an overrunning leaf (slot
-				// stays `undefined`, the same partial/truncated path as an unclaimed
-				// item) rather than let it sink the whole run. `.finally(clearTimeout)`
-				// so the timer never leaks or holds the isolate open.
-				let timer: ReturnType<typeof setTimeout>;
-				const timeout = new Promise<typeof TIMED_OUT>((resolve) => {
-					timer = setTimeout(() => resolve(TIMED_OUT), Math.max(0, deadline - Date.now()));
-				});
-				const r = await Promise.race([fn(items[i], i), timeout]).finally(() => clearTimeout(timer));
-				if (r === TIMED_OUT) return;
-				results[i] = r as R;
-			}
-		}),
-	);
-	return results;
-}
-
-/** base64 of raw bytes (chunked so large inputs don't blow the call stack). */
-export function toB64(bytes: Uint8Array): string {
-	let s = "";
-	const CHUNK = 0x8000;
-	for (let i = 0; i < bytes.length; i += CHUNK) s += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
-	return btoa(s);
-}
-
-/** raw bytes from a base64 string. */
-export function fromB64(b64: string): Uint8Array {
-	const bin = atob(b64.trim());
-	const out = new Uint8Array(bin.length);
-	for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-	return out;
-}
-
 export type Fetched = { status: number; text: string; headers: Headers; url: string };
-
-// ---------- In-isolate content-fetch dedup (substituter, PLAN Nix insight) ----------
-// A pipe/batch/multi-tool chain runs in ONE isolate within a short window and
-// often fetches the same URL from several tools (scrape → extract → readability
-// → metadata …). Cache the fetched text in memory keyed by url+maxBytes so the
-// residential round-trip happens once per chain. Per-isolate + short-TTL: it
-// adds no latency (memory only), needs no ctx/KV, and can't break the fetch path
-// (all ops are pure and wrapped around — never through — the live fetch). The
-// tool-result KV cache still handles cross-isolate/identical-call dedup; this
-// closes the CROSS-TOOL same-URL gap the result cache (keyed by tool+args) can't.
-
-export type FetchCacheEntry = { at: number; status: number; text: string; headers: Record<string, string>; url: string };
-const FETCH_CACHE = new Map<string, FetchCacheEntry>();
-export const FETCH_CACHE_TTL_MS = 30_000;
-export const FETCH_CACHE_MAX_ENTRIES = 64;
-export const FETCH_CACHE_MAX_TEXT = 512_000; // don't pin very large bodies in memory
-
-// Disabled under vitest so the module-level cache can't leak fetched bodies
-// between the many fns tests that mock the fetch and assert on it. A test can
-// force it on/off via setFetchDedup to exercise the integration in isolation.
-let dedupForced: boolean | null = null;
-const fetchDedupActive = (): boolean => dedupForced ?? !(typeof process !== "undefined" && process.env?.VITEST);
-
-/** Test seam: force the fetch dedup on (true) / off (false) / default (null). */
-export function setFetchDedup(on: boolean | null): void {
-	dedupForced = on;
-}
-
-/** Fresh (non-expired) cache entry for `key`, or null. Evicts on expiry. */
-export function fetchCacheGet(key: string, now: number): FetchCacheEntry | null {
-	const e = FETCH_CACHE.get(key);
-	if (!e) return null;
-	if (now - e.at > FETCH_CACHE_TTL_MS) {
-		FETCH_CACHE.delete(key);
-		return null;
-	}
-	return e;
-}
-
-/** Insert an entry, evicting the oldest (Map insertion order) past the cap. */
-export function fetchCacheSet(key: string, e: FetchCacheEntry): void {
-	if (FETCH_CACHE.size >= FETCH_CACHE_MAX_ENTRIES && !FETCH_CACHE.has(key)) {
-		const oldest = FETCH_CACHE.keys().next().value;
-		if (oldest !== undefined) FETCH_CACHE.delete(oldest);
-	}
-	FETCH_CACHE.set(key, e);
-}
-
-/** Test seam: clear the per-isolate fetch cache. */
-export function clearFetchCache(): void {
-	FETCH_CACHE.clear();
-}
 
 /** Default byte cap for text fetches — generous enough that full-body consumers
  * (feeds, sitemaps) aren't silently truncated, small enough to bound memory. */
@@ -416,31 +234,6 @@ export async function fetchTextOkEscalating(
 }
 
 /**
- * Transport fns (proxy/protocol/scrape/batch_fetch) faithfully return
- * error pages too — the raw response IS their content — but a transient
- * 403/429/consent wall must never enter the KV cache, or it poisons repeat
- * calls for an hour. Content-consuming fns instead fail() on >= 400 (see
- * fetchTextOk).
- */
-export function noCacheOn4xx<T extends { noCache?: boolean }>(result: T, status: number): T {
-	if (status >= 400) result.noCache = true;
-	return result;
-}
-
-/**
- * Transport fns (proxy/scrape/batch_fetch) accept an arbitrary method, but their
- * results are content-addressed by args and cached for the fn TTL. A non-idempotent
- * request (POST/PUT/PATCH/DELETE/…) must never be memoized: caching it both serves
- * a stale response for a repeat mutation and silently skips re-executing the side
- * effect. Only GET/HEAD are safe to cache; mark everything else noCache.
- */
-export function noCacheOnMutation<T extends { noCache?: boolean }>(result: T, method: unknown): T {
-	const m = String(method ?? "GET").toUpperCase();
-	if (m !== "GET" && m !== "HEAD") result.noCache = true;
-	return result;
-}
-
-/**
  * Load raw bytes from an inline base64 payload or a URL — THE binary input path,
  * shared by every bytes-consuming fn. URL fetches go through the residential
  * proxy binary-safely (the proxy transports binary bodies base64-encoded, see
@@ -477,151 +270,4 @@ export async function loadHtml(env: RtEnv, args: any, maxBytes?: number): Promis
 		return { html: fetched.text };
 	}
 	return { error: "Provide `html` or `url`." };
-}
-
-/** Strip tags/scripts/styles to readable plain text. */
-export function stripHtml(html: string): string {
-	return html
-		.replace(/<script[\s\S]*?<\/script>/gi, " ")
-		.replace(/<style[\s\S]*?<\/style>/gi, " ")
-		.replace(/<[^>]+>/g, " ")
-		.replace(/&nbsp;/g, " ")
-		.replace(/&lt;/g, "<")
-		.replace(/&gt;/g, ">")
-		.replace(/&quot;/g, '"')
-		.replace(/&#39;/g, "'")
-		// `&amp;` decodes LAST — mirroring _markup.decodeEntities — so a double-escaped
-		// `&amp;lt;` yields the literal text `&lt;` rather than collapsing to `<`.
-		.replace(/&amp;/g, "&")
-		.replace(/\s+/g, " ")
-		.trim();
-}
-
-// ---------- Content-addressed blob store (shared with the `store` fn) ----------
-
-export const STORE_KV_PREFIX = "store:";
-
-/**
- * Base URL for public /s/<uuid> handles. Configurable via the STORE_BASE env
- * var (wrangler `vars`) so staging/local deploys mint URLs that point at
- * themselves; falls back to the prod hostname.
- */
-export function storeBase(env: RtEnv): string {
-	const v = (env as { STORE_BASE?: string }).STORE_BASE;
-	return (typeof v === "string" && v ? v : "https://suxos.net").replace(/\/+$/, "");
-}
-
-/** Accept a bare uuid or a .../s/<uuid> URL and return the uuid (shared with `store`). */
-export function extractStoreId(s: string): string {
-	const m = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(s);
-	return m ? m[1].toLowerCase() : s.trim();
-}
-
-/** The uuid when `u` is a /s/<uuid> CAS handle URL (any host — the path shape is ours), else null. */
-export function storeRefUuid(u: unknown): string | null {
-	if (!isHttpUrl(u)) return null;
-	try {
-		const m = /^\/s\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/i.exec(new URL(u).pathname);
-		return m ? m[1].toLowerCase() : null;
-	} catch {
-		return null;
-	}
-}
-
-/** True when a handle's absolute unix-seconds `expiry` is set and in the past. */
-export function isExpired(ref: { expiry?: number }, now = Date.now()): boolean {
-	return typeof ref.expiry === "number" && ref.expiry * 1000 <= now;
-}
-
-/** Resolve a /s/<uuid> handle to its bytes via KV→R2 directly (no HTTP hop). */
-export async function getBlob(env: RtEnv, uuid: string): Promise<{ bytes: Uint8Array; contentType: string } | null> {
-	if (!env.R2) return null;
-	const raw = await env.OAUTH_KV.get(`${STORE_KV_PREFIX}${uuid}`);
-	if (!raw) return null;
-	const ref = JSON.parse(raw) as { key: string; content_type?: string; expiry?: number };
-	// An expired handle is a not-found (KV's own expirationTtl usually evicts it,
-	// but enforce it here too and best-effort delete a handle KV hasn't reaped yet).
-	if (isExpired(ref)) {
-		await env.OAUTH_KV.delete(`${STORE_KV_PREFIX}${uuid}`).catch(() => {});
-		return null;
-	}
-	const obj = await env.R2.get(ref.key);
-	if (!obj) return null;
-	// Stored bytes may be a transparent-gzip frame — inflate back to the original.
-	const bytes = await maybeDecompress(new Uint8Array(await obj.arrayBuffer()));
-	return { bytes, contentType: ref.content_type ?? obj.httpMetadata?.contentType ?? "application/octet-stream" };
-}
-
-export type BlobRef = { uuid: string; url: string; key: string; sha256: string; size: number; content_type: string; expiry?: number };
-
-export async function sha256Hex(bytes: Uint8Array): Promise<string> {
-	const buf = await crypto.subtle.digest("SHA-256", bytes);
-	return Array.from(new Uint8Array(buf))
-		.map((b) => b.toString(16).padStart(2, "0"))
-		.join("");
-}
-
-/**
- * Content-address bytes into R2 (cas/<sha256> — identical bytes dedupe), mint a
- * uuid handle in KV, and return the public /s/<uuid> URL. The Nix-store move:
- * any fn's binary output becomes a ~100-token reference every other fn can take
- * as a `url` input. Throws when R2 is unbound.
- */
-export async function putBlob(env: RtEnv, bytes: Uint8Array, contentType: string, opts?: { ttlSeconds?: number }): Promise<BlobRef> {
-	if (!env.R2) throw new Error("R2 is not available (bucket binding missing).");
-	const sha256 = await sha256Hex(bytes);
-	const key = `cas/${sha256}`;
-	const uuid = crypto.randomUUID();
-	// Optional expiry (ephemeral artifacts — render screenshots/pdfs). Record an
-	// absolute unix-seconds `expiry` in the handle JSON so any reader can enforce
-	// it, and set KV's own expirationTtl so the handle self-evicts. KV rejects an
-	// expirationTtl under 60s, so below that we lean on the JSON expiry alone — the
-	// reader still treats it as not-found once past. No ttl = permanent handle.
-	const ttl = typeof opts?.ttlSeconds === "number" && opts.ttlSeconds > 0 ? Math.floor(opts.ttlSeconds) : undefined;
-	const expiry = ttl ? Math.floor(Date.now() / 1000) + ttl : undefined;
-	const handle: Record<string, unknown> = { key, content_type: contentType, size: bytes.length, sha256 };
-	if (expiry) handle.expiry = expiry;
-	const kvOpts = ttl && ttl >= 60 ? { expirationTtl: ttl } : undefined;
-	// Transparent gzip for text-ish blobs (marker-framed; getBlob/store/`/s/`
-	// inflate on read). The CAS key stays the sha256 of the ORIGINAL bytes, so
-	// dedup is unaffected and identical content still collapses to one object.
-	const stored = await maybeCompress(bytes, contentType);
-	// The R2 object and KV handle are independent writes — run them concurrently.
-	await Promise.all([
-		env.R2.put(key, stored, { httpMetadata: { contentType }, customMetadata: { sha256 } }),
-		env.OAUTH_KV.put(`${STORE_KV_PREFIX}${uuid}`, JSON.stringify(handle), kvOpts),
-	]);
-	return { uuid, url: `${storeBase(env)}/s/${uuid}`, key, sha256, size: bytes.length, content_type: contentType, ...(expiry ? { expiry } : {}) };
-}
-
-/**
- * Deliver binary output either inline (base64, the default — token-expensive but
- * self-contained) or `as: "url"` via the content-addressed store (~100 tokens,
- * consumable as any other fn's `url` input). Callers pass their own inline shape.
- */
-export async function deliverBytes(
-	env: RtEnv,
-	bytes: Uint8Array,
-	contentType: string,
-	as: string | undefined,
-	inline: () => { content: Array<{ type: "text"; text: string }> },
-): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
-	if (as === "url") {
-		try {
-			const ref = await putBlob(env, bytes, contentType, { ttlSeconds: FANOUT_STORE_TTL_S });
-			return { content: [{ type: "text", text: oj({ url: ref.url, sha256: ref.sha256, size: ref.size, content_type: contentType }) }] };
-		} catch (e) {
-			return { content: [{ type: "text", text: `as:"url" needs the R2 store: ${errMsg(e)}` }], isError: true };
-		}
-	}
-	return inline();
-}
-
-/**
- * THE standard inline envelope for binary output: { mime, size (bytes), base64 }.
- * Every binary-output fn's default (non-url) delivery uses this one shape so
- * consumers can parse any of them identically.
- */
-export function inlineB64(bytes: Uint8Array, mime: string): { content: Array<{ type: "text"; text: string }> } {
-	return { content: [{ type: "text", text: JSON.stringify({ mime, size: bytes.length, base64: toB64(bytes) }) }] };
 }
