@@ -54,22 +54,34 @@ function workersAiLlm(env: RtEnv): Llm {
 	};
 }
 
-// R2-published terminal: re-address the piped Handle under a durable `published/`
-// prefix, so a sink write is a visible, resolvable side effect rather than a no-op.
-// MVP-minimal (R2 only); vault/mail sink targets are cluster-E additions.
+// The piped value reaching a sink is either a bare Handle (a claim-check terminal) or
+// a summarize result `{ abstract, summaryHandle }` (the assimilate-pdfs terminal). Both
+// carry the artifact BY REFERENCE — pull the Handle out, never inline bytes into it.
+function sinkHandle(input: any): Handle {
+	if (input?.r2Key && input?.sha256) return input as Handle;
+	if (input?.summaryHandle?.r2Key) return input.summaryHandle as Handle;
+	throw new Error("run: a sink was handed a value with no resolvable Handle (expected a Handle or a { summaryHandle }).");
+}
+
+// R2-published terminals: re-address the referenced Handle under a durable prefix, so a
+// sink write is a visible, resolvable side effect rather than a no-op. `r2` publishes
+// under `published/`; `vault` publishes under `vault/` — a real, low-risk, content-
+// addressed R2 write (no git-vault machinery), giving assimilate-pdfs two DISTINCT
+// durable sink targets. Both fail LOUD on a missing binding or unresolvable handle.
 function makeSinks(env: RtEnv): Record<string, SinkTarget> {
-	const r2: SinkTarget = {
-		name: "r2",
-		async write(input: Handle): Promise<Handle> {
-			if (!env.R2) throw new Error("run: the r2 sink needs the R2 bucket binding.");
-			const obj = await env.R2.get(input.r2Key);
-			if (!obj) throw new Error(`run: the r2 sink can't resolve handle ${input.r2Key}`);
-			const key = `published/${input.sha256}`;
-			if (!(await env.R2.head(key))) await env.R2.put(key, await obj.arrayBuffer(), { httpMetadata: { contentType: input.type } });
+	const publisher = (name: string, prefix: string): SinkTarget => ({
+		name,
+		async write(input: any): Promise<any> {
+			if (!env.R2) throw new Error(`run: the ${name} sink needs the R2 bucket binding.`);
+			const h = sinkHandle(input);
+			const obj = await env.R2.get(h.r2Key);
+			if (!obj) throw new Error(`run: the ${name} sink can't resolve handle ${h.r2Key}`);
+			const key = `${prefix}${h.sha256}`;
+			if (!(await env.R2.head(key))) await env.R2.put(key, await obj.arrayBuffer(), { httpMetadata: { contentType: h.type } });
 			return input;
 		},
-	};
-	return { r2 };
+	});
+	return { r2: publisher("r2", "published/"), vault: publisher("vault", "vault/") };
 }
 
 export function makeCaps(env: RtEnv): Caps {

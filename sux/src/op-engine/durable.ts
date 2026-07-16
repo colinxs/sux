@@ -3,9 +3,11 @@
 // eviction, retries, and multi-day human pauses.
 //
 // REPLAY DETERMINISM (why this is safe to re-run from the top on every restart):
-//   • The `Op` tree is a STATIC value — built once in the op registry, never from
-//     `Date.now()` / `Math.random()` / live I/O. Walking it yields the same shape
-//     every pass.
+//   • The `Op` tree is a STATIC SHAPE — the registry factory that builds it is a pure
+//     function of no inputs (no `Date.now()` / `Math.random()` / live I/O), so every
+//     construction (including one per replay) yields the same tree. The per-run limiter
+//     it mints carries only scheduling state; step identity never depends on it.
+//     Walking the tree therefore yields the same shape every pass.
 //   • Every leaf (and reconcile, and each sink write) runs inside `step.do(name, …)`,
 //     so its result is MEMOIZED by the runtime. On replay the body is not re-executed;
 //     the persisted return value is handed back. Non-determinism (clocks, network,
@@ -99,8 +101,8 @@ export class OpWorkflow extends WorkflowEntrypoint<RtEnv, OpParams> {
 	async run(event: WorkflowEvent<OpParams>, step: WorkflowStep): Promise<unknown> {
 		const { registry } = await import("./registry.js");
 		const { makeCaps } = await import("./caps.js");
-		const tree = registry[event.payload.opId];
-		if (!tree) throw new Error(`unknown op: ${event.payload.opId}`);
-		return interpretDurable(tree, event.payload.input, step, makeCaps(this.env), "root");
+		const build = registry[event.payload.opId];
+		if (!build) throw new Error(`unknown op: ${event.payload.opId}`);
+		return interpretDurable(build(), event.payload.input, step, makeCaps(this.env), "root");
 	}
 }

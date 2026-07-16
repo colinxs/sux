@@ -24,8 +24,9 @@ function needsDurable(n: Op): boolean {
  * unknown op, or on durable mode without the OP_WORKFLOW binding.
  */
 export async function runVerb({ op: opId, input, mode = "auto" }: { op: string; input: any; mode?: RunMode }, env: RtEnv): Promise<any> {
-	const tree = registry[opId];
-	if (!tree) throw new Error(`unknown op: ${opId}`);
+	const build = registry[opId];
+	if (!build) throw new Error(`unknown op: ${opId}`);
+	const tree = build();
 	const durable = mode === "durable" || (mode === "auto" && needsDurable(tree));
 	if (!durable) return runInline(tree, input, makeCaps(env));
 	if (!env.OP_WORKFLOW) throw new Error("run: durable mode needs the OP_WORKFLOW binding.");
