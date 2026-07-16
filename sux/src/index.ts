@@ -24,6 +24,7 @@ import { handleRecovery } from "./recovery";
 import { handleAppleHealth, handleMychartRoutes, refreshMychartToken } from "./mychart";
 import { normalizeArgs, normalizeText } from "./normalize";
 import { cancelTask, createTask, getTask, isTerminal, listTasks, toPublicTask, toTaskResult, waitForTerminal } from "./tasks";
+import { timingSafeEqual } from "./crypto-util";
 
 type Props = { login: string; name: string; email: string; accessToken: string };
 
@@ -647,14 +648,6 @@ async function agendaTick(env: RtEnv): Promise<unknown> {
 	return mod.runAgenda(env, {}, deps);
 }
 
-// Constant-time string compare (avoids leaking the token via early-exit timing).
-function tokenEq(a: string, b: string): boolean {
-	if (a.length !== b.length) return false;
-	let diff = 0;
-	for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-	return diff === 0;
-}
-
 // The frequent Cron Trigger (must match the second entry in wrangler.jsonc's
 // `triggers.crons`): pushes the Prometheus metrics snapshot AND runs mail-triage on a
 // ~5-min cadence. Any other cron (the daily 13:00 UTC one) runs the rest of the
@@ -716,7 +709,7 @@ async function maintenanceTick(env: RtEnv, ctx: ExecutionContext): Promise<void>
 // exact shape, so a structural check works without a value-import of either
 // (see getOAuthProvider's comment on why this module must not eval the provider
 // package at import time).
-type OAuthErrorLike = { name: string; code: string; description: string; statusCode?: number };
+type OAuthErrorLike = { name: string; code: string; description: string; statusCode?: number; headers?: Record<string, string> };
 function asOAuthError(e: unknown): OAuthErrorLike | null {
 	if (!e || typeof e !== "object") return null;
 	const o = e as Record<string, unknown>;
@@ -738,9 +731,12 @@ export function oauthErrorResponse(e: unknown): Response {
 	console.error(`oauth wrapper caught: ${String((e as Error)?.message ?? e)}`);
 	const oauthErr = asOAuthError(e);
 	if (oauthErr) {
+		// e.g. temporarily_unavailable ships a Retry-After — forward it so the caller
+		// backs off correctly instead of hammering an upstream that already said "wait".
+		const extra = oauthErr.headers && typeof oauthErr.headers === "object" ? oauthErr.headers : {};
 		return new Response(JSON.stringify({ error: oauthErr.code, error_description: oauthErr.description }), {
 			status: typeof oauthErr.statusCode === "number" ? oauthErr.statusCode : 400,
-			headers: { "content-type": "application/json" },
+			headers: { "content-type": "application/json", ...extra },
 		});
 	}
 	return new Response(JSON.stringify({ error: "server_error", error_description: "Internal server error." }), {
@@ -814,7 +810,7 @@ export default {
 				if (!token) return new Response("not found", { status: 404 });
 				const auth = request.headers.get("authorization") ?? "";
 				const presented = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-				if (!presented || !tokenEq(token, presented)) return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: { "content-type": "application/json" } });
+				if (!presented || !timingSafeEqual(token, presented)) return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: { "content-type": "application/json" } });
 				const job = u.searchParams.get("job") ?? "";
 				try {
 					let out: unknown;

@@ -10,7 +10,7 @@ import { errMsg, putBlob, storeBase } from "./fns/_util";
 import { dropboxPut, hasDropbox } from "./fns/dropbox";
 import { ledger } from "./ledger";
 import { runSubJob } from "./cron-heartbeat";
-import { timingSafeEq } from "./recovery";
+import { timingSafeEqual } from "./crypto-util";
 
 // The mail MCP server — the ergonomic Fastmail surface, reached through the `mail_`
 // (and `cal_`/`contact_`) front verbs on the one /mcp connector, behind the same
@@ -81,7 +81,7 @@ function randomPushToken(): string {
  */
 export async function handleMailPushWebhook(env: RtEnv, token: string, rawBody: string, trigger: () => Promise<unknown>): Promise<boolean> {
 	const existing = await pushState(env);
-	if (!existing || !timingSafeEq(existing.token, token)) return false;
+	if (!existing || !timingSafeEqual(existing.token, token)) return false;
 	let body: any = null;
 	try {
 		body = rawBody ? JSON.parse(rawBody) : null;

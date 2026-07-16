@@ -492,6 +492,21 @@ describe("oauthErrorResponse (server_error must not leak internal detail)", () =
 		expect(body.error).toBe("server_error");
 		expect(JSON.stringify(body)).not.toContain(secret);
 	});
+
+	it("forwards an OAuthError's headers (e.g. Retry-After) onto the Response", async () => {
+		const err = Object.assign(new Error("upstream rate limited"), {
+			name: "OAuthError",
+			code: "temporarily_unavailable",
+			description: "upstream rate limited",
+			statusCode: 429,
+			headers: { "Retry-After": "60" },
+		});
+		const res = oauthErrorResponse(err);
+		expect(res.status).toBe(429);
+		expect(res.headers.get("Retry-After")).toBe("60");
+		const body = (await res.json()) as any;
+		expect(body.error).toBe("temporarily_unavailable");
+	});
 });
 
 describe("summarize-before-return meta-arg", () => {

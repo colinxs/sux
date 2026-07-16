@@ -13,6 +13,7 @@
 //   POST /recovery/enqueue  — operator→Worker, bearer-authed. Sign + queue a command for a node.
 //   GET  /recovery/status   — operator→Worker, bearer-authed. Read a node's last-seen health.
 
+import { timingSafeEqual } from "./crypto-util";
 import { keyedSerialize } from "./keyed-serialize";
 import type { RtEnv } from "./registry";
 
@@ -54,16 +55,6 @@ async function hmacHex(secret: string, msg: string): Promise<string> {
 	const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
 	const mac = await crypto.subtle.sign("HMAC", key, enc.encode(msg));
 	return [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-// Constant-time string compare (avoids leaking the MAC/token via early-exit timing).
-// Exported so other bearer-style checks (e.g. the JMAP push webhook token in
-// mail-mcp.ts) reuse it instead of a plain !== compare.
-export function timingSafeEq(a: string, b: string): boolean {
-	if (a.length !== b.length) return false;
-	let diff = 0;
-	for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-	return diff === 0;
 }
 
 // The exact bytes the box signs and the box verifies a command against. Pinning a
@@ -133,7 +124,7 @@ async function handleCheckin(request: Request, env: RtEnv): Promise<Response> {
 
 	const presented = request.headers.get("x-sux-signature") ?? "";
 	const expected = await hmacHex(env.RECOVERY_HMAC_SECRET as string, raw);
-	if (!presented || !timingSafeEq(presented.toLowerCase(), expected)) return json({ error: "bad_signature" }, 401);
+	if (!presented || !timingSafeEqual(presented.toLowerCase(), expected)) return json({ error: "bad_signature" }, 401);
 
 	let body: { node_id?: unknown; timestamp?: unknown; health?: unknown; nonce?: unknown };
 	try {
@@ -237,7 +228,7 @@ function adminAuthed(request: Request, env: RtEnv): boolean {
 	if (!secret) return false;
 	const auth = request.headers.get("authorization") ?? "";
 	const presented = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-	return Boolean(presented) && timingSafeEq(presented, secret);
+	return Boolean(presented) && timingSafeEqual(presented, secret);
 }
 
 // The dead-drop router. Returns null when the path isn't ours (so index.ts falls
@@ -266,5 +257,5 @@ export async function handleRecovery(url: URL, request: Request, env: RtEnv): Pr
 export async function verifyCommand(env: RtEnv, c: SignedCommand): Promise<boolean> {
 	const { sig, ...base } = c;
 	const expected = await hmacHex(cmdSecret(env), commandSigningString(base));
-	return timingSafeEq(sig.toLowerCase(), expected);
+	return timingSafeEqual(sig.toLowerCase(), expected);
 }

@@ -59,6 +59,16 @@ secrets-store access). Left as plain `bug`/`enhancement`, it gets silently re-pi
 re-fails every cycle instead of surfacing once. Label it `needs-human` at triage/fixer time (or
 self-label and stop if a builder rediscovers it), the same way #328/#329/#419/#533 were.
 
+A security-audit run and a fix PR for the same finding can land concurrently against slightly
+different snapshots of `main` — #567/#568 described a CalDAV SSRF credential leak and a
+batch(tool:pipe) rate-limit bypass that were already fixed and test-covered by the same-day
+merge of #479, and the issue-filing step never re-diffed against current `main` before opening
+them (both issues even claimed "independently re-verified by direct read" — the re-verify read
+the pre-merge snapshot). Any audit-to-issue pipeline should re-check a finding against current
+`main` (or the merged-PR list) immediately before filing, not just at audit time, so builders
+stop re-discovering and re-closing already-fixed issues (#585). A builder that hits one mid-batch
+should drop it as redundant/superseded and say so explicitly, rather than re-implementing the fix.
+
 ## The workflows
 
 | File | Trigger | Does |

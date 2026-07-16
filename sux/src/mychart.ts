@@ -14,6 +14,7 @@
 // prefix which the /s/<uuid> handler refuses to serve, never route through dropbox,
 // and never enter the generic KV result cache (the mychart fn is cacheable:false).
 
+import { timingSafeEqual } from "./crypto-util";
 import type { RtEnv } from "./registry";
 
 export const PHI_PREFIX = "phi/";
@@ -59,14 +60,6 @@ export function redirectUri(env: RtEnv): string {
 	const v = (env as { STORE_BASE?: string }).STORE_BASE;
 	const base = (typeof v === "string" && v ? v : "https://suxos.net").replace(/\/+$/, "");
 	return `${base}/mychart/callback`;
-}
-
-/** Constant-time compare (avoids leaking a gate token via early-exit timing). */
-export function tokenEq(a: string, b: string): boolean {
-	if (a.length !== b.length) return false;
-	let diff = 0;
-	for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-	return diff === 0;
 }
 
 const b64url = (bytes: Uint8Array): string => {
@@ -392,7 +385,7 @@ export async function handleMychartRoutes(url: URL, request: Request, env: RtEnv
 		const gate = env.SUX_CRON_TOKEN;
 		if (!gate) return new Response("not found", { status: 404 });
 		const presented = url.searchParams.get("token") ?? "";
-		if (!presented || !tokenEq(gate, presented)) return new Response("unauthorized", { status: 401 });
+		if (!presented || !timingSafeEqual(gate, presented)) return new Response("unauthorized", { status: 401 });
 		try {
 			const cfg = await smartConfig(env);
 			const verifier = makeVerifier();
@@ -505,7 +498,7 @@ export async function handleAppleHealth(url: URL, request: Request, env: RtEnv):
 	if (!token) return new Response("not found", { status: 404 });
 	const auth = request.headers.get("authorization") ?? "";
 	const presented = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-	if (!presented || !tokenEq(token, presented)) return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: { "content-type": "application/json" } });
+	if (!presented || !timingSafeEqual(token, presented)) return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: { "content-type": "application/json" } });
 	if (!env.R2) return new Response(JSON.stringify({ error: "R2 not bound" }), { status: 503, headers: { "content-type": "application/json" } });
 	const MAX_BYTES = 8 * 1024 * 1024;
 	// Reject on the declared Content-Length BEFORE buffering the whole body into memory
