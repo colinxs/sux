@@ -56,9 +56,10 @@ async function hmacHex(secret: string, msg: string): Promise<string> {
 	return [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-// Constant-time hex-string compare (avoids leaking the MAC via early-exit timing).
-// Both sides are fixed-length hex here, so a length mismatch is itself a rejection.
-function timingSafeEq(a: string, b: string): boolean {
+// Constant-time string compare (avoids leaking the MAC/token via early-exit timing).
+// Exported so other bearer-style checks (e.g. the JMAP push webhook token in
+// mail-mcp.ts) reuse it instead of a plain !== compare.
+export function timingSafeEq(a: string, b: string): boolean {
 	if (a.length !== b.length) return false;
 	let diff = 0;
 	for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);

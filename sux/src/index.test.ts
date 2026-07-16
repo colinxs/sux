@@ -475,12 +475,22 @@ describe("oauthErrorResponse (server_error must not leak internal detail)", () =
 		expect(JSON.stringify(body)).not.toContain(secret);
 	});
 
-	it("still echoes the message for a client-side mistake (400)", async () => {
-		const res = oauthErrorResponse(new Error("invalid redirect_uri: not registered"));
+	it("still echoes the message for a genuine OAuthError (400) — classified by type, not by keyword", async () => {
+		const { OAuthError } = await import("./workers-oauth-utils");
+		const res = oauthErrorResponse(new OAuthError("invalid_request", "invalid redirect_uri: not registered"));
 		expect(res.status).toBe(400);
 		const body = (await res.json()) as any;
 		expect(body.error).toBe("invalid_request");
 		expect(body.error_description).toContain("redirect_uri");
+	});
+
+	it("does NOT classify a plain Error as client-side just because its message contains a common keyword like 'state' or 'invalid'", async () => {
+		const secret = "KV put failed for client abc123: invalid signature at endpoint https://internal-kv.example/state";
+		const res = oauthErrorResponse(new Error(secret));
+		expect(res.status).toBe(500);
+		const body = (await res.json()) as any;
+		expect(body.error).toBe("server_error");
+		expect(JSON.stringify(body)).not.toContain(secret);
 	});
 });
 

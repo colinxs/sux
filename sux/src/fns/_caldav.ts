@@ -134,7 +134,11 @@ function foldLine(logical: string): string {
 }
 
 function escapeText(value: string): string {
-	return String(value).replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\n/g, "\\n");
+	// RFC 5545 §3.3.11 defines no escape for a bare CR — strip it (mirrors \n's
+	// literal-backslash-n escape) so a raw \r can never land as a control byte in
+	// the outgoing property line, let alone be mistaken for a line-fold by a lenient
+	// parser (#575).
+	return String(value).replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r/g, "").replace(/\n/g, "\\n");
 }
 
 /** One unfolded TEXT property line (escaped) — the caller folds it (buildVEvent) or hands it to replaceProps (which folds). */

@@ -703,20 +703,40 @@ async function maintenanceTick(env: RtEnv, ctx: ExecutionContext): Promise<void>
 	}
 }
 
+// An OAuthError-shaped exception: both the library's own (@cloudflare/workers-
+// oauth-provider) and this repo's local one (workers-oauth-utils.ts) have this
+// exact shape, so a structural check works without a value-import of either
+// (see getOAuthProvider's comment on why this module must not eval the provider
+// package at import time).
+type OAuthErrorLike = { name: string; code: string; description: string; statusCode?: number };
+function asOAuthError(e: unknown): OAuthErrorLike | null {
+	if (!e || typeof e !== "object") return null;
+	const o = e as Record<string, unknown>;
+	if (o.name !== "OAuthError" || typeof o.code !== "string" || typeof o.description !== "string") return null;
+	return o as unknown as OAuthErrorLike;
+}
+
 // Maps an exception thrown out of the OAuth provider into a clean JSON error
-// Response. Client-side mistakes (bad redirect_uri, missing/invalid params, CSRF
-// state) get a 400 whose error_description echoes the message so the caller can
-// fix their own request. Everything else is an opaque 500: the real message is
-// only logged, never placed in the body, so internal implementation detail (a
-// network failure in handleCallback, an internal TypeError, etc.) is not leaked
-// to the possibly-anonymous caller.
+// Response. A genuine OAuthError (client-side mistakes: bad redirect_uri,
+// missing/invalid params, CSRF state) gets its own code/description/status
+// echoed back so the caller can fix their own request. Everything else is an
+// opaque 500: the real message is only logged, never placed in the body, so
+// internal implementation detail (a network failure in handleCallback, an
+// internal TypeError, etc.) is never leaked to the possibly-anonymous caller —
+// classifying by exception TYPE rather than pattern-matching the free-text
+// message means an internal error can't accidentally echo its own message just
+// because it happens to contain a common word like "state" or "invalid" (#569).
 export function oauthErrorResponse(e: unknown): Response {
-	const msg = String((e as Error)?.message ?? e);
-	const clientError = /redirect|client|invalid|unauthoriz|unregister|missing|csrf|state/i.test(msg);
-	console.error(`oauth wrapper caught: ${msg}`);
-	const errorDescription = clientError ? msg : "Internal server error.";
-	return new Response(JSON.stringify({ error: clientError ? "invalid_request" : "server_error", error_description: errorDescription }), {
-		status: clientError ? 400 : 500,
+	console.error(`oauth wrapper caught: ${String((e as Error)?.message ?? e)}`);
+	const oauthErr = asOAuthError(e);
+	if (oauthErr) {
+		return new Response(JSON.stringify({ error: oauthErr.code, error_description: oauthErr.description }), {
+			status: typeof oauthErr.statusCode === "number" ? oauthErr.statusCode : 400,
+			headers: { "content-type": "application/json" },
+		});
+	}
+	return new Response(JSON.stringify({ error: "server_error", error_description: "Internal server error." }), {
+		status: 500,
 		headers: { "content-type": "application/json" },
 	});
 }
