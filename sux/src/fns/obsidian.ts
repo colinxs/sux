@@ -370,7 +370,10 @@ export const obsidian: Fn = {
 		// (dispatch does no server-side enum enforcement).
 		const action = String(args?.action ?? "").trim().toLowerCase();
 		const backend = String(args?.backend ?? "git").trim().toLowerCase();
-		if (["append", "write", "edit", "delete"].includes(action)) {
+		// Guard EVERY path-taking action, both backends, before dispatch — a `read`
+		// (or any verb) with a '..'/dot segment is arbitrary-file disclosure on the
+		// remote Local REST API, not just an infra-write risk (§592).
+		if (["read", "append", "write", "edit", "delete"].includes(action)) {
 			const p0 = String(args?.path ?? "").trim();
 			const bad = p0 ? badVaultPath(p0) : null;
 			if (bad) return fail(bad);
@@ -422,7 +425,12 @@ export const obsidian: Fn = {
 			if (action === "search") {
 				const q = String(args?.query ?? "").trim();
 				if (!q) return fail("action=search requires a `query`.");
-				const { status, json } = await ghJson(env, `${GH}/search/code?q=${encodeURIComponent(`${q} repo:${repo} extension:md`)}&per_page=20`);
+				// Neutralize GitHub code-search qualifier injection: a caller ':' could
+				// smuggle repo:/org:/user:/language: qualifiers alongside our trusted
+				// repo:/extension: restriction and search another repo with the app's own
+				// token. Qualifiers can't form without a ':', so collapse it to a space (§593).
+				const safeQ = q.replace(/:/g, " ").trim();
+				const { status, json } = await ghJson(env, `${GH}/search/code?q=${encodeURIComponent(`${safeQ} repo:${repo} extension:md`)}&per_page=20`);
 				if (status >= 400) return fail(`GitHub search error: ${json?.message ?? `HTTP ${status}`} (code search needs an authenticated GITHUB_TOKEN).`);
 				const hits = (json?.items ?? []).map((it: any) => ({ path: it?.path, url: it?.html_url }));
 				return ok(oj({ query: q, count: hits.length, hits }));
