@@ -2,8 +2,8 @@
 	"$schema": "../../../node_modules/wrangler/config-schema.json",
 	"name": "sux-e2e",
 	"main": "./e2e-worker.ts",
-	"compatibility_date": "2025-06-01",
-	"compatibility_flags": ["nodejs_compat"],
+	"compatibility_date": "2026-07-16",
+	"compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
 	// Local-only simulated storage (wrangler dev defaults to local mode — no real
 	// Cloudflare account/credentials needed, no cloud KV/R2 touched). The vault/ingest
 	// paths under test read/write these; AI + browser + rate-limit bindings from the
