@@ -13,7 +13,7 @@ name: Fixer (hourly, shallow)
 
 on:
   schedule:
-    - cron: "0 * * * *" # hourly, shallow
+    - cron: "35 * * * *" # hourly, shallow (offset to dodge top-of-hour rush)
   workflow_dispatch:
 
 jobs:
