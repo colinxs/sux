@@ -49,6 +49,12 @@ jobs:
       - name: Node deploy blob in sync
         run: npm run check:node
 
+      # sux/wrangler.jsonc's compatibility_date/compatibility_flags must stay mirrored in
+      # test/e2e/wrangler.e2e.jsonc — otherwise e2e silently validates against a stale
+      # Workers runtime baseline and skips flags like global_fetch_strictly_public (#607, #610).
+      - name: Wrangler compat_date/flags in sync (prod vs e2e)
+        run: npm run check:wrangler-compat
+
       # The generated fn manifest (index.ts) must include every fns/*.ts
       # (fix: npm run gen:index) — a new fn that isn't registered ships silently.
       - name: Function index in sync
