@@ -7,11 +7,19 @@
 
 import { FUNCTIONS } from "./fns";
 import { KIND_PLANS, parseStrategies } from "./fns/get";
-import type { JsonRpc } from "./mcp-util";
+import { type JsonRpc, sseResponse } from "./mcp-util";
+import { exceedsDepth, MAX_ARG_DEPTH } from "./prim";
 import { findFn, type RtEnv, unwrapFnCall } from "./registry";
 
 const rateLimited = (): Response =>
 	new Response(JSON.stringify({ error: "rate_limited" }), { status: 429, headers: { "content-type": "application/json", "retry-after": "10" } });
+
+const nestedTooDeep = (id: unknown, name: string): Response =>
+	sseResponse({
+		jsonrpc: "2.0",
+		id: id ?? null,
+		result: { content: [{ type: "text", text: `Tool '${name}' rejected: arguments nested too deep (> ${MAX_ARG_DEPTH} levels)` }], isError: true },
+	});
 
 /** Extra limiter tokens a tool consumes beyond the base 1. cost defaults to 1
  *  (→ 0 extra); unknown tools charge 0 extra (they'll 404 in dispatch anyway). */
@@ -121,6 +129,14 @@ export async function weightedRateLimit(env: RtEnv, login: string, rpc: JsonRpc 
 	const unwrapped = unwrapFnCall(rpc.params, FUNCTIONS);
 	const effectiveName = unwrapped?.name ?? String(rpc.params?.name ?? "");
 	const effectiveArgs = unwrapped?.args ?? rpc.params?.arguments;
+	// requestCost recurses through nested pipe/batch args with no depth cap of its
+	// own — a self-nested pipe/batch payload can stack-overflow it. checkArgs's
+	// MAX_ARG_DEPTH guard exists precisely to stop this, but runs later in
+	// handleRpc; reject here first, before pricing, so requestCost never sees an
+	// over-deep payload (#626).
+	if (effectiveArgs !== null && typeof effectiveArgs === "object" && exceedsDepth(effectiveArgs, MAX_ARG_DEPTH)) {
+		return nestedTooDeep(rpc.id, effectiveName);
+	}
 	const extra = requestCost(effectiveName, effectiveArgs);
 	for (let i = 0; i < extra; i++) {
 		// Fail OPEN if the limiter throws — an unavailable limiter must never itself

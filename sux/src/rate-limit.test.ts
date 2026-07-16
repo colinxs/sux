@@ -195,4 +195,37 @@ describe("weightedRateLimit", () => {
 			expect(rl.calls(), `obfuscated ${JSON.stringify(obf)} should charge render's 4 extra`).toBe(4);
 		}
 	});
+
+	// requestCost has no recursion-depth cap of its own — a self-nested pipe payload
+	// would stack-overflow it before checkArgs's MAX_ARG_DEPTH guard (which runs
+	// later, in handleRpc) ever sees the request. weightedRateLimit must reject it
+	// itself rather than let requestCost throw an uncaught RangeError (#626).
+	it("rejects a pipe nested past MAX_ARG_DEPTH instead of recursing requestCost into a stack overflow", async () => {
+		let deep: Record<string, unknown> = { tool: "hash", args: {} };
+		for (let i = 0; i < 70; i++) deep = { tool: "pipe", args: { steps: [deep] } };
+		const rl = limiter(100);
+		const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, "u", {
+			jsonrpc: "2.0",
+			id: 1,
+			method: "tools/call",
+			params: { name: "pipe", arguments: { steps: [deep] } },
+		} as any);
+		expect(r).not.toBeNull();
+		expect(r!.status).toBe(200);
+		const body = await r!.text();
+		expect(body).toContain("nested too deep");
+		expect(rl.calls()).toBe(0); // rejected before any limiter token was spent
+	});
+
+	it("does not reject a shallow pipe that stays within MAX_ARG_DEPTH", async () => {
+		const rl = limiter(100);
+		const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, "u", {
+			jsonrpc: "2.0",
+			id: 1,
+			method: "tools/call",
+			params: { name: "pipe", arguments: { steps: [{ tool: "render" }, { tool: "render" }] } },
+		} as any);
+		expect(r).toBeNull();
+		expect(rl.calls()).toBe(8);
+	});
 });

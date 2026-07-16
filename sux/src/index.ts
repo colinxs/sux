@@ -1,4 +1,5 @@
 import type OAuthProvider from "@cloudflare/workers-oauth-provider";
+import { exceedsDepth, MAX_ARG_DEPTH } from "./prim";
 import { isAllowedLogin } from "./utils";
 import { type CacheMeta, cacheKey, deferCacheWrite, type JsonRpc, parseJsonRpc, sseResponse } from "./mcp-util";
 import { unpackFromCache } from "./cache-codec";
@@ -60,7 +61,6 @@ const PROMPT_TEXT: Record<string, string> = { sux: SUX_SKILL_PROMPT, life: LIFE_
 export const FN_DEADLINE_MS = 60_000;
 const MAX_OUTPUT_CHARS = 1_000_000;
 const MAX_ARG_BYTES = 256_000;
-const MAX_ARG_DEPTH = 64;
 
 // MCP Tasks primitive (see src/tasks.ts) — the tools genuinely long-running or
 // fan-out-shaped enough to be worth polling instead of holding a request open:
@@ -113,24 +113,6 @@ export function clampResult(result: ToolResult, max: number): ToolResult {
 	if (!clamped) return result;
 	content.push({ type: "text" as const, text: `\n…[sux: output truncated at ${max} chars]` });
 	return { ...result, content };
-}
-
-// Bounded depth probe: returns whether the object's nesting depth exceeds
-// `limit`. Recursion is capped at `limit`, so a pathologically deep (or
-// cyclic) blob can't blow the stack while we measure it.
-function exceedsDepth(v: unknown, limit: number): boolean {
-	let deep = false;
-	const walk = (node: unknown, d: number): void => {
-		if (deep) return;
-		if (d > limit) {
-			deep = true;
-			return;
-		}
-		if (node === null || typeof node !== "object") return;
-		for (const val of Object.values(node as Record<string, unknown>)) walk(val, d + 1);
-	};
-	walk(v, 0);
-	return deep;
 }
 
 // Reject a pathological args blob before normalizeArgs/run. Depth is checked

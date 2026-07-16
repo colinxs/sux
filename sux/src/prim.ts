@@ -16,3 +16,27 @@ export const oj = (x: unknown): string => JSON.stringify(x);
 export function isHttpUrl(u: unknown): u is string {
 	return typeof u === "string" && /^https?:\/\//i.test(u);
 }
+
+/** Shared cap: index.ts's checkArgs rejects tools/call args nested deeper than
+ *  this, and rate-limit.ts's weightedRateLimit rejects the same payloads before
+ *  pricing them (#626) — one source of truth for both gates. */
+export const MAX_ARG_DEPTH = 64;
+
+/** Bounded depth probe: true if `v`'s object nesting exceeds `limit`. Recursion is
+ *  capped at `limit`, so a pathologically deep (or cyclic) blob can't blow the
+ *  stack while measuring it. Lives here (not index.ts) so rate-limit.ts can reuse
+ *  it without importing index.ts and forming a cycle. */
+export function exceedsDepth(v: unknown, limit: number): boolean {
+	let deep = false;
+	const walk = (node: unknown, d: number): void => {
+		if (deep) return;
+		if (d > limit) {
+			deep = true;
+			return;
+		}
+		if (node === null || typeof node !== "object") return;
+		for (const val of Object.values(node as Record<string, unknown>)) walk(val, d + 1);
+	};
+	walk(v, 0);
+	return deep;
+}
