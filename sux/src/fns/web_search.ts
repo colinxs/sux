@@ -211,6 +211,24 @@ export async function kagiSession(env: any, q: string, limit: number, route: Rou
 	return parseKagiSession(await resp.text(), limit);
 }
 
+// Engines that parse scraped HTML rather than a structured API response — a markup
+// change on the remote site makes them return [] with no throw, indistinguishable
+// from a genuine no-results query (see #537). Warned about below when that happens
+// alongside another engine that DID find something for the same query.
+const SCRAPED_ENGINES = new Set(["ddg", "google", "kagi_session"]);
+
+/** Warn when a scraped engine came back with 0 hits while at least one other engine
+ * in the same batch found results — a strong signal the scraper's markup match broke,
+ * not that the query genuinely has no results. */
+function warnOnSilentScrapeMiss(names: string[], lists: Hit[][], q: string): void {
+	if (!lists.some((l) => l.length)) return; // every engine came back empty — looks like a genuine no-results query
+	names.forEach((name, i) => {
+		if (SCRAPED_ENGINES.has(name) && lists[i].length === 0) {
+			console.warn(`web_search engine '${name}' returned 0 hits for "${q}" while another engine found results — markup may have changed.`);
+		}
+	});
+}
+
 const ENGINES: Record<string, { envKey?: string; envName?: string; run: (env: any, q: string, n: number, route: Route) => Promise<Hit[]> }> = {
 	kagi_session: { envKey: "KAGI_SESSION", envName: "KAGI_SESSION", run: kagiSession }, // subscription (free), residential-proxy HTML scrape
 	kagi: { envKey: "KAGI_API_KEY", envName: "KAGI_API_KEY", run: kagi }, // metered Search API
@@ -332,6 +350,7 @@ export const webSearch: Fn = {
 			if (s.status === "rejected") console.warn(`web_search engine '${engines[i]}' failed: ${reason(s)}`);
 		});
 		let hits = ranAll ? merge(lists, limit) : lists[0] ?? [];
+		if (ranAll || engines.length > 1) warnOnSilentScrapeMiss(engines, lists, q);
 
 		// The engine wasn't picked by the caller — it's whatever defaultEngine() guessed
 		// (kagi_session or the keyless ddg scrape). A single bad guess (e.g. DDG's HTTP 522)
@@ -346,6 +365,7 @@ export const webSearch: Fn = {
 					if (s.status === "rejected") console.warn(`web_search engine '${rest[i]}' failed: ${reason(s)}`);
 				});
 				const lists2 = settled2.map((s) => (s.status === "fulfilled" ? s.value : []));
+				warnOnSilentScrapeMiss([engine, ...rest], [lists[0], ...lists2], q);
 				hits = merge([...lists, ...lists2], limit);
 				if (hits.length) {
 					engines = [engine, ...rest];
@@ -356,7 +376,7 @@ export const webSearch: Fn = {
 
 		if (!hits.length) {
 			if (!ranAll && engines.length === 1 && settled[0]?.status === "rejected") return fail(`Engine '${engine}' failed: ${reason(settled[0])}`);
-			return fail(`No results for "${q}"${ranAll || engines.length > 1 ? ` across: ${engines.join(", ")}` : ""}.`);
+			return fail(`No results for "${q}" from engine${engines.length > 1 ? "s" : ""}: ${engines.join(", ")}.`);
 		}
 
 		const body = fmt(hits);
