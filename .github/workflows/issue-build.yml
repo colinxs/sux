@@ -30,6 +30,7 @@ jobs:
     uses: SuxOS/.github/.github/workflows/issue-build.yml@main
     with:
       model-hint: sonnet  # sonnet only, no Opus escalation (operator directive)
+      needs-suxlib: true  # package.json depends on "@suxos/lib": "file:../suxlib" (see CLAUDE.md's Known gotcha) — the reusable clones it before npm ci when this is set
       gates-summary: |
         npm run type-check · npm test · npm run check:node ·
         npm run gen:index (commit the regenerated index.ts) ·
