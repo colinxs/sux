@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { MemoryStore, fixed, op, pipe, map, reconcile, sink, ask, type Caps } from "@suxos/lib";
+import { MemoryStore, fixed, op, pipe, map, reconcile, sink, ask, stamp, type Caps } from "@suxos/lib";
 import { interpretDurable } from "./durable.js";
 
 // A FAKE WorkflowStep: `do` runs the callback inline (so the interpreter's step
@@ -97,4 +97,16 @@ test("interpretDurable propagates a map item's error and releases the concurrenc
 
 	await expect(interpretDurable(tree, ["bad", "good"], fakeStep({ events: [] }), caps, "op5")).rejects.toThrow("leaf blew up");
 	await goodRanPromise;
+});
+
+test("interpretDurable dispatches reconcile modes — last-write-wins selects the newest stamped handle", async () => {
+	const store = new MemoryStore();
+	const caps = { store, llm: {}, clock: { now: () => 0 }, sinks: {} } as unknown as Caps;
+	const put = async (s: string, at: number) =>
+		stamp(await store.put(new TextEncoder().encode(s), "text/plain"), { now: () => at });
+	const older = await put("older", 100);
+	const newer = await put("newer", 200);
+	const out = await interpretDurable(reconcile({ mode: "last-write-wins" }), [older, newer], fakeStep({ events: [] }), caps, "op6");
+	expect(out.sha256).toBe(newer.sha256);
+	expect(new TextDecoder().decode(await store.get(out))).toBe("newer");
 });
