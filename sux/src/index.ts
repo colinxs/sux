@@ -693,6 +693,14 @@ async function maintenanceTick(env: RtEnv, ctx: ExecutionContext): Promise<void>
 		await refreshAdblockEngine(env);
 	});
 	await runSubJob(env, "life_wiki", () => lifeWikiTick(env));
+	// Markup-drift probe (#545): run a known-good query through web_search's cheap
+	// scraped engines (ddg, kagi_session) and flag a 0-hit response as a soft
+	// failure — same silent-failure mode #537 fixed for a live merge, caught here
+	// proactively instead of waiting for someone to notice thin results.
+	await runSubJob(env, "web_search_selftest", async () => {
+		const { runWebSearchSelftest } = await import("./fns/_web_search_selftest");
+		return runWebSearchSelftest(env);
+	});
 	try {
 		// Push the pre-aggregated metrics snapshot to Grafana Cloud Prometheus. Self-
 		// contained + idempotent: a pure no-op unless the GRAFANA_PROM_* secrets are set,
