@@ -16,6 +16,16 @@ const fakeStep = (rec: { events: string[]; sinks?: string[] }): any => ({
 	sleep: async () => {},
 });
 
+// A fake WorkflowStep whose waitForEvent always rejects — the seam an `ask` node's
+// try/catch is built to handle (a real Workflow throws once a wait's timeout elapses).
+const rejectingStep = (): any => ({
+	do: async (_name: string, fn: any) => fn(),
+	waitForEvent: async (_name: string, _opts: { type: string }) => {
+		throw new Error("waitForEvent timed out");
+	},
+	sleep: async () => {},
+});
+
 test("interpretDurable runs leaves through step.do and resolves ask via an event", async () => {
 	const rec = { events: [] as string[] };
 	const caps = { store: new MemoryStore(), llm: {}, clock: { now: () => 0 }, sinks: {} } as unknown as Caps;
@@ -54,4 +64,37 @@ test("interpretDurable fans out a map, reconciles the handles, and writes each s
 	const text = new TextDecoder().decode(await store.get(out));
 	expect(text).toContain("alpha");
 	expect(text).toContain("beta");
+});
+
+test("interpretDurable's ask swallows a waitForEvent timeout when onTimeout is 'proceed', but rethrows when onTimeout is 'fail'", async () => {
+	const caps = { store: new MemoryStore(), llm: {}, clock: { now: () => 0 }, sinks: {} } as unknown as Caps;
+	const step = rejectingStep();
+
+	const proceed = ask("ok?", { timeout: "1 hour", onTimeout: "proceed" });
+	await expect(interpretDurable(proceed, "unchanged", step, caps, "op3")).resolves.toBe("unchanged");
+
+	const fail = ask("ok?", { timeout: "1 hour", onTimeout: "fail" });
+	await expect(interpretDurable(fail, "unchanged", step, caps, "op4")).rejects.toThrow("waitForEvent timed out");
+});
+
+test("interpretDurable propagates a map item's error and releases the concurrency limiter", async () => {
+	const caps = { store: new MemoryStore(), llm: {}, clock: { now: () => 0 }, sinks: {} } as unknown as Caps;
+
+	let goodRan!: () => void;
+	const goodRanPromise = new Promise<void>((resolve) => (goodRan = resolve));
+	const boom = op(
+		"boom",
+		async (s: string) => {
+			if (s === "bad") throw new Error("leaf blew up");
+			goodRan();
+			return s;
+		},
+		{ kind: "pure" },
+	);
+	// concurrency 1 forces "good" to queue behind "bad" — it only runs if the
+	// catch branch's release(false) actually frees the slot back up.
+	const tree = map(boom, { concurrency: fixed(1) });
+
+	await expect(interpretDurable(tree, ["bad", "good"], fakeStep({ events: [] }), caps, "op5")).rejects.toThrow("leaf blew up");
+	await goodRanPromise;
 });
