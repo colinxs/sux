@@ -49,6 +49,34 @@ const LISTING = {
 	},
 };
 
+const COMMENTS_LISTING = {
+	kind: "Listing",
+	data: {
+		children: [
+			{
+				kind: "t1",
+				data: {
+					id: "c1",
+					author: "bob",
+					body: "top-level comment",
+					score: 5,
+					created_utc: 1700000100,
+					replies: {
+						kind: "Listing",
+						data: {
+							children: [
+								{ kind: "t1", data: { id: "c2", author: "carol", body: "a reply", score: 2, created_utc: 1700000200, replies: "" } },
+								{ kind: "more", data: {} },
+							],
+						},
+					},
+				},
+			},
+			{ kind: "more", data: {} },
+		],
+	},
+};
+
 const UA_KEYLESS = "sux/1.0 (+https://github.com/SuxOS/sux)";
 const UA_OAUTH = "sux/1.0 (by /u/sux)";
 
@@ -151,11 +179,11 @@ describe("reddit — oauth mode (creds set)", () => {
 		expect(url).toContain("restrict_sr=1");
 	});
 
-	it("comments normalizes the post listing from the [post, comments] array", async () => {
+	it("comments normalizes the post listing from the [post, comments] array and parses the comment tree", async () => {
 		global.fetch = vi.fn(async (input: any) => {
 			const url = String(input);
 			if (url.includes("/api/v1/access_token")) return json({ access_token: "TOK", expires_in: 3600 });
-			if (url.startsWith("https://oauth.reddit.com")) return json([LISTING, { kind: "Listing", data: { children: [] } }]);
+			if (url.startsWith("https://oauth.reddit.com")) return json([LISTING, COMMENTS_LISTING]);
 			return json({}, 404);
 		}) as any;
 		const r = await reddit.run(keyedEnv(), { action: "comments", article_id: "abc123" });
@@ -163,6 +191,10 @@ describe("reddit — oauth mode (creds set)", () => {
 		const j = JSON.parse(r.content[0].text);
 		expect(j.count).toBe(1);
 		expect(j.items[0].id).toBe("abc123");
+		expect(j.comments).toHaveLength(1);
+		expect(j.comments[0]).toMatchObject({ id: "c1", author: "bob", body: "top-level comment", score: 5, created_utc: 1700000100 });
+		expect(j.comments[0].replies).toHaveLength(1);
+		expect(j.comments[0].replies[0]).toMatchObject({ id: "c2", author: "carol", body: "a reply" });
 	});
 
 	it("user returns normalized about info", async () => {
@@ -254,9 +286,9 @@ describe("reddit — keyless mode (no creds)", () => {
 		expect(url).toContain("restrict_sr=1");
 	});
 
-	it("comments: fetches /comments/<id>.json and normalizes the post listing from [post, comments]", async () => {
+	it("comments: fetches /comments/<id>.json and normalizes the post listing plus the comment tree from [post, comments]", async () => {
 		guardNoFetch();
-		vi.mocked(smartFetch).mockResolvedValueOnce(json([LISTING, { kind: "Listing", data: { children: [] } }]));
+		vi.mocked(smartFetch).mockResolvedValueOnce(json([LISTING, COMMENTS_LISTING]));
 		const r = await reddit.run(keylessEnv(), { action: "comments", article_id: "abc123" });
 		expect(r.isError).toBeFalsy();
 		const url = vi.mocked(smartFetch).mock.calls[0][1] as string;
@@ -264,6 +296,10 @@ describe("reddit — keyless mode (no creds)", () => {
 		const j = JSON.parse(r.content[0].text);
 		expect(j.count).toBe(1);
 		expect(j.items[0].id).toBe("abc123");
+		expect(j.comments).toHaveLength(1);
+		expect(j.comments[0]).toMatchObject({ id: "c1", author: "bob", body: "top-level comment" });
+		expect(j.comments[0].replies).toHaveLength(1);
+		expect(j.comments[0].replies[0]).toMatchObject({ id: "c2", author: "carol", body: "a reply" });
 	});
 
 	it("user: fetches /user/<name>/about.json and normalizes about info", async () => {

@@ -163,13 +163,55 @@ function normListing(j: any): RedditPost[] {
 		.filter((p): p is RedditPost => p !== null);
 }
 
+type RedditComment = {
+	id: string;
+	author: string;
+	body: string;
+	score: number;
+	created_utc: number;
+	replies?: RedditComment[];
+};
+
+function normComment(d: any): RedditComment {
+	const c: RedditComment = {
+		id: d?.id,
+		author: d?.author,
+		body: d?.body,
+		score: Number(d?.score) || 0,
+		created_utc: Number(d?.created_utc) || 0,
+	};
+	const replies = normComments(d?.replies);
+	if (replies.length) c.replies = replies;
+	return c;
+}
+
+/**
+ * Normalize a comments listing's `t1` children into a comment tree, recursing into
+ * `replies` (itself a Listing, or `""` for a leaf comment). Guards each record like
+ * normListing does, so one malformed comment is skipped rather than discarding the
+ * whole thread.
+ */
+function normComments(j: any): RedditComment[] {
+	const children = j?.data?.children;
+	return (Array.isArray(children) ? children : [])
+		.filter((c: any) => c?.kind === "t1")
+		.map((c: any) => {
+			try {
+				return normComment(c?.data ?? {});
+			} catch {
+				return null;
+			}
+		})
+		.filter((c): c is RedditComment => c !== null);
+}
+
 export const reddit: Fn = {
 	name: "reddit",
 	description:
 		"Reddit read-only API — search posts, browse a subreddit, read a post's comments, or look up a user. " +
 		"Works KEYLESS by default: fetches Reddit's public `.json` endpoints through the residential proxy (Reddit blocks datacenter IPs, so the residential exit is what makes this work) — no credentials needed. " +
 		"Auto-upgrades to app-only OAuth (higher rate limits) when REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET are set. " +
-		"`action`: search (posts matching `q`, optionally scoped to `subreddit`), subreddit (listing for `subreddit` by `sort`), comments (post + comments for `article_id`), user (about for `username`). Returns normalized JSON.",
+		"`action`: search (posts matching `q`, optionally scoped to `subreddit`), subreddit (listing for `subreddit` by `sort`), comments (post in `items` + its comment tree in `comments`, for `article_id`), user (about for `username`). Returns normalized JSON.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -206,10 +248,12 @@ export const reddit: Fn = {
 				const id = String(args?.article_id ?? "").trim();
 				if (!id) return failWith("bad_input", "action=comments requires an `article_id`.");
 				const j = await fetchJson(env, `/comments/${encodeURIComponent(id)}?limit=${limit}`, useOAuth);
-				// /comments returns [postListing, commentsListing]; normalize the post listing.
+				// /comments returns [postListing, commentsListing]; normalize both.
 				const postListing = Array.isArray(j) ? j[0] : j;
+				const commentsListing = Array.isArray(j) ? j[1] : undefined;
 				const items = normListing(postListing);
-				return ok(oj({ service: "reddit", action, count: items.length, items }));
+				const comments = normComments(commentsListing);
+				return ok(oj({ service: "reddit", action, count: items.length, items, comments }));
 			}
 
 			if (action === "user") {
