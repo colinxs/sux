@@ -10,7 +10,11 @@ export default defineConfig({
 		include: ["sux/test/e2e/**/*.e2e.test.ts"],
 		environment: "node",
 		testTimeout: 30_000,
-		hookTimeout: 30_000,
+		// Boot hooks start a real `wrangler dev` (workerd) process. A cold CI runner
+		// downloading the workerd binary + compiling the ~3.5 MB Worker with its Workflow
+		// binding blows past 30s (green in ~5s locally where workerd is warm); give the
+		// boot a generous cold-start budget so a slow boot isn't read as a test failure.
+		hookTimeout: 120_000,
 		fileParallelism: false,
 	},
 });

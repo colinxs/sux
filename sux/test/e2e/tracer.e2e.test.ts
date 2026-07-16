@@ -46,7 +46,7 @@ describe("MCP e2e: durable tracer bullet (assimilate-pdfs on real workerd)", () 
 	beforeAll(async () => {
 		h = await startHarness({});
 		host = h.host;
-	}, 30_000);
+	}, 120_000);
 	afterAll(async () => {
 		// Guard against beforeAll having thrown (e.g. the real bind error) before `h`
 		// was assigned — an unguarded `h.stop()` here would mask that error behind
