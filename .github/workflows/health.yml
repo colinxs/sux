@@ -20,6 +20,10 @@ jobs:
     uses: SuxOS/.github/.github/workflows/health.yml@main
     with:
       smoke-url: "https://suxos.net/mcp"
+      # package.json has "@suxos/lib": "file:../suxlib" — a private sibling repo. Clone
+      # it before `npm ci` (as ci.yml does) so the regression canary can load the suite;
+      # without this the daily canary went red with 111 test files failing to import.
+      sibling-repos: "suxlib"
     secrets: inherit
 
   billing:
