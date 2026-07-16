@@ -13,17 +13,19 @@ import { type Harness, startHarness } from "./harness";
 // with `wrangler workflows instances send-event --local` → assert the instance completes
 // with the abstract and that BOTH sinks wrote to R2.
 
-const HOST = "http://127.0.0.1:18790";
 const REPO_ROOT = join(__dirname, "..", "..", "..");
 const E2E_CONFIG = join(__dirname, "wrangler.e2e.jsonc");
 const execFileP = promisify(execFile);
 
+// host is captured from the harness's actual (randomly-assigned) port once beforeAll
+// resolves — see harness.ts for why the port is no longer a fixed constant.
+let host: string;
 async function post(path: string, body: BodyInit, headers: Record<string, string> = {}): Promise<any> {
-	const r = await fetch(`${HOST}${path}`, { method: "POST", body, headers });
+	const r = await fetch(`${host}${path}`, { method: "POST", body, headers });
 	return r.json();
 }
 async function get(path: string): Promise<any> {
-	return (await fetch(`${HOST}${path}`)).json();
+	return (await fetch(`${host}${path}`)).json();
 }
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -43,9 +45,13 @@ describe("MCP e2e: durable tracer bullet (assimilate-pdfs on real workerd)", () 
 	let h: Harness;
 	beforeAll(async () => {
 		h = await startHarness({});
+		host = h.host;
 	}, 30_000);
 	afterAll(async () => {
-		await h.stop();
+		// Guard against beforeAll having thrown (e.g. the real bind error) before `h`
+		// was assigned — an unguarded `h.stop()` here would mask that error behind
+		// "Cannot read properties of undefined (reading 'stop')".
+		await h?.stop();
 	});
 
 	it("runs assimilate-pdfs durably, pauses at ask, resumes via send-event, writes both sinks", async () => {
@@ -73,7 +79,7 @@ describe("MCP e2e: durable tracer bullet (assimilate-pdfs on real workerd)", () 
 		// Resume the pause with the real external event the `ask` waits on.
 		await execFileP(
 			"npx",
-			["wrangler", "workflows", "instances", "send-event", "op-workflow", id, "--local", "--port", "18790", "--config", E2E_CONFIG, "--type", "ask:review master?", "--payload", "{}"],
+			["wrangler", "workflows", "instances", "send-event", "op-workflow", id, "--local", "--port", String(h.port), "--config", E2E_CONFIG, "--type", "ask:review master?", "--payload", "{}"],
 			{ cwd: REPO_ROOT },
 		);
 

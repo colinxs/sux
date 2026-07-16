@@ -23,7 +23,10 @@ describe("MCP e2e: sux (real dispatch, general fn registry)", () => {
 	}, 30_000);
 
 	afterAll(async () => {
-		await h.stop();
+		// Guard against beforeAll having thrown before `h` was assigned — an unguarded
+		// `h.stop()` here would mask the real bind/boot error behind "Cannot read
+		// properties of undefined (reading 'stop')".
+		await h?.stop();
 	});
 
 	it("tools/list exposes sux and fn with real schemas", async () => {
