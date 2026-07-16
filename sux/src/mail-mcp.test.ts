@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { handleMailPushWebhook, handleMailRpc, MAIL_TOOLS } from "./mail-mcp";
+import { handleMailPushWebhook, MAIL_TOOLS } from "./mail-mcp";
 
 // Reuse the jmap.test mocking approach: a Map-backed KV + a URL-routed fetch that
 // answers Session discovery and the JMAP api endpoint. The mail_* tools compile to
@@ -963,50 +963,3 @@ describe("mail_* ergonomic tools", () => {
 	});
 });
 
-describe("handleMailRpc protocol shell", () => {
-	const call = (rpc: any) => handleMailRpc(env(), {} as any, rpc, 0);
-
-	it("initialize announces the mail server", async () => {
-		const r = await call({ jsonrpc: "2.0", id: 1, method: "initialize" });
-		const body = await sseJson(r);
-		expect(body.result.serverInfo.name).toBe("mail");
-	});
-
-	it("tools/list returns the mail tool set including jmap", async () => {
-		const r = await call({ jsonrpc: "2.0", id: 2, method: "tools/list" });
-		const body = await sseJson(r);
-		const names = body.result.tools.map((t: any) => t.name);
-		expect(names).toContain("mail_search");
-		expect(names).toContain("jmap");
-	});
-
-	it("tools/call rejects an unknown tool", async () => {
-		const r = await call({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "nope", arguments: {} } });
-		const body = await sseJson(r);
-		expect(body.error.code).toBe(-32601);
-	});
-
-	it("tools/call runs a tool", async () => {
-		installFetch();
-		const r = await call({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "mail_mailboxes", arguments: {} } });
-		const body = await sseJson(r);
-		expect(body.result.content[0].text).toContain("mailboxes");
-	});
-
-	it("rejects multi-byte-UTF-8 args whose byte size exceeds the cap even though its UTF-16 code-unit length reads under it", async () => {
-		// 750k CJK chars: ~750k UTF-16 code units (under the 2MB cap by length) but
-		// ~2.25MB of UTF-8 bytes (over it) — the exact gap String.length misses.
-		const junk = "国".repeat(750_000);
-		const r = await call({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "mail_mailboxes", arguments: { junk } } });
-		const body = await sseJson(r);
-		expect(body.result.isError).toBe(true);
-		expect(body.result.content[0].text).toMatch(/too large/);
-	});
-});
-
-/** Parse the SSE-framed JSON-RPC body a handler returns. */
-async function sseJson(resp: Response): Promise<any> {
-	const t = await resp.text();
-	const line = t.split("\n").find((l) => l.startsWith("data:")) ?? t;
-	return JSON.parse(line.replace(/^data:\s*/, ""));
-}
