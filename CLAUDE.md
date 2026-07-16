@@ -61,6 +61,11 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   branch is held by another worktree, and a following rebase/push then operates on the WRONG
   branch. Drain/rebase PRs from a **detached scratch worktree** (`git worktree add --detach
   $SCRATCH origin/<br>` → rebase → `push HEAD:<br>`), never a plain checkout.
+- **When a code-audit finding hinges on the exact contents of a regex or other
+  code containing non-printable/control characters, verify with `od -c`/`cat -A`
+  (or execute the code against the claimed-failing input) before filing or
+  fixing** — a copy-pasted quote can silently drop bytes like `\x7f`, making a
+  correct range read as two literal characters (see #587/#574).
 
 ## House style
 

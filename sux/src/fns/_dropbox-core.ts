@@ -22,7 +22,7 @@ export const TEXT_EXT = /\.(md|txt|json|csv|tsv|ya?ml|xml|html?|js|ts|css)$/i;
 
 // Dropbox requires the Dropbox-API-Arg header to be HTTP-header-safe JSON:
 // every char >= 0x7F escaped as \uXXXX (raw UTF-8 header bytes get a 400).
-export const headerSafeJson = (v: unknown): string => JSON.stringify(v).replace(/[-￿]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+export const headerSafeJson = (v: unknown): string => JSON.stringify(v).replace(/[^\x00-\x7E]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
 
 /** One Dropbox credential scope: the KV key its access token caches under plus the
  * refresh/app/static credentials that mint it. `label` prefixes token-refresh errors;
