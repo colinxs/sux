@@ -330,6 +330,10 @@ export const webSearch: Fn = {
 		const reason = (s: PromiseSettledResult<Hit[]>): string => String(((s as PromiseRejectedResult).reason as Error)?.message ?? (s as PromiseRejectedResult).reason);
 		settled.forEach((s, i) => {
 			if (s.status === "rejected") console.warn(`web_search engine '${engines[i]}' failed: ${reason(s)}`);
+			// A fulfilled-but-empty scrape is indistinguishable from a genuine no-results
+			// unless we say so: a markup drift (a parser matching nothing after DDG/Google/
+			// Kagi tweak a class) resolves to [] and would otherwise vanish silently (#537).
+			else if (s.value.length === 0) console.warn(`web_search engine '${engines[i]}' returned 0 hits — genuine no-results, or a parser/markup drift silently matching nothing.`);
 		});
 		let hits = ranAll ? merge(lists, limit) : lists[0] ?? [];
 
@@ -344,6 +348,7 @@ export const webSearch: Fn = {
 				const settled2 = await Promise.allSettled(rest.map((name) => ENGINES[name].run(env, queryFor(name), limit, route)));
 				settled2.forEach((s, i) => {
 					if (s.status === "rejected") console.warn(`web_search engine '${rest[i]}' failed: ${reason(s)}`);
+					else if (s.value.length === 0) console.warn(`web_search engine '${rest[i]}' returned 0 hits — genuine no-results, or a parser/markup drift silently matching nothing.`);
 				});
 				const lists2 = settled2.map((s) => (s.status === "fulfilled" ? s.value : []));
 				hits = merge([...lists, ...lists2], limit);
