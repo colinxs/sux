@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, json, hmac, hashlib, base64, asyncio, time, signal
+import os, json, hmac, hashlib, base64, asyncio, time, signal, ipaddress
 from aiohttp import web
 from patchright.async_api import async_playwright
 
@@ -22,6 +22,22 @@ def _read_key():
         return ""
 
 CAPSOLVER_KEY = _read_key()
+
+def is_private_ip(ip):
+    # SSRF guard: this Mac sits inside the operator's home LAN, so a page that
+    # ends up connected to a loopback/private/link-local/CGNAT/reserved address
+    # can reach router admin UIs and other local services. isBlockedTarget in
+    # src/proxy.ts only inspects the URL's hostname *text* (it can't resolve DNS
+    # from the Worker), which a DNS-rebinding attacker trivially bypasses — a
+    # public-looking hostname that resolves to 127.0.0.1/192.168.x.x sails
+    # through. This check runs against the address Chromium actually connected
+    # to (see render_on's server_addr() check below), so it can't be raced by
+    # re-resolving the name a second time.
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved or addr.is_multicast or addr.is_unspecified
 
 BLOCK_MARKERS = (
     "px-captcha", "_pxhd", "perimeterx", "captcha-delivery", "datadome",
@@ -92,6 +108,15 @@ async def try_solve_px(page):
 async def render_on(context, spec, interactive=False):
     as_ = spec.get("as", "html")
     page = await context.new_page()
+    # Every response lands here — the navigation itself (initial request and
+    # each redirect hop) AND every sub-resource (img/script/fetch/XHR/iframe).
+    # A page reached via a clean hostname can still pull a sub-resource from a
+    # DNS-rebound internal address (e.g. an <img src> or same-origin XHR), so
+    # this can't be limited to is_navigation_request() responses — checked
+    # below against the address Chromium actually connected to, not a
+    # separately re-resolved name.
+    responses = []
+    page.on("response", lambda r: responses.append(r))
     try:
         if spec.get("block_resources"):
             async def _route(r):
@@ -106,6 +131,16 @@ async def render_on(context, spec, interactive=False):
             await page.wait_for_timeout(int(spec["wait_ms"]))
         if interactive:
             await try_solve_px(page)
+        # Check every response seen so far (navigation, redirect hops,
+        # sub-resources, and any client-side navigation during the waits
+        # above) against the address actually connected to — closes the
+        # DNS-rebinding gap the Worker's hostname-text-only isBlockedTarget
+        # can't (see is_private_ip), for the whole page, not just its
+        # top-level navigation.
+        for r in responses:
+            addr = await r.server_addr()
+            if addr and is_private_ip(addr.get("ipAddress", "")):
+                raise ValueError(f"target resolved to a private address ({addr['ipAddress']})")
         if as_ == "screenshot":
             data = await page.screenshot(full_page=bool(spec.get("full_page")))
             return {"status": status, "content_type": "image/png", "bodyEncoding": "base64", "body": base64.b64encode(data).decode()}, ""
