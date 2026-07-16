@@ -91,33 +91,34 @@ describe("weightedRateLimit", () => {
 		return { calls: () => n, limit: async () => ({ success: ++n <= budget }) };
 	};
 	const call = (name: string) => ({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: {} } });
+	const ctx = { waitUntil: () => {} };
 
 	it("returns null (proceed) when the tool has no extra cost", async () => {
 		const rl = limiter(0);
-		const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, "u", call("hash"));
+		const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, ctx, "u", call("hash"));
 		expect(r).toBeNull();
 		expect(rl.calls()).toBe(0); // never touched the limiter
 	});
 
 	it("consumes cost-1 extra tokens and proceeds when under budget", async () => {
 		const rl = limiter(10);
-		const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, "u", call("render"));
+		const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, ctx, "u", call("render"));
 		expect(r).toBeNull();
 		expect(rl.calls()).toBe(4); // render cost 5 → 4 extra
 	});
 
 	it("returns a 429 when the limiter denies mid-way", async () => {
 		const rl = limiter(1); // only 1 allowed, render needs 4 extra
-		const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, "u", call("render"));
+		const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, ctx, "u", call("render"));
 		expect(r).not.toBeNull();
 		expect(r!.status).toBe(429);
 		expect(await r!.json()).toEqual({ error: "rate_limited" });
 	});
 
 	it("no-ops without a limiter binding or on non-tools/call methods", async () => {
-		expect(await weightedRateLimit({} as any, "u", call("render"))).toBeNull();
+		expect(await weightedRateLimit({} as any, ctx, "u", call("render"))).toBeNull();
 		const rl = limiter(0);
-		expect(await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, "u", { method: "tools/list" } as any)).toBeNull();
+		expect(await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, ctx, "u", { method: "tools/list" } as any)).toBeNull();
 		expect(rl.calls()).toBe(0);
 	});
 
@@ -126,15 +127,15 @@ describe("weightedRateLimit", () => {
 
 	it("charges the real leaf's weight when it's reached via the `fn` escape", async () => {
 		const rl = limiter(10);
-		const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, "u", fnCall("render"));
+		const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, ctx, "u", fnCall("render"));
 		expect(r).toBeNull();
 		expect(rl.calls()).toBe(4); // render cost 5 → 4 extra, same as a direct render call
 	});
 
 	it("a bare/unknown-inner `fn` call charges nothing extra (falls through to fn's own run)", async () => {
 		const rl = limiter(10);
-		expect(await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, "u", fnCall("does_not_exist"))).toBeNull();
-		expect(await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, "u", call("fn"))).toBeNull();
+		expect(await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, ctx, "u", fnCall("does_not_exist"))).toBeNull();
+		expect(await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, ctx, "u", call("fn"))).toBeNull();
 		expect(rl.calls()).toBe(0); // fn itself has default cost
 	});
 
@@ -145,7 +146,7 @@ describe("weightedRateLimit", () => {
 	// batch's own cost-1 weight — otherwise the limiter is trivially evaded.
 	it("charges the full fan-out weight for a batch of renders", async () => {
 		const rl = limiter(100);
-		const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, "u", {
+		const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, ctx, "u", {
 			jsonrpc: "2.0",
 			id: 1,
 			method: "tools/call",
@@ -157,7 +158,7 @@ describe("weightedRateLimit", () => {
 
 	it("denies mid-way when a wide batch exhausts the budget", async () => {
 		const rl = limiter(5); // 3 renders need 12 extra
-		const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, "u", {
+		const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, ctx, "u", {
 			jsonrpc: "2.0",
 			id: 1,
 			method: "tools/call",
@@ -168,7 +169,7 @@ describe("weightedRateLimit", () => {
 
 	it("sums a pipe's step weights so a pipeline of renders can't slip the limiter", async () => {
 		const rl = limiter(100);
-		const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, "u", {
+		const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, ctx, "u", {
 			jsonrpc: "2.0",
 			id: 1,
 			method: "tools/call",
@@ -180,7 +181,7 @@ describe("weightedRateLimit", () => {
 
 	it("charges the full fan-out weight even when a batch is reached via the `fn` escape", async () => {
 		const rl = limiter(100);
-		const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, "u", fnCall("batch", { tool: "render", over: ["a", "b"] }));
+		const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, ctx, "u", fnCall("batch", { tool: "render", over: ["a", "b"] }));
 		expect(r).toBeNull();
 		expect(rl.calls()).toBe(8); // 2 renders × 4 extra, same as a direct batch call
 	});
@@ -190,7 +191,7 @@ describe("weightedRateLimit", () => {
 		const zeroWidthRender = "ren​der";
 		for (const obf of [fullwidthRender, zeroWidthRender]) {
 			const rl = limiter(10);
-			const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, "u", fnCall(obf));
+			const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, ctx, "u", fnCall(obf));
 			expect(r).toBeNull();
 			expect(rl.calls(), `obfuscated ${JSON.stringify(obf)} should charge render's 4 extra`).toBe(4);
 		}
@@ -204,7 +205,7 @@ describe("weightedRateLimit", () => {
 		let deep: Record<string, unknown> = { tool: "hash", args: {} };
 		for (let i = 0; i < 70; i++) deep = { tool: "pipe", args: { steps: [deep] } };
 		const rl = limiter(100);
-		const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, "u", {
+		const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, ctx, "u", {
 			jsonrpc: "2.0",
 			id: 1,
 			method: "tools/call",
@@ -219,7 +220,7 @@ describe("weightedRateLimit", () => {
 
 	it("does not reject a shallow pipe that stays within MAX_ARG_DEPTH", async () => {
 		const rl = limiter(100);
-		const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, "u", {
+		const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, ctx, "u", {
 			jsonrpc: "2.0",
 			id: 1,
 			method: "tools/call",
@@ -227,5 +228,33 @@ describe("weightedRateLimit", () => {
 		} as any);
 		expect(r).toBeNull();
 		expect(rl.calls()).toBe(8);
+	});
+
+	// Unlike checkArgs's too-deep rejection in handleRpc (which calls recordCall/
+	// shipToLoki so it shows up in call metrics/Loki), this earlier gate had no
+	// observability hook — a too-deep payload rejected here vanished from metrics
+	// entirely when MCP_RATE_LIMITER is configured (#629).
+	it("records the depth rejection to metrics, same as checkArgs's rejection path", async () => {
+		const store = new Map<string, string>();
+		const kv = {
+			get: async (key: string) => store.get(key) ?? null,
+			put: async (key: string, value: string) => void store.set(key, value),
+		};
+		const deferred: Promise<unknown>[] = [];
+		const recordingCtx = { waitUntil: (p: Promise<unknown>) => void deferred.push(p) };
+		let deep: Record<string, unknown> = { tool: "hash", args: {} };
+		for (let i = 0; i < 70; i++) deep = { tool: "pipe", args: { steps: [deep] } };
+		const rl = limiter(100);
+		const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl, OAUTH_KV: kv } as any, recordingCtx, "u", {
+			jsonrpc: "2.0",
+			id: 1,
+			method: "tools/call",
+			params: { name: "pipe", arguments: { steps: [deep] } },
+		} as any);
+		expect(r).not.toBeNull();
+		await Promise.all(deferred);
+		const { readMetrics } = await import("./metrics");
+		const m = await readMetrics({ OAUTH_KV: kv } as any);
+		expect(m.errors).toBeGreaterThan(0);
 	});
 });

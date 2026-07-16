@@ -513,7 +513,7 @@ export const rtServer = {
 		// Weighted rate limit: expensive tools (render/Kagi/SerpAPI/Workers AI)
 		// consume extra tokens beyond the base 1 charged above, so a burst of paid
 		// calls drains the budget faster than free deterministic fns (see Fn.cost).
-		const limited = await weightedRateLimit(env, login!, rpc);
+		const limited = await weightedRateLimit(env, ctx, login!, rpc);
 		if (limited) return limited;
 		return handleRpc(env, ctx, rpc);
 	},

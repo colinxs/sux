@@ -7,7 +7,9 @@
 
 import { FUNCTIONS } from "./fns";
 import { KIND_PLANS, parseStrategies } from "./fns/get";
+import { shipToLoki } from "./grafana";
 import { type JsonRpc, sseResponse } from "./mcp-util";
+import { recordCall } from "./metrics";
 import { exceedsDepth, MAX_ARG_DEPTH } from "./prim";
 import { findFn, type RtEnv, unwrapFnCall } from "./registry";
 
@@ -119,7 +121,12 @@ export function requestCost(name: string, args: unknown): number {
  * the limiter denies mid-way (so the caller returns it), or null to proceed.
  * No-op when there's no limiter binding or the method isn't tools/call.
  */
-export async function weightedRateLimit(env: RtEnv, login: string, rpc: JsonRpc | undefined): Promise<Response | null> {
+export async function weightedRateLimit(
+	env: RtEnv,
+	ctx: { waitUntil(p: Promise<unknown>): void },
+	login: string,
+	rpc: JsonRpc | undefined,
+): Promise<Response | null> {
 	if (!env.MCP_RATE_LIMITER || rpc?.method !== "tools/call") return null;
 	// Charge the REAL leaf's weight even when it's reached via the `fn` escape —
 	// otherwise an expensive tool (render/Kagi/AI) dodges its cost behind fn({name}).
@@ -135,6 +142,10 @@ export async function weightedRateLimit(env: RtEnv, login: string, rpc: JsonRpc 
 	// handleRpc; reject here first, before pricing, so requestCost never sees an
 	// over-deep payload (#626).
 	if (effectiveArgs !== null && typeof effectiveArgs === "object" && exceedsDepth(effectiveArgs, MAX_ARG_DEPTH)) {
+		const err = `arguments nested too deep (> ${MAX_ARG_DEPTH} levels)`;
+		const rejectEvent = { tool: effectiveName, ms: 0, error: true, err };
+		recordCall(env, ctx, rejectEvent);
+		shipToLoki(env, ctx, rejectEvent);
 		return nestedTooDeep(rpc.id, effectiveName);
 	}
 	const extra = requestCost(effectiveName, effectiveArgs);
