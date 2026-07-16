@@ -59,7 +59,9 @@ jobs:
       - name: Clone suxlib (private sibling dependency)
         env:
           SUXLIB_TOKEN: ${{ steps.suxlib-token.outputs.token }}
-        run: git clone --depth 1 --branch main "https://x-access-token:${SUXLIB_TOKEN}@github.com/SuxOS/suxlib.git" ../suxlib
+        run: |
+          git clone --depth 1 --branch main "https://x-access-token:${SUXLIB_TOKEN}@github.com/SuxOS/suxlib.git" ../suxlib
+          npm --prefix ../suxlib ci --omit=dev   # install suxlib's own deps (fflate) so sux's tsc can resolve them through the file: dep
 
       - name: Install dependencies
         run: npm ci
