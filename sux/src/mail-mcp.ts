@@ -1093,6 +1093,67 @@ const TOOLS: MailTool[] = [
 		},
 	},
 	{
+		name: "cal_search",
+		description:
+			"Full-text search across your calendars — CalDAV has no cross-collection search, so this fans out a REPORT to each non-task calendar (or a caller-picked subset) and matches `query` against each event's summary/location/description (case-insensitive substring). Returns matches ranked summary-hits-first, plus which calendars were searched vs skipped (a per-calendar error never fails the whole search). The window defaults to 5 years back..1 year ahead — wider than cal_events' 90-day default, since search is for finding past events. Needs CalDAV credentials.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["query"],
+			properties: {
+				query: { type: "string", description: "Free-text to match against event summary/location/description." },
+				start: { type: "string", description: "Window start (ISO-8601); default 5 years back." },
+				end: { type: "string", description: "Window end (ISO-8601); default 1 year ahead." },
+				calendars: { type: "array", items: { type: "string" }, description: "Limit the search to these calendars — each a href (from cal_list) or a case-insensitive substring of a calendar's display name. Omit to search every non-task calendar." },
+				limit: { type: "integer", minimum: 1, maximum: 200, default: 50, description: "Max matches to return, across all calendars." },
+			},
+		},
+		run: async (env, a) => {
+			if (!hasCalDav(env)) return failWith("not_configured", CALDAV_NOT_CONFIGURED);
+			const query = typeof a?.query === "string" ? a.query.trim() : "";
+			if (!query) return failWith("bad_input", "cal_search requires a non-empty `query`.");
+			try {
+				const q = query.toLowerCase();
+				const nonTask = (await listCalendars(env)).filter((c) => !c.isTasks);
+				const wantedNames = Array.isArray(a?.calendars) ? a.calendars.map((v: unknown) => String(v)) : null;
+				const targets = wantedNames
+					? nonTask.filter((c) => wantedNames.some((w: string) => c.href === w || c.name.toLowerCase().includes(w.toLowerCase())))
+					: nonTask;
+				if (!targets.length) return failWith("bad_input", "no calendar matched `calendars` — list them with cal_list.");
+				const now = Date.now();
+				const start = a?.start ? String(a.start) : new Date(now - 5 * 365 * 24 * 60 * 60 * 1000).toISOString();
+				const end = a?.end ? String(a.end) : new Date(now + 365 * 24 * 60 * 60 * 1000).toISOString();
+				const limit = clamp(a?.limit, 1, 200, 50);
+				const settled = await Promise.allSettled(targets.map((cal) => reportObjects(env, cal.href, "VEVENT", { start, end })));
+				const searched: string[] = [];
+				const skipped: Array<{ calendar: string; error: string }> = [];
+				const matches: Array<{ rank: number } & Record<string, unknown>> = [];
+				settled.forEach((s, i) => {
+					const cal = targets[i];
+					if (s.status === "rejected") {
+						skipped.push({ calendar: cal.name, error: errMsg(s.reason) });
+						return;
+					}
+					searched.push(cal.name);
+					for (const o of s.value) {
+						const shaped = shapeCalObject(o);
+						if (!shaped) continue;
+						const summary = String(shaped.summary ?? "").toLowerCase();
+						const inSummary = summary.includes(q);
+						const inOther = !inSummary && (String(shaped.location ?? "").toLowerCase().includes(q) || String(shaped.description ?? "").toLowerCase().includes(q));
+						if (!inSummary && !inOther) continue;
+						matches.push({ rank: inSummary ? 2 : 1, calendar: cal.name, ...shaped });
+					}
+				});
+				matches.sort((x, y) => y.rank - x.rank || String(x.start ?? "").localeCompare(String(y.start ?? "")));
+				const events = matches.slice(0, limit).map(({ rank: _rank, ...rest }) => rest);
+				return ok({ query, window: { start, end }, searched, skipped, count: events.length, total_matches: matches.length, events });
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
 		name: "cal_create",
 		description: "Create a calendar event. Provide summary + start (ISO-8601; a date-only value is all-day), optional end/description/location and `calendar` (href). Applies directly (reversible); pass stage:true to preview first. Needs CalDAV credentials.",
 		inputSchema: { type: "object", additionalProperties: false, required: ["summary", "start"], properties: { calendar: { type: "string" }, summary: { type: "string" }, title: { type: "string", description: "Alias for `summary` (kept for back-compat)." }, start: { type: "string", description: "ISO-8601 start; date-only (YYYY-MM-DD) = all-day." }, end: { type: "string" }, description: { type: "string" }, location: { type: "string" }, stage: { type: "boolean" }, commit_token: { type: "string" }, force: { type: "boolean", description: "Skip staging and apply in one shot (the ! override). By default this verb stages a preview first." } } },

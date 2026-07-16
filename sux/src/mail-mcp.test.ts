@@ -770,7 +770,7 @@ describe("mail_* ergonomic tools", () => {
 
 	it("cal_/task_ verbs gate on CalDAV credentials (§3)", async () => {
 		installFetch();
-		for (const name of ["cal_list", "cal_events", "task_list", "caldav"] as const) {
+		for (const name of ["cal_list", "cal_events", "cal_search", "task_list", "caldav"] as const) {
 			const r = await tool(name).run(env(), { method: "PROPFIND", path: "/x" });
 			expect(r.isError).toBe(true);
 			expect(r.content[0].text).toMatch(/CalDAV|APP_PASSWORD/i); // flip-on-ready message
@@ -824,6 +824,67 @@ describe("mail_* ergonomic tools", () => {
 		await tool("cal_events").run(e, { from: "2026-08-01T00:00:00Z", to: "2026-08-02T00:00:00Z" });
 		expect(reportBody).toContain("20260801T000000Z");
 		expect(reportBody).toContain("20260802T000000Z");
+	});
+
+	// Two calendars ("Personal" from CALS_XML plus a second "Mountaineers" collection),
+	// one event each — so cal_search's fan-out, ranking, and calendars-filter can all be
+	// exercised against more than a single collection.
+	const CALS_XML_2 = `<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+  <d:response><d:href>/dav/calendars/user/me@fastmail.com/personal/</d:href><d:propstat><d:prop><d:displayname>Personal</d:displayname><d:resourcetype><d:collection/><c:calendar/></d:resourcetype><c:supported-calendar-component-set><c:comp name="VEVENT"/></c:supported-calendar-component-set></d:prop></d:propstat></d:response>
+  <d:response><d:href>/dav/calendars/user/me@fastmail.com/mountaineers/</d:href><d:propstat><d:prop><d:displayname>Mountaineers</d:displayname><d:resourcetype><d:collection/><c:calendar/></d:resourcetype><c:supported-calendar-component-set><c:comp name="VEVENT"/></c:supported-calendar-component-set></d:prop></d:propstat></d:response>
+  <d:response><d:href>/dav/calendars/user/me@fastmail.com/tasks/</d:href><d:propstat><d:prop><d:displayname>Tasks</d:displayname><d:resourcetype><d:collection/><c:calendar/></d:resourcetype><c:supported-calendar-component-set><c:comp name="VTODO"/></c:supported-calendar-component-set></d:prop></d:propstat></d:response>
+</d:multistatus>`;
+	const REPORT_XML = (ical: string, href: string) =>
+		`<d:multistatus xmlns:d="DAV:"><d:response><d:href>${href}</d:href><d:propstat><d:prop><d:getetag>"e1"</d:getetag><c:calendar-data xmlns:c="urn:ietf:params:xml:ns:caldav">${ical.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</c:calendar-data></d:prop></d:propstat></d:response></d:multistatus>`;
+
+	it("cal_search fans out across non-task calendars, ranks summary hits first, and reports which calendars were searched (§642)", async () => {
+		const e = calEnv();
+		const rainierEvent = ["BEGIN:VCALENDAR", "VERSION:2.0", "BEGIN:VEVENT", "UID:hike-1", "DTSTART:20200815T090000Z", "SUMMARY:Rainier summit push", "END:VEVENT", "END:VCALENDAR"].join("\r\n");
+		const bozemanEvent = ["BEGIN:VCALENDAR", "VERSION:2.0", "BEGIN:VEVENT", "UID:trip-1", "DTSTART:20210601T090000Z", "SUMMARY:Family trip", "LOCATION:somewhere near Rainier National Park", "END:VEVENT", "END:VCALENDAR"].join("\r\n");
+		global.fetch = vi.fn(async (input: any, init: any) => {
+			const method = init?.method ?? "GET";
+			const url = String(input?.url ?? input);
+			if (method === "PROPFIND") return new Response(CALS_XML_2, { status: 207 });
+			if (method === "REPORT") {
+				if (url.includes("/personal/")) return new Response(REPORT_XML(rainierEvent, "/dav/calendars/user/me@fastmail.com/personal/hike-1.ics"), { status: 207 });
+				if (url.includes("/mountaineers/")) return new Response(REPORT_XML(bozemanEvent, "/dav/calendars/user/me@fastmail.com/mountaineers/trip-1.ics"), { status: 207 });
+				return new Response(`<d:multistatus xmlns:d="DAV:"></d:multistatus>`, { status: 207 });
+			}
+			return new Response("", { status: 200 });
+		}) as any;
+		const out = parse(await tool("cal_search").run(e, { query: "rainier" }));
+		expect(out.searched.sort()).toEqual(["Mountaineers", "Personal"]); // task calendar excluded, both event calendars fanned out
+		expect(out.skipped).toEqual([]);
+		expect(out.count).toBe(2);
+		expect(out.events[0]).toMatchObject({ uid: "hike-1", calendar: "Personal" }); // summary hit ranks above a location-only hit
+		expect(out.events[1]).toMatchObject({ uid: "trip-1", calendar: "Mountaineers" });
+
+		// `calendars` narrows the fan-out to a name substring match.
+		const narrowed = parse(await tool("cal_search").run(e, { query: "rainier", calendars: ["Mountaineers"] }));
+		expect(narrowed.searched).toEqual(["Mountaineers"]);
+		expect(narrowed.events.map((ev: any) => ev.uid)).toEqual(["trip-1"]);
+	});
+
+	it("cal_search degrades gracefully when one calendar's REPORT fails, and gates on creds/query (§642)", async () => {
+		const e = calEnv();
+		const okEvent = ["BEGIN:VCALENDAR", "VERSION:2.0", "BEGIN:VEVENT", "UID:hike-1", "DTSTART:20200815T090000Z", "SUMMARY:Rainier summit push", "END:VEVENT", "END:VCALENDAR"].join("\r\n");
+		global.fetch = vi.fn(async (input: any, init: any) => {
+			const method = init?.method ?? "GET";
+			const url = String(input?.url ?? input);
+			if (method === "PROPFIND") return new Response(CALS_XML_2, { status: 207 });
+			if (method === "REPORT") {
+				if (url.includes("/personal/")) return new Response(REPORT_XML(okEvent, "/dav/calendars/user/me@fastmail.com/personal/hike-1.ics"), { status: 207 });
+				return new Response("server error", { status: 500 }); // Mountaineers REPORT fails
+			}
+			return new Response("", { status: 200 });
+		}) as any;
+		const out = parse(await tool("cal_search").run(e, { query: "rainier" }));
+		expect(out.searched).toEqual(["Personal"]);
+		expect(out.skipped).toEqual([{ calendar: "Mountaineers", error: expect.stringContaining("REPORT") }]);
+		expect(out.count).toBe(1);
+
+		expect((await tool("cal_search").run(env(), { query: "x" })).errorCode).toBe("not_configured"); // no CalDAV creds
+		expect((await tool("cal_search").run(e, {})).errorCode).toBe("bad_input"); // missing query
 	});
 
 	// A stored VEVENT with a TZID + an alarm, so cal_update's GET→rewrite→PUT can be asserted to

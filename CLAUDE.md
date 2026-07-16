@@ -66,6 +66,21 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   (or execute the code against the claimed-failing input) before filing or
   fixing** — a copy-pasted quote can silently drop bytes like `\x7f`, making a
   correct range read as two literal characters (see #587/#574).
+- **`package.json`'s `"@suxos/lib": "file:../suxlib"` needs a private sibling repo
+  (`SuxOS/suxlib`) checked out at `../suxlib` — real CI mints a repo-scoped App
+  token for it (`.github/workflows/ci.yml`), but a bot-build sandbox's default git
+  identity often can't clone it, so `npm run type-check`/`npm test`/`npm run ci`
+  fail on `Cannot find module '@suxos/lib'` for reasons that have nothing to do
+  with the diff (confirmed identical on a clean `main` checkout — this is what
+  sank 4 straight auto-build attempts on #642/#643 before the cause was found).
+  Check `git log -- package.json` for when `@suxos/lib` entries were added — if a
+  sandbox's `../suxlib` is missing/broken, that's the likely reason, not the code
+  under test. Workaround for local verification only (never commit it): stub
+  `../suxlib` with a loose `any`-typed re-export of everything importers pull from
+  `@suxos/lib` (`grep -rn '@suxos/lib'` for the current export surface) so
+  unrelated files resolve; diff `npm test`'s failure set against the same stub on
+  a clean `main` to prove your change adds nothing new, then trust real CI (which
+  has the actual library) for those files' real behavior.
 
 ## House style
 
