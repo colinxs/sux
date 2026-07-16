@@ -263,6 +263,11 @@ missing key degrades to a clear "not configured" message; the rest keep working.
 - `NCBI_API_KEY` (`pubmed`), `S2_API_KEY` (`semantic_scholar`),
   `STACKEXCHANGE_KEY` (`stackexchange`).
 
+**Crypto**
+- `COINGECKO_API_KEY` (`coingecko`) — CoinGecko's free "Demo" tier
+  (`x-cg-demo-api-key`); CoinGecko now 403s pure keyless/datacenter traffic, so
+  this one is effectively required in production, not just quota-raising.
+
 **Obsidian**
 - `OBSIDIAN_VAULT_REPO` (`owner/repo`, live = `colinxs/obsidian-vault`), optional
   `OBSIDIAN_VAULT_BRANCH` / `OBSIDIAN_VAULT_DIR`; or the remote backend's

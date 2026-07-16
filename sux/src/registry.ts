@@ -31,6 +31,8 @@ export type RtEnv = Env &
 		S2_API_KEY?: string;
 
 		STACKEXCHANGE_KEY?: string;
+
+		COINGECKO_API_KEY?: string;
 		R2?: R2Bucket;
 
 		BRAVE_API_KEY?: string;

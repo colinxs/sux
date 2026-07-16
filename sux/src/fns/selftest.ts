@@ -159,6 +159,7 @@ export const selftest: Fn = {
 			ebay: Boolean(env.EBAY_CLIENT_ID && env.EBAY_CLIENT_SECRET),
 			youtube: Boolean(env.YOUTUBE_API_KEY),
 			stackexchange: Boolean(env.STACKEXCHANGE_KEY),
+			coingecko: Boolean(env.COINGECKO_API_KEY),
 			facebook: Boolean(env.FACEBOOK_TOKEN),
 			grafana: Boolean(env.GRAFANA_LOKI_URL && env.GRAFANA_LOKI_USER && env.GRAFANA_LOKI_TOKEN),
 			proxy: isTailscaleConfigured(env),

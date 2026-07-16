@@ -65,4 +65,22 @@ describe("coingecko", () => {
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toMatch(/429/);
 	});
+
+	it("hints at COINGECKO_API_KEY on a keyless 403", async () => {
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("nope", { status: 403 }));
+		const r = await coingecko.run({} as any, { action: "search", term: "x" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/COINGECKO_API_KEY/);
+	});
+
+	it("sends x-cg-demo-api-key and omits the hint when COINGECKO_API_KEY is set", async () => {
+		const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify(SEARCH_BODY), { status: 200 }));
+		await coingecko.run({ COINGECKO_API_KEY: "demokey" } as any, { action: "search", term: "bitcoin" });
+		const headers = spy.mock.calls[0][1]?.headers as Record<string, string>;
+		expect(headers["x-cg-demo-api-key"]).toBe("demokey");
+
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("nope", { status: 403 }));
+		const r = await coingecko.run({ COINGECKO_API_KEY: "demokey" } as any, { action: "search", term: "x" });
+		expect(r.content[0].text).not.toMatch(/COINGECKO_API_KEY/);
+	});
 });
