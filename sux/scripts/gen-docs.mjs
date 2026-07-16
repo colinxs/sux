@@ -27,7 +27,7 @@ const CATEGORIES = [
 	["People / places / social", ["people", "people_finder", "places", "linkedin", "facebook", "uw"]],
 	["Notes / knowledge / vault", ["obsidian", "ingest", "citation", "consolidate"]],
 	["Knowledge / learning", ["recall", "oracle", "study", "advise", "learn", "preferences", "life_wiki", "agenda"]],
-	["Mail (JMAP)", ["jmap", "mail_triage", "mail_sieve", "mail_sieve_backfill", "briefing"]],
+	["Mail (JMAP)", ["jmap", "mail_triage", "mail_sieve", "mail_sieve_hc", "mail_sieve_backfill", "mail_domain_backfill", "briefing"]],
 	["Personal namespaces (one /mcp)", ["vault", "mail", "files", "calendar", "contact"]],
 	["Agent / autonomy", ["proposals"]],
 	["Personal finance", ["monarch"]],

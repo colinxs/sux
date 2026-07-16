@@ -53,7 +53,7 @@ Leaf index (semantics + args in `references/capability-tables.md`; call any via
 `fn({name, args})`): `ace`, `advise`, `agenda`, `amazon`, `autonomy_status`, `batch_fetch`,
 `briefing`, `citation`, `consolidate`, `costco`, `dropbox`, `feed`, `fontcase`, `get`, `homedepot`,
 `jmap`, `kv_get`, `kv_put`, `kv_list`, `kv_delete`, `learn`, `life_wiki`, `linkedin`, `lowes`,
-`mail_sieve`, `mail_sieve_backfill`, `mail_triage`, `monarch`, `mychart`, `obsidian`, `people_finder`, `put`, `redirects`,
+`mail_domain_backfill`, `mail_sieve`, `mail_sieve_hc`, `mail_sieve_backfill`, `mail_triage`, `monarch`, `mychart`, `obsidian`, `people_finder`, `put`, `redirects`,
 `robots`, `sitemap`, `study`, `suggest`, `todoist`, `uw`, `voice`, `walmart`, `watch`,
 `watch_pipeline`, `web_search`, `weekly_ad`.
 
