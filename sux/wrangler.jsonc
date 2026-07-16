@@ -2,7 +2,7 @@
 	"$schema": "../node_modules/wrangler/config-schema.json",
 	"name": "sux",
 	"main": "src/index.ts",
-	"compatibility_date": "2025-06-01",
+	"compatibility_date": "2026-07-16",
 	// global_fetch_strictly_public: forces global fetch() onto the public internet
 	// only — private/internal/loopback/link-local targets are refused at the platform
 	// level, and same-account Worker fetches loop through the public front door. This

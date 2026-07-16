@@ -618,6 +618,56 @@ describe("rtServer.fetch — connector manifest (one front door)", () => {
 	});
 });
 
+// The auth-allowlist + rate-limit gate in rtServer.fetch, upstream of both the
+// manifest short-circuit and handleRpc — only the happy path (props.login ===
+// ALLOWED) was previously exercised anywhere in this file.
+describe("rtServer.fetch — auth/rate-limit gate (403/429)", () => {
+	const ctxFor = (props?: { login?: string }) => ({ waitUntil: () => {}, props }) as unknown as Parameters<typeof rtServer.fetch>[2];
+	const rpcRequest = () =>
+		new Request("https://sux.example.dev/mcp", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize" }),
+		});
+
+	it("403s a login outside the allowlist", async () => {
+		const { kv } = makeKv();
+		const res = await rtServer.fetch(rpcRequest(), makeEnv(kv), ctxFor({ login: "not-allowed" }));
+		expect(res.status).toBe(403);
+		expect(await res.json()).toEqual({ error: "forbidden" });
+	});
+
+	it("403s when props carries no login at all", async () => {
+		const { kv } = makeKv();
+		const res = await rtServer.fetch(rpcRequest(), makeEnv(kv), ctxFor(undefined));
+		expect(res.status).toBe(403);
+		expect(await res.json()).toEqual({ error: "forbidden" });
+	});
+
+	it("429s an allowed login once the rate limiter says no, with a retry-after hint", async () => {
+		const { kv } = makeKv();
+		const env = { ...makeEnv(kv), MCP_RATE_LIMITER: { limit: async () => ({ success: false }) } } as unknown as RtEnv;
+		const res = await rtServer.fetch(rpcRequest(), env, ctxFor({ login: ALLOWED }));
+		expect(res.status).toBe(429);
+		expect(await res.json()).toEqual({ error: "rate_limited" });
+		expect(res.headers.get("retry-after")).toBe("10");
+	});
+
+	it("fails OPEN (does not block) when the rate limiter itself throws", async () => {
+		const { kv } = makeKv();
+		const env = {
+			...makeEnv(kv),
+			MCP_RATE_LIMITER: {
+				limit: async () => {
+					throw new Error("limiter unavailable");
+				},
+			},
+		} as unknown as RtEnv;
+		const res = await rtServer.fetch(rpcRequest(), env, ctxFor({ login: ALLOWED }));
+		expect(res.status).toBe(200);
+	});
+});
+
 // MCP Tasks primitive (src/tasks.ts) — task-augmented tools/call, plus
 // tasks/get, tasks/result, tasks/list, tasks/cancel, all driven through the
 // real handleRpc dispatch (same helpers as the rest of this file).
