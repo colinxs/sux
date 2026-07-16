@@ -167,6 +167,16 @@ describe("web_search", () => {
 		expect(renderRun).not.toHaveBeenCalled(); // no heavy render
 	});
 
+	it("warns naming the engine when a scrape fulfills with 0 hits — a silent markup drift is now traceable (#537)", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		// Non-empty page (a real response) that the parser matches nothing in — the
+		// markup-drift case, indistinguishable from genuine no-results without this warning.
+		smartFetch.mockResolvedValueOnce(new Response("<html><body>a page with no result anchors</body></html>", { status: 200 }));
+		await webSearch.run({} as any, { query: "x", engine: "ddg" });
+		expect(warn).toHaveBeenCalledWith(expect.stringContaining("'ddg' returned 0 hits"));
+		warn.mockRestore();
+	});
+
 	it("renders Google via the mac backend (no key) and parses results", async () => {
 		renderRun.mockResolvedValueOnce({ content: [{ text: serp([{ url: "https://g.com/x", title: "G Result" }]) }] });
 		const r = await webSearch.run({} as any, { query: "x", engine: "google" });
