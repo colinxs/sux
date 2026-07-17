@@ -152,6 +152,11 @@ export const crawl: Fn = {
 			}
 			frontier = next;
 		}
-		return ok(oj({ seed, pages: results.length, results, ...(truncated ? { truncated: true, reason: "time" } : {}), ...(respectRobots ? { skipped_by_robots: skippedByRobots } : {}) }));
+		const out = ok(oj({ seed, pages: results.length, results, ...(truncated ? { truncated: true, reason: "time" } : {}), ...(respectRobots ? { skipped_by_robots: skippedByRobots } : {}) }));
+		// A time-truncated crawl is a partial, not a finished result — freezing it
+		// under the default TTL would serve the same incomplete set for up to an
+		// hour on re-run (mirrors batch_fetch.ts's noCache-on-truncate via noCacheOn4xx).
+		if (truncated) out.noCache = true;
+		return out;
 	},
 };

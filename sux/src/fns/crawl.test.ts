@@ -199,6 +199,10 @@ describe("crawl", () => {
 		expect(out.reason).toBe("time");
 		// children were discovered but the budget cut them off before any fetch
 		expect(mockFetch).not.toHaveBeenCalledWith(expect.anything(), "https://ex.com/p0", expect.anything());
+		// A truncated crawl is a partial, not a finished result — it must never be
+		// frozen under the cache TTL, or a re-run within the hour would replay the
+		// same incomplete set instead of continuing/re-crawling (R-003).
+		expect(r.noCache).toBe(true);
 	});
 
 	it("caps each page body read at 512KB (links past the cap are not seen)", async () => {
