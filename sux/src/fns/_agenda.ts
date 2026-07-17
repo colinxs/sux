@@ -176,7 +176,7 @@ export function detectKnowledgeDrops(consolidate: ConsolidateFindings | null, we
 		drops.push({
 			kind: "weekly_recall_ready",
 			urgency: "fyi",
-			dedupe: `weekly_recall::${weeklyRecall.week}`,
+			dedupe: `weekly_recall::${weeklyRecall.week}::${weeklyRecall.content_hash}`,
 			title: `Weekly recall digest ready (${weeklyRecall.questions} question${weeklyRecall.questions === 1 ? "" : "s"})`,
 			emoji: "🧠",
 			action: task(`Read this week's recall digest — see Weekly/${weeklyRecall.week}.md`),

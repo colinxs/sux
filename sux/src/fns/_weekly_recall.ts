@@ -75,7 +75,21 @@ export type WeeklyRecallSection = { question: string; answer: string; citations:
  *  consumer (the agenda loop, W5) know a digest is ready without re-running recall. */
 const LAST_REPORT_KEY = "last-report";
 
-export type WeeklyRecallFindings = { week: string; questions: number };
+export type WeeklyRecallFindings = { week: string; questions: number; content_hash: string };
+
+/** A short, stable content fingerprint (FNV-1a) over this cycle's answers — mirrors
+ *  _agenda.ts's consolidate fingerprint (#782): a `force:true` mid-week re-run can produce
+ *  genuinely different answers for the SAME question count, and a week-only (or
+ *  count-only) dedupe key would silently swallow those fresh findings in the agenda. */
+function fingerprint(parts: string[]): string {
+	const joined = parts.join("");
+	let h = 2166136261;
+	for (let i = 0; i < joined.length; i++) {
+		h ^= joined.charCodeAt(i);
+		h = Math.imul(h, 16777619);
+	}
+	return (h >>> 0).toString(36);
+}
 
 /** The most recent successful cycle's findings, read from the ledger cache — never re-runs
  *  recall. Returns null if weekly_recall has never completed a cycle (dormant, KV
@@ -86,7 +100,7 @@ export async function lastWeeklyRecallFindings(env: RtEnv): Promise<WeeklyRecall
 	try {
 		const parsed = JSON.parse(raw);
 		if (!parsed || typeof parsed.week !== "string" || typeof parsed.questions !== "number") return null;
-		return { week: parsed.week, questions: parsed.questions };
+		return { week: parsed.week, questions: parsed.questions, content_hash: typeof parsed.content_hash === "string" ? parsed.content_hash : "" };
 	} catch {
 		return null;
 	}
@@ -151,7 +165,8 @@ export async function runWeeklyRecall(env: RtEnv, opts: WeeklyRecallOpts, deps: 
 	try {
 		await deps.digestAppend(env, `Weekly/${week}.md`, buildDigest(week, sections));
 		await led.mark(key); // mark AFTER a successful write so a failed append retries next tick
-		await led.mark(LAST_REPORT_KEY, JSON.stringify({ week, questions: questions.length }));
+		const content_hash = fingerprint(sections.map((s) => `${s.question}|${s.answer}`));
+		await led.mark(LAST_REPORT_KEY, JSON.stringify({ week, questions: questions.length, content_hash }));
 		return { week, questions: questions.length, digest_written: true };
 	} catch (e) {
 		return { week, questions: questions.length, digest_written: false, error: `vault append failed: ${errMsg(e)}` };

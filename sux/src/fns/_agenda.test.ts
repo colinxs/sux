@@ -63,7 +63,7 @@ describe("agenda — detectors", () => {
 	it("wires consolidate + weekly_recall findings in as fyi drops, deduped per week", () => {
 		const drops = detectKnowledgeDrops(
 			{ week: "2026-W28", stale: [{ path: "Foo.md", reason: "no last_verified marker" }], duplicate_candidates: [{ a: "Foo.md", b: "Foo (2).md", key: "foo" }] },
-			{ week: "2026-W28", questions: 3 },
+			{ week: "2026-W28", questions: 3, content_hash: "abc" },
 		);
 		const kinds = drops.map((d) => d.kind);
 		expect(kinds).toEqual(["consolidate_stale", "consolidate_dupes", "weekly_recall_ready"]);
@@ -76,7 +76,7 @@ describe("agenda — detectors", () => {
 
 	it("no knowledge drops when there's nothing to report", () => {
 		expect(detectKnowledgeDrops(null, null)).toHaveLength(0);
-		expect(detectKnowledgeDrops({ week: "2026-W28", stale: [], duplicate_candidates: [] }, { week: "2026-W28", questions: 0 })).toHaveLength(0);
+		expect(detectKnowledgeDrops({ week: "2026-W28", stale: [], duplicate_candidates: [] }, { week: "2026-W28", questions: 0, content_hash: "abc" })).toHaveLength(0);
 	});
 
 	it("detects Monarch financial signals (W7): low balance, unusual charge, bill due soon", () => {
@@ -182,7 +182,7 @@ describe("agenda — loop", () => {
 		const e = env();
 		const d = deps({
 			consolidateFindings: vi.fn(async () => ({ week: "2026-W28", stale: [{ path: "Foo.md", reason: "no last_verified marker" }], duplicate_candidates: [] })),
-			weeklyRecallFindings: vi.fn(async () => ({ week: "2026-W28", questions: 3 })),
+			weeklyRecallFindings: vi.fn(async () => ({ week: "2026-W28", questions: 3, content_hash: "abc" })),
 		});
 		const r = await runAgenda(e, {}, d);
 		expect(r.proposed).toBe(9); // 7 mail/cal + consolidate_stale + weekly_recall_ready
