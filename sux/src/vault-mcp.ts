@@ -74,7 +74,12 @@ const toRecord = (path: string, content: string, fm: Record<string, unknown>): V
 // GitHub's ref endpoint is erroring (see obsidian.ts). INDEX_MAX bounds a pathological
 // vault; well above both the real ~500-note size and the 2000 per-call cap.
 const INDEX_MAX = 5000;
-type VaultIndex = { sha: string; at: number; total: number; truncated: boolean; records: VaultRecord[] };
+// Bumped whenever VaultRecord's shape changes (e.g. #670 added tasks/excerpt/keywords).
+// The vault's git HEAD is independent of Worker deploys, so a KV blob built by the
+// PREVIOUS Worker version can still match the sha check post-deploy; version-stamping
+// forces a rebuild instead of returning records missing the new fields (see #676).
+const INDEX_VERSION = 2;
+type VaultIndex = { sha: string; version: number; at: number; total: number; truncated: boolean; records: VaultRecord[] };
 
 async function buildVaultIndex(env: RtEnv, sha: string, cfg: VaultCfg): Promise<VaultIndex> {
 	const listRes = await obsidian.run(env, git({ action: "list" }));
@@ -106,7 +111,7 @@ async function buildVaultIndex(env: RtEnv, sha: string, cfg: VaultCfg): Promise<
 	// have holes — not just when the whole vault exceeded INDEX_MAX. The blob is
 	// cached until the next HEAD change, so one blip would otherwise poison every
 	// backlinks/query/tags answer for that HEAD with no signal.
-	return { sha, at: Date.now(), total: all.length, truncated: all.length > INDEX_MAX || failed > 0, records };
+	return { sha, version: INDEX_VERSION, at: Date.now(), total: all.length, truncated: all.length > INDEX_MAX || failed > 0, records };
 }
 
 /** The whole-vault index for the current HEAD, rebuilt on HEAD mismatch (bounded-stale
@@ -118,7 +123,7 @@ async function vaultIndex(env: RtEnv, cfg: VaultCfg): Promise<VaultIndex | null>
 	const head = env.OAUTH_KV ? await vaultHead(env, cfg) : null;
 	if (!head) return null;
 	const cached = (await readVaultIndexBlob(env, cfg)) as VaultIndex | null;
-	if (cached?.sha === head && Array.isArray(cached.records)) return cached;
+	if (cached?.sha === head && cached?.version === INDEX_VERSION && Array.isArray(cached.records)) return cached;
 	const fresh = await buildVaultIndex(env, head, cfg);
 	await writeVaultIndexBlob(env, cfg, fresh);
 	return fresh;
@@ -450,7 +455,7 @@ const TOOLS: VaultTool[] = [
 				const tasks: Array<{ path: string } & VaultTask> = [];
 				for (const r of records) {
 					if (wantTag && !r.tags.some((t) => t.toLowerCase() === wantTag)) continue;
-					for (const t of r.tasks) {
+					for (const t of r.tasks ?? []) {
 						if (wantDone !== undefined && t.done !== wantDone) continue;
 						if (wantOverdue && (t.done || !t.due || t.due >= today)) continue;
 						tasks.push({ path: r.path, ...t });
@@ -472,7 +477,7 @@ const TOOLS: VaultTool[] = [
 			if (!q) return failWith("bad_input", "vault_search_body requires a non-empty `q`.");
 			try {
 				const { records, total, truncated } = await scanVault(env, a?.folder ? String(a.folder) : undefined, clampCap(a?.cap));
-				const hits = records.filter((r) => r.excerpt.toLowerCase().includes(q) || r.keywords.includes(q)).map((r) => ({ path: r.path, excerpt: r.excerpt }));
+				const hits = records.filter((r) => (r.excerpt ?? "").toLowerCase().includes(q) || (r.keywords ?? []).includes(q)).map((r) => ({ path: r.path, excerpt: r.excerpt ?? "" }));
 				return ok(JSON.stringify({ q, count: hits.length, hits, scanned: records.length, total, truncated }, null, 2));
 			} catch (e) {
 				return fail(String((e as Error)?.message ?? e));
