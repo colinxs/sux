@@ -491,9 +491,14 @@ async function handleCallback(request: Request, url: URL, env: HandlerEnv): Prom
 	const stateFromQuery = url.searchParams.get("state");
 	if (!stateFromQuery) return text("Missing state parameter", 400);
 
-	const storedDataJson = await env.OAUTH_KV.get(`oauth:state:${stateFromQuery}`);
+	// Workers KV has no atomic get-and-delete/CAS (a Durable Object would, but
+	// that's disproportionate for a single-use token whose real backstop is
+	// GitHub's own single-use authorization `code`). Firing the delete alongside
+	// the get, rather than after it resolves, shrinks the replay window from two
+	// sequential round-trips to one instead of eliminating it outright.
+	const stateKey = `oauth:state:${stateFromQuery}`;
+	const [storedDataJson] = await Promise.all([env.OAUTH_KV.get(stateKey), env.OAUTH_KV.delete(stateKey)]);
 	if (!storedDataJson) return text("Invalid or expired state", 400);
-	await env.OAUTH_KV.delete(`oauth:state:${stateFromQuery}`);
 
 	const oauthReqInfo = safeParseJson<AuthRequest | null>(storedDataJson, null);
 	if (!oauthReqInfo) return text("Invalid state data", 500);

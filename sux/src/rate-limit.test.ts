@@ -115,6 +115,33 @@ describe("weightedRateLimit", () => {
 		expect(await r!.json()).toEqual({ error: "rate_limited" });
 	});
 
+	it("keeps charging remaining tokens after a transient mid-loop limiter throw, instead of letting the rest through free (#415)", async () => {
+		// render needs 4 extra tokens. Token 2 throws (transient blip); tokens 1, 3, 4
+		// all succeed under budget — the throw must not stop the loop early.
+		let n = 0;
+		const rl = { calls: () => n, limit: async () => { n++; if (n === 2) throw new Error("boom"); return { success: true }; } };
+		const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, ctx, "u", call("render"));
+		expect(r).toBeNull();
+		expect(rl.calls()).toBe(4); // all 4 tokens attempted, not stopped at the throw
+	});
+
+	it("still denies when a later token (after a thrown one) hits budget", async () => {
+		// Token 1 throws (fails open for itself); tokens 2-4 run against a budget of 1
+		// more allowed call, so the 2nd real call denies — the throw must not mask it.
+		let n = 0;
+		const rl = {
+			calls: () => n,
+			limit: async () => {
+				n++;
+				if (n === 1) throw new Error("boom");
+				return { success: n <= 2 };
+			},
+		};
+		const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, ctx, "u", call("render"));
+		expect(r).not.toBeNull();
+		expect(r!.status).toBe(429);
+	});
+
 	it("no-ops without a limiter binding or on non-tools/call methods", async () => {
 		expect(await weightedRateLimit({} as any, ctx, "u", call("render"))).toBeNull();
 		const rl = limiter(0);

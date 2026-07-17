@@ -150,14 +150,19 @@ export async function weightedRateLimit(
 	}
 	const extra = requestCost(effectiveName, effectiveArgs);
 	for (let i = 0; i < extra; i++) {
-		// Fail OPEN if the limiter throws — an unavailable limiter must never itself
-		// become an outage (mirrors the presence-check fail-open above).
+		// Fail OPEN for THIS token if the limiter throws — an unavailable limiter
+		// must never itself become an outage (mirrors the presence-check fail-open
+		// above) — but keep charging the rest of the loop. A `break` here let one
+		// transient error zero out backpressure for every remaining token of a
+		// high-cost call (a 100-render batch dodging the limiter on one blip); a
+		// real outage still fails every token open, same net effect, while a
+		// one-off error no longer excuses the whole request (#415).
 		let success = true;
 		try {
 			success = (await env.MCP_RATE_LIMITER.limit({ key: login })).success;
 		} catch (e) {
-			console.warn(`weighted rate limiter threw, failing open: ${String((e as Error)?.message ?? e)}`);
-			break;
+			console.warn(`weighted rate limiter threw for token ${i + 1}/${extra}, failing open for this token: ${String((e as Error)?.message ?? e)}`);
+			continue;
 		}
 		if (!success) return rateLimited();
 	}

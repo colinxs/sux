@@ -36,14 +36,16 @@ function isMeteredObsPath(pathname: string): boolean {
 // coarse per-IP backpressure instead of standing up a second limiter.
 export async function obsRateLimited(request: Request, env: RtEnv): Promise<boolean> {
 	if (!env.OBS_RATE_LIMITER) return false;
-	// Fail OPEN if the limiter throws — an unavailable limiter must never itself
-	// become an outage (matches the not-configured branch above).
+	// Fail CLOSED if the limiter throws — unlike the not-configured branch above
+	// (a deliberate, known-safe state), a throw means the limiter is unhealthy in
+	// an unknown way, and these routes are unauthenticated KV/R2-cost surface
+	// with no other ceiling. An unavailable limiter must not reopen that surface.
 	try {
 		const { success } = await env.OBS_RATE_LIMITER.limit({ key: request.headers.get("cf-connecting-ip") || "anon" });
 		return !success;
 	} catch (e) {
-		console.warn(`obs rate limiter threw, failing open: ${String((e as Error)?.message ?? e)}`);
-		return false;
+		console.warn(`obs rate limiter threw, failing closed: ${String((e as Error)?.message ?? e)}`);
+		return true;
 	}
 }
 
