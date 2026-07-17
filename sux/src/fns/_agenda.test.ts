@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { composeDigest, type AgendaDeps, detectDrops, detectKnowledgeDrops, type EventRef, type MailRef, runAgenda } from "./_agenda";
+import { composeDigest, type AgendaDeps, detectDrops, detectKnowledgeDrops, detectMonarchDrops, type EventRef, type MailRef, runAgenda } from "./_agenda";
 import { listProposals } from "../proposals";
 
 function kvStub() {
@@ -26,6 +26,9 @@ const deps = (over: Partial<AgendaDeps> = {}): AgendaDeps => ({
 	sendDigest: vi.fn(async () => {}),
 	consolidateFindings: vi.fn(async () => null),
 	weeklyRecallFindings: vi.fn(async () => null),
+	monarchAccounts: vi.fn(async () => []),
+	monarchTransactions: vi.fn(async () => []),
+	monarchBudgets: vi.fn(async () => []),
 	...over,
 });
 
@@ -74,6 +77,38 @@ describe("agenda — detectors", () => {
 	it("no knowledge drops when there's nothing to report", () => {
 		expect(detectKnowledgeDrops(null, null)).toHaveLength(0);
 		expect(detectKnowledgeDrops({ week: "2026-W28", stale: [], duplicate_candidates: [] }, { week: "2026-W28", questions: 0 })).toHaveLength(0);
+	});
+
+	it("detects Monarch financial signals (W7): low balance, unusual charge, bill due soon", () => {
+		const drops = detectMonarchDrops(
+			"2026-07-28", // 3 days left in July
+			[{ id: "acct1", name: "Checking", balance: 42.5 }],
+			[{ id: "txn1", amount: -733.2, merchant: "Some LLC", date: "2026-07-27" }],
+			[{ category: "Rent", categoryId: "cat1", remaining: 900 }],
+		);
+		const kinds = drops.map((d) => d.kind);
+		expect(kinds).toEqual(expect.arrayContaining(["low_balance", "unusual_charge", "bill_due"]));
+		for (const d of drops) {
+			expect(d.action.fn).toBe("todoist");
+			expect(d.action.args).toMatchObject({ action: "add" });
+		}
+	});
+
+	it("Monarch: no drops when balances/charges/bills are all unremarkable", () => {
+		const drops = detectMonarchDrops(
+			"2026-07-05", // far from month-end
+			[{ id: "acct1", name: "Checking", balance: 4200 }],
+			[{ id: "txn1", amount: -12.5, merchant: "Coffee" }],
+			[{ category: "Dining", categoryId: "cat2", remaining: 50 }],
+		);
+		expect(drops).toHaveLength(0);
+	});
+
+	it("Monarch: a bill-shaped budget category only surfaces near month-end", () => {
+		const near = detectMonarchDrops("2026-07-30", [], [], [{ category: "Utilities", remaining: 60 }]);
+		const far = detectMonarchDrops("2026-07-05", [], [], [{ category: "Utilities", remaining: 60 }]);
+		expect(near.map((d) => d.kind)).toContain("bill_due");
+		expect(far).toHaveLength(0);
 	});
 });
 
@@ -152,5 +187,25 @@ describe("agenda — loop", () => {
 		const r = await runAgenda(e, {}, d);
 		expect(r.proposed).toBe(9); // 7 mail/cal + consolidate_stale + weekly_recall_ready
 		expect(r.proposals?.map((p) => p.kind)).toEqual(expect.arrayContaining(["consolidate_stale", "weekly_recall_ready"]));
+	});
+
+	it("wires Monarch financial signals (W7) in only when MONARCH_TOKEN is set", async () => {
+		const e = env({ MONARCH_TOKEN: "tok" });
+		const d = deps({
+			monarchAccounts: vi.fn(async () => [{ id: "acct1", name: "Checking", balance: 10 }]),
+			monarchTransactions: vi.fn(async () => []),
+			monarchBudgets: vi.fn(async () => []),
+		});
+		const r = await runAgenda(e, {}, d);
+		expect(r.proposals?.map((p) => p.kind)).toEqual(expect.arrayContaining(["low_balance"]));
+		expect(r.sources.monarch).toMatch(/account/);
+	});
+
+	it("skips Monarch entirely (not_configured) when MONARCH_TOKEN is unset", async () => {
+		const e = env();
+		const d = deps();
+		const r = await runAgenda(e, {}, d);
+		expect(r.sources.monarch).toBe("not_configured");
+		expect(d.monarchAccounts).not.toHaveBeenCalled();
 	});
 });

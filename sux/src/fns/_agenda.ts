@@ -1,8 +1,9 @@
 // The agenda loop — the "figure out what to do" engine (docs/design/personal-agent-
 // roadmap.md, epic #228, W2). It is the SENSE→DECIDE→PROPOSE half of the personal
-// agent: fan out (read-only) across the senses that already exist (mail + calendar),
-// run cheap deterministic DETECTORS that spot a "drop about to happen" (a prescription
-// lapsing, a payment failing, an unanswered personal note), and for each one RECORD a
+// agent: fan out (read-only) across the senses that already exist (mail + calendar +
+// Monarch, W7), run cheap deterministic DETECTORS that spot a "drop about to happen" (a
+// prescription lapsing, a payment failing, an unanswered personal note, a bill due, an
+// unusual charge, a low balance), and for each one RECORD a
 // proposal via the W1 kernel — a reversible Todoist task that catches the drop. Then
 // compose ONE calm digest of what needs Colin and deliver it: appended to the Daily
 // note, and (when armed) mailed to him. The email IS the interface — see the digest
@@ -29,6 +30,7 @@ import { ledger } from "../ledger";
 import { propose } from "../proposals";
 import type { ConsolidateFindings } from "./_consolidate";
 import { classifyMessage } from "./_mail_triage";
+import { hasMonarch, monarch } from "./monarch";
 import { errMsg, vaultToday } from "./_util";
 import type { WeeklyRecallFindings } from "./_weekly_recall";
 
@@ -184,6 +186,84 @@ export function detectKnowledgeDrops(consolidate: ConsolidateFindings | null, we
 	return drops;
 }
 
+/** Monarch's read-only accounts/transactions/budgets ops (W7), trimmed to what the
+ *  detectors below need — see fns/monarch.ts for the full shapes. */
+export type MonarchAccountRef = { id: string; name?: string; balance?: number };
+export type MonarchTxnRef = { id: string; amount?: number; date?: string; merchant?: string };
+export type MonarchBudgetRef = { category?: string; categoryId?: string; remaining?: number };
+
+// A bill-like budget category, so "rent remaining $900 with 3 days left in the month" reads
+// as a bill_due drop and a plain discretionary category (dining, shopping) does not.
+const BILL_GROUP_CUE = /\b(bills?|utilit\w*|subscriptions?|insurance|loans?|rent|mortgage)\b/i;
+// Flag a bill only once it's genuinely close — avoids a month-long "rent due" nag.
+const BILL_DUE_WINDOW_DAYS = 7;
+// Recent-transactions window scanned for the unusual-charge detector (days back from `date`).
+const UNUSUAL_CHARGE_WINDOW_DAYS = 3;
+
+const daysLeftInMonth = (date: string): number => {
+	const d = new Date(`${date}T00:00:00Z`);
+	const lastDay = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
+	return lastDay - d.getUTCDate();
+};
+
+/** Turn Monarch's read-only accounts/transactions/budgets into drops (W7) — same
+ *  read-only-sense/reversible-propose contract as every other detector here. Bill-due,
+ *  unusual-charge, and low-balance are rung-0 threshold rules, not a model: sux never
+ *  moves money, so every finding surfaces as a proposal, never an action. */
+export function detectMonarchDrops(date: string, accounts: MonarchAccountRef[], transactions: MonarchTxnRef[], budgets: MonarchBudgetRef[], opts?: { lowBalanceThreshold?: number; unusualChargeThreshold?: number }): Drop[] {
+	const drops: Drop[] = [];
+	const lowBalanceThreshold = opts?.lowBalanceThreshold ?? 100;
+	const unusualChargeThreshold = opts?.unusualChargeThreshold ?? 500;
+
+	for (const a of accounts) {
+		if (typeof a.balance !== "number" || a.balance >= lowBalanceThreshold) continue;
+		const name = a.name || "account";
+		drops.push({
+			kind: "low_balance",
+			urgency: "today",
+			dedupe: `monarch::low_balance::${a.id}::${date}`,
+			title: `Low balance: ${name} ($${a.balance.toFixed(2)})`,
+			emoji: "🪫",
+			action: task(`Check low balance on ${name} ($${a.balance.toFixed(2)})`, "today"),
+			evidence: { id: a.id, balance: a.balance },
+		});
+	}
+
+	for (const t of transactions) {
+		if (typeof t.amount !== "number" || Math.abs(t.amount) < unusualChargeThreshold) continue;
+		const who = t.merchant || "a transaction";
+		const amt = Math.abs(t.amount).toFixed(2);
+		drops.push({
+			kind: "unusual_charge",
+			urgency: "soon",
+			dedupe: `monarch::unusual_charge::${t.id}`,
+			title: `Unusual charge: ${who} ($${amt})`,
+			emoji: "❗",
+			action: task(`Review unusual charge: ${who} ($${amt})${t.date ? ` on ${t.date}` : ""}`),
+			evidence: { id: t.id, amount: t.amount, merchant: t.merchant },
+		});
+	}
+
+	if (daysLeftInMonth(date) <= BILL_DUE_WINDOW_DAYS) {
+		const month = date.slice(0, 7);
+		for (const b of budgets) {
+			if (!b.category || !BILL_GROUP_CUE.test(b.category) || typeof b.remaining !== "number" || b.remaining <= 0) continue;
+			const remaining = b.remaining.toFixed(2);
+			drops.push({
+				kind: "bill_due",
+				urgency: "soon",
+				dedupe: `monarch::bill_due::${b.categoryId || b.category}::${month}`,
+				title: `Bill due soon: ${b.category} ($${remaining} remaining)`,
+				emoji: "🧾",
+				action: task(`Pay/handle ${b.category} — $${remaining} remaining this month`),
+				evidence: { category: b.category, remaining: b.remaining, month },
+			});
+		}
+	}
+
+	return sortByUrgency(drops);
+}
+
 // ── Digest (the email interface) ─────────────────────────────────────────────────
 export type ProposedDrop = { proposalId: string; drop: Drop };
 
@@ -235,6 +315,12 @@ export type AgendaDeps = {
 	/** The weekly-recall loop's most recent findings (W5) — a ledger-cache read, never a fresh
 	 *  recall fan-out. */
 	weeklyRecallFindings: (env: RtEnv) => Promise<WeeklyRecallFindings | null>;
+	/** Monarch account balances (W7) — only called when hasMonarch(env). */
+	monarchAccounts: (env: RtEnv) => Promise<MonarchAccountRef[]>;
+	/** Monarch transactions in a window (W7) — only called when hasMonarch(env). */
+	monarchTransactions: (env: RtEnv, opts: { start: string; end: string }) => Promise<MonarchTxnRef[]>;
+	/** Monarch per-category budget for a month (W7) — only called when hasMonarch(env). */
+	monarchBudgets: (env: RtEnv, opts: { month: string }) => Promise<MonarchBudgetRef[]>;
 };
 
 export type AgendaOpts = { date?: string; max_mail?: number; horizon_days?: number; dry_run?: boolean; cycle_id?: string };
@@ -291,6 +377,9 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 	let events: EventRef[] = [];
 	let consolidateFindings: ConsolidateFindings | null = null;
 	let weeklyRecallFindings: WeeklyRecallFindings | null = null;
+	let monarchAccounts: MonarchAccountRef[] = [];
+	let monarchTransactions: MonarchTxnRef[] = [];
+	let monarchBudgets: MonarchBudgetRef[] = [];
 	await Promise.all([
 		(async () => {
 			mail = await deps.mailSearch(env, { limit: maxMail });
@@ -316,9 +405,29 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		})().catch((e) => {
 			status.weekly_recall = `unavailable (${errMsg(e).slice(0, 90)})`;
 		}),
+		(async () => {
+			if (!hasMonarch(env)) {
+				status.monarch = "not_configured";
+				return;
+			}
+			const windowStart = addDays(date, -UNUSUAL_CHARGE_WINDOW_DAYS);
+			const [accts, txns, budgetRows] = await Promise.all([deps.monarchAccounts(env), deps.monarchTransactions(env, { start: windowStart, end: date }), deps.monarchBudgets(env, { month: date.slice(0, 7) })]);
+			monarchAccounts = accts;
+			monarchTransactions = txns;
+			monarchBudgets = budgetRows;
+			status.monarch = `${accts.length} account(s), ${txns.length} txn(s)`;
+		})().catch((e) => {
+			status.monarch = `unavailable (${errMsg(e).slice(0, 90)})`;
+		}),
 	]);
 
-	const drops = sortByUrgency([...detectDrops(mail, events), ...detectKnowledgeDrops(consolidateFindings, weeklyRecallFindings)]);
+	const lowBalanceThreshold = numClamp(env.MONARCH_LOW_BALANCE_THRESHOLD, 0, 1_000_000, 100);
+	const unusualChargeThreshold = numClamp(env.MONARCH_UNUSUAL_CHARGE_THRESHOLD, 0, 1_000_000, 500);
+	const drops = sortByUrgency([
+		...detectDrops(mail, events),
+		...detectKnowledgeDrops(consolidateFindings, weeklyRecallFindings),
+		...detectMonarchDrops(date, monarchAccounts, monarchTransactions, monarchBudgets, { lowBalanceThreshold, unusualChargeThreshold }),
+	]);
 
 	// Propose each NEW drop (idempotent per dedupe key). dry_run records nothing.
 	const led = ledger(env, "agenda_drop");
@@ -440,5 +549,23 @@ export async function defaultDeps(): Promise<AgendaDeps> {
 		},
 		consolidateFindings: lastConsolidateFindings,
 		weeklyRecallFindings: lastWeeklyRecallFindings,
+		monarchAccounts: async (env) => {
+			const r = await monarch.run(env, { op: "accounts" });
+			if (r.isError) throw new Error(r.content?.[0]?.text ?? "monarch accounts failed");
+			const parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
+			return (parsed.accounts ?? []).map((a: any) => ({ id: String(a?.id ?? ""), name: a?.name, balance: typeof a?.balance === "number" ? a.balance : undefined }));
+		},
+		monarchTransactions: async (env, o) => {
+			const r = await monarch.run(env, { op: "transactions", start: o.start, end: o.end, limit: 100 });
+			if (r.isError) throw new Error(r.content?.[0]?.text ?? "monarch transactions failed");
+			const parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
+			return (parsed.transactions ?? []).map((t: any) => ({ id: String(t?.id ?? ""), amount: typeof t?.amount === "number" ? t.amount : undefined, date: t?.date, merchant: t?.merchant }));
+		},
+		monarchBudgets: async (env, o) => {
+			const r = await monarch.run(env, { op: "budgets", month: o.month });
+			if (r.isError) throw new Error(r.content?.[0]?.text ?? "monarch budgets failed");
+			const parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
+			return (parsed.budgets ?? []).map((b: any) => ({ category: b?.category, categoryId: b?.categoryId, remaining: typeof b?.remaining === "number" ? b.remaining : undefined }));
+		},
 	};
 }

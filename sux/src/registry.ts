@@ -257,6 +257,12 @@ export type RtEnv = Env &
 		// party, never moves/deletes, never auto-approves.
 		AGENDA_ENABLED?: string;
 		AGENDA_EMAIL?: string;
+		// W7 — Monarch financial-signal detector thresholds (fns/_agenda.ts's detectMonarchDrops).
+		// Both optional; unset ⇒ sane defaults ($100 / $500). Only ever read, never gates whether
+		// the detectors run at all — that's MONARCH_TOKEN (via hasMonarch), same as every other
+		// Monarch surface. Read-only: these thresholds only decide what gets PROPOSED, never acted on.
+		MONARCH_LOW_BALANCE_THRESHOLD?: string;
+		MONARCH_UNUSUAL_CHARGE_THRESHOLD?: string;
 
 		// Ask-gate reminder (fns/_ask_gate_reminder.ts) — proactively surfaces durable
 		// `run` instances paused on a human `ask` gate (op-engine) instead of relying on
