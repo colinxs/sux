@@ -73,6 +73,36 @@ describe("proposal kernel", () => {
 		await expect(approveProposal(env(), "nope")).rejects.toThrow(/no proposal/);
 	});
 
+	it("strips force/confirm/commit_token from a proposal's stored payload args (#559)", async () => {
+		const e = env();
+		const p = await propose(e, {
+			...base,
+			payload: { fn: "obsidian", args: { action: "append", path: "x.md", force: true, confirm: true, commit_token: "abc" } },
+		});
+		expect(p.payload.args).toEqual({ action: "append", path: "x.md" });
+		const done = await approveProposal(e, p.id);
+		expect(JSON.parse(String(done.result)).got).toEqual({ action: "append", path: "x.md" });
+	});
+
+	it("also strips those keys at dispatch time, defending proposals stored before this stripping existed", async () => {
+		const e = env();
+		const legacy = {
+			id: "legacy-1",
+			source: "mail",
+			kind: "archive_newsletters",
+			intent: "x",
+			payload: { fn: "obsidian", args: { action: "append", force: true } },
+			reversible: true,
+			stakes: "low",
+			status: "proposed",
+			createdAt: Date.now(),
+			expiresAt: Date.now() + 1_000_000,
+		};
+		await e.OAUTH_KV.put("sux:proposal:legacy-1", JSON.stringify(legacy));
+		const done = await approveProposal(e, "legacy-1");
+		expect(JSON.parse(String(done.result)).got).toEqual({ action: "append" });
+	});
+
 	it("concurrent approvals of the same proposal execute the payload only once", async () => {
 		const e = env();
 		const p = await propose(e, { ...base, payload: { fn: "obsidian", args: { action: "append", path: "x.md" } } });

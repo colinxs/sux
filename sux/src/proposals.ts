@@ -13,7 +13,10 @@ import { findFn, type RtEnv, type ToolResult } from "./registry";
 //   2. propose() REFUSES anything not marked `reversible: true`.
 //   3. approve executes WITHOUT `force`, so an irreversible sub-action still hits the
 //      target tool's own staged() gate (stages, doesn't fire) — a second lock the
-//      allow-list never has to be perfect to hold.
+//      allow-list never has to be perfect to hold. Enforced by actually stripping
+//      any force/confirm/commit_token-shaped key from `payload.args`, both at
+//      propose() time and again right before dispatch — a payload can't smuggle its
+//      own bypass in and self-commit on approval (#559).
 // Propose-only posture (Colin's choice): nothing here acts until he approves it.
 
 const PREFIX = "sux:proposal:";
@@ -57,6 +60,20 @@ export const PROPOSABLE_FNS = new Set<string>([
 
 const now = (): number => Date.now();
 const days = (n: number): number => n * 24 * 60 * 60 * 1000;
+
+// Keys that a target fn's own staged() gate treats as "skip staging, commit now"
+// (mail/calendar/contact/todoist's `force`, mail's `commit_token`, todoist's
+// `confirm`). A proposal must never carry one — that's the whole point of lock #3 —
+// so it's stripped both when a proposal is stored and again right before dispatch.
+const UNSAFE_ARG_KEYS = new Set(["force", "confirm", "commit_token"]);
+
+function stripUnsafeArgs(args: Record<string, unknown>): Record<string, unknown> {
+	const out: Record<string, unknown> = {};
+	for (const [k, v] of Object.entries(args)) {
+		if (!UNSAFE_ARG_KEYS.has(k)) out[k] = v;
+	}
+	return out;
+}
 
 // Serializes approveProposal's read-check-run-write per proposal id so two concurrent
 // approvals (a double-tap, a retried request) can't both read `status: "proposed"`
@@ -102,7 +119,7 @@ export async function propose(
 		source: String(p.source),
 		kind: String(p.kind),
 		intent: String(p.intent),
-		payload: { fn: p.payload.fn, args: p.payload.args ?? {} },
+		payload: { fn: p.payload.fn, args: stripUnsafeArgs(p.payload.args ?? {}) },
 		reversible: true,
 		stakes: p.stakes ?? "low",
 		advisory: p.advisory,
@@ -142,7 +159,7 @@ async function runProposalFn(env: RtEnv, fn: string, args: Record<string, unknow
 	const { FUNCTIONS } = await import("./fns");
 	const target = findFn(FUNCTIONS, fn);
 	if (!target) throw new Error(`fn '${fn}' is not registered.`);
-	return target.run(env, args);
+	return target.run(env, stripUnsafeArgs(args));
 }
 
 /** Approve → execute. Re-checks both propose-time locks at commit time (a stored
