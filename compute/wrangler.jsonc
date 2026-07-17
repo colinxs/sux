@@ -1,0 +1,28 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "sux-compute",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-07-01",
+	"observability": { "enabled": true },
+	"containers": [
+		{
+			"class_name": "SuxBox",
+			"image": "./Dockerfile",
+			"max_instances": 3,
+			"instance_type": "standard-1",
+			"authorized_keys": [
+				{
+					"name": "colinxs-mac",
+					"public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFUT3Ixp7GcWZa7NwnrWWgP0T8TsqlYRIye7QrknU9ds sux-compute"
+				}
+			]
+		}
+	],
+	"durable_objects": {
+		"bindings": [{ "class_name": "SuxBox", "name": "SUX_BOX" }]
+	},
+	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["SuxBox"] }],
+	"vpc_services": [
+		{ "binding": "MAC_VPC", "service_id": "019f6db5-01d1-7992-98c8-d678f37496d7" }
+	]
+}

@@ -289,6 +289,8 @@ shape is unchanged, only its transport.
 | D8 | vX §4 gate: owner-directed override for design+seeding recorded here; v2 drain keeps queue priority. |
 | D9 | Shadow comparison probe-only, never on live traffic (side effects, node cost). |
 | D10 | Vault mirror is one-way derived data; git stays the single writable truth. |
+| D11 | **No external cloud provider.** The compute plane is Cloudflare Containers (dind pet boxes — each a Linux VM running dockerd); pet-persistent workloads (a real Postgres) go on home-LAN hardware over the same `sux-home` tunnel when needed. Owner decision 2026-07-16. |
+| D12 | The `sux-home` tunnel's first connector runs on the operator's Mac as the proof rig; migrating the connector to the OpenWRT node (always-on) is the F1 build item, purely mechanical — same token, same tunnel ID. |
 
 ## 11. Definition of done
 
@@ -314,3 +316,24 @@ shape is unchanged, only its transport.
 - **Standing watches / continuous queries** — natural v10.1 on top of F7–F9 (a cron that
   enqueues); not in this arc.
 - **Multi-tenant/requester ACLs** — single-operator system; revisit only if that changes.
+
+## 13. Shipped while designing (2026-07-16)
+
+The L3 walking skeleton went live the same day this spec was written — verified, not
+aspirational. All under `compute/` in this repo:
+
+- **`sux-compute` worker** — `https://sux-compute.colinxs.workers.dev`, container app
+  `sux-compute-suxbox` (`a034a320-2ff6-47a5-af1a-3bc55f96f7bf`).
+- **Dind pet boxes** (`SuxBox` Container class, `standard-1`, `sleepAfter: 30m`):
+  `GET /box/:name/` boots a per-name Linux VM running dockerd inside Cloudflare.
+  Verified: `docker_version 28.5.2`, `docker run hello-world` executed inside the box.
+- **SSH into the box** from the operator's Mac (key `~/.ssh/sux-compute_ed25519`):
+  `ssh -o ProxyCommand="npx wrangler containers ssh %h" -i ~/.ssh/sux-compute_ed25519 cloudchamber@<INSTANCE_ID>`
+  (instance IDs via `npx wrangler containers instances sux-compute-suxbox`).
+- **Workers VPC end-to-end** — tunnel `sux-home` (`4b6065ca-e326-40c0-aeb6-65745467ecb7`),
+  VPC Service `sux-mac-test` (`019f6db5-01d1-7992-98c8-d678f37496d7`, http →
+  127.0.0.1:18080), binding `MAC_VPC`. Verified: `GET /vpc` returns the Mac-local marker
+  through edge → tunnel → laptop. This is the F1/F2/F3 pattern proven; the
+  `residential-fetch` service is the next registration on the same tunnel.
+- **Cost shape:** Workers VPC free (beta); the box bills only while awake
+  (standard-1, scale-to-zero after 30m idle); tunnel free.

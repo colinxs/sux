@@ -1,0 +1,17 @@
+{
+	"name": "sux-compute",
+	"private": true,
+	"version": "0.1.0",
+	"description": "SuxOS v10 compute plane — dind pet boxes on Cloudflare Containers + Workers VPC private reach",
+	"scripts": {
+		"deploy": "wrangler deploy",
+		"dev": "wrangler dev"
+	},
+	"dependencies": {
+		"@cloudflare/containers": "^0.2.0"
+	},
+	"devDependencies": {
+		"typescript": "^5.5.0",
+		"wrangler": "^4.111.0"
+	}
+}
