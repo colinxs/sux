@@ -552,6 +552,25 @@ describe("obsidian (remote backend — Funnel'd Local REST API)", () => {
 		expect(fetchMock).not.toHaveBeenCalled(); // the traversal never reached the vault
 	});
 
+	it("refuses a dot-prefixed list before hitting the Local REST API (§702)", async () => {
+		const fetchMock = vi.fn(async () => new Response("SHOULD NOT BE REACHED", { status: 200 }));
+		vi.stubGlobal("fetch", fetchMock);
+		const r = await obsidian.run(REMOTE, { action: "list", path: ".obsidian", backend: "remote" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/Refusing vault path/);
+		expect(fetchMock).not.toHaveBeenCalled(); // .obsidian/ was never enumerated
+	});
+
+	it("still lists the root and slash-terminated folders on the remote backend (no false positive from the guard)", async () => {
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL) => {
+			expect(String(u)).toBe("https://vault.tailnet.ts.net/vault/Area/");
+			return new Response(JSON.stringify({ files: ["a.md"] }), { status: 200 });
+		}));
+		const r = await obsidian.run(REMOTE, { action: "list", path: "Area/", backend: "remote" });
+		expect(r.isError).toBeFalsy();
+		expect(JSON.parse(r.content[0].text)).toMatchObject({ dir: "Area", count: 1 });
+	});
+
 	it("reads a note as text", async () => {
 		vi.stubGlobal("fetch", vi.fn(async (u: string | URL) => {
 			expect(String(u)).toBe("https://vault.tailnet.ts.net/vault/notes/x.md");

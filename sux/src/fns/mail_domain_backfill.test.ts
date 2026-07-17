@@ -100,6 +100,27 @@ describe("mail_domain_backfill", () => {
 		expect(p2.done).toBe(false);
 	});
 
+	it("does not advance the resume cursor past a page whose label write failed", async () => {
+		labelMessages.mockImplementation(async (_env: unknown, _ids: string[], keyword: string) => {
+			if (keyword === "shopping") return { isError: true, content: [{ type: "text", text: "JMAP write failed" }] };
+			return { isError: false, content: [{ type: "text", text: "{}" }] };
+		});
+		const r = await mail_domain_backfill.run(env, { max: 2, dry_run: false }); // page: ids 1 (finance), 2 (shopping)
+		const p = JSON.parse(r.content![0].text as string);
+		expect(p.errors).toEqual([{ keyword: "shopping", error: "JMAP write failed" }]);
+		expect(p.done).toBe(false);
+		expect(typeof p.cursor).toBe("string");
+
+		// Resuming with the returned cursor re-scans the SAME failed page (position 0), not the next one.
+		labelMessages.mockClear();
+		labelMessages.mockResolvedValue({ isError: false, content: [{ type: "text", text: "{}" }] });
+		const r2 = await mail_domain_backfill.run(env, { max: 2, dry_run: false, cursor: p.cursor });
+		const p2 = JSON.parse(r2.content![0].text as string);
+		expect(labelMessages).toHaveBeenCalledWith(expect.anything(), ["1"], "finance", true);
+		expect(labelMessages).toHaveBeenCalledWith(expect.anything(), ["2"], "shopping", true);
+		expect(p2.errors).toBeUndefined();
+	});
+
 	it("rejects a cursor issued for a different mailbox", async () => {
 		const r1 = await mail_domain_backfill.run(env, { max: 2 });
 		const cursor = JSON.parse(r1.content![0].text as string).cursor;

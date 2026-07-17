@@ -106,6 +106,7 @@ export const mail_sieve_backfill: Fn = {
 				if (c?.inMailbox !== inMailbox) return failWith("bad_input", "cursor is for a different mailbox — omit it, or pass the mailbox it was issued for.");
 				position = Math.max(0, Math.floor(Number(c.position) || 0));
 			}
+			const scanStartPosition = position; // rewind target if a label write fails below — see resumeCursor
 
 			const mail = dryRun ? null : await import("../mail-mcp");
 			const filter = { inMailbox };
@@ -170,12 +171,22 @@ export const mail_sieve_backfill: Fn = {
 			}
 
 			const applied: Array<{ flag: string; count: number; error?: string }> = [];
+			let anyError = false;
 			for (const [flag, ids] of byFlag) {
 				const lr = await mail!.labelMessages(env, ids, flag, true);
-				if (lr.isError) applied.push({ flag, count: 0, error: lr.content?.[0]?.text ?? "label failed" });
-				else applied.push({ flag, count: ids.length });
+				if (lr.isError) {
+					applied.push({ flag, count: 0, error: lr.content?.[0]?.text ?? "label failed" });
+					anyError = true;
+				} else applied.push({ flag, count: ids.length });
 			}
-			return ok(oj({ dry_run: false, mailbox, scanned, tagged: matched.length, applied, cursor, done, ...(total !== undefined ? { total } : {}) }));
+			// A label-write failure means part of this call's scanned window wasn't fully
+			// applied. Unlike mail_domain_backfill (which labels per-page), this fn merges
+			// every scanned page's ids by flag and labels once at the end, so we can't
+			// isolate which page failed — rewind the cursor to where THIS call started so a
+			// resume rescans and retries the whole window (label:add is idempotent, so
+			// re-applying the flags that already succeeded is harmless).
+			const resumeCursor = anyError ? encodeCursor({ v: 1, inMailbox, position: scanStartPosition }) : cursor;
+			return ok(oj({ dry_run: false, mailbox, scanned, tagged: matched.length, applied, cursor: resumeCursor, done: anyError ? false : done, ...(total !== undefined ? { total } : {}) }));
 		} catch (e) {
 			if (e instanceof JmapError) return failWith(e.code, e.message);
 			return failWith("upstream_error", errMsg(e));

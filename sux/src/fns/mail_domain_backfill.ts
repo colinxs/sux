@@ -145,15 +145,24 @@ export const mail_domain_backfill: Fn = {
 				}
 
 				// Apply (or, in dry-run, just tally) this page before advancing the checkpoint.
+				let pageFailed = false;
 				for (const [keyword, kwIds] of pageByKeyword) {
 					if (dryRun) {
 						per_keyword[keyword] = (per_keyword[keyword] ?? 0) + kwIds.length;
 						continue;
 					}
 					const lr = await mail!.labelMessages(env, kwIds, keyword, true);
-					if (lr.isError) errors.push({ keyword, error: lr.content?.[0]?.text ?? "label failed" });
-					else per_keyword[keyword] = (per_keyword[keyword] ?? 0) + kwIds.length;
+					if (lr.isError) {
+						errors.push({ keyword, error: lr.content?.[0]?.text ?? "label failed" });
+						pageFailed = true;
+					} else per_keyword[keyword] = (per_keyword[keyword] ?? 0) + kwIds.length;
 				}
+				// A label-write failure means this page is only partially applied — don't
+				// advance the resume cursor past it, or a re-call with the returned cursor
+				// would permanently skip the un-tagged ids. Stop here so the next call
+				// re-scans and retries this same page (label:add is idempotent, so
+				// re-applying the keywords that already succeeded is harmless).
+				if (pageFailed) break;
 
 				scanned += ids.length;
 				position += ids.length;
