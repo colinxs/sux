@@ -137,21 +137,26 @@ export async function runAskGateReminder(env: RtEnv, deps: AskGateReminderDeps):
 	if (!due.length) return { checked: runs.length, pending: pending.length, reminded: 0 };
 
 	const digest = composeReminder(due);
-	try {
-		await deps.digestAppend(env, `Daily/${vaultToday(env.VAULT_TZ)}.md`, buildDigestBlock(due, hasAskGateReminderEmail(env), digest));
-	} catch (e) {
-		return { checked: runs.length, pending: pending.length, reminded: due.length, digest_written: false, error: `vault append failed: ${errMsg(e)}` };
-	}
 
+	// Attempt the send BEFORE the vault append so the append's "digest emailed" text
+	// reflects the true outcome, not the config flag — a send failure here must still
+	// never fail the sweep (the vault digest lands regardless), so it's caught, not thrown.
 	let emailed = false;
 	if (hasAskGateReminderEmail(env)) {
 		try {
 			await deps.sendDigest(env, digest.subject, digest.body);
 			emailed = true;
 		} catch {
-			// An email failure must never fail the sweep — the vault digest already landed.
+			// An email failure must never fail the sweep — the vault digest still lands below.
 		}
 	}
+
+	try {
+		await deps.digestAppend(env, `Daily/${vaultToday(env.VAULT_TZ)}.md`, buildDigestBlock(due, emailed, digest));
+	} catch (e) {
+		return { checked: runs.length, pending: pending.length, reminded: due.length, digest_written: false, emailed, error: `vault append failed: ${errMsg(e)}` };
+	}
+
 	return { checked: runs.length, pending: pending.length, reminded: due.length, digest_written: true, emailed };
 }
 

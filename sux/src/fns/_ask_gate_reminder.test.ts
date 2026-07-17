@@ -110,6 +110,20 @@ describe("ask-gate reminder — sweep", () => {
 		expect(r.emailed).toBe(false);
 	});
 
+	it("a failed send is reflected in the vault note text as NOT emailed, not just the return value", async () => {
+		const e = env({ ASK_GATE_REMINDER_EMAIL: "1" });
+		const d = deps({
+			sendDigest: vi.fn(async () => {
+				throw new Error("mail down");
+			}),
+		});
+		const r = await runAskGateReminder(e, d);
+		expect(r.emailed).toBe(false);
+		const [, , content] = (d.digestAppend as any).mock.calls[0];
+		expect(content).toContain("digest (vault only)");
+		expect(content).not.toContain("digest emailed");
+	});
+
 	it("a listRuns failure surfaces as `error`, never throws", async () => {
 		const e = env();
 		const r = await runAskGateReminder(
