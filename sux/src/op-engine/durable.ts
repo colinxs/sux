@@ -84,11 +84,26 @@ export async function interpretDurable(node: Op, input: any, step: WorkflowStep,
 			try {
 				await step.waitForEvent<any>(`${path}:ask`, { type: `ask:${node.prompt}`, timeout: node.timeout as WorkflowTimeoutDuration });
 			} catch (e) {
-				if (node.onTimeout === "fail") throw e;
+				// The Workers API gives no typed way to tell "the wait elapsed" apart
+				// from any other rejection (a transport error, a dropped RPC), so we
+				// go by message/name — the one signal a real timeout is guaranteed to
+				// carry. Anything that doesn't look like a timeout always propagates,
+				// even under onTimeout: "proceed": a non-timeout failure here must not
+				// silently auto-approve a human-review gate.
+				if (node.onTimeout === "fail" || !isWaitForEventTimeout(e)) throw e;
 			}
 			return input;
 		}
+		default: {
+			const _exhaustive: never = node;
+			throw new Error(`interpretDurable: unhandled op tag: ${(node as Op).tag}`);
+		}
 	}
+}
+
+function isWaitForEventTimeout(e: unknown): boolean {
+	if (!(e instanceof Error)) return false;
+	return /timed?\s*out/i.test(e.name) || /timed?\s*out/i.test(e.message);
 }
 
 /**
