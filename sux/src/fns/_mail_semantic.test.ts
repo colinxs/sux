@@ -102,6 +102,22 @@ describe("_mail_semantic", () => {
 		expect(env.AI.run.mock.calls[embedCallsAfterBuild][1].text).toEqual(["Newsletter\nweekly digest"]);
 	});
 
+	it("an `updated` id (e.g. mail_triage relabeling — keywords/mailboxIds, not content) is kept as-is, not re-embedded", async () => {
+		const env = aiEnv();
+		mockBatch({
+			"Email/query": () => ["Email/query", { ids: ["e1"], total: 1 }],
+			"Email/get": (a) => ["Email/get", { state: "s1", list: (a.ids as string[]).map((id) => EMAILS[id]) }],
+		});
+		await mailSemanticIndex(env);
+		const embedCallsAfterBuild = env.AI.run.mock.calls.length;
+
+		mockBatch({ "Email/changes": (a) => ["Email/changes", { oldState: a.sinceState, newState: "s2", hasMoreChanges: false, created: [], updated: ["e1"], destroyed: [] }] });
+		const idx2 = await mailSemanticIndex(env);
+		expect(idx2?.state).toBe("s2");
+		expect(idx2?.chunks.map((c) => c.id)).toEqual(["e1"]);
+		expect(env.AI.run.mock.calls.length).toBe(embedCallsAfterBuild); // the cached embedding was already valid — no Email/get, no re-embed
+	});
+
 	it("drops a destroyed id from the cached chunk set without re-embedding anything", async () => {
 		const env = aiEnv();
 		mockBatch({

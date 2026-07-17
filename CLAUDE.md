@@ -137,6 +137,15 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   automatically. A bare invocation either reports "No test files found" (wrong cwd/glob) or
   `Cannot find package 'cloudflare:workers'` (no alias) — neither means the code is broken.
   For an ad hoc single-file run use `npx vitest run --config sux/vitest.config.ts <path>`.
+- **A JMAP per-call error (e.g. `Email/changes`'s `cannotCalculateChanges` when `sinceState`
+  has aged out server-side) comes back as a normal `["error", {type,...}, callId]` entry
+  INSIDE `methodResponses`** — `fns/jmap.ts`'s `jmap.run`/`_jmap.ts`'s `runBatch` only throw
+  for a REQUEST-level failure (auth, rate limit, transport); per-call errors are silent unless
+  the caller checks that callId's response for `mr[0] === "error"`. Code that assumes any
+  JMAP problem throws will silently treat an error response as an empty/absent result instead
+  of the specific failure it is — see `_mail_semantic.ts`'s `methodResult()` for the check
+  (used to fall back from an incremental `Email/changes` diff to a full rebuild on exactly
+  this error).
 
 ## House style
 

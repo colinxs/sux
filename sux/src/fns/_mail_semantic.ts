@@ -158,11 +158,17 @@ async function applyChanges(env: RtEnv, cached: MailSemanticIndex): Promise<Mail
 		created.delete(id);
 		updated.delete(id);
 	}
-	const fresh = await embedIds(env, [...created, ...updated]);
+	// An Email's CONTENT (subject/preview) is immutable once received — JMAP reports "updated"
+	// for a keyword/mailbox move too (mail_triage relabels constantly), which would otherwise
+	// re-embed unchanged text on every triage tick. Only re-embed an `updated` id when we don't
+	// already hold a valid embedding for it; `created` ids always need a first embed.
+	const alreadyEmbedded = new Set(cached.chunks.filter((c) => c.embedding.length > 0).map((c) => c.id));
+	const toEmbed = [...created, ...[...updated].filter((id) => !alreadyEmbedded.has(id))];
+	const fresh = await embedIds(env, toEmbed);
 	const freshIds = new Set(fresh.map((c) => c.id));
-	// Drop destroyed ids outright; drop stale copies of created/updated ids (the fresh embed
-	// replaces them — or, if that id's fetch failed above, it's dropped rather than kept stale).
-	const kept = cached.chunks.filter((c) => !destroyed.has(c.id) && !created.has(c.id) && !updated.has(c.id) && !freshIds.has(c.id));
+	// Drop destroyed ids outright; drop stale copies of ids that got freshly (re-)embedded above.
+	// An `updated` id whose embedding was already valid (skipped above) simply stays as-is.
+	const kept = cached.chunks.filter((c) => !destroyed.has(c.id) && !freshIds.has(c.id));
 	let chunks = [...kept, ...fresh];
 	const truncated = cached.truncated || chunks.length > INDEX_MAX;
 	if (chunks.length > INDEX_MAX) chunks = chunks.slice(chunks.length - INDEX_MAX);
