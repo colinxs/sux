@@ -71,6 +71,32 @@ describe("mail_sieve_backfill", () => {
 		expect(labelMessages).toHaveBeenCalledWith(expect.anything(), ["2"], "mailing-list", true);
 	});
 
+	it("does not advance the resume cursor past a scan window with a failed label write", async () => {
+		labelMessages.mockImplementation(async (_env: unknown, _ids: string[], flag: string) => {
+			if (flag === "mailing-list") return { isError: true, content: [{ type: "text", text: "JMAP write failed" }] };
+			return { isError: false, content: [{ type: "text", text: "{}" }] };
+		});
+		const r = await mail_sieve_backfill.run(env, { dry_run: false });
+		const p = JSON.parse(r.content![0].text as string);
+		expect(p.applied).toEqual(
+			expect.arrayContaining([
+				{ flag: "junk", count: 1 },
+				{ flag: "mailing-list", count: 0, error: "JMAP write failed" },
+			]),
+		);
+		expect(p.done).toBe(false);
+		expect(typeof p.cursor).toBe("string");
+
+		// Resuming with the returned cursor re-scans from the START of this call's window
+		// (position 0), not past the failed flag's messages.
+		labelMessages.mockClear();
+		labelMessages.mockResolvedValue({ isError: false, content: [{ type: "text", text: "{}" }] });
+		const r2 = await mail_sieve_backfill.run(env, { dry_run: false, cursor: p.cursor });
+		const p2 = JSON.parse(r2.content![0].text as string);
+		expect(p2.scanned).toBe(3); // re-scanned ids 1,2,3 from position 0
+		expect(labelMessages).toHaveBeenCalledWith(expect.anything(), ["2"], "mailing-list", true);
+	});
+
 	it("rejects an unknown category before ever calling the jmap engine", async () => {
 		const r = await mail_sieve_backfill.run(env, { categories: ["bogus"] });
 		expect(r.isError).toBe(true);
