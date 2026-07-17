@@ -1,7 +1,8 @@
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { labelsFor } from "./_domain_labels";
 import { type Invocation, JmapError, runBatch } from "./_jmap";
-import { errMsg, fromB64, oj, toB64 } from "./_util";
+import { BUDGET_MS, type Cursor, PAGE, decodeCursor, encodeCursor, resolveMailbox, resultFor, senderAddress } from "./_jmap_backfill";
+import { errMsg, oj } from "./_util";
 
 // mail_domain_backfill — the historical companion to the mail_sieve_hc / _domain_labels Sieve.
 // A live Sieve script only ever tags NEW deliveries; it can never retroactively touch mail already
@@ -19,46 +20,6 @@ import { errMsg, fromB64, oj, toB64 } from "./_util";
 // flag; re-calling with the cursor advances the sweep, so the whole ~53k inbox drains across a
 // handful of invocations. Oldest-first paging is stable against new arrivals (they append at the
 // tail and are caught by the live Sieve anyway).
-
-/** JMAP EmailAddress[] → the first sender address string (what labelsFor keys its domain off). */
-function senderAddress(from: unknown): string | undefined {
-	if (!Array.isArray(from)) return undefined;
-	for (const x of from) {
-		const email = (x as { email?: unknown })?.email;
-		if (typeof email === "string" && email) return email;
-	}
-	return undefined;
-}
-
-/** Resolve a mailbox arg (role like "inbox", display name, or raw id) to a mailbox id, or undefined. */
-function resolveMailbox(boxes: any[], mailbox: string): string | undefined {
-	const key = mailbox.toLowerCase();
-	const byRole = boxes.find((b) => String(b?.role ?? "").toLowerCase() === key);
-	if (byRole) return byRole.id;
-	const byName = boxes.find((b) => String(b?.name ?? "").toLowerCase() === key);
-	if (byName) return byName.id;
-	return boxes.some((b) => b?.id === mailbox) ? mailbox : undefined;
-}
-
-/** The first methodResponse for `method`; throws JmapError on a method-level JMAP error in the batch. */
-function resultFor(methodResponses: any[], method: string): any {
-	for (const mr of methodResponses ?? []) {
-		if (mr[0] === method) return mr[1];
-		if (mr[0] === "error") throw new JmapError("upstream_error", `JMAP ${method}: ${mr[1]?.type ?? "error"}${mr[1]?.description ? " — " + mr[1].description : ""}`);
-	}
-	return null;
-}
-
-type Cursor = { v: 1; inMailbox: string; position: number };
-const encodeCursor = (c: Cursor): string => toB64(new TextEncoder().encode(JSON.stringify(c)));
-const decodeCursor = (s: string): Cursor => JSON.parse(new TextDecoder().decode(fromB64(s)));
-
-// One Email/get page pulls up to 200 ids (the engine's per-page cap); a per-call scan bounded by
-// `max` keeps scan + write comfortably inside the 55s fn budget. Writes go one Email/set per keyword
-// PER PAGE, so a page (≤200 ids/keyword) never approaches maxObjectsInSet and the resume cursor only
-// ever advances past a fully-written page (a mid-call budget stop can't skip un-tagged mail).
-const PAGE = 200;
-const BUDGET_MS = 50_000;
 
 export const mail_domain_backfill: Fn = {
 	name: "mail_domain_backfill",
