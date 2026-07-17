@@ -185,9 +185,9 @@ export async function readGitContents(env: any, cfg: VaultCfg, full: string): Pr
 // in the common case) — so re-read and retry instead of surfacing a hard fail. `write`
 // deliberately does NOT retry: it has no prior content to reconcile against, so a 409
 // there is a genuine "you meant to overwrite something else" signal (base_sha).
-const RETRY_ATTEMPTS = 3;
+export const RETRY_ATTEMPTS = 3;
 const RETRY_BASE_MS = 40;
-const retryDelay = (attempt: number): number => Math.round(RETRY_BASE_MS * 2 ** attempt * (0.5 + Math.random()));
+export const retryDelay = (attempt: number): number => Math.round(RETRY_BASE_MS * 2 ** attempt * (0.5 + Math.random()));
 
 // Surgical find/replace: the match must be unique unless all=true, so an edit
 // can never land somewhere unintended — task ops flip exactly the checkbox they

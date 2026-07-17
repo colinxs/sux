@@ -1,7 +1,7 @@
 import { fingerprint, ledger } from "./ledger";
 import { fail, failWith, ok, type RtEnv, type ToolResult } from "./registry";
 import { ingest } from "./fns/ingest";
-import { obsidian, readGitContents, readVaultIndexBlob, type VaultCfg, vaultCfg, vaultHead, vaultPut, writeVaultIndexBlob } from "./fns/obsidian";
+import { obsidian, readGitContents, RETRY_ATTEMPTS, retryDelay, readVaultIndexBlob, type VaultCfg, vaultCfg, vaultHead, vaultPut, writeVaultIndexBlob } from "./fns/obsidian";
 import { vaultToday } from "./fns/_util";
 import {
 	bodyExcerpt,
@@ -381,21 +381,27 @@ const TOOLS: VaultTool[] = [
 			if ("error" in cfg) return failWith("not_configured", cfg.error);
 			// Read note + its sha, transform, then write PUTting THAT read-time sha:
 			// a concurrent modification collides (409) instead of a silent lost update.
-			const cur = await readGitContents(env, cfg, cfg.inVault(path));
-			if (cur.status === 404) return failWith("not_found", `Note not found: ${path}`);
-			if (cur.error) return fail(cur.error);
-			let patched: { content: string; changed: boolean };
-			try {
-				if (targets[0] === "frontmatter_field") patched = patchFrontmatter(cur.body, a.frontmatter_field, a.content);
-				else if (targets[0] === "heading") patched = patchHeadingSection(cur.body, a.heading, mode, a.content);
-				else patched = patchBlockRef(cur.body, a.block, mode, a.content);
-			} catch (e) {
-				return failWith("bad_input", `vault_patch: ${String((e as Error)?.message ?? e)}`);
+			// Retried like obsidian.ts's append/edit (RETRY_ATTEMPTS): re-read and
+			// reapply the patch against the fresh body each attempt, so it self-heals.
+			for (let attempt = 0; attempt < RETRY_ATTEMPTS; attempt++) {
+				if (attempt > 0) await new Promise((r) => setTimeout(r, retryDelay(attempt - 1)));
+				const cur = await readGitContents(env, cfg, cfg.inVault(path));
+				if (cur.status === 404) return failWith("not_found", `Note not found: ${path}`);
+				if (cur.error) return fail(cur.error);
+				let patched: { content: string; changed: boolean };
+				try {
+					if (targets[0] === "frontmatter_field") patched = patchFrontmatter(cur.body, a.frontmatter_field, a.content);
+					else if (targets[0] === "heading") patched = patchHeadingSection(cur.body, a.heading, mode, a.content);
+					else patched = patchBlockRef(cur.body, a.block, mode, a.content);
+				} catch (e) {
+					return failWith("bad_input", `vault_patch: ${String((e as Error)?.message ?? e)}`);
+				}
+				if (!patched.changed) return ok(JSON.stringify({ ok: true, path, changed: false, note: "target already holds this value" }, null, 2));
+				const wrote = await vaultPut(env, cfg, path, patched.content, `sux: patch ${path}`, { sha: cur.sha });
+				if (wrote.ok) return ok(JSON.stringify({ ok: true, path, changed: true, target: targets[0], ...(targets[0] === "frontmatter_field" ? {} : { mode }) }, null, 2));
+				if (!wrote.conflict) return fail(wrote.error);
 			}
-			if (!patched.changed) return ok(JSON.stringify({ ok: true, path, changed: false, note: "target already holds this value" }, null, 2));
-			const wrote = await vaultPut(env, cfg, path, patched.content, `sux: patch ${path}`, { sha: cur.sha });
-			if (!wrote.ok) return fail(wrote.error);
-			return ok(JSON.stringify({ ok: true, path, changed: true, target: targets[0], ...(targets[0] === "frontmatter_field" ? {} : { mode }) }, null, 2));
+			return fail(`patch of ${path} lost the race to a concurrent writer ${RETRY_ATTEMPTS} times in a row — retry once more.`);
 		},
 	},
 	{

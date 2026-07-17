@@ -291,22 +291,40 @@ describe("vault MCP tools", () => {
 		expect(putBody).toContain("# Log\nnew entry"); // section body replaced, heading kept
 	});
 
-	it("vault_patch PUTs the read-time sha — a concurrent write yields a 409, not a silent lost update", async () => {
-		let putSha: string | undefined;
+	it("vault_patch retries a 409 (bounded) and succeeds once the concurrent write clears", async () => {
+		// A concurrent writer landed between our first read (sha s1) and our write —
+		// re-read + reapply the patch instead of hard-failing (same self-heal as
+		// obsidian.ts's append/edit).
+		let reads = 0;
+		let puts = 0;
 		routes.handler = (url, init) => {
-			const m = /\/contents\/(.+?)(\?|$)/.exec(url);
-			const path = m ? decodeURIComponent(m[1]) : "";
 			if (init?.method === "PUT") {
-				putSha = JSON.parse(init.body).sha;
-				return new Response(JSON.stringify({ message: "does not match" }), { status: 409 }); // note moved under us
+				puts++;
+				const sha = JSON.parse(init.body).sha;
+				if (sha === "s1") return new Response(JSON.stringify({ message: "does not match" }), { status: 409 });
+				return new Response(JSON.stringify({ commit: { sha: "c2" } }), { status: 200 });
 			}
-			if (path === "P/a.md") return new Response(JSON.stringify({ content: b64("---\ntype: project\n---\n# Log\nold"), sha: "read-sha" }), { status: 200 });
-			return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+			reads++;
+			return new Response(JSON.stringify({ content: b64("---\ntype: project\n---\n# Log\nold"), sha: reads === 1 ? "s1" : "s2" }), { status: 200 });
+		};
+		const out = parse(await tool("vault_patch").run(ENV, { path: "P/a.md", heading: "Log", content: "new" }));
+		expect(out).toMatchObject({ ok: true, changed: true });
+		expect(puts).toBe(2); // 1st PUT 409s (sha s1), retry re-reads (sha s2) and lands
+	});
+
+	it("vault_patch surfaces a clear conflict after exhausting retries on a persistent 409", async () => {
+		let puts = 0;
+		routes.handler = (url, init) => {
+			if (init?.method === "PUT") {
+				puts++;
+				return new Response(JSON.stringify({ message: "does not match" }), { status: 409 });
+			}
+			return new Response(JSON.stringify({ content: b64("---\ntype: project\n---\n# Log\nold"), sha: "s1" }), { status: 200 });
 		};
 		const out = await tool("vault_patch").run(ENV, { path: "P/a.md", heading: "Log", content: "new" });
-		expect(putSha).toBe("read-sha"); // the sha threaded from the read, not a re-fetched HEAD-at-write
 		expect(out.isError).toBe(true);
-		expect(out.content[0].text).toMatch(/changed since read/);
+		expect(out.content[0].text).toMatch(/lost the race/);
+		expect(puts).toBe(3); // RETRY_ATTEMPTS
 	});
 
 	it("codes the obvious error buckets via failWith ([bad_input]/[not_found])", async () => {
