@@ -18,10 +18,10 @@ const fakeStep = (rec: { events: string[]; sinks?: string[] }): any => ({
 
 // A fake WorkflowStep whose waitForEvent always rejects — the seam an `ask` node's
 // try/catch is built to handle (a real Workflow throws once a wait's timeout elapses).
-const rejectingStep = (): any => ({
+const rejectingStep = (message = "waitForEvent timed out"): any => ({
 	do: async (_name: string, fn: any) => fn(),
 	waitForEvent: async (_name: string, _opts: { type: string }) => {
-		throw new Error("waitForEvent timed out");
+		throw new Error(message);
 	},
 	sleep: async () => {},
 });
@@ -75,6 +75,14 @@ test("interpretDurable's ask swallows a waitForEvent timeout when onTimeout is '
 
 	const fail = ask("ok?", { timeout: "1 hour", onTimeout: "fail" });
 	await expect(interpretDurable(fail, "unchanged", step, caps, "op4")).rejects.toThrow("waitForEvent timed out");
+});
+
+test("interpretDurable's ask rethrows a non-timeout waitForEvent error even when onTimeout is 'proceed'", async () => {
+	const caps = { store: new MemoryStore(), llm: {}, clock: { now: () => 0 }, sinks: {} } as unknown as Caps;
+	const step = rejectingStep("RPC transport disconnected");
+
+	const proceed = ask("ok?", { timeout: "1 hour", onTimeout: "proceed" });
+	await expect(interpretDurable(proceed, "unchanged", step, caps, "op7")).rejects.toThrow("RPC transport disconnected");
 });
 
 test("interpretDurable propagates a map item's error and releases the concurrency limiter", async () => {
