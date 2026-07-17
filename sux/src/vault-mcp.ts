@@ -180,9 +180,14 @@ async function scanVault(env: RtEnv, folder: string | undefined, cap: number): P
 const TOOLS: VaultTool[] = [
 	{
 		name: "vault_read",
-		description: "Read a note from the vault (cloud git store, KV-cached — always available).",
-		inputSchema: { type: "object", additionalProperties: false, required: ["path"], properties: { path: { type: "string", description: "Note path, e.g. Inbox/idea.md" } } },
-		run: (env, a) => obsidian.run(env, git({ action: "read", path: a?.path })),
+		description: "Read a note from the vault (cloud git store, KV-cached — always available). Pass with_sha:true to get the note's content sha (JSON `{path, body, sha}`) for use as vault_write's base_sha.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["path"],
+			properties: { path: { type: "string", description: "Note path, e.g. Inbox/idea.md" }, with_sha: { type: "boolean", description: "Return JSON `{path, body, sha}` instead of the bare body string." } },
+		},
+		run: (env, a) => obsidian.run(env, git({ action: "read", path: a?.path, ...(a?.with_sha === true ? { with_sha: true } : {}) })),
 	},
 	{
 		name: "vault_list",
@@ -196,12 +201,12 @@ const TOOLS: VaultTool[] = [
 	// through the local mcp-gate wrapper meanwhile.
 	{
 		name: "vault_write",
-		description: "Create or overwrite a note. Every write is a git commit — history is the undo. Optional `base_sha` (from a prior read/write) makes a concurrent change since then 409 instead of silently clobbering it.",
+		description: "Create or overwrite a note. Every write is a git commit — history is the undo. Optional `base_sha` (the note's content sha, from vault_read with_sha:true or a prior write's returned `sha`) makes a concurrent change since then 409 instead of silently clobbering it.",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
 			required: ["path", "content"],
-			properties: { path: { type: "string" }, content: { type: "string", description: "Full markdown body." }, base_sha: { type: "string", description: "Expected current commit sha; a mismatch fails with a 409 instead of overwriting." } },
+			properties: { path: { type: "string" }, content: { type: "string", description: "Full markdown body." }, base_sha: { type: "string", description: "Expected current content sha; a mismatch fails with a 409 instead of overwriting." } },
 		},
 		run: (env, a) => obsidian.run(env, git({ action: "write", path: a?.path, content: a?.content, ...(typeof a?.base_sha === "string" && a.base_sha ? { base_sha: a.base_sha } : {}) })),
 	},

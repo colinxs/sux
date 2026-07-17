@@ -115,6 +115,28 @@ describe("obsidian (git backend)", () => {
 		expect(Buffer.from(putBody.content, "base64").toString("utf8")).toBe("first\n");
 	});
 
+	it("append retries a 422 create-race collision (two writers creating the same new note)", async () => {
+		// Both writers read a 404 and PUT with no sha; the loser gets GitHub's 422
+		// "sha wasn't supplied" (not 409) because the note now exists. Retry should
+		// re-read (finding the just-created note) and merge onto it instead of
+		// hard-failing (#673).
+		let reads = 0;
+		let puts = 0;
+		routes.handler = (url, init) => {
+			if (init?.method === "PUT") {
+				puts++;
+				if (puts === 1) return new Response(JSON.stringify({ message: `Invalid request.\n\n"sha" wasn't supplied.` }), { status: 422 });
+				return new Response(JSON.stringify({ commit: { sha: "def" } }), { status: 200 });
+			}
+			reads++;
+			if (reads === 1) return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+			return new Response(JSON.stringify({ content: b64("winner's note"), sha: "abc" }), { status: 200 });
+		};
+		const r = await obsidian.run(ENV, { action: "append", path: "new.md", content: "mine" });
+		expect(r.isError).toBeFalsy();
+		expect(puts).toBe(2);
+	});
+
 	it("append retries a 409 (bounded, jittered), re-reading the merge base each attempt", async () => {
 		let reads = 0;
 		let puts = 0;
@@ -161,6 +183,22 @@ describe("obsidian (git backend)", () => {
 		expect(JSON.parse(r.content[0].text)).toMatchObject({ ok: true, created: false, commit: "c1" });
 		expect(putBody.sha).toBe("s1");
 		expect(Buffer.from(putBody.content, "base64").toString("utf8")).toBe("fresh body");
+	});
+
+	it("write returns the new content/blob sha (usable as a later base_sha), not just the commit sha", async () => {
+		routes.handler = (url, init) => {
+			if (init?.method === "PUT") return new Response(JSON.stringify({ commit: { sha: "c1" }, content: { sha: "blob1" } }), { status: 200 });
+			return new Response(JSON.stringify({ content: b64("old body"), sha: "s1" }), { status: 200 });
+		};
+		const r = await obsidian.run(ENV, { action: "write", path: "n.md", content: "fresh body" });
+		expect(JSON.parse(r.content[0].text)).toMatchObject({ ok: true, commit: "c1", sha: "blob1" });
+	});
+
+	it("read with_sha:true returns JSON {path, body, sha} — the note's content sha, usable as base_sha", async () => {
+		routes.handler = () => new Response(JSON.stringify({ content: b64("hello"), sha: "blob-sha" }), { status: 200 });
+		const r = await obsidian.run(ENV, { action: "read", path: "n.md", with_sha: true });
+		expect(r.isError).toBeFalsy();
+		expect(JSON.parse(r.content[0].text)).toEqual({ path: "n.md", body: "hello", sha: "blob-sha" });
 	});
 
 	it("write with base_sha PUTs it directly (no lookup) instead of the fetched-HEAD sha", async () => {

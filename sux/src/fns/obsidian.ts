@@ -129,7 +129,7 @@ export async function vaultPut(
 	content: string | Uint8Array,
 	message: string,
 	opts?: { failIfExists?: boolean; sha?: string },
-): Promise<{ ok: true; commit?: string; created: boolean } | { ok: false; error: string; exists?: boolean; conflict?: boolean }> {
+): Promise<{ ok: true; commit?: string; sha?: string; created: boolean } | { ok: false; error: string; exists?: boolean; conflict?: boolean }> {
 	const bad = badVaultPath(path);
 	if (bad) return { ok: false, error: bad };
 	const full = cfg.inVault(normPath(path));
@@ -151,7 +151,7 @@ export async function vaultPut(
 	if (put.status === 409) return { ok: false, error: `note changed since read — re-read and retry: ${path}`, conflict: true };
 	if (put.status >= 400) return { ok: false, error: `GitHub write error: ${put.json?.message ?? `HTTP ${put.status}`} (writes need a GITHUB_TOKEN with write access).` };
 	await noteWritten(env, cfg, path, typeof content === "string" ? content : null, put.json?.commit?.sha);
-	return { ok: true, commit: put.json?.commit?.sha, created };
+	return { ok: true, commit: put.json?.commit?.sha, sha: put.json?.content?.sha, created };
 }
 
 /** Read a note's decoded body + sha from GitHub, refetching raw for >1MB files.
@@ -362,7 +362,8 @@ export const obsidian: Fn = {
 			path: { type: "string", description: "Note path within the vault (read/append/write/edit/delete; a folder filter for list)." },
 			query: { type: "string", description: "Search query (action=search)." },
 			content: { type: "string", description: "Markdown content (action=append/write)." },
-			base_sha: { type: "string", description: "action=write: expected current commit sha (from a prior read/write). A mismatch 409s instead of silently overwriting; append/edit already do this via their own read." },
+			base_sha: { type: "string", description: "action=write: expected current content/blob sha (from a prior action=read with with_sha:true, or the `sha` a prior write/append/edit returned). A mismatch 409s instead of silently overwriting; append/edit already do this via their own read." },
+			with_sha: { type: "boolean", description: "action=read: return JSON `{path, body, sha}` (the content/blob sha, usable as base_sha) instead of the bare body string." },
 			find: { type: "string", description: "Exact text to replace (action=edit); must match exactly once unless `all` is set." },
 			replace: { type: "string", description: "Replacement text (action=edit; empty string deletes the match)." },
 			all: { type: "boolean", description: "Replace every occurrence of `find` (action=edit)." },
@@ -418,6 +419,16 @@ export const obsidian: Fn = {
 			if (action === "read") {
 				const p = String(args?.path ?? "").trim();
 				if (!p) return fail("action=read requires a `path`.");
+				// with_sha:true returns the note's content/blob sha (JSON) so a caller can
+				// thread it back as base_sha on a later write/edit — the KV cache only tracks
+				// the vault HEAD commit sha (for cache-freshness), not per-note blob shas, so
+				// this always reads live rather than serving a cache hit (#672).
+				if (args?.with_sha === true) {
+					const r = await readGitContents(env, cfg, inVault(p));
+					if (r.status === 404) return fail(`Note not found: ${p}`);
+					if (r.error) return fail(r.error);
+					return ok(oj({ path: p, body: r.body, sha: r.sha }));
+				}
 				const head = env.OAUTH_KV ? await vaultHead(env, cfg) : null;
 				if (head) {
 					const hit = await cacheGet(env, gitNoteKey(cfg, p));
@@ -463,9 +474,14 @@ export const obsidian: Fn = {
 					const body = JSON.stringify({ message: `sux: append to ${p}`, content: toB64(new TextEncoder().encode(merged)), branch, ...(sha ? { sha } : {}) });
 					const put = await ghJson(env, `${GH}/repos/${repo}/contents/${encodeURIComponent(full)}`, { method: "PUT", body });
 					if (put.status === 409) continue;
+					// Create race: we both read a 404 and PUT with no sha; the loser gets GitHub's
+					// 422 "sha wasn't supplied" (not 409) because the note now exists. Re-reading
+					// finds the just-created note and the next attempt merges onto it instead of
+					// hard-failing with a confusing error (#673).
+					if (sha === undefined && put.status === 422 && /sha/i.test(String(put.json?.message ?? ""))) continue;
 					if (put.status >= 400) return fail(`GitHub write error: ${put.json?.message ?? `HTTP ${put.status}`} (append needs a GITHUB_TOKEN with write access).`);
 					await noteWritten(env, cfg, p, merged, put.json?.commit?.sha);
-					return ok(oj({ ok: true, path: p, bytes: merged.length, commit: put.json?.commit?.sha }));
+					return ok(oj({ ok: true, path: p, bytes: merged.length, commit: put.json?.commit?.sha, sha: put.json?.content?.sha }));
 				}
 				return fail(`append to ${p} lost the race to a concurrent writer ${RETRY_ATTEMPTS} times in a row — retry once more.`);
 			}
@@ -481,7 +497,7 @@ export const obsidian: Fn = {
 				const baseSha = typeof args?.base_sha === "string" && args.base_sha ? args.base_sha : undefined;
 				const r = await vaultPut(env, cfg, p, content, `sux: write ${p}`, baseSha !== undefined ? { sha: baseSha } : undefined);
 				if (!r.ok) return fail(r.error);
-				return ok(oj({ ok: true, path: p, bytes: content.length, created: r.created, commit: r.commit }));
+				return ok(oj({ ok: true, path: p, bytes: content.length, created: r.created, commit: r.commit, sha: r.sha }));
 			}
 			if (action === "edit") {
 				const p = String(args?.path ?? "").trim();
@@ -501,7 +517,7 @@ export const obsidian: Fn = {
 					const edited = applyEdit(cur.body, find, String(args?.replace ?? ""), args?.all === true);
 					if ("error" in edited) return fail(`${edited.error} in ${p}`);
 					const w = await vaultPut(env, cfg, p, edited.text, `sux: edit ${p}`, { sha: cur.sha });
-					if (w.ok) return ok(oj({ ok: true, path: p, replaced: edited.count, commit: w.commit }));
+					if (w.ok) return ok(oj({ ok: true, path: p, replaced: edited.count, commit: w.commit, sha: w.sha }));
 					if (!w.conflict) return fail(w.error);
 				}
 				return fail(`edit of ${p} lost the race to a concurrent writer ${RETRY_ATTEMPTS} times in a row — retry once more.`);
