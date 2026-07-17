@@ -91,7 +91,7 @@ function makeSinks(env: RtEnv): Record<string, SinkTarget> {
 			return input;
 		},
 	});
-	return { r2: publisher("r2", "published/"), vault: publisher("vault", "vault/"), "mail-labels": mailLabelsSink(env) };
+	return { r2: publisher("r2", "published/"), vault: publisher("vault", "vault/"), "mail-labels": mailLabelsSink(env), "vault-notes": vaultNotesSink(env) };
 }
 
 // The `mail-triage-plan` op's terminal (registry.ts): applies a batch of {id, label, add}
@@ -137,6 +137,48 @@ function mailLabelsSink(env: RtEnv): SinkTarget {
 				failed += typeof parsed.failed === "number" ? parsed.failed : 0;
 			}
 			return { labeled, groups: groups.size, ...(failed ? { failed } : {}) };
+		},
+	};
+}
+
+// The `vault-consolidate-plan` op's terminal (registry.ts): applies a batch of already-
+// approved {keep, archive, mergedContent} merge proposals via the EXISTING obsidian fn's
+// git-backed write/append actions. Dynamically imported for the same reason mailLabelsSink
+// is — op-engine's non-vault ops (echo, mail-triage-plan) never pull obsidian's GitHub-API
+// dependency graph into their module load. Deliberately NON-DESTRUCTIVE: `keep` gets a
+// `write` (overwrite with the merged content), `archive` gets an `append` (a pointer back to
+// `keep`, its own content left intact) — never a `delete` — so a wrong merge judgment is
+// always undoable by hand or `git revert`. A malformed item (missing keep/archive/content) is
+// skipped, not a hard failure; an empty batch is a no-op.
+function vaultNotesSink(env: RtEnv): SinkTarget {
+	return {
+		name: "vault-notes",
+		async write(input: any, caps: Caps): Promise<any> {
+			const items: Array<{ keep?: unknown; archive?: unknown; mergedContent?: unknown }> = Array.isArray(input) ? input : [];
+			if (!items.length) return { merged: 0 };
+			const { obsidian } = await import("../fns/obsidian.js");
+			const stamp = new Date(caps.clock.now()).toISOString().slice(0, 10);
+			let merged = 0;
+			let failed = 0;
+			for (const it of items) {
+				const keep = typeof it?.keep === "string" ? it.keep : "";
+				const archive = typeof it?.archive === "string" ? it.archive : "";
+				const mergedContent = typeof it?.mergedContent === "string" ? it.mergedContent : "";
+				if (!keep || !archive || !mergedContent) continue;
+				const w = await obsidian.run(env, { action: "write", path: keep, content: mergedContent, backend: "git" });
+				if (w.isError) {
+					failed++;
+					continue;
+				}
+				const note = `> [!note] Merged into [[${keep}]] by vault-consolidate-plan on ${stamp} — see there for the combined content.`;
+				const a = await obsidian.run(env, { action: "append", path: archive, content: note, backend: "git" });
+				if (a.isError) {
+					failed++;
+					continue;
+				}
+				merged++;
+			}
+			return { merged, groups: items.length, ...(failed ? { failed } : {}) };
 		},
 	};
 }

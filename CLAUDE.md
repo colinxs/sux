@@ -146,6 +146,14 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   of the specific failure it is — see `_mail_semantic.ts`'s `methodResult()` for the check
   (used to fall back from an incremental `Email/changes` diff to a full rebuild on exactly
   this error).
+- **suxlib's `reconcile` op-tree node collapses `Handle[]` → ONE `Handle`, and `Handle` itself
+  (`{r2Key,sha256,type,size,producedAt?}`) carries no room for extra metadata** — fine for
+  assimilate-pdfs' single-master-document use, but any per-item/per-cluster merge whose SINK
+  needs to know where each merged result goes (a target path, a cluster id) can't route that
+  through a top-level `reconcile` node without losing it on the way through. Call suxlib's
+  `runReconcile()` directly INSIDE a leaf instead (leaves get `caps.store` too) and return the
+  metadata alongside the resolved text — see `op-engine/_vault_consolidate_plan.ts`'s
+  `proposeMerge` (#735).
 
 ## House style
 

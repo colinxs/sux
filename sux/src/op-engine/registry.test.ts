@@ -52,3 +52,39 @@ test("mail-triage-plan: a veto ({approved:false}) rejects the gate and never rea
 	await expect(interpretDurable(registry["mail-triage-plan"](), messages, fakeStep(rec, { approved: false }), caps, "root")).rejects.toThrow(AskRejectedError);
 	expect(written).toHaveLength(0);
 });
+
+test("vault-consolidate-plan: proposes a faithful-union merge per cluster, asks for approval, and sinks only the approved batch", async () => {
+	const rec = { events: [] as string[] };
+	const written: unknown[] = [];
+	const caps = {
+		store: new MemoryStore(),
+		llm: {},
+		clock: { now: () => 0 },
+		sinks: { "vault-notes": { name: "vault-notes", write: async (input: any) => (written.push(input), { merged: input.length, groups: input.length }) } },
+	} as unknown as Caps;
+
+	const clusters = [{ a: "Archive/Project Alpha (2).md", aContent: "alpha body", b: "Projects/project-alpha.md", bContent: "alpha body plus more", key: "project alpha" }];
+
+	const out = await interpretDurable(registry["vault-consolidate-plan"](), clusters, fakeStep(rec), caps, "root");
+
+	expect(rec.events).toEqual(["ask:apply these note merges?"]);
+	expect(written).toHaveLength(1);
+	expect(written[0]).toEqual([{ keep: "Archive/Project Alpha (2).md", archive: "Projects/project-alpha.md", mergedContent: expect.stringContaining("alpha body"), key: "project alpha" }]);
+	expect(out).toEqual(written[0]);
+});
+
+test("vault-consolidate-plan: a veto ({approved:false}) rejects the gate and never reaches the sink", async () => {
+	const rec = { events: [] as string[] };
+	const written: unknown[] = [];
+	const caps = {
+		store: new MemoryStore(),
+		llm: {},
+		clock: { now: () => 0 },
+		sinks: { "vault-notes": { name: "vault-notes", write: async (input: any) => (written.push(input), input) } },
+	} as unknown as Caps;
+
+	const clusters = [{ a: "A.md", aContent: "x", b: "B.md", bContent: "y", key: "k" }];
+
+	await expect(interpretDurable(registry["vault-consolidate-plan"](), clusters, fakeStep(rec, { approved: false }), caps, "root")).rejects.toThrow(AskRejectedError);
+	expect(written).toHaveLength(0);
+});

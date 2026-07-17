@@ -127,6 +127,7 @@ import { mail_sieve_hc } from "./mail_sieve_hc";
 import { mail_triage_plan } from "./mail_triage_plan";
 import { uw } from "./uw";
 import { run } from "./run";
+import { vault_consolidate_plan } from "./vault_consolidate_plan";
 
 export const FUNCTIONS: Fn[] = [
 	search,
@@ -252,4 +253,5 @@ export const FUNCTIONS: Fn[] = [
 	mail_triage_plan,
 	uw,
 	run,
+	vault_consolidate_plan,
 ];

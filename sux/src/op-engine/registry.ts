@@ -1,5 +1,6 @@
-import { op, pipe, map, reconcile, ask, sink, aimd, fixed, unzip, extract, summarize, type Op } from "@suxos/lib";
+import { op, pipe, map, reconcile, ask, sink, aimd, fixed, unzip, extract, summarize, type Caps, type Op } from "@suxos/lib";
 import { classifyForLabelPlan, compactLabelPlan, type LabelPlanItem } from "./_mail_triage_plan.js";
+import { proposeMerge, compactMergePlan, type DuplicateClusterInput, type MergePlanItem } from "./_vault_consolidate_plan.js";
 import type { TriageMsg } from "../fns/_mail_triage.js";
 
 // THE op registry — named op trees that the `run` front-verb and the OpWorkflow
@@ -29,6 +30,17 @@ import type { TriageMsg } from "../fns/_mail_triage.js";
 // `label:add` (never archive/unarchive/undelete/draft-reply — see _mail_triage_plan.ts), the
 // human is asked once to approve the WHOLE batch, and only on approval does the `mail-labels`
 // sink (caps.ts) apply them. onTimeout:'fail' — an unanswered gate applies nothing.
+//
+// `vault-consolidate-plan` is the action-half `consolidate` (fns/_consolidate.ts) documents
+// about itself as missing: input is a batch of duplicate-candidate clusters (path + content
+// each side) already fetched by the `vault_consolidate_plan` fn — same reason as mail-triage-
+// plan's fetch-in-the-calling-fn shape (a leaf only sees `caps`, not env). Each cluster is
+// proposed as one faithful-union merge (`proposeMerge` — content-addressed via `caps.store`,
+// reusing suxlib's op/reconcile.ts dedup, NOT a tree-level `reconcile` node, since a Handle
+// carries no room for the cluster's target-path metadata past the merge), the human approves
+// the WHOLE batch once, and only on approval does the `vault-notes` sink (caps.ts) apply them
+// — a `write` of the merged content to the canonical note plus an `append` pointer on the
+// duplicate, never a delete. onTimeout:'fail' — an unanswered gate applies nothing.
 export const registry: Record<string, () => Op> = {
 	echo: () => op("echo", async (x: unknown) => x, { kind: "pure" }),
 	"assimilate-pdfs": () =>
@@ -46,5 +58,12 @@ export const registry: Record<string, () => Op> = {
 			op("compact", async (items: Array<LabelPlanItem | null>) => compactLabelPlan(items), { kind: "pure" }),
 			ask("apply these label changes?", { timeout: "24 hour", onTimeout: "fail" }),
 			sink("mail-labels"),
+		),
+	"vault-consolidate-plan": () =>
+		pipe(
+			map(op("propose", async (c: DuplicateClusterInput, caps: Caps) => proposeMerge(c, caps), { kind: "effect" }), { concurrency: fixed(8) }),
+			op("compact", async (items: Array<MergePlanItem | null>) => compactMergePlan(items), { kind: "pure" }),
+			ask("apply these note merges?", { timeout: "24 hour", onTimeout: "fail" }),
+			sink("vault-notes"),
 		),
 };

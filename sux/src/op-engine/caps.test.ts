@@ -7,6 +7,9 @@ type FakeToolResult = { content: Array<{ type: "text"; text: string }>; isError?
 const labelMessages = vi.fn(async (_env: unknown, ids: string[], label: string, add: boolean): Promise<FakeToolResult> => ({ content: [{ type: "text", text: JSON.stringify({ labeled: ids.length, keyword: label, add }) }] }));
 vi.mock("../mail-mcp.js", () => ({ labelMessages: (...args: [unknown, string[], string, boolean]) => labelMessages(...args) }));
 
+const obsidianRun = vi.fn(async (_env: unknown, _args: unknown): Promise<FakeToolResult> => ({ content: [{ type: "text", text: "{}" }] }));
+vi.mock("../fns/obsidian.js", () => ({ obsidian: { run: (...args: [unknown, unknown]) => obsidianRun(...args) } }));
+
 // Fake R2: just enough of the head/get/put surface makeSinks touches.
 test("sinks re-address a Handle (r2 -> published/) and a {summaryHandle} (vault -> vault/)", async () => {
 	const objs = new Map<string, Uint8Array>();
@@ -119,4 +122,34 @@ test("mail-labels sink reads labelMessages' actual labeled/failed counts instead
 		{} as Caps,
 	);
 	expect(out).toEqual({ labeled: 1, groups: 1, failed: 2 });
+});
+
+test("vault-notes sink writes the merged content to `keep` and appends a pointer to `archive` — never a delete", async () => {
+	obsidianRun.mockClear();
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	const out = await sinks["vault-notes"].write(
+		[{ keep: "Projects/project-alpha.md", archive: "Archive/Project Alpha (2).md", mergedContent: "merged body", key: "project alpha" }],
+		{ clock: { now: () => 0 } } as unknown as Caps,
+	);
+	expect(obsidianRun).toHaveBeenCalledWith({}, { action: "write", path: "Projects/project-alpha.md", content: "merged body", backend: "git" });
+	expect(obsidianRun).toHaveBeenCalledWith({}, { action: "append", path: "Archive/Project Alpha (2).md", content: expect.stringContaining("Merged into [[Projects/project-alpha.md]]"), backend: "git" });
+	expect(obsidianRun).not.toHaveBeenCalledWith({}, expect.objectContaining({ action: "delete" }));
+	expect(out).toEqual({ merged: 1, groups: 1 });
+});
+
+test("vault-notes sink is a no-op on an empty batch (never an error)", async () => {
+	obsidianRun.mockClear();
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	const out = await sinks["vault-notes"].write([], { clock: { now: () => 0 } } as unknown as Caps);
+	expect(obsidianRun).not.toHaveBeenCalled();
+	expect(out).toEqual({ merged: 0 });
+});
+
+test("vault-notes sink skips (doesn't throw) an item whose write fails, and counts it as failed", async () => {
+	obsidianRun.mockClear();
+	obsidianRun.mockResolvedValueOnce({ isError: true, content: [{ type: "text", text: "conflict" }] });
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	const out = await sinks["vault-notes"].write([{ keep: "A.md", archive: "B.md", mergedContent: "x", key: "k" }], { clock: { now: () => 0 } } as unknown as Caps);
+	expect(out).toEqual({ merged: 0, groups: 1, failed: 1 });
+	expect(obsidianRun).toHaveBeenCalledTimes(1); // the append never runs once the write itself failed
 });

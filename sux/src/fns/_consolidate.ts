@@ -86,7 +86,7 @@ export type ConsolidateReport = {
 
 /** ISO date `staleDays` days before `now` — same-day boundary as the cutoff (a note verified
  *  exactly on the cutoff date counts as still-fresh, matching `<` not `<=` at the caller). */
-function cutoffIso(days: number, now: Date): string {
+export function cutoffIso(days: number, now: Date): string {
 	const cutoff = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
 	return cutoff.toISOString().slice(0, 10);
 }
@@ -101,6 +101,42 @@ function duplicateKey(path: string): string {
 		.replace(/\(\d+\)$/, "")
 		.replace(/[\s_-]+/g, " ")
 		.trim();
+}
+
+export type ClassifyResult = { stale: StaleNote[]; duplicate_candidates: DuplicateCandidate[]; scanned: number };
+
+/** Pure classification over ALREADY-FETCHED note content (no I/O): flags staleness per
+ *  `last_verified` frontmatter and groups same-looking titles into duplicate-candidate pairs.
+ *  Shared by runConsolidate's weekly digest sweep and vault_consolidate_plan's on-demand scan
+ *  (fns/vault_consolidate_plan.ts) — both already have note content in hand from their own
+ *  read pass, so this only ever classifies, never fetches. A path missing from `contents` (a
+ *  failed read) is silently skipped, not counted as scanned. */
+export function classifyNotes(paths: string[], contents: Map<string, string>, cutoff: string, days: number): ClassifyResult {
+	const stale: StaleNote[] = [];
+	const keyToPaths = new Map<string, string[]>();
+	let scanned = 0;
+	for (const path of paths) {
+		const content = contents.get(path);
+		if (content === undefined) continue;
+		scanned++;
+		const fm = parseFrontmatter(content);
+		const lv = typeof fm?.last_verified === "string" ? fm.last_verified : undefined;
+		if (!lv) stale.push({ path, reason: "no last_verified marker" });
+		else if (lv < cutoff) stale.push({ path, last_verified: lv, reason: `older than ${days}d` });
+
+		const dk = duplicateKey(path);
+		const list = keyToPaths.get(dk) ?? [];
+		list.push(path);
+		keyToPaths.set(dk, list);
+		void extractWikilinks; // reserved for a future duplicate-scoring pass (link overlap) — not used in V1
+	}
+
+	const duplicate_candidates: DuplicateCandidate[] = [];
+	for (const [dk, group] of keyToPaths) {
+		if (group.length < 2) continue;
+		for (let i = 0; i < group.length; i++) for (let j = i + 1; j < group.length; j++) duplicate_candidates.push({ a: group[i], b: group[j], key: dk });
+	}
+	return { stale, duplicate_candidates, scanned };
 }
 
 function buildDigest(week: string, staleDaysUsed: number, stale: StaleNote[], dupes: DuplicateCandidate[], scanned: number, truncated: boolean, windowOffset: number, totalNotes: number): string {
@@ -152,40 +188,21 @@ export async function runConsolidate(env: RtEnv, opts: { week?: string; force?: 
 	const windowOffset = Number.isFinite(storedOffset) && storedOffset >= 0 ? storedOffset : 0;
 	const { window: scanPaths, nextOffset } = sweepWindow(paths, windowOffset, MAX_NOTES_PER_SWEEP);
 
-	const stale: StaleNote[] = [];
-	const keyToPaths = new Map<string, string[]>();
-	let scanned = 0;
+	const contents = new Map<string, string>();
 	for (const path of scanPaths) {
-		let content: string;
 		try {
-			content = await deps.readNote(env, path);
+			contents.set(path, await deps.readNote(env, path));
 		} catch {
 			continue; // one unreadable note must not sink the whole sweep
 		}
-		scanned++;
-		const fm = parseFrontmatter(content);
-		const lv = typeof fm?.last_verified === "string" ? fm.last_verified : undefined;
-		if (!lv) stale.push({ path, reason: "no last_verified marker" });
-		else if (lv < cutoff) stale.push({ path, last_verified: lv, reason: `older than ${days}d` });
-
-		const dk = duplicateKey(path);
-		const list = keyToPaths.get(dk) ?? [];
-		list.push(path);
-		keyToPaths.set(dk, list);
-		void extractWikilinks; // reserved for a future duplicate-scoring pass (link overlap) — not used in V1
 	}
+	const { stale, duplicate_candidates, scanned } = classifyNotes(scanPaths, contents, cutoff, days);
 
 	// Every read failing (vs. an empty vault) means the sweep saw nothing real — report it as a
 	// failure rather than a false "0 stale, 0 dupes" digest, and leave the week unmarked so the
 	// next tick retries instead of waiting a full week.
 	if (scanPaths.length > 0 && scanned === 0) {
 		return { week, scanned, truncated, window_offset: windowOffset, error: true, note: `all ${scanPaths.length} note read(s) failed — nothing scanned, skipping digest and ledger mark` };
-	}
-
-	const duplicate_candidates: DuplicateCandidate[] = [];
-	for (const [dk, group] of keyToPaths) {
-		if (group.length < 2) continue;
-		for (let i = 0; i < group.length; i++) for (let j = i + 1; j < group.length; j++) duplicate_candidates.push({ a: group[i], b: group[j], key: dk });
 	}
 
 	try {
