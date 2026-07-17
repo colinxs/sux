@@ -106,12 +106,12 @@ export const mail_sieve_backfill: Fn = {
 				if (c?.inMailbox !== inMailbox) return failWith("bad_input", "cursor is for a different mailbox — omit it, or pass the mailbox it was issued for.");
 				position = Math.max(0, Math.floor(Number(c.position) || 0));
 			}
-			const scanStartPosition = position; // rewind target if a label write fails below — see resumeCursor
-
 			const mail = dryRun ? null : await import("../mail-mcp");
 			const filter = { inMailbox };
 			const matched: Array<{ id: string; flags: string[] }> = [];
-			const byFlag = new Map<string, string[]>();
+			// Accumulated ACROSS pages, but each entry only grows after that page's write
+			// succeeds — see the per-page apply below for why this can't be a plain byFlag Map.
+			const appliedByFlag = new Map<string, { count: number; error?: string }>();
 			let scanned = 0;
 			let total: number | undefined;
 			let done = false;
@@ -132,12 +132,44 @@ export const mail_sieve_backfill: Fn = {
 				const byId = new Map<string, { from?: unknown; subject?: unknown }>();
 				for (const e of Array.isArray(get?.list) ? get.list : []) byId.set(String(e?.id), e);
 
+				// Group THIS page's ids by flag (a message can land in several, e.g. junk+notification).
+				const pageByFlag = new Map<string, string[]>();
 				for (const id of ids) {
 					const e = byId.get(id);
 					const flags = matchCoarseCategories({ from: senderAddress(e?.from), subject: e?.subject ? String(e.subject) : undefined }, categories);
 					if (!flags.length) continue;
 					matched.push({ id, flags });
-					for (const f of flags) byFlag.set(f, [...(byFlag.get(f) ?? []), id]);
+					for (const f of flags) {
+						const arr = pageByFlag.get(f);
+						if (arr) arr.push(id);
+						else pageByFlag.set(f, [id]);
+					}
+				}
+
+				// Apply (or, in dry-run, just tally via `matched` above) this page before advancing
+				// the checkpoint — mirrors mail_domain_backfill: a page (≤200 ids/flag) never
+				// approaches maxObjectsInSet, and the resume cursor only ever advances past a
+				// written page, so a mid-sweep budget stop or resume can't silently skip un-tagged
+				// mail the way a single end-of-scan Email/set over the whole window could.
+				let pageFailed = false;
+				if (!dryRun) {
+					for (const [flag, kwIds] of pageByFlag) {
+						const lr = await mail!.labelMessages(env, kwIds, flag, true);
+						const prev = appliedByFlag.get(flag);
+						if (lr.isError) {
+							appliedByFlag.set(flag, { count: prev?.count ?? 0, error: lr.content?.[0]?.text ?? "label failed" });
+							pageFailed = true;
+						} else appliedByFlag.set(flag, { count: (prev?.count ?? 0) + kwIds.length });
+					}
+				}
+
+				// A failed page's ids stay un-tagged, so don't advance scanned/position past it —
+				// mirrors mail_domain_backfill's per-page isolation (see #703). The cursor still
+				// points at THIS page's start, so a resume rescans and retries it (label:add is
+				// idempotent, so re-applying flags that already succeeded on this page is harmless).
+				if (pageFailed) {
+					done = false;
+					break;
 				}
 
 				scanned += ids.length;
@@ -170,23 +202,8 @@ export const mail_sieve_backfill: Fn = {
 				);
 			}
 
-			const applied: Array<{ flag: string; count: number; error?: string }> = [];
-			let anyError = false;
-			for (const [flag, ids] of byFlag) {
-				const lr = await mail!.labelMessages(env, ids, flag, true);
-				if (lr.isError) {
-					applied.push({ flag, count: 0, error: lr.content?.[0]?.text ?? "label failed" });
-					anyError = true;
-				} else applied.push({ flag, count: ids.length });
-			}
-			// A label-write failure means part of this call's scanned window wasn't fully
-			// applied. Unlike mail_domain_backfill (which labels per-page), this fn merges
-			// every scanned page's ids by flag and labels once at the end, so we can't
-			// isolate which page failed — rewind the cursor to where THIS call started so a
-			// resume rescans and retries the whole window (label:add is idempotent, so
-			// re-applying the flags that already succeeded is harmless).
-			const resumeCursor = anyError ? encodeCursor({ v: 1, inMailbox, position: scanStartPosition }) : cursor;
-			return ok(oj({ dry_run: false, mailbox, scanned, tagged: matched.length, applied, cursor: resumeCursor, done: anyError ? false : done, ...(total !== undefined ? { total } : {}) }));
+			const applied: Array<{ flag: string; count: number; error?: string }> = [...appliedByFlag].map(([flag, v]) => ({ flag, ...v }));
+			return ok(oj({ dry_run: false, mailbox, scanned, tagged: matched.length, applied, cursor, done, ...(total !== undefined ? { total } : {}) }));
 		} catch (e) {
 			if (e instanceof JmapError) return failWith(e.code, e.message);
 			return failWith("upstream_error", errMsg(e));

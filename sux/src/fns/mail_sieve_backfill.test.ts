@@ -125,6 +125,66 @@ describe("mail_sieve_backfill", () => {
 		expect(p2.done).toBe(true);
 	});
 
+	it("chunks writes per internal page within ONE call, instead of one Email/set for the whole scan window", async () => {
+		// Regression test for the un-chunked/late-write bug (R-002): the buggy version accumulated
+		// `byFlag` across every loop iteration of a single call and issued ONE Email/set per flag
+		// only after the whole while-loop finished scanning. That means a flag spanning many pages
+		// got batched into a single write that could exceed JMAP's maxObjectsInSet, AND the
+		// resume cursor (already advanced past every scanned page) could never re-visit a page
+		// whose write failed. Internal loop iterations only happen when max > PAGE (200), so this
+		// uses a 250-message fixture (id "1" on page 1, id "201" on page 2 — a genuine 2nd
+		// Email/query/get round-trip, not a mocking artifact) with both matching "junk".
+		const CLEAN = { id: "", from: [{ email: "friend@gmail.com" }], subject: "lunch tomorrow?" };
+		const BIG = Array.from({ length: 250 }, (_, i) => ({ ...CLEAN, id: String(i + 1) }));
+		BIG[0] = { id: "1", from: [{ email: "prize@sketchy.tld" }], subject: "You WON the lottery!" };
+		BIG[200] = { id: "201", from: [{ email: "prize@sketchy.tld" }], subject: "FINAL notice: claim your prize" };
+		const queryPositions: number[] = [];
+		runBatch.mockImplementation((_env: unknown, calls: any[]) => {
+			if (calls[0][0] === "Mailbox/get") return scanImpl(_env, calls);
+			const { position, limit } = calls[0][1];
+			queryPositions.push(position);
+			const page = BIG.slice(position, position + limit);
+			return {
+				response: {
+					methodResponses: [
+						["Email/query", { ids: page.map((e) => e.id), total: BIG.length, position, queryState: "qs" }, "q"],
+						["Email/get", { list: page }, "g"],
+					],
+				},
+				session: {},
+			};
+		});
+		const junkCalls: string[][] = [];
+		labelMessages.mockImplementation(async (_env: unknown, ids: string[], flag: string) => {
+			if (flag === "junk") junkCalls.push(ids);
+			return { isError: false, content: [{ type: "text", text: "{}" }] };
+		});
+
+		const r = await mail_sieve_backfill.run(env, { dry_run: false, max: 250 });
+		const p = JSON.parse(r.content![0].text as string);
+
+		expect(queryPositions).toEqual([0, 200]); // confirms 2 genuine internal page iterations
+		// Chunked: two SEPARATE per-page writes (["1"] then ["201"]), never one combined ["1","201"].
+		expect(junkCalls).toEqual([["1"], ["201"]]);
+		expect(p.applied.find((a: any) => a.flag === "junk").count).toBe(2);
+		expect(p.done).toBe(true);
+	});
+
+	it("a write failure on one page doesn't drop the whole run — later pages still apply and report their own errors", async () => {
+		labelMessages.mockImplementation(async (_env: unknown, ids: string[], flag: string) => {
+			if (flag === "junk") return { isError: true, content: [{ type: "text", text: "Email/set rejected (too many ids)" }] };
+			return { isError: false, content: [{ type: "text", text: "{}" }] };
+		});
+		const r = await mail_sieve_backfill.run(env, { dry_run: false });
+		const p = JSON.parse(r.content![0].text as string);
+		const junk = p.applied.find((a: any) => a.flag === "junk");
+		const mailingList = p.applied.find((a: any) => a.flag === "mailing-list");
+		expect(junk.count).toBe(0);
+		expect(junk.error).toBeTruthy();
+		expect(mailingList.count).toBe(1);
+		expect(mailingList.error).toBeUndefined();
+	});
+
 	it("rejects a cursor issued for a different mailbox", async () => {
 		const r1 = await mail_sieve_backfill.run(env, { max: 2 });
 		const cursor = JSON.parse(r1.content![0].text as string).cursor;
