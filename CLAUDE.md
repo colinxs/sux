@@ -154,6 +154,11 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   `runReconcile()` directly INSIDE a leaf instead (leaves get `caps.store` too) and return the
   metadata alongside the resolved text — see `op-engine/_vault_consolidate_plan.ts`'s
   `proposeMerge` (#735).
+- **A bot-build sandbox has NO access to `SuxOS/.github`** (`gh api repos/SuxOS/.github`
+  404s, `gh repo view` can't resolve it) — an issue asking to extract/add a reusable
+  `workflow_call` there (matching the existing `audit`/`health`/`fixer`/`triage`/`issue-build`
+  pattern) isn't buildable in one bot session; check access early and drop it back to the
+  queue rather than half-building the calling-repo side (#399).
 
 ## House style
 
