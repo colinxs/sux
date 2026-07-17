@@ -274,6 +274,21 @@ describe("mail_* ergonomic tools", () => {
 		expect(out.messages).toHaveLength(1);
 	});
 
+	it("mail_semantic embeds+ranks the recent mailbox by meaning (KV-cached, state-keyed) and requires `q` + the Workers-AI binding", async () => {
+		installFetch();
+		const aiEnv = () => ({ ...env(), AI: { run: vi.fn(async (_m: string, inputs: any) => ({ data: inputs.text.map(() => [1, 0, 0]) })) } });
+		const r = parse(await tool("mail_semantic").run(aiEnv(), { q: "hello there" }));
+		expect(r.hits[0]).toMatchObject({ id: "e1", subject: "Hello" });
+		expect(r.scanned).toBe(1);
+
+		const missingQ = await tool("mail_semantic").run(aiEnv(), {});
+		expect(missingQ.isError).toBe(true);
+
+		const noAi = await tool("mail_semantic").run(env(), { q: "hello there" });
+		expect(noAi.isError).toBe(true);
+		expect(noAi.content[0].text).toMatch(/Workers AI/);
+	});
+
 	it("mail_draft creates a draft and returns the id", async () => {
 		installFetch();
 		const out = parse(await tool("mail_draft").run(env(), { to: ["x@y.com"], subject: "Hi", text: "yo" }));
