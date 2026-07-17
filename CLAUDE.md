@@ -154,6 +154,14 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   `runReconcile()` directly INSIDE a leaf instead (leaves get `caps.store` too) and return the
   metadata alongside the resolved text — see `op-engine/_vault_consolidate_plan.ts`'s
   `proposeMerge` (#735).
+- **`study`'s pdf-from-path branch (`study.ts`'s `extractDocText`) only reads a Dropbox path
+  through Mode B (whole-account, `DROPBOX_FULL_*`) — never through Mode A (the app-folder
+  `dropbox` fn), even though Mode A is the credential most features actually have configured.**
+  Don't assume `study({source:"/some/app-folder/path.pdf", kind:"pdf"})` works just because
+  `hasDropbox(env)` is true; it needs `hasDropboxFull(env)`. To study a file that only lives in
+  the App folder without adding a second credential, mint a Mode A shared link (`dropbox.ts`'s
+  exported `sharedLink`, forced to a raw download with `?dl=1`) and hand study that http(s) URL
+  instead — see `_learning_folder.ts`'s `runLearningFolderSync` (#433).
 
 ## House style
 
