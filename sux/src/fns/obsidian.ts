@@ -380,9 +380,16 @@ export const obsidian: Fn = {
 		const backend = String(args?.backend ?? "git").trim().toLowerCase();
 		// Guard EVERY path-taking action, both backends, before dispatch — a `read`
 		// (or any verb) with a '..'/dot segment is arbitrary-file disclosure on the
-		// remote Local REST API, not just an infra-write risk (§592).
-		if (["read", "append", "write", "edit", "delete"].includes(action)) {
-			const p0 = String(args?.path ?? "").trim();
+		// remote Local REST API, not just an infra-write risk (§592). `list` enumerates
+		// a directory on the remote backend (`encPath` doesn't escape '.'), so a
+		// dot-prefixed path there discloses .obsidian/ infra just like a bad `read`
+		// path would (§702); `search` takes no path but is included defensively.
+		if (["list", "read", "search", "append", "write", "edit", "delete"].includes(action)) {
+			const raw = String(args?.path ?? "").trim();
+			// `list`'s own dispatch (both backends) strips leading/trailing slashes before
+			// treating the path as a folder filter/dir — mirror that here so 'Area/' or the
+			// root listing ('/') isn't misread as a bad trailing-empty segment.
+			const p0 = action === "list" ? raw.replace(/^\/+|\/+$/g, "") : raw;
 			const bad = p0 ? badVaultPath(p0) : null;
 			if (bad) return fail(bad);
 		}
