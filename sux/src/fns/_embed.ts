@@ -32,6 +32,26 @@ export async function embedOne(env: RtEnv, text: string): Promise<number[]> {
 	return (await embed(env, [text]))[0] ?? [];
 }
 
+/** Pack an embedding as base64-encoded Float32 bytes — ~4x smaller than JSON's full-precision
+ *  doubles (~19 chars/number) and the storage format the vault semantic index persists, since
+ *  bge-base-en-v1.5's 768-dim vectors dominate that blob's size (see #717). Precision loss
+ *  (float64 -> float32) is negligible for cosine ranking. */
+export function encodeEmbedding(vec: number[]): string {
+	const bytes = new Uint8Array(new Float32Array(vec).buffer);
+	let s = "";
+	const CHUNK = 0x8000;
+	for (let i = 0; i < bytes.length; i += CHUNK) s += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+	return btoa(s);
+}
+
+/** Inverse of encodeEmbedding. */
+export function decodeEmbedding(b64: string): number[] {
+	const bin = atob(b64);
+	const bytes = new Uint8Array(bin.length);
+	for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+	return Array.from(new Float32Array(bytes.buffer));
+}
+
 /** Cosine similarity of two equal-length vectors; 0 when either is empty or a zero vector. */
 export function cosine(a: number[], b: number[]): number {
 	const n = Math.min(a.length, b.length);

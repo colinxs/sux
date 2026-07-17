@@ -2,6 +2,7 @@ import { type Fn, fail, ok } from "../registry";
 import { smartFetch } from "../proxy";
 import { extractRpcFromText } from "../mcp-util";
 import { cfOriginHint, fromB64, toB64, oj, safeParseJson } from "./_util";
+import { maybeCompressString, maybeDecompressString } from "./_gzip";
 
 // Work with Obsidian markdown notes across two backends:
 //   git    (default) — a git-backed vault via the GitHub API (async, versioned).
@@ -66,12 +67,21 @@ const remoteNoteKey = (p: string) => `cache:vault:remote:note:${normPath(p)}`;
 
 async function cacheGet(env: any, key: string): Promise<any | null> {
 	const raw = await env.OAUTH_KV?.get(key).catch(() => null);
-	return safeParseJson(raw, null);
+	if (!raw) return null;
+	const decompressed = await maybeDecompressString(raw).catch(() => raw);
+	return safeParseJson(decompressed, null);
 }
-async function cachePut(env: any, key: string, value: unknown): Promise<void> {
+async function cachePut(env: any, key: string, value: unknown): Promise<boolean> {
 	try {
-		await env.OAUTH_KV?.put(key, JSON.stringify(value));
-	} catch {}
+		await env.OAUTH_KV?.put(key, await maybeCompressString(JSON.stringify(value)));
+		return true;
+	} catch (e) {
+		// Best-effort cache — a write hiccup must never fail the request it's caching for.
+		// Logged (not swallowed silently) since a dropped write otherwise looks identical to
+		// a healthy cache miss, e.g. an over-25MiB KV value silently never persisting (#717).
+		console.log(`obsidian: cache write for ${key} failed: ${e instanceof Error ? e.message : String(e)}`);
+		return false;
+	}
 }
 async function cacheDel(env: any, key: string): Promise<void> {
 	try {
@@ -85,7 +95,7 @@ async function cacheDel(env: any, key: string): Promise<void> {
 export async function readVaultIndexBlob(env: any, cfg: VaultCfg): Promise<any | null> {
 	return cacheGet(env, gitIndexKey(cfg));
 }
-export async function writeVaultIndexBlob(env: any, cfg: VaultCfg, blob: unknown): Promise<void> {
+export async function writeVaultIndexBlob(env: any, cfg: VaultCfg, blob: unknown): Promise<boolean> {
 	return cachePut(env, gitIndexKey(cfg), blob);
 }
 
@@ -95,7 +105,7 @@ export async function writeVaultIndexBlob(env: any, cfg: VaultCfg, blob: unknown
 export async function readVaultSemanticBlob(env: any, cfg: VaultCfg): Promise<any | null> {
 	return cacheGet(env, gitSemanticIndexKey(cfg));
 }
-export async function writeVaultSemanticBlob(env: any, cfg: VaultCfg, blob: unknown): Promise<void> {
+export async function writeVaultSemanticBlob(env: any, cfg: VaultCfg, blob: unknown): Promise<boolean> {
 	return cachePut(env, gitSemanticIndexKey(cfg), blob);
 }
 

@@ -1,5 +1,5 @@
 import { test, expect, vi } from "vitest";
-import { answerVerb, cancelVerb, listDurableRuns, run, runVerb, statusVerb } from "./run.js";
+import { answerVerb, cancelVerb, describeOp, listDurableRuns, run, runVerb, statusVerb } from "./run.js";
 
 // A minimal in-memory KVNamespace — just enough of put/get/list for the run index.
 // Records the opts each put() was called with so tests can assert on expirationTtl.
@@ -147,6 +147,38 @@ test("run fn's answer action requires a prompt", async () => {
 	const res = await run.run(env, { action: "answer", instanceId: "instance-1" });
 	expect(res.isError).toBe(true);
 	expect(res.content[0].text).toContain("prompt");
+});
+
+test("describeOp finds an op tree's ask gates without running it", () => {
+	expect(describeOp("assimilate-pdfs")).toEqual({
+		opId: "assimilate-pdfs",
+		asks: [{ prompt: "review master?", timeout: "24 hour", onTimeout: "proceed" }],
+	});
+	expect(describeOp("echo")).toEqual({ opId: "echo", asks: [] });
+});
+
+test("describeOp throws on an unknown op", () => {
+	expect(() => describeOp("nope")).toThrow(/unknown op/);
+});
+
+test("run fn's describe action returns the op's ask gates without an instanceId", async () => {
+	const res = await run.run({} as any, { action: "describe", op: "assimilate-pdfs" });
+	expect(res.isError).toBeUndefined();
+	expect(JSON.parse(res.content[0].text)).toMatchObject({
+		action: "describe",
+		opId: "assimilate-pdfs",
+		asks: [{ prompt: "review master?", timeout: "24 hour", onTimeout: "proceed" }],
+	});
+});
+
+test("run fn's describe action requires an op and rejects an unknown one", async () => {
+	const missing = await run.run({} as any, { action: "describe" });
+	expect(missing.isError).toBe(true);
+	expect(missing.content[0].text).toContain("op");
+
+	const unknown = await run.run({} as any, { action: "describe", op: "nope" });
+	expect(unknown.isError).toBe(true);
+	expect(unknown.content[0].text).toMatch(/unknown op/);
 });
 
 test("run fn's status action round-trips through the Fn surface", async () => {

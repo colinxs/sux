@@ -77,6 +77,29 @@ function needsDurable(n: Op): boolean {
 	return false;
 }
 
+export type AskGate = { prompt: string; timeout: string; onTimeout: "proceed" | "fail" };
+
+// Every op tree is a static shape per opId (registry factories are pure — see
+// registry.ts), so its `ask` nodes and their exact prompt text can be discovered ahead
+// of any run. Recurses through `pipe`/`map` since either can nest an `ask`. This is what
+// lets a caller learn "what can this op pause on" (`run action:describe`) instead of
+// having to already know — or go read — the op tree's source to construct a matching
+// `run action:answer` call (#715).
+function collectAskGates(n: Op, out: AskGate[] = []): AskGate[] {
+	if (n.tag === "ask") out.push({ prompt: n.prompt, timeout: n.timeout, onTimeout: n.onTimeout });
+	else if (n.tag === "pipe") for (const s of n.steps) collectAskGates(s, out);
+	else if (n.tag === "map") collectAskGates(n.op, out);
+	return out;
+}
+
+/** Describe a registered op's `ask` gates (exact prompt text + timeout/onTimeout) without
+ * running it — the read side of `run action:describe`. Throws on an unknown opId. */
+export function describeOp(opId: string): { opId: string; asks: AskGate[] } {
+	const build = registry[opId];
+	if (!build) throw new Error(`unknown op: ${opId}`);
+	return { opId, asks: collectAskGates(build()) };
+}
+
 /**
  * Run a registered op by id. INLINE (forced, or `auto` over a simple tree) interprets
  * the op in-request and returns its OUTPUT. DURABLE (forced, or `auto` over a tree with
@@ -132,12 +155,12 @@ export const run: Fn = {
 	// so it must never be served from cache.
 	cacheable: false,
 	description:
-		"Run a composable op (a named suxlib Op tree) by id. {op}: the registered op id (call with a bad id to see the list; MVP ships `echo`). {input}: the op's input value (any JSON). {mode}: auto (default — inline for a simple pure/effect pipe, durable when the op fans out (map) or pauses for a human (ask)) | inline (force in-request; returns the op's output) | durable (force a Workflow; returns {instanceId} to poll). The durable runtime persists every step, so a run survives isolate eviction, retries, and multi-day approval pauses. Durable mode needs the OP_WORKFLOW binding. {action}: \"list\" enumerates durable run instances started from this connector (instanceId, opId, startedAt, live status where available) instead of starting/running an op — use it to discover paused `ask` gates without already holding an instanceId. \"status\" returns a durable {instanceId}'s live status (plus error/output once terminal). \"answer\" delivers a payload to an `ask` gate the instance is paused on — needs {instanceId} and {prompt} (the op tree's exact `ask(prompt, ...)` text); {payload} defaults to {approved:true}, pass {approved:false} to reject the gate and stop the run. \"cancel\" terminates a durable instance.",
+		"Run a composable op (a named suxlib Op tree) by id. {op}: the registered op id (call with a bad id to see the list; MVP ships `echo`). {input}: the op's input value (any JSON). {mode}: auto (default — inline for a simple pure/effect pipe, durable when the op fans out (map) or pauses for a human (ask)) | inline (force in-request; returns the op's output) | durable (force a Workflow; returns {instanceId} to poll). The durable runtime persists every step, so a run survives isolate eviction, retries, and multi-day approval pauses. Durable mode needs the OP_WORKFLOW binding. {action}: \"list\" enumerates durable run instances started from this connector (instanceId, opId, startedAt, live status where available) instead of starting/running an op — use it to discover paused `ask` gates without already holding an instanceId. \"status\" returns a durable {instanceId}'s live status (plus error/output once terminal). \"describe\" returns {op}'s `ask` gates (exact prompt text + timeout/onTimeout) up front, so a caller can construct a correct `answer` call before ever running the op — needs {op}, no {instanceId}. \"answer\" delivers a payload to an `ask` gate the instance is paused on — needs {instanceId} and {prompt} (the op tree's exact `ask(prompt, ...)` text, as returned by `describe`); {payload} defaults to {approved:true}, pass {approved:false} to reject the gate and stop the run. \"cancel\" terminates a durable instance.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
 		properties: {
-			op: { type: "string", description: "Registered op id to run (e.g. `echo`). An unknown id returns the known-ops list. Required unless {action} is 'list'." },
+			op: { type: "string", description: "Registered op id to run (e.g. `echo`). An unknown id returns the known-ops list. Required unless {action} is 'list' (and required, not the instanceId, for 'describe')." },
 			input: { description: "Input value passed to the op tree (any JSON: string, object, array, …)." },
 			mode: {
 				type: "string",
@@ -146,8 +169,8 @@ export const run: Fn = {
 			},
 			action: {
 				type: "string",
-				enum: ["list", "status", "answer", "cancel"],
-				description: "list: enumerate durable run instances (most recent first). status: fetch {instanceId}'s live status. answer: deliver a payload to an `ask` gate ({instanceId}+{prompt}, optional {payload}). cancel: terminate {instanceId}. Omit to run an op.",
+				enum: ["list", "status", "describe", "answer", "cancel"],
+				description: "list: enumerate durable run instances (most recent first). status: fetch {instanceId}'s live status. describe: return {op}'s `ask` gates (prompt+timeout+onTimeout) without running it. answer: deliver a payload to an `ask` gate ({instanceId}+{prompt}, optional {payload}). cancel: terminate {instanceId}. Omit to run an op.",
 			},
 			instanceId: { type: "string", description: "Durable instance id (from a prior durable run or `action:list`). Required for status/answer/cancel." },
 			prompt: { type: "string", description: "The op tree's exact `ask(prompt, ...)` text — targets the right gate when an instance has more than one. Required for `answer`." },
@@ -161,6 +184,12 @@ export const run: Fn = {
 			if (!env.OAUTH_KV) return failWith("not_configured", "run list needs the OAUTH_KV binding.");
 			const runs = await listDurableRuns(env);
 			return ok(oj({ action, count: runs.length, runs }));
+		}
+		if (action === "describe") {
+			const opId = a?.op ? String(a.op) : "";
+			if (!opId) return failWith("bad_input", "run describe requires an `op` (a registered op id).");
+			if (!registry[opId]) return failWith("not_found", `run: unknown op '${opId}'. Known ops: ${Object.keys(registry).join(", ") || "(none)"}.`);
+			return ok(oj({ action, ...describeOp(opId) }));
 		}
 		if (action === "status" || action === "answer" || action === "cancel") {
 			const instanceId = a?.instanceId ? String(a.instanceId) : "";
@@ -182,7 +211,7 @@ export const run: Fn = {
 				return failWith("upstream_error", `run ${action} ${instanceId} failed: ${errMsg(e)}`);
 			}
 		}
-		if (action) return failWith("bad_input", `run: unknown action '${action}'. Use 'list', 'status', 'answer', 'cancel', or omit to run an op.`);
+		if (action) return failWith("bad_input", `run: unknown action '${action}'. Use 'list', 'status', 'describe', 'answer', 'cancel', or omit to run an op.`);
 
 		const opId = a?.op ? String(a.op) : "";
 		if (!opId) return failWith("bad_input", "run requires an `op` (a registered op id).");
