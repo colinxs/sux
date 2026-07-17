@@ -1,13 +1,14 @@
 import { defuseCitationTag, hasAI, llm } from "../ai";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { hasDropboxFull, readFull, searchFull } from "./_dropbox-full";
-import { obsidian } from "./obsidian";
+import { obsidian, vaultCfg } from "./obsidian";
 import { defaultEngine, webSearch } from "./web_search";
 import { jmap } from "./jmap";
 import { hasCalDav, listCalendars, parseICal, reportObjects } from "./_caldav";
 import { embedOne } from "./_embed";
 import { classifyKnn, listExamples } from "./_examples";
 import { maybeDecompressString } from "./_gzip";
+import { topKByCosine, vaultSemanticIndex } from "./_vault_semantic";
 import { errMsg, oj } from "./_util";
 
 // recall — "what do I know about X?" answered from YOUR life. It fans out server-side
@@ -39,35 +40,57 @@ const pj = (s: string): any => {
 type Gathered = { material: string; refs: string[] };
 
 /** Vault: search the notes, read the top matches, excerpt them. Prefers the remote backend
- *  (Local REST /search/simple actually searches the live vault) — the git backend's GitHub
- *  code-search returns items:[] on a PRIVATE vault repo, so on git it silently finds nothing.
- *  vault-mcp.ts §18/50-53 is why there's no vault_search verb: git can't full-text a private repo. */
+ *  (Local REST /search/simple actually searches the live vault). On the git backend, GitHub
+ *  code-search returns items:[] on a PRIVATE vault repo, so lexical search silently finds
+ *  nothing there — fall back to vault_semantic's cosine kNN (vault-mcp.ts's brute-force,
+ *  HEAD-keyed embedded index) instead, giving git-backend recall real retrieval rather than
+ *  an always-empty source. vault-mcp.ts §18/50-53 is why there's no lexical vault_search verb:
+ *  git can't full-text a private repo. */
 async function fromVault(env: RtEnv, question: string): Promise<Gathered> {
 	const remote = Boolean((env as { OBSIDIAN_REMOTE_URL?: string; OBSIDIAN_REMOTE_KEY?: string }).OBSIDIAN_REMOTE_URL && (env as { OBSIDIAN_REMOTE_KEY?: string }).OBSIDIAN_REMOTE_KEY);
-	const backend = remote ? "remote" : "git";
-	const r = await obsidian.run(env, { action: "search", query: question, backend });
+	if (!remote) return fromVaultSemantic(env, question);
+	const r = await obsidian.run(env, { action: "search", query: question, backend: "remote" });
 	if (r.isError) throw new Error(r.content?.[0]?.text ?? "vault search failed");
 	const hits = (pj(r.content?.[0]?.text ?? "")?.hits ?? []) as Array<{ path?: string }>;
-	// Git code-search returns REPO-relative paths (they include any OBSIDIAN_VAULT_DIR
-	// prefix), but obsidian `read` expects a VAULT-relative path and re-applies the dir
-	// itself — strip the dir here so the read doesn't double-prefix into a 404 that would
-	// silently drop the whole vault source. (Remote search paths are already vault-relative,
-	// so the strip is a no-op there.)
-	const dir = String((env as { OBSIDIAN_VAULT_DIR?: string }).OBSIDIAN_VAULT_DIR ?? "").replace(/^\/+|\/+$/g, "");
 	const parts: string[] = [];
 	const refs: string[] = [];
 	for (const h of hits.slice(0, 3)) {
-		let path = h?.path;
+		const path = h?.path;
 		if (!path) continue;
-		if (backend === "git" && dir && path.startsWith(`${dir}/`)) path = path.slice(dir.length + 1);
 		try {
-			const rd = await obsidian.run(env, { action: "read", path, backend });
+			const rd = await obsidian.run(env, { action: "read", path, backend: "remote" });
 			if (!rd.isError) {
 				parts.push(`[vault:${path}]\n${(rd.content?.[0]?.text ?? "").slice(0, 1500)}`);
 				refs.push(`vault:${path}`);
 			}
 		} catch {
 			/* skip an unreadable note */
+		}
+	}
+	return { material: parts.join("\n\n"), refs };
+}
+
+/** Git-backend vault leg: rank the vault's HEAD-keyed embedded chunk index (built by
+ *  vault-mcp.ts's vault_semantic) against the question via cosine kNN. Same graceful-degrade
+ *  contract as the other sources — no AI binding, no vault config, or no resolvable HEAD all
+ *  fall back to an empty gather rather than throwing, since a missing embedding substrate is
+ *  not a recall failure, just a source with nothing to offer. */
+async function fromVaultSemantic(env: RtEnv, question: string): Promise<Gathered> {
+	if (!hasAI(env)) return { material: "", refs: [] };
+	const cfg = vaultCfg(env);
+	if ("error" in cfg) return { material: "", refs: [] };
+	const idx = await vaultSemanticIndex(env, cfg);
+	if (!idx) return { material: "", refs: [] };
+	const vec = await embedOne(env, question);
+	const hits = topKByCosine(vec, idx.chunks, 5);
+	const parts: string[] = [];
+	const refs: string[] = [];
+	const seen = new Set<string>();
+	for (const h of hits) {
+		parts.push(`[vault:${h.path}]\n${h.text.slice(0, 1500)}`);
+		if (!seen.has(h.path)) {
+			seen.add(h.path);
+			refs.push(`vault:${h.path}`);
 		}
 	}
 	return { material: parts.join("\n\n"), refs };

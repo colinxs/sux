@@ -243,7 +243,7 @@ export const advise: Fn = {
 				const parts = chunkText(body);
 				if (!parts.length) return failWith("upstream_error", "the source produced no chunks.");
 
-				const vecs = await embed(env, parts); // one batched round-trip
+				const vecs = await embed(env, parts); // embed() itself slices into ≤100-text batches
 				const ts = Date.now();
 				for (let i = 0; i < parts.length; i++) {
 					const c: SourceChunk = { id: newId(), source_id, domain, authority, title, text: parts[i], embedding: vecs[i], ts: ts + i };

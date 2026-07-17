@@ -61,6 +61,11 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   branch is held by another worktree, and a following rebase/push then operates on the WRONG
   branch. Drain/rebase PRs from a **detached scratch worktree** (`git worktree add --detach
   $SCRATCH origin/<br>` → rebase → `push HEAD:<br>`), never a plain checkout.
+- **A bot-build's starting branch can already be behind `origin/main`** — other builders'
+  PRs land while yours is queued/running, and an issue can reference a file a just-merged PR
+  added (e.g. #712 needed #708/#710's `_vault_semantic.ts`, absent from the branch's own base).
+  `git fetch origin main && git rebase origin/main` before assuming a referenced file/symbol
+  is missing or the issue is stale — it's often just that your branch hasn't caught up yet.
 - **When a code-audit finding hinges on the exact contents of a regex or other
   code containing non-printable/control characters, verify with `od -c`/`cat -A`
   (or execute the code against the claimed-failing input) before filing or

@@ -2,7 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // recall composes obsidian/search/jmap — mock them (each has its own suite) so we test
 // recall's fan-out, graceful degrade, citation collection, and untrusted-fenced synthesis.
-vi.mock("./obsidian", () => ({ obsidian: { run: vi.fn() } }));
+// The git-backend vault leg now goes through _vault_semantic.ts's real vaultHead/vaultCfg
+// (unmocked) to exercise the actual wiring — only obsidian.run (list/read/search) is a mock,
+// same pattern vault-mcp.test.ts uses for vault_semantic. vaultHead's GitHub ref lookup rides
+// smartFetch, so that's mocked too (routes.handler answers it).
+const routes = vi.hoisted(() => ({ handler: null as null | ((url: string, init?: any) => Response) }));
+vi.mock("../proxy", () => ({ smartFetch: vi.fn(async (_env: any, url: string, init?: any) => routes.handler!(url, init)) }));
+vi.mock("./obsidian", async () => {
+	const actual = await vi.importActual<any>("./obsidian");
+	return { ...actual, obsidian: { run: vi.fn() } };
+});
 vi.mock("./web_search", () => ({ webSearch: { run: vi.fn() }, defaultEngine: vi.fn(() => "ddg") }));
 vi.mock("./jmap", () => ({ jmap: { run: vi.fn() } }));
 vi.mock("./_dropbox-full", () => ({ hasDropboxFull: vi.fn(() => false), searchFull: vi.fn(), readFull: vi.fn() }));
@@ -33,16 +42,36 @@ const calHas = hasCalDav as unknown as ReturnType<typeof vi.fn>;
 const calList = listCalendars as unknown as ReturnType<typeof vi.fn>;
 const calReport = reportObjects as unknown as ReturnType<typeof vi.fn>;
 
+// A KV-backed HEAD sha for the git-backend semantic vault leg (vaultHead → smartFetch → this route).
+const HEAD = "head-1";
+
 let aiRun: ReturnType<typeof vi.fn>;
-const env = () => ({ AI: { run: aiRun } }) as any;
+let kv: { get: ReturnType<typeof vi.fn>; put: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn>; list: ReturnType<typeof vi.fn> };
+const env = () => ({ AI: { run: aiRun }, OAUTH_KV: kv, OBSIDIAN_VAULT_REPO: "me/vault" }) as any;
 const noAiEnv = () => ({}) as any;
 
 beforeEach(() => {
-	aiRun = vi.fn(async () => ({ response: "Your oncologist is Dr. Chen and the next scan is in March [mail:Scan]; appointments are Tuesdays [vault:Areas/Health.md]." }));
-	// Vault: search → one hit; read → the note body.
-	obs.mockImplementation(async (_e: any, a: any) =>
-		a.action === "search" ? okR(JSON.stringify({ hits: [{ path: "Areas/Health.md" }] })) : okR("Dr. Chen is my oncologist. Appointments are Tuesdays."),
+	const store = new Map<string, string>();
+	kv = {
+		get: vi.fn(async (k: string) => store.get(k) ?? null),
+		put: vi.fn(async (k: string, v: string) => void store.set(k, v)),
+		delete: vi.fn(async (k: string) => void store.delete(k)),
+		list: vi.fn(async ({ prefix }: { prefix?: string } = {}) => ({ keys: [...store.keys()].filter((k) => !prefix || k.startsWith(prefix)).map((name) => ({ name })), list_complete: true as const })),
+	};
+	routes.handler = (url: string) => (url.includes("/git/ref/heads/") ? new Response(JSON.stringify({ object: { sha: HEAD } }), { status: 200 }) : new Response(JSON.stringify({ message: "not needed by this test" }), { status: 404 }));
+	// AI.run answers embeddings ({data}) for the embed model (query AND the vault's chunks all
+	// score identically, so a single note surfaces as one hit) and synthesis ({response}) for text.
+	aiRun = vi.fn(async (model: string, inputs: any) =>
+		model.includes("bge")
+			? { data: (inputs.text as string[]).map(() => [1, 0, 0]) }
+			: { response: "Your oncologist is Dr. Chen and the next scan is in March [mail:Scan]; appointments are Tuesdays [vault:Areas/Health.md]." },
 	);
+	// Vault: list → one note; read → the note body; search (remote-backend path) → one hit.
+	obs.mockImplementation(async (_e: any, a: any) => {
+		if (a.action === "list") return okR(JSON.stringify({ notes: ["Areas/Health.md"] }));
+		if (a.action === "search") return okR(JSON.stringify({ hits: [{ path: "Areas/Health.md" }] }));
+		return okR("Dr. Chen is my oncologist. Appointments are Tuesdays.");
+	});
 	mail.mockResolvedValue(okR(JSON.stringify({ methodResponses: [["Email/get", { list: [{ id: "e1", subject: "Scan", from: [{ email: "chen@clinic.com" }], receivedAt: "2026-03-01", preview: "next scan in March" }] }, "g"]] })));
 	web.mockResolvedValue(okR("1. Oncology scans — https://ex.com — what to expect from a scan"));
 });
@@ -68,7 +97,9 @@ describe("recall", () => {
 		expect(out.sources).toMatchObject({ vault: "1 hit(s)", mail: "1 hit(s)", web: "1 hit(s)" });
 		expect(out.citations).toEqual(expect.arrayContaining(["vault:Areas/Health.md", "mail:Scan", "web"]));
 		// The untrusted material was fenced (llm() wraps the user arg) and the question rode the system role.
-		const [system, user] = aiRun.mock.calls[0][1].messages.map((m: any) => m.content);
+		// The vault leg embeds first (query + note chunks), so find the synthesis call by model, not index 0.
+		const synthCall = aiRun.mock.calls.find((c: any) => !String(c[0]).includes("bge"))!;
+		const [system, user] = synthCall[1].messages.map((m: any) => m.content);
 		expect(system).toContain("who is my oncologist?");
 		expect(user).toContain("<<<DATA>>>");
 		expect(user).toContain("Dr. Chen is my oncologist"); // the vault note body is in the fenced data
@@ -84,13 +115,15 @@ describe("recall", () => {
 	});
 
 	it("says so (and skips the LLM) when nothing matches", async () => {
-		obs.mockResolvedValue(okR(JSON.stringify({ hits: [] })));
+		obs.mockImplementation(async (_e: any, a: any) => (a.action === "list" ? okR(JSON.stringify({ notes: [] })) : okR(JSON.stringify({ hits: [] }))));
 		mail.mockResolvedValue(okR(JSON.stringify({ methodResponses: [["Email/get", { list: [] }, "g"]] })));
 		web.mockResolvedValue(okR("(no results)"));
 		const out = parse(await recall.run(env(), { question: "obscure thing" }));
 		expect(out.answer).toContain("couldn't find anything");
 		expect(out.citations).toEqual([]);
-		expect(aiRun).not.toHaveBeenCalled();
+		// The embed model may still be called to rank an empty vault/learned set, but the
+		// (expensive) text-synthesis model must never run when nothing was gathered.
+		expect(aiRun.mock.calls.some((c) => !String(c[0]).includes("bge"))).toBe(false);
 	});
 
 	it("adds files (Mode B) as a source when configured: inlines a small text hit, cites [files:…]", async () => {
@@ -134,15 +167,6 @@ describe("recall", () => {
 		expect(web).toHaveBeenCalled();
 		expect(out.sources.web).toBe("1 hit(s)");
 		expect(out.citations).toContain("web");
-	});
-
-	it("strips OBSIDIAN_VAULT_DIR from search-hit paths before reading (no double-prefix 404)", async () => {
-		obs.mockImplementation(async (_e: any, a: any) => (a.action === "search" ? okR(JSON.stringify({ hits: [{ path: "notes/Areas/Health.md" }] })) : okR("Dr. Chen is my oncologist.")));
-		const dirEnv = { AI: { run: aiRun }, OBSIDIAN_VAULT_DIR: "notes" } as any;
-		const out = parse(await recall.run(dirEnv, { question: "oncologist?", sources: ["vault"] }));
-		const readCall = obs.mock.calls.find((c: any) => c[1].action === "read");
-		expect(readCall?.[1].path).toBe("Areas/Health.md"); // vault-relative, not the double-prefixed repo path
-		expect(out.sources.vault).toBe("1 hit(s)"); // vault contributed rather than being silently dropped
 	});
 
 	// A Map-backed OAUTH_KV seeded with a taught example, plus an embed-aware AI.run so the
@@ -218,6 +242,23 @@ describe("recall", () => {
 		expect(backends).toContain("remote");
 		expect(backends.every((b) => b === "remote")).toBe(true); // search AND read hit the live vault, not dead git code-search
 		expect(out.sources.vault).toBe("1 hit(s)");
+	});
+
+	it("uses vault_semantic's cosine kNN (not lexical search) for the git-backend vault leg — GitHub code-search can't see a private repo", async () => {
+		obs.mockImplementation(async (_e: any, a: any) => {
+			if (a.action === "search") throw new Error("git backend must not lexically search — code-search returns nothing on a private repo");
+			if (a.action === "list") return okR(JSON.stringify({ notes: ["Diet/plan.md", "Fitness/walk.md"] }));
+			const body = a.path === "Diet/plan.md" ? "Avoid sodium above 1500mg daily." : "Walk for exercise thirty minutes.";
+			return okR(body);
+		});
+		// Keyword-shaped embeddings so kNN ranking is testable (mirrors advise.test.ts's embedVec).
+		aiRun = vi.fn(async (model: string, inputs: any) => {
+			if (!model.includes("bge")) return { response: "sodium note [vault:Diet/plan.md]." };
+			const embedVec = (t: string) => [t.toLowerCase().includes("sodium") ? 1 : 0, t.toLowerCase().includes("exercise") ? 1 : 0, 0.1];
+			return { data: (inputs.text as string[]).map(embedVec) };
+		});
+		const out = parse(await recall.run(env(), { question: "how much sodium can I have", sources: ["vault"] }));
+		expect(out.citations[0]).toBe("vault:Diet/plan.md"); // the sodium note ranks first by cosine similarity
 	});
 
 	const VEVENT = [

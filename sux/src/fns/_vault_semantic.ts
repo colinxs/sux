@@ -15,21 +15,11 @@ import { type VaultCfg, readVaultSemanticBlob, vaultHead, writeVaultSemanticBlob
 const VERSION = 1;
 // Mirrors vault-mcp.ts's INDEX_MAX — bounds a pathological vault, well above the real ~500-note size.
 const INDEX_MAX = 5000;
-// Workers AI's bge-base-en-v1.5 caps a single embed() call at 100 texts — batch the vault's
-// chunks into calls of this size rather than one call per chunk (N/EMBED_BATCH round-trips,
-// not N) or one giant call that Workers AI would reject.
-const EMBED_BATCH = 100;
 
 export type SemanticChunk = { path: string; title: string; text: string; embedding: number[] };
 export type SemanticIndex = { sha: string; version: number; at: number; total: number; truncated: boolean; chunks: SemanticChunk[] };
 
 const titleOf = (path: string): string => (path.split("/").pop() ?? path).replace(/\.md$/i, "");
-
-async function embedBatched(env: RtEnv, texts: string[]): Promise<number[][]> {
-	const out: number[][] = [];
-	for (let i = 0; i < texts.length; i += EMBED_BATCH) out.push(...(await embed(env, texts.slice(i, i + EMBED_BATCH))));
-	return out;
-}
 
 /** Read every note in full, chunk it, and embed every chunk (batched). Mirrors vault-mcp.ts's
  *  buildVaultIndex shape (list → per-note read → derive), but keeps the full chunked body
@@ -56,7 +46,7 @@ export async function buildVaultSemanticIndex(env: RtEnv, sha: string, cfg: Vaul
 		}),
 	);
 	const parts = perNote.flat();
-	const vecs = parts.length ? await embedBatched(env, parts.map((p) => p.text)) : [];
+	const vecs = parts.length ? await embed(env, parts.map((p) => p.text)) : [];
 	const chunks: SemanticChunk[] = parts.map((p, i) => ({ ...p, embedding: vecs[i] ?? [] }));
 	return { sha, version: VERSION, at: Date.now(), total: all.length, truncated: all.length > INDEX_MAX || failed > 0, chunks };
 }
