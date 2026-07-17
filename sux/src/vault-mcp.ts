@@ -1,7 +1,10 @@
+import { hasAI } from "./ai";
 import { fingerprint, ledger } from "./ledger";
 import { fail, failWith, ok, type RtEnv, type ToolResult } from "./registry";
+import { embedOne } from "./fns/_embed";
 import { ingest } from "./fns/ingest";
 import { obsidian, readGitContents, RETRY_ATTEMPTS, retryDelay, readVaultIndexBlob, type VaultCfg, vaultCfg, vaultHead, vaultPut, writeVaultIndexBlob } from "./fns/obsidian";
+import { topKByCosine, vaultSemanticIndex } from "./fns/_vault_semantic";
 import { vaultToday } from "./fns/_util";
 import {
 	bodyExcerpt,
@@ -479,6 +482,37 @@ const TOOLS: VaultTool[] = [
 				const { records, total, truncated } = await scanVault(env, a?.folder ? String(a.folder) : undefined, clampCap(a?.cap));
 				const hits = records.filter((r) => (r.excerpt ?? "").toLowerCase().includes(q) || (r.keywords ?? []).includes(q)).map((r) => ({ path: r.path, excerpt: r.excerpt ?? "" }));
 				return ok(JSON.stringify({ q, count: hits.length, hits, scanned: records.length, total, truncated }, null, 2));
+			} catch (e) {
+				return fail(String((e as Error)?.message ?? e));
+			}
+		},
+	},
+	{
+		name: "vault_semantic",
+		description:
+			"Semantic search over the vault via Workers-AI embeddings — finds notes by MEANING, not substring (complements vault_search_body's exact-text grep). Brute-force cosine kNN over every note chunked+embedded (no Vectorize; KV-cached, HEAD-keyed like the derived index — rebuilds the whole embedded set when the vault changes). Returns the top-k matching chunks with their source note path. Needs the Workers-AI binding.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["q"],
+			properties: {
+				q: { type: "string", description: "Natural-language query." },
+				k: { type: "integer", minimum: 1, maximum: 50, description: "How many chunk matches to return (default 8)." },
+			},
+		},
+		run: async (env, a) => {
+			const q = typeof a?.q === "string" ? a.q.trim() : "";
+			if (!q) return failWith("bad_input", "vault_semantic requires a non-empty `q`.");
+			if (!hasAI(env)) return failWith("not_configured", "Workers AI binding not configured (add \"ai\" to wrangler) — needed to embed the vault and the query.");
+			const cfg = vaultCfg(env);
+			if ("error" in cfg) return failWith("not_configured", cfg.error);
+			try {
+				const idx = await vaultSemanticIndex(env, cfg);
+				if (!idx) return failWith("upstream_error", "could not resolve the vault's HEAD (offline or no OAUTH_KV) — needed to build/read the semantic index.");
+				const vec = await embedOne(env, q);
+				const k = Math.min(50, Math.max(1, Number(a?.k) || 8));
+				const hits = topKByCosine(vec, idx.chunks, k);
+				return ok(JSON.stringify({ q, count: hits.length, hits, scanned: idx.chunks.length, total: idx.total, truncated: idx.truncated }, null, 2));
 			} catch (e) {
 				return fail(String((e as Error)?.message ?? e));
 			}

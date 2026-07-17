@@ -2,11 +2,14 @@ import { test, expect, vi } from "vitest";
 import { listDurableRuns, runVerb } from "./run.js";
 
 // A minimal in-memory KVNamespace — just enough of put/get/list for the run index.
+// Records the opts each put() was called with so tests can assert on expirationTtl.
 function fakeKv() {
 	const store = new Map<string, string>();
+	const putCalls: Array<{ key: string; opts?: { expirationTtl?: number } }> = [];
 	return {
-		put: async (key: string, value: string) => {
+		put: async (key: string, value: string, opts?: { expirationTtl?: number }) => {
 			store.set(key, value);
+			putCalls.push({ key, opts });
 		},
 		get: async (key: string) => store.get(key) ?? null,
 		list: async ({ prefix }: { prefix: string }) => ({
@@ -14,6 +17,7 @@ function fakeKv() {
 			list_complete: true,
 			cursor: undefined,
 		}),
+		putCalls,
 	} as any;
 }
 
@@ -51,6 +55,15 @@ test("a durable run gets indexed in KV, and listDurableRuns surfaces it with liv
 	expect(runs).toHaveLength(1);
 	expect(runs[0]).toMatchObject({ instanceId, opId: "assimilate-pdfs", status: "waiting" });
 	expect(runs[0].startedAt).toBeGreaterThan(0);
+});
+
+test("indexing a durable run sets an expirationTtl so the index self-evicts instead of growing forever", async () => {
+	const kv = fakeKv();
+	const env = { OAUTH_KV: kv, OP_WORKFLOW: fakeWorkflow("waiting") } as any;
+	await runVerb({ op: "assimilate-pdfs", input: {}, mode: "durable" }, env);
+
+	expect(kv.putCalls).toHaveLength(1);
+	expect(kv.putCalls[0].opts?.expirationTtl).toBeGreaterThan(0);
 });
 
 test("listDurableRuns returns the newest run first and reports 'unknown' when a status lookup fails", async () => {

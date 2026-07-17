@@ -104,6 +104,17 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   Workers-AI `embed()`/`cosine()`, used by `#701`'s `vault_semantic` gap) means
   the rest is a small lift. Recognize effort-`L` issues of this shape early and
   drop them back to the queue rather than half-building them.
+- **Correction to the bullet above's example: `vault_semantic` (#701/#708) turned out
+  buildable with zero new resources** — `_source.ts`/`_examples.ts` already prove the
+  brute-force-KV-cosine pattern needs only the existing `AI` + `OAUTH_KV` bindings; #701
+  was closed on a mistaken premise and rebuilt in #708. The general principle (a feature
+  needing a genuinely NEW Cloudflare resource isn't buildable in one session) still
+  holds — just verify the "needs Vectorize/D1/etc." premise before trusting it, don't
+  take a prior closing note at face value. Separately: Workers-AI's `bge-base-en-v1.5`
+  hard-caps a single `embed()`/`AI.run` call at **100 texts** (undocumented in this repo
+  before #708) — any call site batching an unbounded chunk count (e.g. a long document)
+  must slice into ≤100-sized batches or the call errors; see `_vault_semantic.ts`'s
+  `embedBatched()` for the shape.
 
 ## House style
 
