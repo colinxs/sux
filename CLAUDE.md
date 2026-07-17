@@ -130,6 +130,13 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   — which DOES close over `env` already — for an env-needing terminal write (see `caps.ts`'s
   `mailLabelsSink`). Don't widen the `Caps` type itself for this; it's defined in `@suxos/lib`,
   a separate read-only-in-sandbox repo (see the `../suxlib` gotcha above).
+- **Bare `npx vitest run <path>` silently misbehaves in this repo** — the include glob and
+  the `cloudflare:workers` alias (needed because `op-engine/durable.ts`'s `OpWorkflow` value-
+  imports it, and `index.ts` re-exports `OpWorkflow`, pulling it into almost every test file's
+  import graph) both live in `sux/vitest.config.ts`, which only `npm test`/`npm run ci` pass
+  automatically. A bare invocation either reports "No test files found" (wrong cwd/glob) or
+  `Cannot find package 'cloudflare:workers'` (no alias) — neither means the code is broken.
+  For an ad hoc single-file run use `npx vitest run --config sux/vitest.config.ts <path>`.
 
 ## House style
 
