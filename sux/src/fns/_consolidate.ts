@@ -111,7 +111,12 @@ function duplicateKey(path: string): string {
 		.trim();
 }
 
-export type ConsolidateFindings = { week: string; stale: StaleNote[]; duplicate_candidates: DuplicateCandidate[] };
+/** `stale_count`/`duplicate_count` hold the REAL (untruncated) totals from the sweep that
+ *  produced this cache entry — `stale`/`duplicate_candidates` themselves are capped to
+ *  MAX_CACHED_FINDINGS, so a consumer that needs an accurate count (the agenda digest, #781)
+ *  must read the `_count` fields, not `.length`. Optional for back-compat with a cache entry
+ *  written before these fields existed; a consumer should fall back to `.length` in that case. */
+export type ConsolidateFindings = { week: string; stale: StaleNote[]; duplicate_candidates: DuplicateCandidate[]; stale_count?: number; duplicate_count?: number };
 
 /** The most recent successful sweep's findings (bounded to MAX_CACHED_FINDINGS per bucket),
  *  read from the ledger cache — never re-scans the vault. Returns null if consolidate has
@@ -122,10 +127,14 @@ export async function lastConsolidateFindings(env: RtEnv): Promise<ConsolidateFi
 	try {
 		const parsed = JSON.parse(raw);
 		if (!parsed || typeof parsed.week !== "string") return null;
+		const stale = Array.isArray(parsed.stale) ? parsed.stale : [];
+		const duplicate_candidates = Array.isArray(parsed.duplicate_candidates) ? parsed.duplicate_candidates : [];
 		return {
 			week: parsed.week,
-			stale: Array.isArray(parsed.stale) ? parsed.stale : [],
-			duplicate_candidates: Array.isArray(parsed.duplicate_candidates) ? parsed.duplicate_candidates : [],
+			stale,
+			duplicate_candidates,
+			stale_count: typeof parsed.stale_count === "number" ? parsed.stale_count : stale.length,
+			duplicate_count: typeof parsed.duplicate_count === "number" ? parsed.duplicate_count : duplicate_candidates.length,
 		};
 	} catch {
 		return null;
@@ -238,7 +247,16 @@ export async function runConsolidate(env: RtEnv, opts: { week?: string; force?: 
 		await deps.digestAppend(env, `Consolidation/${week}.md`, buildDigest(week, days, stale, duplicate_candidates, scanned, truncated, windowOffset, paths.length));
 		await led.mark(key);
 		await led.mark(CURSOR_KEY, String(nextOffset));
-		await led.mark(LAST_REPORT_KEY, JSON.stringify({ week, stale: stale.slice(0, MAX_CACHED_FINDINGS), duplicate_candidates: duplicate_candidates.slice(0, MAX_CACHED_FINDINGS) }));
+		await led.mark(
+			LAST_REPORT_KEY,
+			JSON.stringify({
+				week,
+				stale: stale.slice(0, MAX_CACHED_FINDINGS),
+				duplicate_candidates: duplicate_candidates.slice(0, MAX_CACHED_FINDINGS),
+				stale_count: stale.length,
+				duplicate_count: duplicate_candidates.length,
+			}),
+		);
 		return { week, scanned, truncated, window_offset: windowOffset, next_offset: nextOffset, stale, duplicate_candidates, digest_written: true };
 	} catch (e) {
 		const msg = `vault append failed: ${errMsg(e)}`;

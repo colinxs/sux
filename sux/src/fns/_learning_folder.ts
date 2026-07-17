@@ -14,6 +14,7 @@
 // raw download with dl=1) and hands study that http(s) URL instead — no Mode B needed.
 import { type RtEnv } from "../registry";
 import { dropbox, hasDropbox, sharedLink } from "./dropbox";
+import { dropboxRawUrl } from "./_util";
 import { oracle, loadKb } from "./oracle";
 import { study } from "./study";
 
@@ -33,16 +34,6 @@ export const learningFolderTopic = (env: RtEnv): string => String(env.LEARNING_F
 const MAX_PER_RUN = 5;
 
 const normPath = (p: string): string => `/${String(p ?? "").replace(/^\/+/, "")}`;
-
-const toRawUrl = (url: string): string => {
-	try {
-		const u = new URL(url);
-		u.searchParams.set("dl", "1");
-		return u.toString();
-	} catch {
-		return url;
-	}
-};
 
 export type LearningFolderEntry = { path: string; name: string };
 
@@ -121,7 +112,7 @@ export async function runLearningFolderSync(env: RtEnv, deps: LearningFolderDeps
 			errors.push(`${entry.path}: could not mint a shared link`);
 			continue;
 		}
-		const r = await deps.studyPdf(env, toRawUrl(url), topic, entry.name);
+		const r = await deps.studyPdf(env, dropboxRawUrl(url), topic, entry.name);
 		if (r.ok) studied.push(entry.path);
 		else errors.push(`${entry.path}: ${r.error ?? "study failed"}`);
 	}
