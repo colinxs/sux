@@ -81,6 +81,14 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   unrelated files resolve; diff `npm test`'s failure set against the same stub on
   a clean `main` to prove your change adds nothing new, then trust real CI (which
   has the actual library) for those files' real behavior.
+- **Cloudflare Workflows' `step.waitForEvent` has no typed/distinguishable error
+  for "the wait timed out"** vs. any other rejection (transport error, dropped
+  RPC) — even Cloudflare's own docs just wrap the whole call in one blanket
+  try/catch. Code that treats *every* caught error as a timeout (e.g. to proceed
+  past a human-approval pause) fails OPEN on real failures, not just timeouts
+  (#682). `sux/src/op-engine/durable.ts`'s `isWaitForEventTimeout` sniffs
+  `error.name`/`.message` for a timeout-shaped string as the least-bad available
+  signal — reuse that heuristic rather than re-deriving it.
 
 ## House style
 
