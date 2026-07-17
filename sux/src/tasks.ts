@@ -170,7 +170,13 @@ async function finishTask(env: RtEnv, ctx: { waitUntil(p: Promise<unknown>): voi
 	if (!current || isTerminal(current.status)) return;
 	const status: TaskStatus = result.isError ? "failed" : "completed";
 	const statusMessage = result.isError ? (result.content?.[0]?.text ?? "Tool execution failed.") : undefined;
-	await putTask(env, { ...current, status, statusMessage, result, lastUpdatedAt: nowIso() });
+	// Re-check immediately before the write: a concurrent tasks/cancel may have
+	// landed its own read-then-write in the gap since `current` was read above.
+	// KV has no compare-and-swap, so this narrows (does not eliminate) the race,
+	// but it's the closest-to-the-write point we can re-check at — see #375.
+	const latest = await getTask(env, taskId);
+	if (!latest || isTerminal(latest.status)) return;
+	await putTask(env, { ...latest, status, statusMessage, result, lastUpdatedAt: nowIso() });
 	const first = Array.isArray(result.content) ? result.content.find((p): p is { type: "text"; text: string } => p?.type === "text" && typeof p.text === "string") : undefined;
 	const event = { tool, ms: Date.now() - startedAt, error: Boolean(result.isError), err: result.isError ? first?.text : undefined };
 	recordCall(env, ctx, event);

@@ -152,6 +152,33 @@ describe("cancelTask", () => {
 		expect(after?.status).toBe("cancelled");
 	});
 
+	it("a cancel that lands between finishTask's read and write is not resurrected (#375)", async () => {
+		const kv = makeKv();
+		const env = makeEnv(kv);
+		const { ctx, deferred } = makeCtx();
+		let resolveRun!: (r: ToolResult) => void;
+		const runPromise = new Promise<ToolResult>((r) => (resolveRun = r));
+		const rec = createTask(env, ctx, "crawl", undefined, () => runPromise);
+		await deferred[0]; // the initial write only — the run() promise is still pending
+
+		// Simulate a `tasks/cancel` landing in the gap between finishTask's
+		// first re-check read and its second, closest-to-the-write re-check —
+		// only the SECOND get triggers it, so the first read still observes "working".
+		let gets = 0;
+		const realGet = kv.get;
+		kv.get = async (key: string) => {
+			gets++;
+			if (gets === 2) await cancelTask(env, rec.taskId);
+			return realGet(key);
+		};
+
+		resolveRun(ok("too late"));
+		await Promise.all(deferred.splice(0));
+
+		const after = await getTask(env, rec.taskId);
+		expect(after?.status).toBe("cancelled");
+	});
+
 	it("returns not_found for an unknown id", async () => {
 		const env = makeEnv(makeKv());
 		const r = await cancelTask(env, "nope");
