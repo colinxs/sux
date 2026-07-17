@@ -124,6 +124,7 @@ import { recall } from "./recall";
 import { get } from "./get";
 import { mail_domain_backfill } from "./mail_domain_backfill";
 import { mail_sieve_hc } from "./mail_sieve_hc";
+import { mail_triage_plan } from "./mail_triage_plan";
 import { uw } from "./uw";
 import { run } from "./run";
 
@@ -248,6 +249,7 @@ export const FUNCTIONS: Fn[] = [
 	get,
 	mail_domain_backfill,
 	mail_sieve_hc,
+	mail_triage_plan,
 	uw,
 	run,
 ];

@@ -1,7 +1,11 @@
-import { test, expect } from "vitest";
+import { test, expect, vi } from "vitest";
 import type { Caps, Handle } from "@suxos/lib";
 import { makeCaps } from "./caps.js";
 import type { RtEnv } from "../registry.js";
+
+type FakeToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
+const labelMessages = vi.fn(async (_env: unknown, ids: string[], label: string, add: boolean): Promise<FakeToolResult> => ({ content: [{ type: "text", text: JSON.stringify({ labeled: ids.length, keyword: label, add }) }] }));
+vi.mock("../mail-mcp.js", () => ({ labelMessages: (...args: [unknown, string[], string, boolean]) => labelMessages(...args) }));
 
 // Fake R2: just enough of the head/get/put surface makeSinks touches.
 test("sinks re-address a Handle (r2 -> published/) and a {summaryHandle} (vault -> vault/)", async () => {
@@ -66,4 +70,36 @@ test("markdownFromPdf: fails loud when toMarkdown returns a format:'error' resul
 test("markdownFromPdf: fails loud when the AI binding is absent", async () => {
 	const { llm } = makeCaps({} as unknown as RtEnv);
 	await expect(llm.markdownFromPdf(new Uint8Array([1]))).rejects.toThrow(/env\.AI\.toMarkdown/);
+});
+
+test("mail-labels sink groups proposals by (label, add) and calls labelMessages once per group", async () => {
+	labelMessages.mockClear();
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	const out = await sinks["mail-labels"].write(
+		[
+			{ id: "1", label: "junk", add: true, confidence: 0.9, reason: "x" },
+			{ id: "2", label: "receipt", add: true, confidence: 0.85, reason: "y" },
+			{ id: "3", label: "junk", add: true, confidence: 0.9, reason: "z" },
+		],
+		{} as Caps,
+	);
+	expect(labelMessages).toHaveBeenCalledTimes(2);
+	expect(labelMessages).toHaveBeenCalledWith({}, ["1", "3"], "junk", true);
+	expect(labelMessages).toHaveBeenCalledWith({}, ["2"], "receipt", true);
+	expect(out).toEqual({ labeled: 3, groups: 2 });
+});
+
+test("mail-labels sink is a no-op on an empty batch (never an error)", async () => {
+	labelMessages.mockClear();
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	const out = await sinks["mail-labels"].write([], {} as Caps);
+	expect(labelMessages).not.toHaveBeenCalled();
+	expect(out).toEqual({ labeled: 0, groups: 0 });
+});
+
+test("mail-labels sink fails loud when labelMessages reports an error", async () => {
+	labelMessages.mockClear();
+	labelMessages.mockResolvedValueOnce({ content: [{ type: "text", text: "[upstream_error] JMAP rejected the patch" }], isError: true });
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	await expect(sinks["mail-labels"].write([{ id: "1", label: "junk", add: true, confidence: 0.9, reason: "x" }], {} as Caps)).rejects.toThrow(/JMAP rejected the patch/);
 });

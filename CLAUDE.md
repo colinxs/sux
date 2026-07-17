@@ -120,6 +120,16 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   before #708) — any call site batching an unbounded chunk count (e.g. a long document)
   must slice into ≤100-sized batches or the call errors; see `_vault_semantic.ts`'s
   `embedBatched()` for the shape.
+- **A durable op's leaf (`op(name, fn, opts)`) only ever receives `caps` (store/llm/clock/
+  sinks) — never `env`**, because `op-engine/registry.ts`'s factories are typed `() => Op`
+  (zero args, by design — see that file's replay-determinism note). A leaf that needs a
+  binding outside `caps` (mail/JMAP, KV, any other RtEnv secret) can't reach it directly.
+  Two ways around it, both used by `mail-triage-plan` (#718): do the env-needing fetch in the
+  CALLING fn before `run` even starts and pass the result in as the op's `input` (see
+  `mail_triage_plan.ts`), or add a new `caps.sinks[name]` target in `caps.ts`'s `makeSinks(env)`
+  — which DOES close over `env` already — for an env-needing terminal write (see `caps.ts`'s
+  `mailLabelsSink`). Don't widen the `Caps` type itself for this; it's defined in `@suxos/lib`,
+  a separate read-only-in-sandbox repo (see the `../suxlib` gotcha above).
 
 ## House style
 
