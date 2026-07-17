@@ -7,7 +7,9 @@ name: Fixer
 
 on:
   schedule:
-    - cron: "17 8 * * *" # feat proposer: 1/day (bug-drain push keeps issue-build/pr-sweeps at 15min)
+    # Deep tier of the 3-cadence proposer (see fixer-bugs.yml 15m / fixer-hourly.yml 30m):
+    # bugs + feature ideas + an explicit push for at least one ambitious/large idea per pass.
+    - cron: "23 * * * *"
   workflow_dispatch:
 
 jobs:
@@ -24,4 +26,5 @@ jobs:
       # routinely needs more turns to read broadly before it can propose anything (observed:
       # 2026-07-14 dispatch hit the cap with zero issues filed).
       max-turns: 40
+      scope: deep
     secrets: inherit

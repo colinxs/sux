@@ -1,0 +1,27 @@
+name: Fixer (15m, bugs only)
+
+# Tightest tier of the 3-cadence proposer (see fixer-30m.yml 30m bugs+feats / fixer.yml 1h
+# deep). Runs every 15m with scope: bugs — correctness bugs only, no feature/doc/dead-code
+# proposals, so the cheapest and most time-sensitive signal (a bug in code that just landed)
+# surfaces fast without also generating feature noise on every pass. Distinct workflow name
+# -> distinct concurrency group, so this never blocks on or races the other tiers. Safe by
+# construction: the reusable's own throttle check (check-throttle, defer-at: yellow) already
+# stands this down under budget pressure, same as every other proposer-stage caller.
+# Reusable workflow: SuxOS/.github/.github/workflows/fixer.yml
+
+on:
+  schedule:
+    - cron: "3,18,33,48 * * * *" # every 15m, offset to dodge top-of-hour rush
+  workflow_dispatch:
+
+jobs:
+  fixer:
+    permissions:
+      contents: read
+      issues: write
+      id-token: write
+    uses: SuxOS/.github/.github/workflows/fixer.yml@main
+    with:
+      max-turns: 10 # tight: only fresh, cheap-to-spot bugs, not a repo re-sweep
+      scope: bugs
+    secrets: inherit
