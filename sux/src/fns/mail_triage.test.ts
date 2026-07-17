@@ -59,7 +59,7 @@ describe("mail_triage.run", () => {
 		core.runTriage.mockResolvedValueOnce(report);
 		const r = await mail_triage.run(env, { mailbox: "inbox", max: 10, dry_run: true, unread: false });
 		expect(core.defaultDeps).toHaveBeenCalledTimes(1);
-		expect(core.runTriage).toHaveBeenCalledWith(env, { mailbox: "inbox", max: 10, dry_run: true, cycle_id: undefined, budget_ms: undefined, unread: false }, deps);
+		expect(core.runTriage).toHaveBeenCalledWith(env, { mailbox: "inbox", max: 10, dry_run: true, cycle_id: undefined, budget_ms: undefined, unread: false, sweep_backlog: false }, deps);
 		expect(body(r)).toEqual(report);
 	});
 

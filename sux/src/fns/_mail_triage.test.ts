@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ACTION_FOR, ARCHIVE_CONFIDENCE_THRESHOLD, AUTO_ACT_OPS, CONFIDENCE_THRESHOLD, DRAFT_REPLY_CONFIDENCE_THRESHOLD, classifyMessage, detectReplyDraft, hasMailTriage, hasMailTriageAct, isAutoActAllowed, isSensitiveSender, resolveOp, runTriage, type TriageDeps, type TriageLabel, type TriageMsg, type TriageOp } from "./_mail_triage";
+import { ACTION_FOR, ARCHIVE_CONFIDENCE_THRESHOLD, AUTO_ACT_OPS, CONFIDENCE_THRESHOLD, DRAFT_REPLY_CONFIDENCE_THRESHOLD, classify, classifyMessage, detectReplyDraft, hasMailTriage, hasMailTriageAct, isAutoActAllowed, isSensitiveSender, resolveOp, runTriage, type TriageDeps, type TriageLabel, type TriageMsg, type TriageOp } from "./_mail_triage";
 import { appendTriageEntries, bulkUndo, readTriageEntries } from "./_mail_triage_log";
 
 // A single OAUTH_KV stub, TTL-aware only enough for the ledger (opts ignored). Mirrors the
@@ -112,6 +112,45 @@ describe("classifier — rules stub", () => {
 			const c = cases.find((k) => k[2] === l)![1];
 			expect(classifyMessage(c).confidence).toBeGreaterThanOrEqual(CONFIDENCE_THRESHOLD);
 		}
+	});
+	it("labels a strong promotional pitch spam (distinct from junk's scam cues and mailing_list's bulk-sender footer), reversibly", () => {
+		const c = classifyMessage({ id: "sp1", from: "deals@somebrand.example", subject: "Flash sale: 40% off everything, shop now" });
+		expect(c.label).toBe("spam");
+		expect(c.confidence).toBeGreaterThanOrEqual(CONFIDENCE_THRESHOLD);
+		expect(ACTION_FOR.spam).toEqual({ kind: "label", label: "spam", add: true });
+		expect(isAutoActAllowed(ACTION_FOR.spam!)).toBe(true);
+	});
+});
+
+describe("classify() — ambiguous-spam AI seam (best-effort, cost-controlled)", () => {
+	// A weak/borderline cue only ("coupon") — NOT one of the strong SPAM_SUBJECT_CUE phrases, so
+	// classifyMessage's sync rules fall through to "unknown" and leave the decision to the AI seam.
+	const ambiguous: TriageMsg = { id: "amb1", from: "someone@randomcorp.example", subject: "New coupon just for you" };
+	it("without an AI binding, falls back to the rules-stub result untouched", async () => {
+		const c = await classify(envWith(), ambiguous);
+		expect(c).toEqual(classifyMessage(ambiguous));
+	});
+	it("with AI available, a SPAM verdict on a weak/ambiguous cue upgrades the label", async () => {
+		const env = envWith({}) as any;
+		env.AI = { run: vi.fn(async () => ({ response: "SPAM" })) };
+		const c = await classify(env, ambiguous);
+		expect(c.label).toBe("spam");
+		expect(env.AI.run).toHaveBeenCalledTimes(1);
+	});
+	it("with AI available, a NOT_SPAM verdict (or no weak cue at all) leaves the base result alone", async () => {
+		const env = envWith({}) as any;
+		env.AI = { run: vi.fn(async () => ({ response: "NOT_SPAM" })) };
+		expect((await classify(env, ambiguous)).label).toBe("unknown");
+		// No promotional cue at all → the AI call is never made (cost control).
+		const noCue: TriageMsg = { id: "amb2", from: "someone@randomcorp.example", subject: "Quick question" };
+		await classify(env, noCue);
+		expect(env.AI.run).toHaveBeenCalledTimes(1); // only the `ambiguous` case above called it
+	});
+	it("a model/transport failure best-effort falls back to the base result", async () => {
+		const env = envWith({}) as any;
+		env.AI = { run: vi.fn(async () => { throw new Error("boom"); }) };
+		const c = await classify(env, ambiguous);
+		expect(c.label).toBe("unknown");
 	});
 });
 
@@ -492,6 +531,38 @@ describe("runTriage — unread-default scan (autonomous lane leaves read mail al
 		const searchSpy = vi.fn(async (_env: any, _o: any) => SAMPLE);
 		await runTriage(envWith({ MAIL_TRIAGE_ENABLED: "1" }), { cycle_id: "ud2", unread: false }, { ...deps, search: searchSpy });
 		expect(searchSpy.mock.calls[0][1]).toMatchObject({ unread: false });
+	});
+});
+
+describe("runTriage — sweep_backlog pages through search results", () => {
+	it("advances `position` across pages instead of refetching the same page forever, and defaults unread:false", async () => {
+		const pages = [
+			Array.from({ length: 50 }, (_, i) => ({ id: `bp0-${i}`, from: "someone@randomcorp.example", subject: "hey" })),
+			Array.from({ length: 3 }, (_, i) => ({ id: `bp1-${i}`, from: "someone@randomcorp.example", subject: "hey" })),
+		];
+		const searchSpy = vi.fn(async (_env: any, o: any) => pages[o.position / 50] ?? []);
+		const deps = { ...mkDeps([]), search: searchSpy };
+		const report = await runTriage(envWith({ MAIL_TRIAGE_ENABLED: "1" }), { cycle_id: "sw1", sweep_backlog: true, max: 100 }, deps);
+		// A short second page (3 < the 50 page size) means the mailbox is exhausted — no wasted
+		// third fetch to confirm it.
+		expect(searchSpy).toHaveBeenCalledTimes(2);
+		expect(searchSpy.mock.calls[0][1]).toMatchObject({ unread: false, position: 0 });
+		expect(searchSpy.mock.calls[1][1]).toMatchObject({ position: 50 });
+		expect(report.scanned).toBe(53);
+	});
+	it("a plain (non-sweep) cycle still fetches exactly one page — unaffected by the pagination change", async () => {
+		const deps = mkDeps(SAMPLE);
+		const searchSpy = vi.fn(async (_env: any, _o: any) => SAMPLE);
+		await runTriage(envWith({ MAIL_TRIAGE_ENABLED: "1" }), { cycle_id: "sw2" }, { ...deps, search: searchSpy });
+		expect(searchSpy).toHaveBeenCalledTimes(1);
+	});
+	it("stops once `max` total messages are scanned, even mid-page", async () => {
+		const bigPage = Array.from({ length: 50 }, (_, i) => ({ id: `bp2-${i}`, from: "someone@randomcorp.example", subject: "hey" }));
+		const searchSpy = vi.fn(async () => bigPage);
+		const deps = { ...mkDeps([]), search: searchSpy };
+		const report = await runTriage(envWith({ MAIL_TRIAGE_ENABLED: "1" }), { cycle_id: "sw3", sweep_backlog: true, max: 10 }, deps);
+		expect(report.scanned).toBe(10);
+		expect(searchSpy).toHaveBeenCalledTimes(1);
 	});
 });
 

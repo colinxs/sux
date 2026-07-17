@@ -16,16 +16,17 @@ export const mail_triage: Fn = {
 	surface: "leaf",
 	annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
 	description:
-		"Autonomous mail triage: classify inbox messages and (when armed) act with REVERSIBLE ops ONLY — add a label, archive, unarchive, undelete — plus draft-reply, which stages a suggested reply DRAFT (to Drafts, for your review) for a personal message that asks for a reply and NEVER sends. NEVER a junk-move, label-remove, delete, or send. Archiving (the one op that hides mail) fires only when highly confident; below that bar a declutter guess is labeled in place instead. action:'run' (default) processes new/unseen messages once (idempotent per message); 'undo' reverses a whole cycle by its cycle_id (moves/labels only — staged drafts are left for you to send or delete); 'log' reads the action log. DORMANT unless MAIL_TRIAGE_ENABLED is set; suggest-only (no actions) until MAIL_TRIAGE_ACT is also set. Pass dry_run:true to force suggest-only. Each cycle appends a did/suggests/undo digest to the vault Daily note.",
+		"Autonomous mail triage: classify inbox messages and (when armed) act with REVERSIBLE ops ONLY — add a label, archive, unarchive, undelete — plus draft-reply, which stages a suggested reply DRAFT (to Drafts, for your review) for a personal message that asks for a reply and NEVER sends. NEVER a junk-move, label-remove, delete, or send. Archiving (the one op that hides mail) fires only when highly confident; below that bar a declutter guess is labeled in place instead. action:'run' (default) processes new/unseen messages once (idempotent per message); 'undo' reverses a whole cycle by its cycle_id (moves/labels only — staged drafts are left for you to send or delete); 'log' reads the action log. Pass sweep_backlog:true to page through the EXISTING backlog (already-read mail included by default) instead of just the newest page, still reversible-only. DORMANT unless MAIL_TRIAGE_ENABLED is set; suggest-only (no actions) until MAIL_TRIAGE_ACT is also set. Pass dry_run:true to force suggest-only. Each cycle appends a did/suggests/undo digest to the vault Daily note.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
 		properties: {
 			action: { type: "string", enum: ["run", "undo", "log"], default: "run", description: "run a cycle, undo a cycle (needs cycle_id), or read the log." },
 			mailbox: { type: "string", description: "Source mailbox role to triage (default inbox)." },
-			max: { type: "integer", minimum: 1, maximum: 100, description: "Max messages to process this cycle (default 25)." },
+			max: { type: "integer", minimum: 1, maximum: 100, description: "Max messages to process this cycle (default 25; with sweep_backlog this is the total across all pages)." },
 			dry_run: { type: "boolean", description: "Force suggest-only: classify + digest, mutate nothing (even if MAIL_TRIAGE_ACT is set)." },
-			unread: { type: "boolean", description: "Only consider unread messages (default true — the bot leaves intentionally-read inbox mail alone). Pass false to also scan read mail." },
+			unread: { type: "boolean", description: "Only consider unread messages (default true, or false when sweep_backlog is set). Pass false to also scan read mail." },
+			sweep_backlog: { type: "boolean", description: "Sweep the existing backlog: page through search results (instead of just the newest page) until the mailbox is exhausted, `max` is reached, or the budget runs out. Still reversible-only (same classify to confidence-gate to act to log loop)." },
 			cycle_id: { type: "string", description: "Override the cycle id (for undo, or deterministic/idempotent runs)." },
 			budget_ms: { type: "integer", description: "Self-imposed wall-clock budget for the loop (cron bypasses FN_DEADLINE_MS)." },
 			limit: { type: "integer", minimum: 1, maximum: 500, description: "action:'log' — how many log entries to return." },
@@ -48,7 +49,7 @@ export const mail_triage: Fn = {
 				return ok(oj(res));
 			}
 			const deps = await defaultDeps();
-			const report = await runTriage(env, { mailbox: a?.mailbox ? String(a.mailbox) : undefined, max: a?.max, dry_run: a?.dry_run === true, cycle_id: a?.cycle_id ? String(a.cycle_id) : undefined, budget_ms: a?.budget_ms, unread: typeof a?.unread === "boolean" ? a.unread : undefined }, deps);
+			const report = await runTriage(env, { mailbox: a?.mailbox ? String(a.mailbox) : undefined, max: a?.max, dry_run: a?.dry_run === true, cycle_id: a?.cycle_id ? String(a.cycle_id) : undefined, budget_ms: a?.budget_ms, unread: typeof a?.unread === "boolean" ? a.unread : undefined, sweep_backlog: a?.sweep_backlog === true }, deps);
 			return ok(oj(report));
 		} catch (e) {
 			return failWith("upstream_error", errMsg(e));

@@ -52,7 +52,7 @@ export const hasMailTriage = (env: RtEnv): boolean => flagOn(env.MAIL_TRIAGE_ENA
 export const hasMailTriageAct = (env: RtEnv): boolean => hasMailTriage(env) && flagOn(env.MAIL_TRIAGE_ACT);
 
 // ── Classifier (rules stub) ───────────────────────────────────────────────────
-export type TriageLabel = "junk" | "transaction" | "receipt" | "amazon_return" | "mailing_list" | "notification" | "important" | "personal" | "unknown";
+export type TriageLabel = "junk" | "spam" | "transaction" | "receipt" | "amazon_return" | "mailing_list" | "notification" | "important" | "personal" | "unknown";
 /** `op` is an optional PER-MESSAGE reversible override of the label's default `ACTION_FOR` op —
  *  used by service-notification classification to attach a type-specific label keyword (e.g.
  *  `gh:ci-fail`) instead of the label's blanket action. It is still funnelled through the same
@@ -123,6 +123,7 @@ export const isAutoActAllowed = (op: TriageOp): boolean => (AUTO_ACT_OPS as read
  *  `unknown` stays untouched. Table-driven: a new specific label is one row + its rule. */
 export const ACTION_FOR: Record<TriageLabel, TriageOp | null> = {
 	junk: { kind: "label", label: "junk", add: true },
+	spam: { kind: "label", label: "spam", add: true },
 	transaction: { kind: "label", label: "transaction", add: true },
 	receipt: { kind: "label", label: "receipt", add: true },
 	amazon_return: { kind: "label", label: "amazon-return", add: true },
@@ -173,6 +174,14 @@ const AMAZON_RETURN_CUE = /\b(return|refund|return label|item returned|drop off|
 // a NON-personal domain — never a body cue alone from a real person's mailbox.
 const MAILING_LIST_CUE = /\b(newsletter|digest|weekly|unsubscribe|this email was sent to|view (this|in) (email )?(in )?(your )?browser|manage (your )?preferences)\b/i;
 const MAILING_LIST_FROM = /(newsletter|no-?reply|news@|updates?@|hello@|team@|marketing@|list@|announce@)/i;
+// Promotional/marketing spam — distinct from JUNK (outright scam cues) and MAILING_LIST (a
+// self-identifying bulk sender/unsubscribe footer): a strong sales pitch is enough on its own,
+// checked on subject+preview regardless of sender shape.
+const SPAM_SUBJECT_CUE = /\b(\d{1,3}%\s*off|percent off|limited time( only)?|flash sale|clearance|exclusive deal|act now|buy now|free trial|special offer|discount code|shop now|don'?t miss out|last chance|hurry(,| —)? (sale|offer) ends)\b/i;
+// A weaker/borderline signal (single generic sales words) that isn't confident enough for the
+// sync rule to commit to — only used to decide whether an AMBIGUOUS message is worth spending an
+// AI call on (see classify()'s ambiguous-spam seam below).
+const SPAM_WEAK_CUE = /\b(sale|deal|offer|discount|coupon|promo(tion)?)\b/i;
 // Important AUTO-elevates (attention-increasing = safe, add-only): a human on a personal-provider
 // domain asking for a reply / flagging urgency or a deadline. Kept conservative — false positives
 // here would over-flag — but a hit is a safe reversible `label:add "important"` (never a remove).
@@ -256,6 +265,9 @@ export function classifyMessage(msg: TriageMsg): Classification {
 	// preview-only path behind !isPersonal stops a real person's mail that merely says
 	// "weekly"/"unsubscribe" from being mislabeled a mailing list.
 	if (MAILING_LIST_CUE.test(hay) && (MAILING_LIST_FROM.test(from) || (!isPersonal && MAILING_LIST_CUE.test(preview)))) return { label: "mailing_list", confidence: 0.8, reason: "mailing-list cue + bulk sender" };
+	// A strong, unambiguous sales pitch (checked after mailing-list so a newsletter's own footer
+	// doesn't double-classify) is confident enough for the sync rule to commit without an AI call.
+	if (SPAM_SUBJECT_CUE.test(hay)) return { label: "spam", confidence: 0.8, reason: "promotional/marketing subject cue" };
 	if (NOTIFY_FROM.test(from)) return { label: "notification", confidence: 0.75, reason: "automated notification sender" };
 	// Important AUTO-elevates (add-only `label:add`, attention-increasing = the safe direction) but on a
 	// deliberately narrow signal: a real person on a personal-provider domain explicitly asking for a
@@ -265,11 +277,35 @@ export function classifyMessage(msg: TriageMsg): Classification {
 	return { label: "unknown", confidence: 0.2, reason: "no rule matched" };
 }
 
-/** The pluggable classify SEAM. Today it is the rules stub; when chunk 03's learning
- *  substrate (embeddings + kNN over Colin's own filing history) lands, branch here on its
- *  presence and fall back to classifyMessage — the loop below never needs to change. */
-export function classify(_env: RtEnv, msg: TriageMsg): Classification {
-	return classifyMessage(msg);
+const SPAM_AI_SYSTEM =
+	"You classify a single email as promotional/marketing SPAM or NOT. Reply with exactly one word: SPAM or NOT_SPAM. SPAM means a sales pitch, marketing blast, or promotional offer; a real person's message, a receipt/transaction/service notification, or an on-topic reply is NOT_SPAM.";
+
+/** Ambiguous-case AI classifier: fires ONLY when the sync rules fell all the way through to
+ *  `unknown` AND a weak/borderline promotional cue is present — mirrors summarize.ts's
+ *  best-effort Workers-AI tier (cheap rung first, model only for the genuinely unclear
+ *  remainder, cost-controlled by construction). Best-effort: no AI binding, or any failure,
+ *  silently falls back to the base rules-stub result rather than blocking classification. */
+async function classifySpamAmbiguous(env: RtEnv, msg: TriageMsg, base: Classification): Promise<Classification> {
+	if (base.label !== "unknown" || !hasAI(env)) return base;
+	const hay = `${String(msg.subject ?? "")}\n${String(msg.preview ?? "")}`;
+	if (!SPAM_WEAK_CUE.test(hay)) return base;
+	try {
+		const material = `From: ${msg.from ?? "?"}\nSubject: ${msg.subject ?? "(no subject)"}\n\n${(msg.preview ?? "").slice(0, 500)}`;
+		const verdict = (await llm(env, SPAM_AI_SYSTEM, material, 8, "classify spam")).trim().toUpperCase();
+		if (verdict.startsWith("SPAM")) return { label: "spam", confidence: 0.78, reason: "AI-classified promotional spam (ambiguous rule signal)" };
+	} catch {
+		// Best-effort: any model/transport failure just falls back to the base result below.
+	}
+	return base;
+}
+
+/** The pluggable classify SEAM. The rules stub runs first; an `unknown` result with a weak
+ *  promotional cue gets one Workers-AI best-effort pass to resolve it as spam or not (cost-
+ *  controlled — see `classifySpamAmbiguous`). When chunk 03's learning substrate (embeddings +
+ *  kNN over Colin's own filing history) lands, branch here on its presence — the loop below
+ *  never needs to change. */
+export async function classify(env: RtEnv, msg: TriageMsg): Promise<Classification> {
+	return classifySpamAmbiguous(env, msg, classifyMessage(msg));
 }
 
 // ── Draft-reply rule (attention-INCREASING, never sends) ────────────────────────
@@ -292,12 +328,19 @@ export function detectReplyDraft(msg: TriageMsg): Classification | null {
 
 // ── The loop ───────────────────────────────────────────────────────────────────
 export type TriageDeps = {
-	search: (env: RtEnv, opts: { mailbox: string; unread?: boolean; limit: number }) => Promise<TriageMsg[]>;
+	/** `position` (0-based offset into the mailbox's search result set) is OPTIONAL — omitted for
+	 *  a normal cycle (page 0); `runTriage`'s backlog sweep (`sweep_backlog:true`) advances it
+	 *  across successive pages so a sweep can walk past the newest N messages into older mail
+	 *  that a fixed single-page fetch would otherwise refetch forever (see mail_search's own
+	 *  `position` param). */
+	search: (env: RtEnv, opts: { mailbox: string; unread?: boolean; limit: number; position?: number }) => Promise<TriageMsg[]>;
 	act: (env: RtEnv, ids: string[], op: TriageOp) => Promise<void>;
 	digestAppend: (env: RtEnv, path: string, content: string) => Promise<void>;
 	/** Override the classify SEAM (defaults to the module `classify`). The seam a learning
-	 *  classifier drops into; tests inject it to drive the loop with arbitrary confidences. */
-	classify?: (env: RtEnv, msg: TriageMsg) => Classification;
+	 *  classifier drops into; tests inject it to drive the loop with arbitrary confidences.
+	 *  Sync OR async — the loop always awaits it, and the module default is async (it may make
+	 *  a best-effort AI call), while test doubles stay plain sync functions. */
+	classify?: (env: RtEnv, msg: TriageMsg) => Classification | Promise<Classification>;
 	/** Compose a suggested reply body for a message (behind the <<<DATA>>> fence). Returns "" when
 	 *  no safe reply is possible — then the tone/PII gate rejects it and the bot suggests instead of
 	 *  drafting. OPTIONAL: absent (or absent `draftReply`) → the draft-reply lane degrades to a
@@ -308,7 +351,21 @@ export type TriageDeps = {
 	draftReply?: (env: RtEnv, args: { reply_to: string; text: string }) => Promise<{ id: string }>;
 };
 
-type TriageOpts = { mailbox?: string; max?: number; dry_run?: boolean; cycle_id?: string; budget_ms?: number; unread?: boolean };
+type TriageOpts = {
+	mailbox?: string;
+	max?: number;
+	dry_run?: boolean;
+	cycle_id?: string;
+	budget_ms?: number;
+	unread?: boolean;
+	/** Sweep the existing backlog instead of a single page: pages through search results (JMAP's
+	 *  own per-call cap, see mail-mcp.ts's mail_search) advancing `position` until the mailbox is
+	 *  exhausted, `max` total messages have been scanned, or the wall-clock budget runs out.
+	 *  Defaults `unread` to false (backlog mail is mostly already-read) unless explicitly overridden.
+	 *  Still reversible-only — same classify → confidence-gate → act → log loop, just fed by
+	 *  multiple pages instead of one. */
+	sweep_backlog?: boolean;
+};
 
 type TriageReport = {
 	cycle: string;
@@ -371,117 +428,143 @@ export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps):
 	const led = ledger(env, "mail_triage");
 
 	// Default the autonomous scan to UNREAD-only so the bot never touches mail Colin has
-	// intentionally opened and kept in the inbox. `unread:false` is an explicit override.
-	const msgs = await deps.search(env, { mailbox, unread: opts.unread !== false, limit: max });
+	// intentionally opened and kept in the inbox. `unread:false` is an explicit override. A
+	// backlog sweep instead defaults to unread:false — the backlog is mostly already-read mail.
+	const sweepBacklog = opts.sweep_backlog === true;
+	const unread = opts.unread !== undefined ? opts.unread !== false : !sweepBacklog;
 	let scanned = 0;
 	let skipped = 0;
 	let truncated = false;
 	const acted: NonNullable<TriageReport["acted"]> = [];
 	const suggested: NonNullable<TriageReport["suggested"]> = [];
 
-	for (const m of msgs) {
+	// A plain re-run without paging would keep refetching the SAME newest page forever — every id
+	// in it is already `led.seen` and gets skipped, never advancing into older backlog mail. A
+	// sweep instead pages through `position` (mail_search's own per-call cap, see mail-mcp.ts)
+	// until the mailbox is exhausted (a short page), `max` total messages are scanned, or the
+	// wall-clock budget runs out. A normal (non-sweep) cycle is unaffected: MAX_PAGES caps it to
+	// the same single page as before.
+	const PAGE_SIZE = 50;
+	const MAX_PAGES = sweepBacklog ? 40 : 1;
+	let position = 0;
+	let pages = 0;
+	sweep: while (pages < MAX_PAGES && scanned < max) {
 		if (Date.now() >= deadline) {
 			truncated = true;
 			break;
 		}
-		scanned++;
-		if (!m?.id) continue;
-		// Idempotency: the message id is a natural last-seen key. We CHECK it up front (skip
-		// already-processed ids so daily cron re-runs are no-ops), but only MARK it seen AFTER
-		// a definitive decision below — never before. This fixes two bugs: a transient act
-		// failure must be retried (so we don't mark on failure), and a suggest-ONLY pass must
-		// not block a later ACT pass (so we don't mark when acting is disabled). Enabling ACT
-		// therefore still processes the full backlog.
-		if (await led.seen(m.id)) {
-			skipped++;
-			continue;
-		}
-		let c = (deps.classify ?? classify)(env, m);
-		// A personal message that asks for a reply is upgraded to a draft-reply intent — the one
-		// CREATE op (a reply DRAFT is staged for review, never sent). Kept OUT of the shared
-		// classify() seam so briefing's isFlagged (which only reads `.label`) is unaffected, and
-		// still runs even when a test injects `deps.classify` (draft-reply tests rely on this).
-		if (c.label === "personal") c = detectReplyDraft(m) ?? c;
-		// A classification may carry a per-message op override (service notifications attach a
-		// type-specific label, draft-reply attaches the create op); otherwise fall back to the
-		// label's default action. `resolveOp` then applies the archive confidence bar — a
-		// low-confidence archive de-escalates to a label kept in the inbox, so declutter mail is
-		// only HIDDEN when we're highly certain.
-		const base = c.op ?? ACTION_FOR[c.label];
-		const op = base ? resolveOp(base, c.label, c.confidence) : null;
-		// draft-reply clears a higher bar than the reversible ops (a draft is more intrusive than a label).
-		const bar = op?.kind === "draft-reply" ? DRAFT_REPLY_CONFIDENCE_THRESHOLD : CONFIDENCE_THRESHOLD;
-		// Sensitive-sender guard: health/finance/insurance/gov/legal mail is FORCED to suggest-only
-		// for CATEGORY tags (transaction/mailing-list/etc.), regardless of confidence or MAIL_TRIAGE_ACT
-		// — a human must apply those on sensitive mail. `important` is EXEMPT: elevating attention is the
-		// safe direction, and you always want to SEE important bank/health mail, so it may still auto-add.
-		const sensitive = isSensitiveSender(String(m.from ?? "")) && c.label !== "important";
-		// Allow-list guard sits BEFORE the confidence gate: an op not on AUTO_ACT_OPS can never act.
-		const wouldAct = !sensitive && !!op && isAutoActAllowed(op) && c.confidence >= bar;
-		const rec = op ? opRecord(op, mailbox, m.mailboxes) : null;
-		let markSeen = false;
-		// This message's log entry, persisted BEFORE led.mark below (see the ordering note).
-		let entry: TriageEntry | null = null;
-		if (wouldAct && actAllowed && op!.kind === "draft-reply") {
-			// Draft-reply lane: compose a reply → tone/PII-gate it → stage a DRAFT (never send).
-			// Missing compose/draft deps or a gate-fail → suggest "needs your reply" (definitive:
-			// mark seen). A draft-SAVE throw is transient → leave unseen so the next cycle retries.
-			const canDraft = !!deps.composeReply && !!deps.draftReply;
-			let body = "";
-			if (canDraft) {
-				try {
-					body = (await deps.composeReply!(env, m)).trim();
-				} catch {
-					body = "";
-				}
+		const pageLimit = sweepBacklog ? PAGE_SIZE : max;
+		const msgs = await deps.search(env, { mailbox, unread, limit: pageLimit, position });
+		pages++;
+		if (!msgs.length) break; // backlog exhausted
+
+		for (const m of msgs) {
+			if (Date.now() >= deadline) {
+				truncated = true;
+				break sweep;
 			}
-			if (canDraft && passesDraftGate(body)) {
-				try {
-					const d = await deps.draftReply!(env, { reply_to: m.id, text: body });
-					acted.push({ id: m.id, label: c.label, confidence: c.confidence, op: "draft-reply", to: `draft:${d.id}` });
-					entry = { cycle, id: m.id, action: "acted", label: c.label, confidence: c.confidence, reason: c.reason, subject: m.subject, at: Date.now(), op: "draft-reply", draft_id: d.id };
-					markSeen = true; // drafted successfully → don't reprocess
-				} catch (e) {
-					const reason = `draft reply failed: ${errMsg(e)}`;
+			if (scanned >= max) break sweep;
+			scanned++;
+			if (!m?.id) continue;
+			// Idempotency: the message id is a natural last-seen key. We CHECK it up front (skip
+			// already-processed ids so daily cron re-runs are no-ops), but only MARK it seen AFTER
+			// a definitive decision below — never before. This fixes two bugs: a transient act
+			// failure must be retried (so we don't mark on failure), and a suggest-ONLY pass must
+			// not block a later ACT pass (so we don't mark when acting is disabled). Enabling ACT
+			// therefore still processes the full backlog.
+			if (await led.seen(m.id)) {
+				skipped++;
+				continue;
+			}
+			let c = await (deps.classify ?? classify)(env, m);
+			// A personal message that asks for a reply is upgraded to a draft-reply intent — the one
+			// CREATE op (a reply DRAFT is staged for review, never sent). Kept OUT of the shared
+			// classify() seam so briefing's isFlagged (which only reads `.label`) is unaffected, and
+			// still runs even when a test injects `deps.classify` (draft-reply tests rely on this).
+			if (c.label === "personal") c = detectReplyDraft(m) ?? c;
+			// A classification may carry a per-message op override (service notifications attach a
+			// type-specific label, draft-reply attaches the create op); otherwise fall back to the
+			// label's default action. `resolveOp` then applies the archive confidence bar — a
+			// low-confidence archive de-escalates to a label kept in the inbox, so declutter mail is
+			// only HIDDEN when we're highly certain.
+			const base = c.op ?? ACTION_FOR[c.label];
+			const op = base ? resolveOp(base, c.label, c.confidence) : null;
+			// draft-reply clears a higher bar than the reversible ops (a draft is more intrusive than a label).
+			const bar = op?.kind === "draft-reply" ? DRAFT_REPLY_CONFIDENCE_THRESHOLD : CONFIDENCE_THRESHOLD;
+			// Sensitive-sender guard: health/finance/insurance/gov/legal mail is FORCED to suggest-only
+			// for CATEGORY tags (transaction/mailing-list/etc.), regardless of confidence or MAIL_TRIAGE_ACT
+			// — a human must apply those on sensitive mail. `important` is EXEMPT: elevating attention is the
+			// safe direction, and you always want to SEE important bank/health mail, so it may still auto-add.
+			const sensitive = isSensitiveSender(String(m.from ?? "")) && c.label !== "important";
+			// Allow-list guard sits BEFORE the confidence gate: an op not on AUTO_ACT_OPS can never act.
+			const wouldAct = !sensitive && !!op && isAutoActAllowed(op) && c.confidence >= bar;
+			const rec = op ? opRecord(op, mailbox, m.mailboxes) : null;
+			let markSeen = false;
+			// This message's log entry, persisted BEFORE led.mark below (see the ordering note).
+			let entry: TriageEntry | null = null;
+			if (wouldAct && actAllowed && op!.kind === "draft-reply") {
+				// Draft-reply lane: compose a reply → tone/PII-gate it → stage a DRAFT (never send).
+				// Missing compose/draft deps or a gate-fail → suggest "needs your reply" (definitive:
+				// mark seen). A draft-SAVE throw is transient → leave unseen so the next cycle retries.
+				const canDraft = !!deps.composeReply && !!deps.draftReply;
+				let body = "";
+				if (canDraft) {
+					try {
+						body = (await deps.composeReply!(env, m)).trim();
+					} catch {
+						body = "";
+					}
+				}
+				if (canDraft && passesDraftGate(body)) {
+					try {
+						const d = await deps.draftReply!(env, { reply_to: m.id, text: body });
+						acted.push({ id: m.id, label: c.label, confidence: c.confidence, op: "draft-reply", to: `draft:${d.id}` });
+						entry = { cycle, id: m.id, action: "acted", label: c.label, confidence: c.confidence, reason: c.reason, subject: m.subject, at: Date.now(), op: "draft-reply", draft_id: d.id };
+						markSeen = true; // drafted successfully → don't reprocess
+					} catch (e) {
+						const reason = `draft reply failed: ${errMsg(e)}`;
+						suggested.push({ id: m.id, label: c.label, confidence: c.confidence, reason });
+						entry = { cycle, id: m.id, action: "suggested", label: c.label, confidence: c.confidence, reason, subject: m.subject, op: "draft-reply", at: Date.now() };
+						// draft-save FAILED (transient) → leave unseen so the next cycle retries.
+					}
+				} else {
+					const why = canDraft ? "no safe auto-draft (tone/PII gate)" : "draft staging unavailable";
+					const reason = `${c.reason} — reply-worthy; ${why}, suggest a manual reply`;
 					suggested.push({ id: m.id, label: c.label, confidence: c.confidence, reason });
 					entry = { cycle, id: m.id, action: "suggested", label: c.label, confidence: c.confidence, reason, subject: m.subject, op: "draft-reply", at: Date.now() };
-					// draft-save FAILED (transient) → leave unseen so the next cycle retries.
+					markSeen = true; // definitive (won't draft this) → don't re-suggest daily
+				}
+			} else if (wouldAct && actAllowed) {
+				try {
+					await deps.act(env, [m.id], op!);
+					acted.push({ id: m.id, label: c.label, confidence: c.confidence, op: rec!.log.op ?? op!.kind, to: rec!.to });
+					entry = { cycle, id: m.id, action: "acted", label: c.label, confidence: c.confidence, reason: c.reason, subject: m.subject, at: Date.now(), ...rec!.log };
+					markSeen = true; // acted successfully → don't reprocess
+				} catch (e) {
+					const reason = `act ${rec!.to} failed: ${errMsg(e)}`;
+					suggested.push({ id: m.id, label: c.label, confidence: c.confidence, reason });
+					entry = { cycle, id: m.id, action: "suggested", label: c.label, confidence: c.confidence, reason, subject: m.subject, at: Date.now() };
+					// act FAILED → leave unseen so the next cycle retries.
 				}
 			} else {
-				const why = canDraft ? "no safe auto-draft (tone/PII gate)" : "draft staging unavailable";
-				const reason = `${c.reason} — reply-worthy; ${why}, suggest a manual reply`;
+				const why = sensitive ? "sensitive sender: suggest-only" : !op ? `${c.label}: no auto-action` : c.confidence < bar ? `low confidence ${c.confidence.toFixed(2)} < ${bar}` : "act path disabled (suggest-only)";
+				const reason = `${c.reason} — ${why}${rec ? `; suggest ${rec.to}` : ""}`;
 				suggested.push({ id: m.id, label: c.label, confidence: c.confidence, reason });
-				entry = { cycle, id: m.id, action: "suggested", label: c.label, confidence: c.confidence, reason, subject: m.subject, op: "draft-reply", at: Date.now() };
-				markSeen = true; // definitive (won't draft this) → don't re-suggest daily
+				entry = { cycle, id: m.id, action: "suggested", label: c.label, confidence: c.confidence, reason, subject: m.subject, ...(rec ? rec.log : {}), at: Date.now() };
+				// Mark seen only on a definitive no-act decision while ACT is enabled (so daily
+				// re-runs don't re-suggest). In pure suggest-only mode, leave it unseen so that
+				// turning ACT on later still actions the existing inbox.
+				if (actAllowed) markSeen = true;
 			}
-		} else if (wouldAct && actAllowed) {
-			try {
-				await deps.act(env, [m.id], op!);
-				acted.push({ id: m.id, label: c.label, confidence: c.confidence, op: rec!.log.op ?? op!.kind, to: rec!.to });
-				entry = { cycle, id: m.id, action: "acted", label: c.label, confidence: c.confidence, reason: c.reason, subject: m.subject, at: Date.now(), ...rec!.log };
-				markSeen = true; // acted successfully → don't reprocess
-			} catch (e) {
-				const reason = `act ${rec!.to} failed: ${errMsg(e)}`;
-				suggested.push({ id: m.id, label: c.label, confidence: c.confidence, reason });
-				entry = { cycle, id: m.id, action: "suggested", label: c.label, confidence: c.confidence, reason, subject: m.subject, at: Date.now() };
-				// act FAILED → leave unseen so the next cycle retries.
-			}
-		} else {
-			const why = sensitive ? "sensitive sender: suggest-only" : !op ? `${c.label}: no auto-action` : c.confidence < bar ? `low confidence ${c.confidence.toFixed(2)} < ${bar}` : "act path disabled (suggest-only)";
-			const reason = `${c.reason} — ${why}${rec ? `; suggest ${rec.to}` : ""}`;
-			suggested.push({ id: m.id, label: c.label, confidence: c.confidence, reason });
-			entry = { cycle, id: m.id, action: "suggested", label: c.label, confidence: c.confidence, reason, subject: m.subject, ...(rec ? rec.log : {}), at: Date.now() };
-			// Mark seen only on a definitive no-act decision while ACT is enabled (so daily
-			// re-runs don't re-suggest). In pure suggest-only mode, leave it unseen so that
-			// turning ACT on later still actions the existing inbox.
-			if (actAllowed) markSeen = true;
+			// Reversibility invariant: PERSIST the undo-log entry for this message BEFORE marking it
+			// seen. led.mark is what stops the next cycle from reprocessing; if we marked first and
+			// then crashed (or the isolate was evicted) before writing the log, an ACTED message would
+			// be un-undoable — acted-but-unlogged. Log-then-mark, per message, closes that window.
+			if (entry) await appendTriageEntries(env, [entry]);
+			if (markSeen) await led.mark(m.id);
 		}
-		// Reversibility invariant: PERSIST the undo-log entry for this message BEFORE marking it
-		// seen. led.mark is what stops the next cycle from reprocessing; if we marked first and
-		// then crashed (or the isolate was evicted) before writing the log, an ACTED message would
-		// be un-undoable — acted-but-unlogged. Log-then-mark, per message, closes that window.
-		if (entry) await appendTriageEntries(env, [entry]);
-		if (markSeen) await led.mark(m.id);
+		if (msgs.length < pageLimit) break; // short page ⇒ nothing older left in the mailbox
+		position += msgs.length;
 	}
 
 	// Digest: best-effort, idempotent per cycle id (a double cron-fire won't double-append).
@@ -529,7 +612,7 @@ export async function defaultDeps(): Promise<TriageDeps> {
 	return {
 		search: async (env, o) => {
 			if (!searchTool) throw new Error("mail_search tool not found");
-			const r = await searchTool.run(env, { mailbox: o.mailbox, ...(o.unread ? { unread: true } : {}), limit: o.limit });
+			const r = await searchTool.run(env, { mailbox: o.mailbox, ...(o.unread ? { unread: true } : {}), limit: o.limit, ...(o.position ? { position: o.position } : {}) });
 			if (r.isError) throw new Error(r.content?.[0]?.text ?? "mail_search failed");
 			const parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
 			return (parsed.emails ?? []).map((e: any) => ({ id: String(e?.id ?? ""), from: e?.from, subject: e?.subject, preview: e?.preview, mailboxes: Array.isArray(e?.labels) ? e.labels : undefined }));
