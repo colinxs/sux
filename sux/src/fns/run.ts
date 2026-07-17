@@ -12,13 +12,18 @@ export type RunMode = "inline" | "durable" | "auto";
 // squirreled away every instanceId itself.
 const RUN_INDEX_PREFIX = "sux:run:idx:";
 const RUN_INDEX_MAX = 200;
+// Cloudflare Workflow instance state retention tops out at 30d (paid plan; 3d on free) —
+// past that the instance itself is gone and `status()` can only ever report "unknown", so
+// an index entry has no use surviving longer. Self-evicting here is what actually bounds
+// the `sux:run:idx:` keyspace; RUN_INDEX_MAX alone only capped the returned slice, not storage.
+const RUN_INDEX_TTL_SECONDS = 30 * 24 * 60 * 60;
 
 type RunIndexEntry = { instanceId: string; opId: string; startedAt: number };
 
 /** Best-effort — an index-write hiccup must never fail the run it's indexing. */
 async function indexDurableRun(env: RtEnv, entry: RunIndexEntry): Promise<void> {
 	try {
-		await env.OAUTH_KV.put(`${RUN_INDEX_PREFIX}${entry.instanceId}`, JSON.stringify(entry));
+		await env.OAUTH_KV.put(`${RUN_INDEX_PREFIX}${entry.instanceId}`, JSON.stringify(entry), { expirationTtl: RUN_INDEX_TTL_SECONDS });
 	} catch (e) {
 		console.log(`run: failed to index durable instance ${entry.instanceId}: ${errMsg(e)}`);
 	}

@@ -61,6 +61,7 @@ const headKey = (cfg: VaultCfg) => `cache:vault:git:${cfg.repo}@${cfg.branch}:he
 const gitNoteKey = (cfg: VaultCfg, p: string) => `cache:vault:git:${cfg.repo}@${cfg.branch}:note:${cfg.inVault(normPath(p))}`;
 const gitListKey = (cfg: VaultCfg, filter: string) => `cache:vault:git:${cfg.repo}@${cfg.branch}:list:${filter || "/"}`;
 const gitIndexKey = (cfg: VaultCfg) => `cache:vault:git:${cfg.repo}@${cfg.branch}:index`;
+const gitSemanticIndexKey = (cfg: VaultCfg) => `cache:vault:git:${cfg.repo}@${cfg.branch}:semantic`;
 const remoteNoteKey = (p: string) => `cache:vault:remote:note:${normPath(p)}`;
 
 async function cacheGet(env: any, key: string): Promise<any | null> {
@@ -86,6 +87,16 @@ export async function readVaultIndexBlob(env: any, cfg: VaultCfg): Promise<any |
 }
 export async function writeVaultIndexBlob(env: any, cfg: VaultCfg, blob: unknown): Promise<void> {
 	return cachePut(env, gitIndexKey(cfg), blob);
+}
+
+// Same HEAD-keyed cache/invalidation contract as the derived-scan index above, but a
+// DISTINCT key (and shape: chunk text + embeddings, not {path,fm,tags,links}) — owned by
+// _vault_semantic.ts's chunk+embed index, kept opaque here for the same reason.
+export async function readVaultSemanticBlob(env: any, cfg: VaultCfg): Promise<any | null> {
+	return cacheGet(env, gitSemanticIndexKey(cfg));
+}
+export async function writeVaultSemanticBlob(env: any, cfg: VaultCfg, blob: unknown): Promise<void> {
+	return cachePut(env, gitSemanticIndexKey(cfg), blob);
 }
 
 export async function vaultHead(env: any, cfg: VaultCfg): Promise<string | null> {

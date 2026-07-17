@@ -19,12 +19,13 @@ export const VAULT_ACTIONS: Record<string, Dispatch> = {
 	tags: "vault_tags",
 	tasks: "vault_tasks",
 	search_body: "vault_search_body",
+	semantic: "vault_semantic",
 };
 
 export const vault: Fn = namespaceFn({
 	name: "vault",
 	description:
-		"Obsidian vault (git-backed) through the one /mcp connector. {action, ...args}: read·list·write·append·edit·delete(confirm:true)·capture·batch_append·daily_read·daily_append·backlinks·query·patch·tags·tasks·search_body. Each action's remaining args are that vault_* tool's own — e.g. vault({action:'read', path:'Inbox/x.md'}), vault({action:'write', path, content}). Writes are git commits (history is the undo); delete needs confirm:true.",
+		"Obsidian vault (git-backed) through the one /mcp connector. {action, ...args}: read·list·write·append·edit·delete(confirm:true)·capture·batch_append·daily_read·daily_append·backlinks·query·patch·tags·tasks·search_body·semantic. Each action's remaining args are that vault_* tool's own — e.g. vault({action:'read', path:'Inbox/x.md'}), vault({action:'write', path, content}). Writes are git commits (history is the undo); delete needs confirm:true.",
 	tools: () => VAULT_TOOLS,
 	actions: VAULT_ACTIONS,
 });

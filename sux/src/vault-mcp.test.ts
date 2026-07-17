@@ -39,6 +39,7 @@ describe("vault MCP tools", () => {
 			"vault_tags",
 			"vault_tasks",
 			"vault_search_body",
+			"vault_semantic",
 		]);
 		expect(names).not.toContain("vault_search"); // live-dependent — deferred to the vpc phase
 		for (const t of VAULT_TOOLS) expect(t.inputSchema).toBeDefined();
@@ -421,5 +422,50 @@ describe("vault MCP tools", () => {
 		await tool("vault_capture").run(ENV, { text: "jot", title: "Jot", path: "Home.md" });
 		expect(putPath).toMatch(/^Inbox\//);
 		expect(putPath).not.toBe("Home.md");
+	});
+
+	it("vault_semantic chunks+embeds every note (KV-cached, HEAD-keyed) and ranks by cosine similarity", async () => {
+		const store = new Map<string, string>();
+		const kv = { get: async (k: string) => store.get(k) ?? null, put: async (k: string, v: string) => void store.set(k, v), delete: async (k: string) => void store.delete(k) };
+		// A keyword embedding — deterministic so kNN ranking is testable (mirrors advise.test.ts's embedVec).
+		const embedVec = (t: string): number[] => {
+			const s = t.toLowerCase();
+			return [s.includes("sodium") ? 1 : 0, s.includes("exercise") ? 1 : 0, 0.1];
+		};
+		const run = vi.fn(async (_model: string, inputs: any) => ({ data: inputs.text.map(embedVec) }));
+		const env = { OBSIDIAN_VAULT_REPO: "me/vault", OAUTH_KV: kv, AI: { run } } as any;
+		const notes: Record<string, string> = {
+			"Diet/plan.md": "Avoid sodium above 1500mg daily.",
+			"Fitness/walk.md": "Walk for exercise thirty minutes.",
+		};
+		const head = "head-1";
+		routes.handler = (url) => {
+			if (url.includes("/git/ref/heads/")) return new Response(JSON.stringify({ object: { sha: head } }), { status: 200 });
+			if (url.includes("/git/trees/")) return new Response(JSON.stringify({ tree: Object.keys(notes).map((p) => ({ type: "blob", path: p })) }), { status: 200 });
+			const m = /\/contents\/(.+?)(\?|$)/.exec(url);
+			const path = m ? decodeURIComponent(m[1]) : "";
+			if (notes[path] === undefined) return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+			return new Response(JSON.stringify({ content: b64(notes[path]), sha: head }), { status: 200 });
+		};
+
+		const r = parse(await tool("vault_semantic").run(env, { q: "how much sodium can I have" }));
+		expect(r.hits[0].path).toBe("Diet/plan.md");
+		expect(r.scanned).toBe(2);
+
+		// A second call at the same HEAD serves the cached embedded index — only the new
+		// query gets embedded, the corpus is NOT re-embedded (would be an unbounded AI cost).
+		const callsAfterFirst = run.mock.calls.length;
+		await tool("vault_semantic").run(env, { q: "exercise" });
+		expect(run.mock.calls.length).toBe(callsAfterFirst + 1);
+	});
+
+	it("vault_semantic requires a `q` and the Workers-AI binding", async () => {
+		const missingQ = await tool("vault_semantic").run(ENV, {});
+		expect(missingQ.isError).toBe(true);
+
+		const noAiEnv = { OBSIDIAN_VAULT_REPO: "me/vault", OAUTH_KV: { get: async () => null, put: async () => {}, delete: async () => {} } } as any;
+		const noAi = await tool("vault_semantic").run(noAiEnv, { q: "test" });
+		expect(noAi.isError).toBe(true);
+		expect(noAi.content[0].text).toMatch(/Workers AI/);
 	});
 });
