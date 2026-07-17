@@ -65,6 +65,9 @@ const days = (n: number): number => n * 24 * 60 * 60 * 1000;
 // (mail/calendar/contact/todoist's `force`, mail's `commit_token`, todoist's
 // `confirm`). A proposal must never carry one — that's the whole point of lock #3 —
 // so it's stripped both when a proposal is stored and again right before dispatch.
+// This is a hand-maintained allow-list, not derived from the target fns' schemas —
+// a future PROPOSABLE_FNS entry (or an existing one) that grows a differently-named
+// bypass switch needs a matching addition here, or it silently reopens lock #3.
 const UNSAFE_ARG_KEYS = new Set(["force", "confirm", "commit_token"]);
 
 function stripUnsafeArgs(args: Record<string, unknown>): Record<string, unknown> {
