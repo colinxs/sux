@@ -15,6 +15,7 @@
 // see this file's `.test.ts` for a full encrypt→decrypt round trip against the same
 // derivation a real browser push service performs.
 import type { RtEnv } from "../registry";
+import { isBlockedTarget } from "../proxy";
 
 export type PushSubscriptionInfo = { endpoint: string; keys: { p256dh: string; auth: string } };
 export type PushMessage = { title: string; body: string; url?: string };
@@ -54,6 +55,10 @@ function validSubscription(sub: unknown): sub is PushSubscriptionInfo {
 
 export async function subscribe(env: RtEnv, sub: PushSubscriptionInfo): Promise<void> {
 	if (!validSubscription(sub)) throw new Error("invalid subscription: endpoint + keys.p256dh + keys.auth are required.");
+	// SSRF guard (mirrors every other outbound-fetch path — proxy.ts's isBlockedTarget):
+	// reject a private/loopback/link-local/metadata endpoint up front, so a bad
+	// subscription can never be stored for a later send() to fetch.
+	if (isBlockedTarget(sub.endpoint)) throw new Error("invalid subscription: endpoint resolves to a private/loopback/link-local/metadata address.");
 	await env.OAUTH_KV.put(await subKey(sub.endpoint), JSON.stringify(sub));
 }
 
@@ -180,6 +185,10 @@ export async function encryptPayload(plaintext: Uint8Array, p256dhB64: string, a
  *  404/410 "gone") rather than throwing, so a dead endpoint can't sink a fan-out send. */
 export async function sendToSubscription(env: RtEnv, sub: PushSubscriptionInfo, message: PushMessage, ttlSeconds = 60): Promise<boolean> {
 	if (!hasWebPush(env)) return false;
+	// Defense in depth: subscribe() already refuses a blocked endpoint, but a subscription
+	// could predate that guard (or be planted directly in KV) — never send a VAPID-signed
+	// POST to a private/loopback/link-local/metadata target.
+	if (isBlockedTarget(sub.endpoint)) return false;
 	try {
 		const body = await encryptPayload(textEncoder.encode(JSON.stringify(message)), sub.keys.p256dh, sub.keys.auth);
 		const res = await fetch(sub.endpoint, {

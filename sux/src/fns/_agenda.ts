@@ -1,9 +1,10 @@
 // The agenda loop — the "figure out what to do" engine (docs/design/personal-agent-
 // roadmap.md, epic #228, W2). It is the SENSE→DECIDE→PROPOSE half of the personal
 // agent: fan out (read-only) across the senses that already exist (mail + calendar +
-// Monarch, W7), run cheap deterministic DETECTORS that spot a "drop about to happen" (a
-// prescription lapsing, a payment failing, an unanswered personal note, a bill due, an
-// unusual charge, a low balance), and for each one RECORD a
+// Monarch, W7/W7.1), run cheap deterministic DETECTORS that spot a "drop about to happen"
+// (a prescription lapsing, a payment failing, an unanswered personal note, a bill due, an
+// unusual charge, a low balance, a portfolio allocation drifting, a savings rate sliding),
+// and for each one RECORD a
 // proposal via the W1 kernel — a reversible Todoist task that catches the drop. Then
 // compose ONE calm digest of what needs Colin and deliver it: appended to the Daily
 // note, and (when armed) mailed to him. The email IS the interface — see the digest
@@ -230,7 +231,10 @@ export function detectMonarchDrops(date: string, accounts: MonarchAccountRef[], 
 	}
 
 	for (const t of transactions) {
-		if (typeof t.amount !== "number" || Math.abs(t.amount) < unusualChargeThreshold) continue;
+		// Monarch's amount is signed negative-is-expense (monarch.ts's module doc) — only
+		// outgoing money is a "charge"; a large positive incoming deposit (paycheck, refund,
+		// transfer-in) is never an unusual charge, no matter how large.
+		if (typeof t.amount !== "number" || t.amount >= 0 || Math.abs(t.amount) < unusualChargeThreshold) continue;
 		const who = t.merchant || "a transaction";
 		const amt = Math.abs(t.amount).toFixed(2);
 		drops.push({
@@ -262,6 +266,106 @@ export function detectMonarchDrops(date: string, accounts: MonarchAccountRef[], 
 	}
 
 	return sortByUrgency(drops);
+}
+
+/** Monarch's read-only holdings/cashflow ops (W7.1) — the two ops accounts/transactions/
+ *  budgets left dormant when W7 landed (#803). See fns/monarch.ts for the full shapes. */
+export type MonarchHoldingRef = { ticker?: string; name?: string; value?: number; quantity?: number };
+export type MonarchCashflowSummary = { sumIncome?: number; sumExpense?: number; savings?: number; savingsRate?: number } | null;
+
+/** Ticker (or name, when no ticker) -> fraction of total portfolio value. Empty when
+ *  holdings carry no usable value. */
+export type PortfolioWeights = Record<string, number>;
+
+// A holding's allocation share moving by this many percentage points since the last cached
+// snapshot is a meaningful drift, not day-to-day price noise.
+const PORTFOLIO_DRIFT_THRESHOLD_PCT = 10;
+// The savings rate falling this many percentage points below the last cached snapshot reads
+// as a real trend, not one noisy month.
+const SAVINGS_RATE_DROP_THRESHOLD_PCT = 15;
+
+/** Pure allocation calc — no I/O, no caching. Groups by ticker (falling back to name), so
+ *  multiple lots of the same security across accounts collapse into one weight. */
+export function computePortfolioWeights(holdings: MonarchHoldingRef[]): PortfolioWeights {
+	const total = holdings.reduce((sum, h) => sum + (typeof h.value === "number" ? h.value : 0), 0);
+	const weights: PortfolioWeights = {};
+	if (total <= 0) return weights;
+	for (const h of holdings) {
+		if (typeof h.value !== "number") continue;
+		const key = h.ticker || h.name;
+		if (!key) continue;
+		weights[key] = (weights[key] ?? 0) + h.value / total;
+	}
+	return weights;
+}
+
+/** Derive a self-consistent savings rate (fraction, income - expense over income) directly
+ *  from cashflow's raw sums when possible, rather than trusting Monarch's own `savingsRate`
+ *  field's scale (undocumented — could be a fraction or a whole percentage). Falls back to
+ *  the raw field only when income is missing/non-positive. Returns null when neither is
+ *  usable. */
+export function computeSavingsRate(cashflow: MonarchCashflowSummary): number | null {
+	if (!cashflow) return null;
+	if (typeof cashflow.sumIncome === "number" && cashflow.sumIncome > 0 && typeof cashflow.savings === "number") {
+		return cashflow.savings / cashflow.sumIncome;
+	}
+	return typeof cashflow.savingsRate === "number" ? cashflow.savingsRate : null;
+}
+
+/** Portfolio-drift (W7.1): flag a holding whose share of the portfolio moved by more than
+ *  the threshold since the last cached snapshot — a concentration building up, or a position
+ *  sold off entirely. `priorWeights` null (no snapshot yet, e.g. the very first cycle) means
+ *  there's nothing to compare against, so it detects nothing; the caller is responsible for
+ *  caching `weights` as the next cycle's prior. */
+export function detectPortfolioDrift(date: string, weights: PortfolioWeights, priorWeights: PortfolioWeights | null, opts?: { driftThresholdPct?: number }): Drop[] {
+	if (!priorWeights || Object.keys(priorWeights).length === 0) return [];
+	const threshold = (opts?.driftThresholdPct ?? PORTFOLIO_DRIFT_THRESHOLD_PCT) / 100;
+	const drops: Drop[] = [];
+	const tickers = new Set([...Object.keys(weights), ...Object.keys(priorWeights)]);
+	for (const ticker of tickers) {
+		const weight = weights[ticker] ?? 0;
+		const prior = priorWeights[ticker] ?? 0;
+		const delta = weight - prior;
+		if (Math.abs(delta) < threshold) continue;
+		const pct = (weight * 100).toFixed(1);
+		const deltaPct = `${delta >= 0 ? "+" : ""}${(delta * 100).toFixed(1)}pt`;
+		drops.push({
+			kind: "portfolio_drift",
+			urgency: "fyi",
+			dedupe: `monarch::portfolio_drift::${ticker}::${date}`,
+			title: `Portfolio drift: ${ticker} now ${pct}% (${deltaPct})`,
+			emoji: "📊",
+			action: task(`Review portfolio allocation — ${ticker} shifted to ${pct}% of the portfolio (${deltaPct})`),
+			evidence: { ticker, weight, priorWeight: prior },
+		});
+	}
+	return sortByUrgency(drops);
+}
+
+/** Savings-rate trend (W7.1): flag a month trending toward a negative, or sharply lower,
+ *  savings rate than the last cached snapshot. A negative rate always flags (even with no
+ *  prior snapshot to compare against — spending more than earning needs no history to be
+ *  worth a look); a sharp *drop* needs a prior rate to compare against. */
+export function detectSavingsRateDrop(date: string, rate: number | null, priorRate: number | null, opts?: { dropThresholdPct?: number }): Drop[] {
+	if (rate === null) return [];
+	const dropThreshold = (opts?.dropThresholdPct ?? SAVINGS_RATE_DROP_THRESHOLD_PCT) / 100;
+	const negative = rate < 0;
+	const droppedSharply = priorRate !== null && priorRate - rate >= dropThreshold;
+	if (!negative && !droppedSharply) return [];
+	const month = date.slice(0, 7);
+	const pct = (rate * 100).toFixed(1);
+	const reason = negative ? `negative (${pct}%)` : `down to ${pct}% (from ${(priorRate! * 100).toFixed(1)}%)`;
+	return [
+		{
+			kind: "savings_rate_drop",
+			urgency: "soon",
+			dedupe: `monarch::savings_rate::${month}`,
+			title: `Savings rate ${reason}`,
+			emoji: "📉",
+			action: task(`Check cashflow this month — savings rate ${reason}`),
+			evidence: { rate, priorRate, month },
+		},
+	];
 }
 
 // ── Digest (the email interface) ─────────────────────────────────────────────────
@@ -321,6 +425,11 @@ export type AgendaDeps = {
 	monarchTransactions: (env: RtEnv, opts: { start: string; end: string }) => Promise<MonarchTxnRef[]>;
 	/** Monarch per-category budget for a month (W7) — only called when hasMonarch(env). */
 	monarchBudgets: (env: RtEnv, opts: { month: string }) => Promise<MonarchBudgetRef[]>;
+	/** Monarch investment positions (W7.1) — only called when hasMonarch(env). */
+	monarchHoldings: (env: RtEnv) => Promise<MonarchHoldingRef[]>;
+	/** Monarch income/expense/savings summary for a window (W7.1) — only called when
+	 *  hasMonarch(env). */
+	monarchCashflow: (env: RtEnv, opts: { start: string; end: string }) => Promise<MonarchCashflowSummary>;
 };
 
 export type AgendaOpts = { date?: string; max_mail?: number; horizon_days?: number; dry_run?: boolean; cycle_id?: string };
@@ -380,6 +489,8 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 	let monarchAccounts: MonarchAccountRef[] = [];
 	let monarchTransactions: MonarchTxnRef[] = [];
 	let monarchBudgets: MonarchBudgetRef[] = [];
+	let monarchHoldings: MonarchHoldingRef[] = [];
+	let monarchCashflow: MonarchCashflowSummary = null;
 	await Promise.all([
 		(async () => {
 			mail = await deps.mailSearch(env, { limit: maxMail });
@@ -411,10 +522,19 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 				return;
 			}
 			const windowStart = addDays(date, -UNUSUAL_CHARGE_WINDOW_DAYS);
-			const [accts, txns, budgetRows] = await Promise.all([deps.monarchAccounts(env), deps.monarchTransactions(env, { start: windowStart, end: date }), deps.monarchBudgets(env, { month: date.slice(0, 7) })]);
+			const monthStart = `${date.slice(0, 7)}-01`;
+			const [accts, txns, budgetRows, holdingRows, cashflowRow] = await Promise.all([
+				deps.monarchAccounts(env),
+				deps.monarchTransactions(env, { start: windowStart, end: date }),
+				deps.monarchBudgets(env, { month: date.slice(0, 7) }),
+				deps.monarchHoldings(env),
+				deps.monarchCashflow(env, { start: monthStart, end: date }),
+			]);
 			monarchAccounts = accts;
 			monarchTransactions = txns;
 			monarchBudgets = budgetRows;
+			monarchHoldings = holdingRows;
+			monarchCashflow = cashflowRow;
 			status.monarch = `${accts.length} account(s), ${txns.length} txn(s)`;
 		})().catch((e) => {
 			status.monarch = `unavailable (${errMsg(e).slice(0, 90)})`;
@@ -423,11 +543,44 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 
 	const lowBalanceThreshold = numClamp(env.MONARCH_LOW_BALANCE_THRESHOLD, 0, 1_000_000, 100);
 	const unusualChargeThreshold = numClamp(env.MONARCH_UNUSUAL_CHARGE_THRESHOLD, 0, 1_000_000, 500);
+	const driftThresholdPct = numClamp(env.MONARCH_PORTFOLIO_DRIFT_THRESHOLD_PCT, 0, 100, 10);
+	const savingsDropThresholdPct = numClamp(env.MONARCH_SAVINGS_RATE_DROP_THRESHOLD_PCT, 0, 100, 15);
+
+	// W7.1: portfolio-drift + savings-rate need a PRIOR cycle's snapshot to compare against —
+	// read it (this loop's own ledger, never re-derived from another loop), compute this
+	// cycle's values, then persist the new snapshot below for the next cycle to compare
+	// against (5c's cross-loop cache shape, applied within one loop's own history instead).
+	const monarchSnap = ledger(env, "agenda_monarch_snapshot");
+	let priorWeights: PortfolioWeights | null = null;
+	let priorSavingsRate: number | null = null;
+	if (hasMonarch(env)) {
+		try {
+			const rawWeights = await monarchSnap.get("portfolio_weights");
+			priorWeights = rawWeights ? JSON.parse(rawWeights) : null;
+		} catch {
+			priorWeights = null; // corrupt cache entry — treat as no snapshot yet
+		}
+		const rawRate = await monarchSnap.get("savings_rate");
+		const parsedRate = rawRate === null ? NaN : Number(rawRate);
+		priorSavingsRate = Number.isFinite(parsedRate) ? parsedRate : null;
+	}
+	const portfolioWeights = computePortfolioWeights(monarchHoldings);
+	const savingsRate = computeSavingsRate(monarchCashflow);
+
 	const drops = sortByUrgency([
 		...detectDrops(mail, events),
 		...detectKnowledgeDrops(consolidateFindings, weeklyRecallFindings),
 		...detectMonarchDrops(date, monarchAccounts, monarchTransactions, monarchBudgets, { lowBalanceThreshold, unusualChargeThreshold }),
+		...detectPortfolioDrift(date, portfolioWeights, priorWeights, { driftThresholdPct }),
+		...detectSavingsRateDrop(date, savingsRate, priorSavingsRate, { dropThresholdPct: savingsDropThresholdPct }),
 	]);
+
+	// Persist this cycle's snapshot for the NEXT cycle's comparison — never on a dry run
+	// (dry_run records/sends nothing) and only when there's something usable to cache.
+	if (hasMonarch(env) && !dryRun) {
+		if (Object.keys(portfolioWeights).length) await monarchSnap.mark("portfolio_weights", JSON.stringify(portfolioWeights));
+		if (savingsRate !== null) await monarchSnap.mark("savings_rate", String(savingsRate));
+	}
 
 	// Propose each NEW drop (idempotent per dedupe key). dry_run records nothing.
 	const led = ledger(env, "agenda_drop");
@@ -566,6 +719,25 @@ export async function defaultDeps(): Promise<AgendaDeps> {
 			if (r.isError) throw new Error(r.content?.[0]?.text ?? "monarch budgets failed");
 			const parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
 			return (parsed.budgets ?? []).map((b: any) => ({ category: b?.category, categoryId: b?.categoryId, remaining: typeof b?.remaining === "number" ? b.remaining : undefined }));
+		},
+		monarchHoldings: async (env) => {
+			const r = await monarch.run(env, { op: "holdings" });
+			if (r.isError) throw new Error(r.content?.[0]?.text ?? "monarch holdings failed");
+			const parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
+			return (parsed.holdings ?? []).map((h: any) => ({ ticker: h?.ticker, name: h?.name, value: typeof h?.value === "number" ? h.value : undefined, quantity: typeof h?.quantity === "number" ? h.quantity : undefined }));
+		},
+		monarchCashflow: async (env, o) => {
+			const r = await monarch.run(env, { op: "cashflow", start: o.start, end: o.end });
+			if (r.isError) throw new Error(r.content?.[0]?.text ?? "monarch cashflow failed");
+			const parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
+			const summary = parsed.summary;
+			if (!summary || typeof summary !== "object") return null;
+			return {
+				sumIncome: typeof summary.sumIncome === "number" ? summary.sumIncome : undefined,
+				sumExpense: typeof summary.sumExpense === "number" ? summary.sumExpense : undefined,
+				savings: typeof summary.savings === "number" ? summary.savings : undefined,
+				savingsRate: typeof summary.savingsRate === "number" ? summary.savingsRate : undefined,
+			};
 		},
 	};
 }
