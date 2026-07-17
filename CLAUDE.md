@@ -96,6 +96,14 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   automated session today; don't spend gate/turn budget implementing the suxlib-side
   half only to find you can't land it — check `git push` (or just try it early)
   before doing real work there, and drop the issue back to the queue instead.
+- **A feature that needs a NEW Cloudflare resource** (a Vectorize index, D1
+  database, extra R2 bucket/Queue, …) **beyond what's already bound in
+  `wrangler.jsonc` isn't buildable in one bot-build session** — provisioning it
+  needs a real `wrangler <resource> create` against the account, which a sandbox
+  has no credentials for; don't assume an adjacent primitive (e.g. `_embed.ts`'s
+  Workers-AI `embed()`/`cosine()`, used by `#701`'s `vault_semantic` gap) means
+  the rest is a small lift. Recognize effort-`L` issues of this shape early and
+  drop them back to the queue rather than half-building them.
 
 ## House style
 
