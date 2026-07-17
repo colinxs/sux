@@ -8,20 +8,20 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 // fails CI here, even when the fn still "returns something".
 //
 // The extractors take `html`/`xml` inline, so no fetch happens — but their
-// modules import ../proxy transitively, and homedepot drives ../mac-render, so
-// both are mocked (matching the sibling *.test.ts).
+// modules import ../proxy transitively, and homedepot drives ../cf-render (via
+// retailRender), so both are mocked (matching the sibling *.test.ts).
 
 vi.mock("../proxy", () => ({ smartFetch: vi.fn() }));
-vi.mock("../mac-render", () => ({ macRender: vi.fn() }));
+vi.mock("../cf-render", () => ({ cfRender: vi.fn() }));
 
-import { macRender } from "../mac-render";
+import { cfRender } from "../cf-render";
 import { feed } from "./feed";
 import { homedepot } from "./homedepot";
 import { metadata } from "./metadata";
 import { readability } from "./readability";
 import { tables } from "./tables";
 
-const macRenderMock = vi.mocked(macRender);
+const cfRenderMock = vi.mocked(cfRender);
 
 /** Parse a fn's single text result as JSON. */
 function parsed(r: { content: Array<{ text: string }> }): any {
@@ -182,7 +182,7 @@ describe("golden: feed", () => {
 });
 
 describe("golden: homedepot (fromPods)", () => {
-	// A rendered Home Depot search grid (what the mac render backend returns after
+	// A rendered Home Depot search grid (what the render backend returns after
 	// warming the Akamai sensor): two product-pod tiles, one with the dollars/cents
 	// split across sibling spans — the exact layout fromPods must normalize.
 	const PODS_HTML = `<!doctype html><html><body>
@@ -201,9 +201,9 @@ describe("golden: homedepot (fromPods)", () => {
 </body></html>`;
 
 	it("normalizes rendered product-pod tiles into the shared retail shape", async () => {
-		macRenderMock.mockResolvedValueOnce({ ok: true, contentType: "text/html", body: PODS_HTML });
+		cfRenderMock.mockResolvedValueOnce({ ok: true, contentType: "text/html", body: PODS_HTML });
 		const r = await homedepot.run(
-			{ MAC_RENDER_URL: "x", MAC_RENDER_SECRET: "y" } as any,
+			{ BROWSER: {} } as any,
 			{ action: "search", term: "white paint" },
 		);
 		expect(r.isError).toBeFalsy();

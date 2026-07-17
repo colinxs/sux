@@ -89,7 +89,7 @@ describe("people_finder fn", () => {
 
 	it("merges public data across all sources, isolates the failing one, and dedupes", async () => {
 		setMocks();
-		const r = await people_finder.run({ MAC_RENDER_URL: "x", MAC_RENDER_SECRET: "y" } as any, { name: "Arden Hellmann" });
+		const r = await people_finder.run({} as any, { name: "Arden Hellmann" });
 		expect(r.isError).toBeFalsy();
 		const p = JSON.parse(r.content[0].text);
 

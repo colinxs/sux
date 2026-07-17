@@ -13,7 +13,7 @@ import { errMsg, oj } from "./_util";
 // page, and extract products out of the HTML — embedded JSON first, product
 // tiles as the fallback. When Akamai still blocks the proxy fetch, the ladder
 // escalates to the paid residential unlocker (gated behind UNLOCKER_API_*; no-ops
-// when unset). Costco has NO render backend — the mac/cf render nodes are never
+// when unset). Costco has NO render backend — the cf render node is never
 // tried here. Best-effort throughout: parsing never throws, and a zero-product
 // result is disambiguated (Akamai block vs. layout change).
 

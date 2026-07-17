@@ -55,10 +55,10 @@ describe("linkedin fn", () => {
 		expect(r.content[0].text).toMatch(/linkedin\.com/);
 	});
 
-	it("scrapes a person via the render mac backend and returns distilled data", async () => {
+	it("scrapes a person via cf-residential render and returns distilled data", async () => {
 		renderRun.mockResolvedValueOnce({ content: [{ text: personHtml }] });
 		const r = await linkedin.run({} as any, { url: "https://www.linkedin.com/in/ada" });
-		expect(renderRun).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ url: "https://www.linkedin.com/in/ada", backend: "mac", solve: true }));
+		expect(renderRun).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ url: "https://www.linkedin.com/in/ada", as: "html" }));
 		expect(JSON.parse(r.content[0].text).name).toBe("Ada Lovelace");
 	});
 
@@ -76,7 +76,7 @@ describe("linkedin fn", () => {
 	});
 
 	it("propagates a render error", async () => {
-		renderRun.mockResolvedValueOnce({ content: [{ text: "mac backend not configured" }], isError: true });
+		renderRun.mockResolvedValueOnce({ content: [{ text: "render backend not configured" }], isError: true });
 		const r = await linkedin.run({} as any, { url: "https://www.linkedin.com/in/ada" });
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toMatch(/render/);

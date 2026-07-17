@@ -11,6 +11,8 @@
 
 import type { RtEnv } from "../registry";
 import { smartFetch } from "../proxy";
+import { looksBlocked } from "../retail-render";
+import { unlockerRender } from "../unlocker-render";
 import { errMsg, isHttpUrl, oj } from "../prim";
 import { storeRefUuid, getBlob } from "./_util/store-ref";
 import { fetchDedupActive, fetchCacheGet, fetchCacheSet, FETCH_CACHE_MAX_TEXT } from "./_util/fetch-cache";
@@ -31,10 +33,10 @@ export * from "./_util/store-ref";
 
 // Cloudflare's edge-to-origin error family: the CF edge itself answered, but
 // couldn't reach/resolve whatever sits behind it — a dead Tunnel or broken DNS on
-// a self-hosted origin, NOT an app-level error from the origin service. Both the
-// Mac render bridge and the Obsidian remote-search backend sit behind tunneled
-// origins, so a 530 (or its siblings) from either is an availability signal, not
-// something a caller can retry its way out of. See #551.
+// a self-hosted origin, NOT an app-level error from the origin service.
+// The Obsidian remote-search backend sits behind a tunneled origin, so a 530 (or
+// its siblings) from it is an availability signal, not something a caller can retry
+// its way out of. See #551.
 const CF_ORIGIN_UNREACHABLE_STATUSES = new Set([521, 522, 523, 524, 525, 526, 530]);
 
 /** A short hint appended to an error message when `status` is one of Cloudflare's
@@ -51,19 +53,35 @@ export function vaultToday(tz?: string): string {
 }
 
 /**
- * Fetch a URL as post-JS HTML via the `render` mac backend (headed browser +
- * CapSolver). The path for sites that gate content behind JS / bot walls
- * (Google, LinkedIn, Google Shopping). Delegates to the render fn through the
- * registry (dynamic import breaks the index.ts→fns cycle); throws on render
- * failure so callers can wrap with their own message. Was triplicated inline.
+ * Fetch a URL as post-JS HTML via the `render` fn (Cloudflare Browser Run,
+ * residential + stealth), escalating to the paid residential unlocker for a wall
+ * cf can't clear. The path for sites that gate content behind JS / bot walls
+ * (Google, LinkedIn, Google Shopping). `unlocker` defaults ON — those callers need
+ * the hardest-wall tier; the cheap extract seam (fetchTextOkEscalating) passes
+ * `unlocker:false` to stay cf-only and never burn a paid call. Delegates to the
+ * render fn through the registry (dynamic import breaks the index.ts→fns cycle);
+ * throws when cf fails and the unlocker is unconfigured/unavailable, so callers can
+ * wrap with their own message. Was triplicated inline.
  */
-export async function renderHtml(env: RtEnv, url: string, opts?: { solve?: boolean; wait_ms?: number; backend?: "cf" | "mac" }): Promise<string> {
+export async function renderHtml(env: RtEnv, url: string, opts?: { wait_ms?: number; unlocker?: boolean }): Promise<string> {
 	const { FUNCTIONS } = (await import("./index")) as { FUNCTIONS: Array<{ name: string; run: (e: RtEnv, a: unknown) => Promise<{ content?: Array<{ text?: string }>; isError?: boolean }> }> };
 	const render = FUNCTIONS.find((f) => f.name === "render");
 	if (!render) throw new Error("the `render` fn is not available");
-	const r = await render.run(env, { url, backend: opts?.backend ?? "mac", as: "html", solve: opts?.solve ?? true, wait_ms: opts?.wait_ms ?? 6000 });
-	if (r?.isError) throw new Error(r.content?.[0]?.text ?? "render failed");
-	return r.content?.[0]?.text ?? "";
+	const r = await render.run(env, { url, as: "html", wait_ms: opts?.wait_ms ?? 6000 });
+	if (!r?.isError) return r.content?.[0]?.text ?? "";
+	const err = r.content?.[0]?.text ?? "render failed";
+	// cf failed or hit a bot wall — escalate to the paid unlocker unless suppressed
+	// (no-ops instantly when UNLOCKER_API_* is unset, so this stays graceful). A
+	// `bad_input` rejection is render's own SSRF/URL guard, and the unlocker runs no
+	// isBlockedTarget check of its own — escalating would fetch the very address the
+	// guard just refused, and bill for it. Only a genuine render miss earns the rung.
+	if (opts?.unlocker !== false && !err.startsWith("[bad_input]")) {
+		const u = await unlockerRender(env, { url });
+		// The unlocker returns a wall as a 200 too, so it needs the same canonical check
+		// retailRender applies to this leg — else a block page is handed back as content.
+		if (u.ok && !looksBlocked(u.body)) return u.body;
+	}
+	throw new Error(err);
 }
 
 export type Fetched = { status: number; text: string; headers: Headers; url: string };
@@ -208,8 +226,8 @@ export async function fetchTextOk(
 const ESCALATABLE_STATUSES = /HTTP (401|403|429) /;
 
 /**
- * `fetchTextOk`, escalating to `render` (cf backend — cheap/fast, no CapSolver)
- * when the raw/residential-proxy fetch comes back blocked. THE extract-family
+ * `fetchTextOk`, escalating to `render` (cf-residential — cheap/fast) when the
+ * raw/residential-proxy fetch comes back blocked. THE extract-family
  * fetch seam (tables/readability/select/metadata/grep/extract_contacts/… via
  * loadHtml): those leaves used to hard-fail on any UA-gated site `render` itself
  * clears fine (e.g. Wikipedia's bare-UA block). GET-only (render only navigates);
@@ -226,7 +244,7 @@ export async function fetchTextOkEscalating(
 	const method = (init?.method ?? "GET").toUpperCase();
 	if (method !== "GET" || !ESCALATABLE_STATUSES.test(first.error)) return first;
 	try {
-		const html = await renderHtml(env, String(url), { backend: "cf" });
+		const html = await renderHtml(env, String(url), { unlocker: false });
 		if (html) return { text: html, headers: new Headers({ "content-type": "text/html" }), status: 200 };
 	} catch {
 		// render couldn't clear it either — surface the original fetch error below.

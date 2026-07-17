@@ -8,13 +8,11 @@ import { decodeEntities, normalizeMoney, type RetailProduct } from "./_retail";
 // Amazon's search or product page — passing the active AWS WAF / Robot Check bot
 // wall a plain fetch can't — and lifts products out of the rendered HTML.
 //
-// Rendering goes through `retailRender`, a cf→mac ladder. Cloudflare Browser
-// Rendering with residential routing + stealth is the DEFAULT backend — a PROVEN
-// pass for Amazon's AWS WAF (verified live) with no dependency on the flaky mac
-// node. The mac backend (a residential patched browser that auto-escalates to the
-// headed CapSolver solver, so we never force `solve`) is only the dormant fallback
-// for when cf can't clear the wall. Both backends funnel through the SAME extractor
-// below.
+// Rendering goes through `retailRender`, a cf→unlocker ladder. Cloudflare Browser
+// Rendering with residential routing + stealth is the PRIMARY backend — a PROVEN
+// pass for Amazon's AWS WAF (verified live). The paid residential unlocker is only
+// the fallback rung for when cf can't clear the wall (no-ops when UNLOCKER_API_* is
+// unset). Both backends funnel through the SAME extractor below.
 //
 // Extraction is best-effort and every tile is parsed in its own try/catch — one
 // bad tile never aborts the whole parse.
@@ -127,7 +125,7 @@ export const amazon: Fn = {
 	name: "amazon",
 	cost: 5,
 	description:
-		"Amazon product search / product-detail via a rendered browser (Amazon has no usable free API and walls plain fetches). Renders through Cloudflare Browser Run with residential routing + stealth (a proven pass for Amazon's AWS WAF), falling back to the mac backend (a residential patched browser that auto-escalates to a captcha solver) only when cf can't clear the wall. " +
+		"Amazon product search / product-detail via a rendered browser (Amazon has no usable free API and walls plain fetches). Renders through Cloudflare Browser Run with residential routing + stealth (a proven pass for Amazon's AWS WAF), falling back to the paid residential unlocker only when cf can't clear the wall. " +
 			"`action`: search (products for a `term`) or product (one product by `asin`). Extraction is best-effort from the rendered page, normalized to the shared retail shape (id=ASIN/title/price/image/url; brand for product). " +
 			"`limit` caps search results (default 15, max 40). Slower than an API.",
 	inputSchema: {
@@ -159,8 +157,8 @@ export const amazon: Fn = {
 		}
 		const limit = Math.min(40, Math.max(1, Number(args?.limit) || 15));
 
-		// cf-residential+stealth is the default retailRender backend and a PROVEN pass
-		// for Amazon's AWS WAF (verified live); the flaky mac node stays as the fallback.
+		// cf-residential+stealth is the primary retailRender backend and a PROVEN pass
+		// for Amazon's AWS WAF (verified live); the paid unlocker stays as the fallback.
 		const r = await retailRender(env, { url, block_resources: true, wait_until: "networkidle2", wait_ms: 6000 });
 		if (!r.ok) return failWith("blocked", `amazon: blocked or render failed — ${r.error}`);
 

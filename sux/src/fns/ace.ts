@@ -6,11 +6,10 @@ import { decodeEntities, normalizeMoney, type RetailProduct } from "./_retail";
 // Ace Hardware runs on the Kibo/Mozu commerce platform and exposes no public
 // product API, so this fn renders Ace's search page through `retailRender` and lifts
 // products out of the rendered HTML. Ace runs an INVISIBLE reCAPTCHA v3 in the
-// background that scores the session but does NOT wall the page, so we never force a
-// solve — the render backend auto-escalates only if a real captcha wall ever appears.
-// Rendering defaults to Cloudflare Browser Run (residential + stealth); the mac
-// render backend (a residential patched browser) is the dormant fallback for when cf
-// can't clear a wall. Extraction is best-effort from the rendered DOM: each result is
+// background that scores the session but does NOT wall the page on the common path.
+// Rendering defaults to Cloudflare Browser Run (residential + stealth); the paid
+// residential unlocker is the fallback for when cf can't clear a wall (no-ops when
+// UNLOCKER_API_* is unset). Extraction is best-effort from the rendered DOM: each result is
 // a `mz-productlisting` tile with a `/p/<slug>/<sku>` anchor. Every step
 // guards/try-catches — never throws.
 
@@ -85,7 +84,7 @@ export const ace: Fn = {
 	name: "ace",
 	cost: 5,
 	description:
-		"Ace Hardware product search via a rendered browser (Ace has no public product API, runs on Kibo/Mozu with an invisible reCAPTCHA v3, and a plain fetch returns no grid). Renders through Cloudflare Browser Run (residential + stealth) by default, falling back to the mac render backend (a residential patched browser) when cf can't clear a wall. " +
+		"Ace Hardware product search via a rendered browser (Ace has no public product API, runs on Kibo/Mozu with an invisible reCAPTCHA v3, and a plain fetch returns no grid). Renders through Cloudflare Browser Run (residential + stealth) by default, falling back to the paid residential unlocker when cf can't clear a wall. " +
 		"`action`: search (products for a `term`). Extraction is best-effort from the rendered `mz-productlisting` tiles, normalized to the shared retail shape (id/title/price/image/url). " +
 		"`limit` caps results (default 15, max 40). Slower than an API.",
 	inputSchema: {

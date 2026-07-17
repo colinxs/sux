@@ -2,9 +2,10 @@
 // engine): a headless Chromium (`@cloudflare/puppeteer`) that executes JS and —
 // with `residential` routing + `stealth` masking — egresses from a home IP past
 // datacenter-IP bot detection. The `render` fn drives it for arbitrary pages; the
-// retailer fns reach it (via retail-render's mac→cf fallback) only when the mac
-// backend is down. Extracted from render.ts so both callers share ONE puppeteer
-// driver instead of duplicating the launch/stealth/interception/goto dance.
+// retailer fns reach it (via retail-render) as the PRIMARY leg, escalating to the
+// paid unlocker only when cf can't clear a hard wall. Extracted from render.ts so
+// both callers share ONE puppeteer driver instead of duplicating the
+// launch/stealth/interception/goto dance.
 //
 // Cloudflare renamed this product "Browser Rendering" -> "Browser Run" (Apr 2026).
 // The rename is additive only — same `@cloudflare/puppeteer` package, same `browser`
@@ -14,9 +15,9 @@
 // server-side Puppeteer path; `debug_recording` below opts into the one that does
 // (session recordings), for post-mortem debugging of bot-wall failures.
 //
-// Mirrors macRender's never-throw envelope: a launch/nav failure or a missing
-// BROWSER binding resolves to `{ ok:false, error }`. HTML/text return a string
-// `body`; screenshot/pdf return raw `bytes` (the caller delivers them).
+// Never-throw envelope: a launch/nav failure or a missing BROWSER binding resolves
+// to `{ ok:false, error }`. HTML/text return a string `body`; screenshot/pdf return
+// raw `bytes` (the caller delivers them).
 
 import puppeteer from "@cloudflare/puppeteer";
 import { smartFetch } from "./proxy";

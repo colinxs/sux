@@ -2,19 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // selftest probes each fetch-ladder rung live. It must NEVER hang and NEVER throw:
 // a wedged or failing rung has to surface as `ok:false`, not propagate. So we mock
-// every egress path — the worker's global fetch (direct), smartFetch (residential
-// scrape), macRender (Mac node) — and drive each into success, failure, and hang.
+// every egress path — the worker's global fetch (direct) and smartFetch (residential
+// scrape) — and drive each into success, failure, and hang.
 
 const smartFetchMock = vi.hoisted(() => vi.fn());
 const isTailscaleConfiguredMock = vi.hoisted(() => vi.fn(() => true));
-const macRenderMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../proxy", () => ({
 	smartFetch: smartFetchMock,
 	isTailscaleConfigured: isTailscaleConfiguredMock,
-}));
-vi.mock("../mac-render", () => ({
-	macRender: macRenderMock,
 }));
 
 import { selftest } from "./selftest";
@@ -24,8 +20,6 @@ import { selftest } from "./selftest";
 const FULL_ENV = {
 	TAILSCALE_PROXY_URL: "https://box.ts.net",
 	TAILSCALE_PROXY_SECRET: "s",
-	MAC_RENDER_URL: "https://mac.ts.net",
-	MAC_RENDER_SECRET: "s",
 	BROWSER: {},
 	KAGI_API_KEY: "k",
 	KROGER_CLIENT_ID: "a",
@@ -55,7 +49,6 @@ describe("selftest", () => {
 		fetchSpy = vi.spyOn(globalThis, "fetch") as any;
 		fetchSpy.mockResolvedValue(new Response("<html>ok</html>", { status: 200 }));
 		smartFetchMock.mockResolvedValue(new Response("ok", { status: 200 }));
-		macRenderMock.mockResolvedValue({ ok: true, contentType: "text/html", body: "<html>ok</html>" });
 		isTailscaleConfiguredMock.mockReturnValue(true);
 	});
 
@@ -64,19 +57,18 @@ describe("selftest", () => {
 		vi.clearAllMocks();
 	});
 
-	it("returns the { rungs, grafana, configured } shape with all four rungs and never errors", async () => {
+	it("returns the { rungs, grafana, configured } shape with all rungs and never errors", async () => {
 		const r = await selftest.run(FULL_ENV, {});
 		expect(r.isError).toBeFalsy();
 		const out = parse(r);
 		expect(Object.keys(out)).toEqual(["rungs", "grafana", "configured"]);
-		expect(Object.keys(out.rungs)).toEqual(["direct", "scrape", "render_mac", "render_cf"]);
+		expect(Object.keys(out.rungs)).toEqual(["direct", "scrape", "render_cf"]);
 	});
 
 	it("reports every rung up when each probe answers", async () => {
 		const out = parse(await selftest.run(FULL_ENV, {}));
 		expect(out.rungs.direct).toMatchObject({ ok: true, status: 200 });
 		expect(out.rungs.scrape).toMatchObject({ ok: true, status: 200 });
-		expect(out.rungs.render_mac).toMatchObject({ ok: true });
 		expect(out.rungs.render_cf).toMatchObject({ ok: true });
 	});
 
@@ -92,7 +84,6 @@ describe("selftest", () => {
 			coingecko: true,
 			grafana: true,
 			proxy: true,
-			mac_render: true,
 			browser: true,
 		});
 	});
@@ -103,7 +94,6 @@ describe("selftest", () => {
 		// (kagi/brave/exa/etc.) is ever contacted for `configured`.
 		expect(fetchSpy).toHaveBeenCalledTimes(2); // direct + grafana push probe
 		expect(smartFetchMock).toHaveBeenCalledTimes(1); // scrape only
-		expect(macRenderMock).toHaveBeenCalledTimes(1); // render_mac only
 	});
 
 	it("reports a THROWN probe as down, not thrown (direct fetch rejects)", async () => {
@@ -126,26 +116,12 @@ describe("selftest", () => {
 		expect(out.rungs.scrape.error).toMatch(/timed out/);
 	});
 
-	it("reports a failing mac render (its {ok:false} envelope) as down without throwing", async () => {
-		macRenderMock.mockResolvedValueOnce({ ok: false, error: "mac render failed: HTTP 502" });
-		const out = parse(await selftest.run(FULL_ENV, {}));
-		expect(out.rungs.render_mac.ok).toBe(false);
-		expect(out.rungs.render_mac.error).toMatch(/502/);
-	});
-
 	it("skips (does not fail) the scrape rung when the residential proxy is unconfigured", async () => {
 		isTailscaleConfiguredMock.mockReturnValue(false);
 		const out = parse(await selftest.run({ ...FULL_ENV, TAILSCALE_PROXY_URL: undefined, TAILSCALE_PROXY_SECRET: undefined }, {}));
 		expect(out.rungs.scrape).toMatchObject({ ok: false, skipped: true });
 		expect(smartFetchMock).not.toHaveBeenCalled();
 		expect(out.configured.proxy).toBe(false);
-	});
-
-	it("skips the render_mac rung gracefully when MAC_RENDER_URL is unset", async () => {
-		const out = parse(await selftest.run({ ...FULL_ENV, MAC_RENDER_URL: undefined }, {}));
-		expect(out.rungs.render_mac).toMatchObject({ ok: false, skipped: true });
-		expect(out.rungs.render_mac.reason).toMatch(/MAC_RENDER_URL/);
-		expect(macRenderMock).not.toHaveBeenCalled();
 	});
 
 	it("reports render_cf down/skipped when the BROWSER binding is absent, up when present", async () => {

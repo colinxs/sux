@@ -1,13 +1,12 @@
 // Shared client for a paid residential "web unlocker" backend (Bright Data / Zyte /
 // Oxylabs-style): a hosted HTTP endpoint that fetches a URL through its own managed
 // residential IP pool + challenge-solving and returns the final unlocked HTML. This
-// is the LAST rung of the retail escalation ladder — reached only after cf-residential
-// (primary) and the mac gesture/captcha node (fallback) both fail a hard wall
-// (Home Depot's Akamai `_abck`, Costco's Akamai soft-block). It is a plain
-// authenticated POST — no browser — so it is cheaper on Worker CPU than a render but
-// costs money per call.
+// is the FALLBACK rung of the retail ladder — reached only after cf-residential
+// (primary) fails a hard wall (Home Depot's Akamai `_abck`, Costco's Akamai
+// soft-block). It is a plain authenticated POST — no browser — so it is cheaper on
+// Worker CPU than a render but costs money per call.
 //
-// Gated fail-closed exactly like macRender: unset UNLOCKER_API_URL/UNLOCKER_API_KEY →
+// Gated fail-closed: unset UNLOCKER_API_URL/UNLOCKER_API_KEY →
 // the rung no-ops with `{ ok:false, error:"unlocker not configured" }`, never throws,
 // so the caller falls straight through to its existing blocked-failure message. It is
 // body-in / body-out (POST `{ url }`, HTML back) so swapping providers is a config
@@ -25,7 +24,7 @@ export type UnlockerSpec = {
 export type UnlockerResult = { ok: true; contentType: string; body: string } | { ok: false; error: string };
 
 // Bound the AbortSignal so a slow provider can never hang the rung. Kept tight because
-// this fires only after cf+mac already spent their budgets — FN_DEADLINE_MS is the
+// this fires only after cf (primary) already spent its budget — FN_DEADLINE_MS is the
 // ultimate cap, but a paid unlocker should not push us to it.
 const UNLOCKER_TIMEOUT_DEFAULT_MS = 12_000;
 const UNLOCKER_TIMEOUT_CAP_MS = 20_000;

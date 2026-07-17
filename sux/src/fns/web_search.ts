@@ -92,9 +92,10 @@ async function ddg(env: any, q: string, limit: number, route: Route): Promise<Hi
 
 // Google, DIRECT — no SerpAPI. Google now gates results behind JS (a plain HTTP
 // fetch, even residential/curl-impersonate, returns an empty JS shell), so we
-// render the SERP in the `render` mac backend (headed browser + CapSolver clears
-// the bot wall) and parse the post-JS HTML. Real Google results, no third-party
-// SERP API — but heavier than an API call, so google is an opt-in engine.
+// render the SERP through cf-residential (Cloudflare Browser Run: residential +
+// stealth headless Chromium from a home IP) and parse the post-JS HTML. Real Google
+// results, no third-party SERP API — but heavier than an API call, so google is an
+// opt-in engine.
 async function googleDirect(env: any, q: string, limit: number, _route: Route): Promise<Hit[]> {
 	// Over-request: Google's SERP host drops (google/gstatic) and dedupe shrink the
 	// parsed hit count, so ask for more than `limit` (up to Google's ~40 ceiling) or
@@ -215,7 +216,7 @@ const ENGINES: Record<string, { envKey?: string; envName?: string; run: (env: an
 	kagi_session: { envKey: "KAGI_SESSION", envName: "KAGI_SESSION", run: kagiSession }, // subscription (free), residential-proxy HTML scrape
 	kagi: { envKey: "KAGI_API_KEY", envName: "KAGI_API_KEY", run: kagi }, // metered Search API
 	ddg: { run: ddg }, // no key — cheap residential HTML scrape (no JS)
-	google: { run: googleDirect }, // no key — heavy: rendered in the mac backend (Google needs JS)
+	google: { run: googleDirect }, // no key — heavy: rendered via cf Browser Run (Google needs JS)
 	exa: { envKey: "EXA_API_KEY", envName: "EXA_API_KEY", run: exa }, // 20k req/mo free tier — preferred over brave
 	brave: { envKey: "BRAVE_API_KEY", envName: "BRAVE_API_KEY", run: brave }, // metered-only since Feb 2026, no free tier — see comment above
 };
@@ -236,7 +237,7 @@ function available(env: any): string[] {
 }
 
 // Auto-fallback pool for the no-`engine`-arg case, in preference order. Excludes
-// `google`: it's opt-in (heavy mac-backend render) and only ever runs when named
+// `google`: it's opt-in (heavy cf render) and only ever runs when named
 // explicitly or via `all`, never silently pulled in by a fallback.
 const AUTO_FALLBACK_ORDER = ["kagi_session", "ddg", "kagi", "exa", "brave"] as const;
 
@@ -274,7 +275,7 @@ export const webSearch: Fn = {
 	cost: 3,
 	description:
 		"Web search over Kagi, DuckDuckGo, native Google, Exa, and Brave. `engine`: kagi_session, kagi, ddg, google, exa, brave, or `all` — which fans out across every currently-available engine concurrently (MAP), merges/dedupes by URL with consensus ranking, and with `summarize: true` reduces the pooled results into one Workers-AI synthesis with citations (map-reduce). " +
-		"DEFAULT is kagi_session — Kagi run on YOUR subscription (free/unmetered) by scraping the /html/search page with the KAGI_SESSION token through the residential proxy — when that secret is set, else ddg. ddg (DuckDuckGo) is scraped keyless+cheap via the residential proxy (no JS needed) — the free no-key fallback. google renders the real SERP in the headed `render` mac backend (Google needs JS; heavier/slower, opt-in — never picked automatically). kagi, exa, and brave are key-gated (KAGI_API_KEY, EXA_API_KEY, BRAVE_API_KEY) and used only when their secret is set; `all` skips unconfigured ones. exa has a genuine 20,000 req/mo free tier and is the preferred key-gated fallback — brave lost its free tier in Feb 2026 and is now metered with no default spend cap, so prefer configuring EXA_API_KEY over BRAVE_API_KEY. When `engine` is left unset and the auto-picked default (kagi_session or ddg) errors or comes back empty, it's non-fatal: the call falls back through whichever of kagi_session/ddg/kagi/exa/brave are configured and merges what succeeds, same graceful-degradation as the fetch ladder's escalation — an explicit `engine` still fails hard on that engine's own error. Falls back to the plain merged list if AI isn't configured. Returns numbered results (title, url, snippet) — cite by number. " +
+		"DEFAULT is kagi_session — Kagi run on YOUR subscription (free/unmetered) by scraping the /html/search page with the KAGI_SESSION token through the residential proxy — when that secret is set, else ddg. ddg (DuckDuckGo) is scraped keyless+cheap via the residential proxy (no JS needed) — the free no-key fallback. google renders the real SERP through the `render` fn (Cloudflare Browser Run, residential + stealth; Google needs JS; heavier/slower, opt-in — never picked automatically). kagi, exa, and brave are key-gated (KAGI_API_KEY, EXA_API_KEY, BRAVE_API_KEY) and used only when their secret is set; `all` skips unconfigured ones. exa has a genuine 20,000 req/mo free tier and is the preferred key-gated fallback — brave lost its free tier in Feb 2026 and is now metered with no default spend cap, so prefer configuring EXA_API_KEY over BRAVE_API_KEY. When `engine` is left unset and the auto-picked default (kagi_session or ddg) errors or comes back empty, it's non-fatal: the call falls back through whichever of kagi_session/ddg/kagi/exa/brave are configured and merges what succeeds, same graceful-degradation as the fetch ladder's escalation — an explicit `engine` still fails hard on that engine's own error. Falls back to the plain merged list if AI isn't configured. Returns numbered results (title, url, snippet) — cite by number. " +
 			"file_type / include_domains / exclude_domains scope the Kagi engines (kagi, kagi_session) via documented query operators (filetype:, site:, -site:) — neither Kagi surface has a structured param for these on the session path, so both fold into the query text the same way. Other engines ignore them.",
 	inputSchema: {
 		type: "object",
@@ -341,7 +342,7 @@ export const webSearch: Fn = {
 		// (kagi_session or the keyless ddg scrape). A single bad guess (e.g. DDG's HTTP 522)
 		// shouldn't hard-fail the whole call when other configured engines are healthy — fall
 		// back through the rest of the pool and merge, same graceful-degradation pattern as
-		// the fetch ladder's scrape → render → render:mac escalation.
+		// the fetch ladder's scrape → render escalation.
 		if (!hits.length && !ranAll && !explicitEngine) {
 			const rest = AUTO_FALLBACK_ORDER.filter((name) => name !== engine && (!ENGINES[name].envKey || (env as any)[ENGINES[name].envKey]));
 			if (rest.length) {

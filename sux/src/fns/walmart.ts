@@ -10,18 +10,11 @@ import { normalizeMoney, type RetailProduct } from "./_retail";
 //
 // READS ONLY: both actions here (search, product) are reads, so they go through
 // `retailRender` — cf-residential+stealth FIRST (it often clears PerimeterX for a
-// plain page load from a home IP), with the mac render backend as the fallback. The
-// mac leg carries `solve: true`: Walmart's real wall is a press-and-hold gesture that
-// ONLY the Mac Python service passes (a real mouse-hold — no cf/puppeteer equivalent;
-// see docs/retail.md "Why the press-and-hold win matters"), so when cf misses, mac is
-// the one backend that can force it.
-//
-// GUARDRAIL: any FUTURE interactive/cart/checkout action must NOT ride the cf leg —
-// those need the gesture-capable mac path, so route them via retailRender's preferMac
-// (or macRender directly with solve). There is no such action today; keep it that way
-// unless you add the mac-only routing alongside it.
+// plain page load from a home IP), with the paid residential unlocker as the fallback
+// rung for the hard walls cf can't clear. The unlocker no-ops when UNLOCKER_API_* is
+// unset, so the common path stays pure cf and a hard wall surfaces cf's error.
 
-const BLOCKED_MSG = "walmart: blocked or no data — the mac render backend may be down or Walmart challenged the request.";
+const BLOCKED_MSG = "walmart: blocked or no data — the render backend may be down or Walmart challenged the request.";
 
 /**
  * Extract and parse the `<script id="__NEXT_DATA__" type="application/json">…
@@ -57,7 +50,7 @@ export const walmart: Fn = {
 	name: "walmart",
 	cost: 5,
 	description:
-		"Walmart product search and detail via a rendered browser (Walmart runs an active PerimeterX JS challenge a plain fetch can't pass). Renders through Cloudflare Browser Run (residential + stealth) first, falling back to the mac render backend (a residential patched browser that solves Walmart's press-and-hold gesture) when cf can't clear the wall. " +
+		"Walmart product search and detail via a rendered browser (Walmart runs an active PerimeterX JS challenge a plain fetch can't pass). Renders through Cloudflare Browser Run (residential + stealth) first, falling back to the paid residential unlocker when cf can't clear the wall. " +
 		"`action`: search (products for a `term`) or product (detail by `item_id`). Products come from Walmart's embedded __NEXT_DATA__ JSON, normalized to the shared retail shape (id/title/price/brand/image/url/in_stock). " +
 		"`limit` caps search results (default 15, max 40). Slower than an API — it renders the real page.",
 	inputSchema: {
@@ -84,7 +77,6 @@ export const walmart: Fn = {
 				block_resources: true,
 				wait_until: "domcontentloaded",
 				wait_ms: 4000,
-				solve: true,
 			});
 			if (!r.ok) return failWith("blocked", `${BLOCKED_MSG} (${r.error})`);
 			const data = extractNextData(r.body);
@@ -112,7 +104,6 @@ export const walmart: Fn = {
 			block_resources: true,
 			wait_until: "domcontentloaded",
 			wait_ms: 4000,
-			solve: true,
 		});
 		if (!r.ok) return failWith("blocked", `${BLOCKED_MSG} (${r.error})`);
 		const data = extractNextData(r.body);

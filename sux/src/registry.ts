@@ -38,7 +38,7 @@ export type RtEnv = Env &
 		BRAVE_API_KEY?: string;
 
 		// Facebook Graph API access token (facebook fn). (linkedin fn now scrapes via
-		// the render mac backend — Proxycurl shut down July 2025 — so it needs no key.)
+		// cf-residential render — Proxycurl shut down July 2025 — so it needs no key.)
 		FACEBOOK_TOKEN?: string;
 		// Cloudflare Access self-hosted application fronting /dashboard (dashboard.ts).
 		// Team domain e.g. 'https://your-team.cloudflareaccess.com'; AUD is the
@@ -282,9 +282,6 @@ export type RtEnv = Env &
 		// a redeploy; unset → cf-render's tracked default.
 		STEALTH_CHROME_MAJOR?: string;
 
-		MAC_RENDER_URL?: string;
-		MAC_RENDER_SECRET?: string;
-
 		// UW Person Web Service (PWS) mutual-TLS tier for the `uw` fn. An
 		// `mtls_certificates` binding (a Fetcher that presents the client cert) to
 		// ws.admin.washington.edu — grants the richer, student-inclusive record that
@@ -293,10 +290,9 @@ export type RtEnv = Env &
 		// "Cert set" = this binding exists (declared in wrangler mtls_certificates).
 		UW_PWS_CERT?: Fetcher;
 
-		// Paid residential "web unlocker" (Bright Data / Zyte / Oxylabs) — the last rung
-		// of the retail escalation ladder (homedepot/costco) after cf + mac fail. Optional
-		// pair, same fail-closed convention as MAC_RENDER_*: unset → the rung no-ops. See
-		// sux/src/unlocker-render.ts.
+		// Paid residential "web unlocker" (Bright Data / Zyte / Oxylabs) — the fallback
+		// rung of the retail ladder (homedepot/costco) after cf (primary) fails. Optional
+		// pair, fail-closed: unset → the rung no-ops. See sux/src/unlocker-render.ts.
 		UNLOCKER_API_URL?: string;
 		UNLOCKER_API_KEY?: string;
 

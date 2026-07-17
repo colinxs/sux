@@ -1,10 +1,9 @@
 import { type Fn, ok } from "../registry";
 import { oj } from "./_util";
 import { isTailscaleConfigured, smartFetch } from "../proxy";
-import { macRender } from "../mac-render";
 
-// Live probe of the fetch ladder — the three egress pillars (direct → residential
-// scrape → mac render) plus the CF Browser Run binding. Each rung is probed
+// Live probe of the fetch ladder — the egress pillars (direct → residential
+// scrape) plus the CF Browser Run binding. Each rung is probed
 // independently, guarded, and hard time-bounded so a hung node (the exact failure
 // this fn exists to detect) can never hang selftest itself: a probe that throws or
 // exceeds the deadline is reported `ok:false`, never propagated. `configured`
@@ -105,25 +104,10 @@ async function probeGrafana(
 	}
 }
 
-// Rung 3 — the Mac patchright render node. macRender never throws (returns
-// {ok:false,error}), but we still bound it: its own AbortSignal budget can exceed
-// our probe deadline. Skipped when MAC_RENDER_URL is unset.
-async function probeRenderMac(env: Parameters<typeof macRender>[0], ms: number): Promise<Rung> {
-	if (!env.MAC_RENDER_URL) return { ok: false, skipped: true, reason: "MAC_RENDER_URL unset" };
-	try {
-		return await withTimeout(ms, async () => {
-			const r = await macRender(env, { url: PROBE_URL, timeout_ms: Math.min(ms, 5_000) });
-			return r.ok ? { ok: true } : { ok: false, error: r.error };
-		});
-	} catch (e) {
-		return { ok: false, error: msg(e) };
-	}
-}
-
 export const selftest: Fn = {
 	name: "selftest",
 	description:
-		"Probe the fetch ladder and report which rungs are up. Live health check: fetches a tiny known URL through each egress path — direct (worker fetch), scrape (residential proxy / OpenWRT node), render_mac (Mac patchright node) — and reports whether the BROWSER binding (render_cf) is present. Also actively probes the Grafana Cloud Loki push endpoint (`grafana`): POSTs one health-check line with the configured URL/user/token and reports the HTTP status, so a misconfigured stack (all secrets set yet nothing lands) shows as a 401/403/404 instead of failing silently in the fire-and-forget ship path. Every probe is guarded and hard time-bounded (default 8s each, override with timeout_ms) so a hung node can never hang selftest. Also reports `configured` — which credentials/bindings are present as booleans, WITHOUT calling the upstreams (no key spent, no rate limit touched). Returns JSON { rungs:{direct,scrape,render_mac,render_cf}, grafana, configured }. Never cached.",
+		"Probe the fetch ladder and report which rungs are up. Live health check: fetches a tiny known URL through each egress path — direct (worker fetch), scrape (residential proxy / OpenWRT node) — and reports whether the BROWSER binding (render_cf) is present. Also actively probes the Grafana Cloud Loki push endpoint (`grafana`): POSTs one health-check line with the configured URL/user/token and reports the HTTP status, so a misconfigured stack (all secrets set yet nothing lands) shows as a 401/403/404 instead of failing silently in the fire-and-forget ship path. Every probe is guarded and hard time-bounded (default 8s each, override with timeout_ms) so a hung node can never hang selftest. Also reports `configured` — which credentials/bindings are present as booleans, WITHOUT calling the upstreams (no key spent, no rate limit touched). Returns JSON { rungs:{direct,scrape,render_cf}, grafana, configured }. Never cached.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -136,10 +120,9 @@ export const selftest: Fn = {
 	run: async (env, args) => {
 		const ms = Math.min(Math.max(Number(args?.timeout_ms) || DEFAULT_TIMEOUT_MS, 1), MAX_TIMEOUT_MS);
 
-		const [direct, scrape, render_mac, grafana] = await Promise.all([
+		const [direct, scrape, grafana] = await Promise.all([
 			probeDirect(ms),
 			probeScrape(env, ms),
-			probeRenderMac(env, ms),
 			probeGrafana(env, ms),
 		]);
 
@@ -163,10 +146,13 @@ export const selftest: Fn = {
 			facebook: Boolean(env.FACEBOOK_TOKEN),
 			grafana: Boolean(env.GRAFANA_LOKI_URL && env.GRAFANA_LOKI_USER && env.GRAFANA_LOKI_TOKEN),
 			proxy: isTailscaleConfigured(env),
-			mac_render: Boolean(env.MAC_RENDER_URL && env.MAC_RENDER_SECRET),
 			browser: Boolean(env.BROWSER),
+			// The retail ladder's only fallback rung. It fails closed when unset, so a
+			// `blocked` retailer is ambiguous — paid rung broken, or never armed? — unless
+			// selftest says which. No network: presence only, like every flag here.
+			unlocker: Boolean(env.UNLOCKER_API_URL && env.UNLOCKER_API_KEY),
 		};
 
-		return ok(oj({ rungs: { direct, scrape, render_mac, render_cf }, grafana, configured }));
+		return ok(oj({ rungs: { direct, scrape, render_cf }, grafana, configured }));
 	},
 };

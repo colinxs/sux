@@ -61,10 +61,10 @@ describe("registry conformance", () => {
 	});
 
 	it("failWith carries a machine code as an errorCode + [code] prefix, human text preserved", () => {
-		const r = failWith("blocked", "costco: blocked by Akamai (try render:mac) — no products");
+		const r = failWith("blocked", "costco: blocked by Akamai (try the unlocker) — no products");
 		expect(r.isError).toBe(true);
 		expect(r.errorCode).toBe("blocked");
-		expect(r.content[0].text).toBe("[blocked] costco: blocked by Akamai (try render:mac) — no products");
+		expect(r.content[0].text).toBe("[blocked] costco: blocked by Akamai (try the unlocker) — no products");
 		// The human message survives verbatim after the machine prefix.
 		expect(r.content[0].text.endsWith("no products")).toBe(true);
 	});

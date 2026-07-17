@@ -241,10 +241,10 @@ describe("fetchTextOk (the fetch-validation seam)", () => {
 describe("fetchTextOkEscalating (extract-family scrape→render fallback)", () => {
 	beforeEach(() => renderRun.mockReset());
 
-	it("escalates a 403 to render's cf backend and returns its html", async () => {
+	it("escalates a 403 to the render fn (cf-residential) and returns its html", async () => {
 		renderRun.mockResolvedValueOnce({ content: [{ text: "<h1>rendered</h1>" }] });
 		const r = await fetchTextOkEscalating({} as any, "https://blocked.example");
-		expect(renderRun).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ url: "https://blocked.example", backend: "cf" }));
+		expect(renderRun).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ url: "https://blocked.example", as: "html" }));
 		expect("text" in r && r.text).toBe("<h1>rendered</h1>");
 		expect("status" in r && r.status).toBe(200);
 	});

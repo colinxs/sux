@@ -3,11 +3,12 @@ import { renderHtml, oj } from "./_util";
 
 // LinkedIn public data by SCRAPING (Proxycurl — the old provider path — shut down
 // in July 2025 after LinkedIn sued Nubela). We render the public profile/company
-// page through the residential `render` fn's `mac` backend (headed patched
-// browser + CapSolver, which clears LinkedIn's active bot wall) and extract the
-// structured data LinkedIn publishes on the page itself: schema.org JSON-LD
-// (Person / Organization) plus og: meta as a fallback. Distilled to token-cheap
-// fields. Public-page data only — deeper fields need an authenticated session.
+// page through `renderHtml` (Cloudflare Browser Run: residential + stealth headless
+// Chromium egressing from a home IP, a proven pass for LinkedIn's bot wall) and
+// extract the structured data LinkedIn publishes on the page itself: schema.org
+// JSON-LD (Person / Organization) plus og: meta as a fallback. Distilled to
+// token-cheap fields. Public-page data only — deeper fields need an authenticated
+// session.
 
 /** Parse every <script type="application/ld+json"> block, flattening @graph. */
 export function parseJsonLd(html: string): any[] {
@@ -60,9 +61,9 @@ export function extractCompany(html: string): Record<string, unknown> {
 
 export const linkedin: Fn = {
 	name: "linkedin",
-	cost: 5, // scrapes via a full headed-browser render (mac backend) — heavy
+	cost: 5, // scrapes via a full headless-browser render (cf-residential) — heavy
 	description:
-		"LinkedIn public profile/company data by scraping (the old Proxycurl API shut down July 2025). action: person (default) resolves a profile URL; company resolves a company URL. Renders the public page through the residential `render` mac backend (headed browser + CapSolver to clear the bot wall) and extracts schema.org JSON-LD (Person/Organization) + og: meta, distilled to token-cheap fields. Needs the mac render backend configured (MAC_RENDER_URL/MAC_RENDER_SECRET). Public-page fields only — deeper data needs an authenticated session.",
+		"LinkedIn public profile/company data by scraping (the old Proxycurl API shut down July 2025). action: person (default) resolves a profile URL; company resolves a company URL. Renders the public page through cf-residential (Cloudflare Browser Run: residential + stealth headless Chromium from a home IP, to clear the bot wall) and extracts schema.org JSON-LD (Person/Organization) + og: meta, distilled to token-cheap fields. Public-page fields only — deeper data needs an authenticated session.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -80,7 +81,7 @@ export const linkedin: Fn = {
 		const action = String(args?.action ?? "person") === "company" ? "company" : "person";
 
 		try {
-			// Anti-bot render via the mac backend (headed browser + CapSolver).
+			// Anti-bot render via cf-residential (stealth headless Chromium, home-IP egress).
 			const html = await renderHtml(env, url);
 			if (!parseJsonLd(html).length && /authwall|sign in to LinkedIn|Join LinkedIn to view/i.test(html)) {
 				return fail("LinkedIn returned an auth wall (no public data). This profile needs an authenticated session.");

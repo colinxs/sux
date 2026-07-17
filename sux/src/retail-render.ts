@@ -1,58 +1,53 @@
-// Resilient render for the retailer fns: try Cloudflare Browser Run
-// (residential + stealth) FIRST, fall back to the Mac patched-browser backend only
-// when cf can't clear a given wall.
+// Resilient render for the retailer fns: Cloudflare Browser Run (residential +
+// stealth) is the PRIMARY, with the paid residential "unlocker" as the fallback
+// rung for the hard walls cf can't clear (Home Depot's Akamai `_abck`, Walmart's
+// PerimeterX, Costco's Akamai soft-block).
 //
-// cf-residential is the DEFAULT backend: a stealthed headless Chromium egressing
-// from a home IP, a proven pass for the WAF/soft-bot walls the retailers hit on the
-// common path (Amazon's AWS WAF, verified live) with no dependency on the single
-// flaky Mac node. The Mac node is now a DORMANT fallback — it still owns the solver
-// tiers cf CANNOT replicate (the PerimeterX press-and-hold gesture, the CapSolver
-// captcha pass), so a call facing a gesture/captcha wall opts back into mac-first
-// per call (opts.preferMac) or reaches the node explicitly via backend:mac.
+// cf-residential is a stealthed headless Chromium egressing from a home IP — a
+// proven pass for the WAF/soft-bot walls the retailers hit on the common path
+// (Amazon's AWS WAF, verified live). The unlocker is a hosted residential IP pool
+// + challenge-solving reached by a plain authenticated POST (no browser); it is
+// env-gated fail-closed (UNLOCKER_API_* unset → no-ops instantly), so the common
+// path stays pure cf and a hard wall surfaces cf's blocked error unchanged.
 //
 // Whichever backend answers, the caller runs the SAME extractor on the returned
 // HTML (the extractors are backend-agnostic). Never throws — if BOTH fail we
-// surface the first (primary) backend's error, the signal callers match on.
+// surface the cf (primary) backend's error, the signal callers match on.
 
 import { cfRender } from "./cf-render";
-import { type MacRenderResult, macRender } from "./mac-render";
 import type { RtEnv } from "./registry";
+import { unlockerRender } from "./unlocker-render";
 
-// The retail callers only ever want post-JS HTML, so this is the mac spec minus
-// `as` (always html). `solve` is honored on the mac leg (cf has no solver tier).
+// The retail callers only ever want post-JS HTML, so this is the render spec minus
+// `as` (always html).
 export type RetailRenderSpec = {
 	url: string;
 	wait_until?: string;
 	wait_ms?: number;
 	block_resources?: boolean;
 	timeout_ms?: number;
-	solve?: boolean;
 };
 
-export type RetailRenderOpts = {
-	// Opt back into mac-FIRST (cf as the fallback) for a specific retailer/call. cf is
-	// the universal default; set this ONLY when cf regresses on a wall that needs the
-	// mac node's gesture/captcha tiers up front (a PerimeterX press-and-hold or a real
-	// captcha wall) so the flaky-but-capable node leads instead of trailing.
-	preferMac?: boolean;
-};
+// The never-throw render envelope, shared by retailRender and its callers (was
+// MacRenderResult before the mac backend was removed).
+export type RenderResult = { ok: true; contentType: string; body: string } | { ok: false; error: string };
 
-// Both legs run sequentially inside the 60s FN_DEADLINE_MS, and the mac (fallback)
-// leg's HTTP timeout is its render budget + a ~15s margin — so the FIRST (cf) leg
-// must be capped well under the deadline or the fallback never runs. Budgets chosen
-// so worst case (first + second + mac margin) lands ~52s, leaving an 8s buffer. A
-// caller adding a THIRD escalation rung (e.g. the paid unlocker on homedepot/costco)
-// must keep its own budget inside that buffer — FN_DEADLINE_MS is the hard backstop.
+// The cf (primary) leg runs inside the 60s FN_DEADLINE_MS; its budget is capped
+// well under the deadline so the unlocker fallback still has room to run. The cf
+// leg's real ceiling is FIRST_LEG_MS + the caller's `wait_ms`, which cf-render
+// sleeps AFTER goto — and which this path does NOT clamp, since retailRender calls
+// cfRender directly rather than through the render fn (whose schema caps wait_ms at
+// 10s). Worst case at today's callers (wait_ms ≤6s): 25 + 6 + 12 ≈ 43s, plus launch
+// and extraction — inside the deadline, but raise `wait_ms` here and it isn't.
 const FIRST_LEG_MS = 25_000;
-const SECOND_LEG_MS = 12_000;
+const UNLOCKER_LEG_MS = 12_000;
 
 // A bot WALL comes back as a "successful" fetch of a block/challenge page, not a transport
 // error — so a leg that returns HTML isn't necessarily a win. Treat a page carrying these
-// signatures as a FAILURE so the ladder escalates (cf→mac, and the caller's unlocker rung)
-// instead of returning the wall as content. MARKER-based only (no blanket length check — a
-// legitimately short page must not read as blocked): Akamai (Access Denied / sec-cpt /
-// Reference #), PerimeterX-HUMAN (Pardon Our Interruption / verify you are human / px-captcha),
-// Cloudflare/Imperva challenge.
+// signatures as a FAILURE so the ladder escalates (cf→unlocker) instead of returning the
+// wall as content. MARKER-based only (no blanket length check — a legitimately short page
+// must not read as blocked): Akamai (Access Denied / sec-cpt / Reference #), PerimeterX-HUMAN
+// (Pardon Our Interruption / verify you are human / px-captcha), Cloudflare/Imperva challenge.
 const BLOCK_RE = /Access Denied|sec-cpt|Pardon Our Interruption|verify you are (a )?human|px-captcha|Attention Required|Just a moment|Incapsula|Request unsuccessful|Reference #\d/i;
 
 // `minBytes` is opt-in and OFF by default (0) so the ladder's own escalation calls below
@@ -70,38 +65,34 @@ export function looksBlocked(html: string | undefined, minBytes = 0): boolean {
 }
 
 /**
- * Render a retail page across the cf + mac backends with a deadline-safe fallback.
- * Order is cf→mac by default, mac→cf when opts.preferMac. Returns the never-throw mac
- * envelope; on total failure it surfaces the first (primary) backend's error.
+ * Render a retail page across the cf + unlocker backends with a deadline-safe
+ * fallback. Order is cf→unlocker: cf-residential first, then the paid unlocker for
+ * a wall cf couldn't clear (a no-op when UNLOCKER_API_* is unset). Returns the
+ * never-throw envelope; on total failure it surfaces the cf (primary) error.
  */
-export async function retailRender(env: RtEnv, spec: RetailRenderSpec, opts: RetailRenderOpts = {}): Promise<MacRenderResult> {
-	const order: Array<"mac" | "cf"> = opts.preferMac ? ["mac", "cf"] : ["cf", "mac"];
-	const firstBudget = Math.min(spec.timeout_ms ?? FIRST_LEG_MS, FIRST_LEG_MS);
+export async function retailRender(env: RtEnv, spec: RetailRenderSpec): Promise<RenderResult> {
+	const budget = Math.min(spec.timeout_ms ?? FIRST_LEG_MS, FIRST_LEG_MS);
 
-	const runLeg = async (backend: "mac" | "cf", budget: number): Promise<MacRenderResult> => {
-		if (backend === "mac") {
-			const m = await macRender(env, { as: "html", ...spec, timeout_ms: budget });
-			// A mac leg that returns a wall (rare — mac solves challenges — but possible) must
-			// also escalate, not pass the block page through as content. A concurrent
-			// solverError means the CapSolver tier itself broke — name it in the signal so a
-			// solver breakage isn't invisible behind a generic "blocked".
-			if (m.ok && "body" in m && looksBlocked(m.body)) {
-				return { ok: false, error: m.solverError ? `mac render blocked (bot wall); solver errored: ${m.solverError}` : "mac render blocked (bot wall)" };
-			}
-			return m;
-		}
-		const cf = await cfRender(env, { url: spec.url, as: "html", wait_until: spec.wait_until, wait_ms: spec.wait_ms, block_resources: spec.block_resources, timeout_ms: budget, residential: true, stealth: true });
-		if (cf.ok && "body" in cf) {
-			// cf cleared transport but may have fetched a bot wall — a "successful" block page.
-			// Treat it as a failure so the ladder escalates to mac / the paid unlocker.
-			if (looksBlocked(cf.body)) return { ok: false, error: "cf render blocked (bot wall)" };
-			return { ok: true, contentType: cf.contentType, body: cf.body };
-		}
-		return { ok: false, error: cf.ok ? "cf render returned a non-HTML result" : cf.error };
-	};
+	const cf = await cfRender(env, {
+		url: spec.url,
+		as: "html",
+		wait_until: spec.wait_until,
+		wait_ms: spec.wait_ms,
+		block_resources: spec.block_resources,
+		timeout_ms: budget,
+		residential: true,
+		stealth: true,
+	});
+	// cf cleared transport but may have fetched a bot wall — a "successful" block page.
+	// Treat it as a failure so the ladder escalates to the paid unlocker.
+	if (cf.ok && "body" in cf && !looksBlocked(cf.body)) {
+		return { ok: true, contentType: cf.contentType, body: cf.body };
+	}
+	const cfError = cf.ok ? ("body" in cf ? "cf render blocked (bot wall)" : "cf render returned a non-HTML result") : cf.error;
 
-	const first = await runLeg(order[0], firstBudget);
-	if (first.ok) return first;
-	const second = await runLeg(order[1], SECOND_LEG_MS);
-	return second.ok ? second : first; // surface the primary (first-choice) backend's error
+	// Fallback: the paid residential unlocker (no-ops instantly when UNLOCKER_API_* is unset).
+	const u = await unlockerRender(env, { url: spec.url, timeout_ms: UNLOCKER_LEG_MS });
+	if (u.ok && !looksBlocked(u.body)) return { ok: true, contentType: u.contentType, body: u.body };
+
+	return { ok: false, error: cfError }; // surface the primary (cf) backend's error
 }

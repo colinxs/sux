@@ -12,7 +12,7 @@
 | Intent | Function |
 |---|---|
 | Fetch a page (bot-shy sites, datacenter-IP blocks) | `scrape` |
-| JS-rendered page, screenshot, or page→PDF | `render` (`as: html\|text\|screenshot\|pdf`; `backend: mac` for Akamai-hard sites) |
+| JS-rendered page, screenshot, or page→PDF | `render` (`as: html\|text\|screenshot\|pdf`; cf-residential headless Chromium, home-IP egress past datacenter-IP bot detection) |
 | Force everything through the residential exit (raw HTTP: headers, POST, binary) | `proxy` |
 | Fetch from a specific country/locale (geo-priced / geo-gated data) | `proxy` with an `x-exit-geo` header (e.g. `us-ca`, `de`) |
 | Many URLs at once | `batch_fetch` (`as: "url"` = bulk download to R2) |
@@ -71,9 +71,10 @@ Overlap rule: papers-in-general → `openalex` or `semantic_scholar`;
 | Facebook Graph node/edge | `facebook` |
 | University of Washington person lookup | `uw` (public faculty/staff/student directory at directory.uw.edu; also feeds `people_finder`) |
 
-Retailer note: amazon/walmart/homedepot/lowes/ace ride the mac render backend —
-slow, best-effort; bestbuy/ebay/kroger are official APIs — prefer them when the
-retailer is interchangeable.
+Retailer note: amazon/walmart/homedepot/lowes/ace render through cf-residential
+(with an internal paid-unlocker fallback for the hardest walls) — slow, best-effort;
+bestbuy/ebay/kroger are official APIs — prefer them when the retailer is
+interchangeable.
 
 ## Documents & media
 

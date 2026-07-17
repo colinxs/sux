@@ -15,7 +15,7 @@ export const DOMAINS: DomainSpec[] = [
 	{ key: "search", blurb: "Web search across engines (Kagi, Google, Brave, DDG, Tavily, Exa).", leaves: ["search", "web_search", "tavily"] },
 	{
 		key: "fetch",
-		blurb: "Retrieve & render pages through a residential proxy, with the scrape → render → render:mac escalation ladder for bot-walled sites; snapshots, redirects, robots, crawl.",
+		blurb: "Retrieve & render pages through a residential proxy, with the scrape → render escalation ladder for bot-walled sites; snapshots, redirects, robots, crawl.",
 		leaves: ["scrape", "render", "proxy", "crawl", "wayback", "redirects", "robots"],
 	},
 	{

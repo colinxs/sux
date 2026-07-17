@@ -1,6 +1,6 @@
 ---
 name: sux
-description: Route a task to the right sux edge function and chain them when needed — web search (Kagi, native Google, Brave, DDG, Tavily, Exa), scrape/render through a residential proxy with an escalation ladder (scrape → render → render:mac) for bot-walled sites, crawl, extract/parse HTML (links, tables, metadata, readability, feeds, sitemaps, extract_contacts, entities, subtitles), research databases (arxiv, pubmed, openalex, crossref, semantic_scholar, clinical_trials, stackexchange, reddit), convert formats (markdown, html, csv, json, xml, yaml), build/fill PDFs, OCR, convert images, compress/archive/encode/hash, declutter + token-pack, Workers-AI text (summarize, translate, classify, redact), archived snapshots (wayback), product/price/store search (shop + named retailers), places/people, crypto (coingecko), YouTube, Obsidian notes, vault capture (ingest url/text/query with blob routing), and storage (R2 store + KV + Dropbox app folder). Use whenever the user wants any web fetch, scrape/render of a page (including Akamai/PerimeterX-walled sites), data transform, extraction, research lookup, or lightweight compute done at the edge via the sux MCP connector.
+description: Route a task to the right sux edge function and chain them when needed — web search (Kagi, native Google, Brave, DDG, Tavily, Exa), scrape/render through a residential proxy with an escalation ladder (scrape → render) for bot-walled sites, crawl, extract/parse HTML (links, tables, metadata, readability, feeds, sitemaps, extract_contacts, entities, subtitles), research databases (arxiv, pubmed, openalex, crossref, semantic_scholar, clinical_trials, stackexchange, reddit), convert formats (markdown, html, csv, json, xml, yaml), build/fill PDFs, OCR, convert images, compress/archive/encode/hash, declutter + token-pack, Workers-AI text (summarize, translate, classify, redact), archived snapshots (wayback), product/price/store search (shop + named retailers), places/people, crypto (coingecko), YouTube, Obsidian notes, vault capture (ingest url/text/query with blob routing), and storage (R2 store + KV + Dropbox app folder). Use whenever the user wants any web fetch, scrape/render of a page (including Akamai/PerimeterX-walled sites), data transform, extraction, research lookup, or lightweight compute done at the edge via the sux MCP connector.
 ---
 
 # sux — the edge function engine
@@ -30,11 +30,12 @@ capability map, or `sux({domain})` to zoom one group.
 ## Two principles before dispatching
 
 1. **Escalate fetching gradually.** Plain `scrape` (residential proxy, cheapest)
-   → `render` (headless Chromium, JS executed, screenshot / page→PDF)
-   → `render {backend:"mac"}` (residential patched browser that clears
-   Akamai/PerimeterX and auto-solves captchas; add `solve:true` to force the
-   solver tier). Don't start at the top — mac is slow and a shared resource.
-   `selftest` probes which rungs of the ladder are currently up.
+   → `render` (cf-residential headless Chromium — JS executed, egressing from a
+   home IP past datacenter-IP bot detection; screenshot / page→PDF). Don't start at
+   the top — a render spins up a browser. For the hardest retail walls
+   (Akamai/PerimeterX), the retailer fns (`amazon`, `walmart`, `homedepot`, `lowes`,
+   `ace`) internally fall back to a paid residential unlocker after cf. `selftest`
+   probes which rungs of the ladder are currently up.
 2. **Keep bulk data out of context.** Pick the **narrowest** function, and compose
    lighter ones in front of heavy ones. Chain steps server-side with `pipe`, fan
    out with `batch` (let its `reduce`/`reduce_with` merge), ask for `as:"url"`
@@ -88,8 +89,9 @@ to squeeze — then hand the small result to the model.
 
 ## When something fails
 
-Escalate the fetch ladder first (`scrape` → `render` → `render {backend:"mac",
-solve:true}`); run `selftest` to see which rungs are up; try `wayback` if the live
+Escalate the fetch ladder first (`scrape` → `render`, cf-residential headless
+Chromium; the retail fns then fall back internally to a paid unlocker for hard
+walls); run `selftest` to see which rungs are up; try `wayback` if the live
 page is gone. Key-gated tools (`tavily`, `find_similar`, `youtube`, `places`,
 `bestbuy`, `ebay`, `kroger`, `facebook`, `controld`, `tailscale`) fail cleanly when
 the secret is unset — fall back to `search` / `shop` / `scrape`. If a tool errors or

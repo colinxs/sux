@@ -12,7 +12,7 @@ import { webSearch } from "./web_search";
 // drift, never a query that legitimately has no answer.
 export const SEARCH_PROBE_QUERY = "site:wikipedia.org test";
 
-// `google` scrapes through the mac render backend and is deliberately opt-in/
+// `google` scrapes through the cf-residential render path and is deliberately opt-in/
 // never-picked-automatically elsewhere in web_search.ts (see its `run` description);
 // an unattended daily probe shouldn't be the first thing to invoke that heavy path.
 // `ddg` and `kagi_session` are the cheap, no-extra-infra scraped engines.

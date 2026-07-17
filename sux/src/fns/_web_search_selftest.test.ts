@@ -35,7 +35,7 @@ describe("runWebSearchSelftest", () => {
 		expect(runEngine).toHaveBeenCalledTimes(AUTO_SCRAPED_ENGINES.length - 1);
 	});
 
-	it("excludes google from the automatic cron probe (opt-in mac-render path elsewhere)", () => {
+	it("excludes google from the automatic cron probe (opt-in cf-residential render path elsewhere)", () => {
 		expect(AUTO_SCRAPED_ENGINES).not.toContain("google");
 	});
 });

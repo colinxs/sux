@@ -4,8 +4,8 @@ vi.mock("../kagi", () => ({
 	kagiTool: vi.fn(async () => ({ content: [{ type: "text", text: "### [Kagi Result](https://example.com/a)\n**URL:** https://example.com/a\nA kagi snippet.\n\n### [Second Result](https://example.org/b)\n**URL:** https://example.org/b\nAnother snippet." }] })),
 }));
 
-// google renders via the `render` mac backend (registry); ddg scrapes via the
-// residential proxy (smartFetch). Mock both seams.
+// google renders via the `render` fn (cf-residential, through the registry); ddg
+// scrapes via the residential proxy (smartFetch). Mock both seams.
 const { renderRun } = vi.hoisted(() => ({ renderRun: vi.fn() }));
 vi.mock("./index", () => ({ FUNCTIONS: [{ name: "render", run: renderRun }] }));
 const { smartFetch } = vi.hoisted(() => ({ smartFetch: vi.fn() }));
@@ -177,13 +177,13 @@ describe("web_search", () => {
 		warn.mockRestore();
 	});
 
-	it("renders Google via the mac backend (no key) and parses results", async () => {
+	it("renders Google via cf-residential render (no key) and parses results", async () => {
 		renderRun.mockResolvedValueOnce({ content: [{ text: serp([{ url: "https://g.com/x", title: "G Result" }]) }] });
 		const r = await webSearch.run({} as any, { query: "x", engine: "google" });
 		expect(r.isError).toBeFalsy();
 		expect(r.content[0].text).toContain("1. G Result");
 		expect(r.content[0].text).toContain("https://g.com/x");
-		expect(renderRun).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ backend: "mac", solve: true }));
+		expect(renderRun).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ as: "html" }));
 		expect(String(renderRun.mock.calls[0][1].url)).toContain("google.com/search");
 	});
 
