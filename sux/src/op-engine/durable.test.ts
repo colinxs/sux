@@ -1,6 +1,6 @@
 import { test, expect } from "vitest";
 import { MemoryStore, fixed, op, pipe, map, reconcile, sink, ask, stamp, type Caps } from "@suxos/lib";
-import { interpretDurable } from "./durable.js";
+import { AskRejectedError, interpretDurable } from "./durable.js";
 
 // A FAKE WorkflowStep: `do` runs the callback inline (so the interpreter's step
 // bodies execute in plain node vitest, no workerd), and `waitForEvent` records the
@@ -83,6 +83,30 @@ test("interpretDurable's ask rethrows a non-timeout waitForEvent error even when
 
 	const proceed = ask("ok?", { timeout: "1 hour", onTimeout: "proceed" });
 	await expect(interpretDurable(proceed, "unchanged", step, caps, "op7")).rejects.toThrow("RPC transport disconnected");
+});
+
+test("interpretDurable's ask throws AskRejectedError when answered with {approved: false}, even under onTimeout: 'proceed'", async () => {
+	const caps = { store: new MemoryStore(), llm: {}, clock: { now: () => 0 }, sinks: {} } as unknown as Caps;
+	const step: any = {
+		do: async (_name: string, fn: any) => fn(),
+		waitForEvent: async () => ({ payload: { approved: false, reason: "not ready" } }),
+		sleep: async () => {},
+	};
+
+	const proceed = ask("ok?", { timeout: "1 hour", onTimeout: "proceed" });
+	await expect(interpretDurable(proceed, "unchanged", step, caps, "op8")).rejects.toThrow(AskRejectedError);
+});
+
+test("interpretDurable's ask proceeds normally when answered with a payload that doesn't explicitly reject", async () => {
+	const caps = { store: new MemoryStore(), llm: {}, clock: { now: () => 0 }, sinks: {} } as unknown as Caps;
+	const step: any = {
+		do: async (_name: string, fn: any) => fn(),
+		waitForEvent: async () => ({ payload: { approved: true } }),
+		sleep: async () => {},
+	};
+
+	const proceed = ask("ok?", { timeout: "1 hour", onTimeout: "proceed" });
+	await expect(interpretDurable(proceed, "unchanged", step, caps, "op9")).resolves.toBe("unchanged");
 });
 
 test("interpretDurable propagates a map item's error and releases the concurrency limiter", async () => {
