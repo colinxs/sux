@@ -29,6 +29,22 @@ async function indexDurableRun(env: RtEnv, entry: RunIndexEntry): Promise<void> 
 	}
 }
 
+/** Look up a single indexed run's opId by instanceId (a targeted point-read, unlike
+ * listDurableRuns' full-prefix scan) — the opId is what lets `answer` validate a
+ * `prompt` against the op tree's actual `ask` gates before sending. Null when the
+ * index has no entry (no OAUTH_KV, evicted past RUN_INDEX_TTL_SECONDS, or an instance
+ * never indexed) — callers treat that as "can't validate", not "invalid".  */
+async function getIndexedRun(env: RtEnv, instanceId: string): Promise<RunIndexEntry | null> {
+	if (!env.OAUTH_KV) return null;
+	const raw = await env.OAUTH_KV.get(`${RUN_INDEX_PREFIX}${instanceId}`);
+	if (!raw) return null;
+	try {
+		return JSON.parse(raw) as RunIndexEntry;
+	} catch {
+		return null;
+	}
+}
+
 /**
  * List indexed durable run instances (most recently started first, capped at
  * RUN_INDEX_MAX), enriched with each instance's live status where the binding is
@@ -202,6 +218,24 @@ export const run: Fn = {
 				if (action === "answer") {
 					const prompt = a?.prompt ? String(a.prompt) : "";
 					if (!prompt) return failWith("bad_input", "run answer requires a `prompt` matching the op tree's `ask(prompt, ...)` text.");
+					// Validate `prompt` against the instance's own op tree before sending — a
+					// mismatch (typo, wrong instance) would otherwise be silently buffered
+					// by Workflows (no waitForEvent matches it) while this fn still reported
+					// sent:true (#726).  Only possible when the run index still has the
+					// instance's opId; falls back to sending unvalidated when it doesn't
+					// (index miss is "can't tell", not "reject").
+					const entry = await getIndexedRun(env, instanceId);
+					if (entry) {
+						let asks: AskGate[] = [];
+						try {
+							asks = describeOp(entry.opId).asks;
+						} catch {
+							// unknown/removed opId — nothing to validate against, fall through to send
+						}
+						if (asks.length && !asks.some((g) => g.prompt === prompt)) {
+							return failWith("not_found", `run answer: '${prompt}' matches no ask gate on '${entry.opId}'. Valid prompts: ${asks.map((g) => g.prompt).join(", ")}.`);
+						}
+					}
 					await answerVerb(instanceId, prompt, a?.payload, env);
 					return ok(oj({ action, instanceId, prompt, sent: true }));
 				}

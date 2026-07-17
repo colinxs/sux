@@ -129,10 +129,13 @@ export async function runAskGateReminder(env: RtEnv, deps: AskGateReminderDeps):
 
 	// Per-instance cooldown ledger: only the gates not already reminded within the
 	// window get included in THIS tick's digest, so a long-stuck gate nudges every few
-	// hours instead of every 5-minute tick.
+	// hours instead of every 5-minute tick. Checked (not marked) here — marking happens
+	// only after the digest append succeeds, so a failed write doesn't suppress the
+	// instance for the whole cooldown window (see #725: mark-before-confirm silently
+	// swallowed the reminder on a transient vault-append failure).
 	const led = ledger(env, "ask_gate_reminder", cooldownMinutes(env) * 60);
 	const due: PendingGate[] = [];
-	for (const p of pending) if (await led.markIfNew(p.instanceId)) due.push(p);
+	for (const p of pending) if (!(await led.seen(p.instanceId))) due.push(p);
 
 	if (!due.length) return { checked: runs.length, pending: pending.length, reminded: 0 };
 
@@ -156,6 +159,7 @@ export async function runAskGateReminder(env: RtEnv, deps: AskGateReminderDeps):
 	} catch (e) {
 		return { checked: runs.length, pending: pending.length, reminded: due.length, digest_written: false, emailed, error: `vault append failed: ${errMsg(e)}` };
 	}
+	for (const p of due) await led.mark(p.instanceId);
 
 	return { checked: runs.length, pending: pending.length, reminded: due.length, digest_written: true, emailed };
 }

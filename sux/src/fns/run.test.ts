@@ -149,6 +149,39 @@ test("run fn's answer action requires a prompt", async () => {
 	expect(res.content[0].text).toContain("prompt");
 });
 
+test("run fn's answer action rejects a prompt that matches no gate on the instance's own op — no event sent (#726)", async () => {
+	const kv = fakeKv();
+	await kv.put("sux:run:idx:instance-1", JSON.stringify({ instanceId: "instance-1", opId: "assimilate-pdfs", startedAt: 1 }));
+	const rec = { events: [] as Array<{ type: string; payload: unknown }>, terminated: false };
+	const env = { OAUTH_KV: kv, OP_WORKFLOW: { get: async () => fakeInstance({ status: "waiting" }, rec) } } as any;
+
+	const res = await run.run(env, { action: "answer", instanceId: "instance-1", prompt: "totally wrong prompt" });
+	expect(res.isError).toBe(true);
+	expect(res.content[0].text).toContain("review master?"); // lists the valid prompt(s)
+	expect(rec.events).toEqual([]); // never sent — no false sent:true
+});
+
+test("run fn's answer action sends the event when the prompt matches the instance's op's ask gate", async () => {
+	const kv = fakeKv();
+	await kv.put("sux:run:idx:instance-1", JSON.stringify({ instanceId: "instance-1", opId: "assimilate-pdfs", startedAt: 1 }));
+	const rec = { events: [] as Array<{ type: string; payload: unknown }>, terminated: false };
+	const env = { OAUTH_KV: kv, OP_WORKFLOW: { get: async () => fakeInstance({ status: "waiting" }, rec) } } as any;
+
+	const res = await run.run(env, { action: "answer", instanceId: "instance-1", prompt: "review master?" });
+	expect(res.isError).toBeUndefined();
+	expect(JSON.parse(res.content[0].text)).toMatchObject({ sent: true });
+	expect(rec.events).toEqual([{ type: "ask:review master?", payload: { approved: true } }]);
+});
+
+test("run fn's answer action sends unvalidated when the instance isn't in the run index (can't tell, not reject)", async () => {
+	const rec = { events: [] as Array<{ type: string; payload: unknown }>, terminated: false };
+	const env = { OP_WORKFLOW: { get: async () => fakeInstance({ status: "waiting" }, rec) } } as any;
+
+	const res = await run.run(env, { action: "answer", instanceId: "unindexed-instance", prompt: "anything" });
+	expect(res.isError).toBeUndefined();
+	expect(rec.events).toEqual([{ type: "ask:anything", payload: { approved: true } }]);
+});
+
 test("describeOp finds an op tree's ask gates without running it", () => {
 	expect(describeOp("assimilate-pdfs")).toEqual({
 		opId: "assimilate-pdfs",

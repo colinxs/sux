@@ -208,6 +208,15 @@ export type RtEnv = Env &
 		MAIL_TRIAGE_ENABLED?: string;
 		MAIL_TRIAGE_ACT?: string;
 
+		// Auto-start the DURABLE, human-approved sibling of mail-triage (fns/mail_triage_plan.ts
+		// + op-engine's mail-triage-plan op) on the frequent cron, so the ask-gate + reminder
+		// machinery (MAIL_TRIAGE_PLAN_ENABLED's own gate is separate from MAIL_TRIAGE_ENABLED —
+		// they can run independently) is actually exercised instead of sitting idle behind a
+		// manual `mail_triage_plan` call (#727). Fail-closed: unset ⇒ total no-op. Dedup-guarded
+		// by the run index (index.ts's mailTriagePlanTick): starts at most one durable run at a
+		// time — a tick is skipped while a prior run is still queued/running/waiting.
+		MAIL_TRIAGE_PLAN_ENABLED?: string;
+
 		// Morning-briefing digest (fns/_briefing.ts + the daily cron). Same two-stage,
 		// fail-closed toggle gate as MAIL_TRIAGE_* (set via `wrangler secret`, NOT declared in
 		// wrangler.jsonc — like MAIL_TRIAGE_*/DROPBOX_FULL_*). BRIEFING_ENABLED must be truthy

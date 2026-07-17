@@ -96,6 +96,22 @@ describe("ask-gate reminder — sweep", () => {
 		expect(r.error).toMatch(/vault append failed/);
 	});
 
+	it("a vault-append failure does NOT mark the cooldown ledger — the instance is still due on the next sweep (#725)", async () => {
+		const e = env();
+		const failing = deps({
+			digestAppend: vi.fn(async () => {
+				throw new Error("git 409");
+			}),
+		});
+		const first = await runAskGateReminder(e, failing);
+		expect(first.error).toMatch(/vault append failed/);
+
+		const second = await runAskGateReminder(e, deps());
+		expect(second.pending).toBe(1);
+		expect(second.reminded).toBe(1);
+		expect(second.digest_written).toBe(true);
+	});
+
 	it("an email failure never fails the sweep — the vault digest already landed", async () => {
 		const e = env({ ASK_GATE_REMINDER_EMAIL: "1" });
 		const r = await runAskGateReminder(

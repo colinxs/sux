@@ -867,6 +867,7 @@ describe("scheduled (cron-dispatch wiring)", () => {
 
 		expect(shipMetricsSnapshot).toHaveBeenCalledTimes(1);
 		expect(store.has(heartbeatKey("mail_triage"))).toBe(true);
+		expect(store.has(heartbeatKey("mail_triage_plan"))).toBe(true);
 		expect(store.has(heartbeatKey("ask_gate_reminder"))).toBe(true);
 		expect(store.has(heartbeatKey("self_improve"))).toBe(false);
 		expect(store.has(heartbeatKey("kroger_token"))).toBe(false);
@@ -885,6 +886,7 @@ describe("scheduled (cron-dispatch wiring)", () => {
 		expect(store.has(heartbeatKey("self_improve"))).toBe(true);
 		expect(store.has(heartbeatKey("kroger_token"))).toBe(true);
 		expect(store.has(heartbeatKey("mail_triage"))).toBe(false);
+		expect(store.has(heartbeatKey("mail_triage_plan"))).toBe(false);
 		expect(store.has(heartbeatKey("ask_gate_reminder"))).toBe(false);
 	});
 

@@ -606,6 +606,30 @@ async function askGateReminderTick(env: RtEnv): Promise<unknown> {
 	return mod.runAskGateReminder(env, deps);
 }
 
+// One durable mail-triage-plan auto-start, riding the SAME frequent cron as mail-triage
+// (NOT the daily one — a durable run's `ask` gate fails closed at 24h, so it should get
+// a chance to start well within that window). FAIL-CLOSED: no-op unless
+// MAIL_TRIAGE_PLAN_ENABLED. Dedup guard: skips starting a new run when the run index
+// (run.ts's listDurableRuns) already has a mail-triage-plan instance in a non-terminal
+// live status (queued/running/waiting/paused) — otherwise every 5-minute tick would pile
+// up an unbounded queue of approval gates. A stale/aborted run (errored/complete/
+// terminated/unknown) doesn't block a fresh start. This is what turns the ask-gate +
+// reminder machinery (#723/#725) from code that's never exercised into a live loop (#727).
+async function mailTriagePlanTick(env: RtEnv): Promise<unknown> {
+	const s = String(env.MAIL_TRIAGE_PLAN_ENABLED ?? "").trim().toLowerCase();
+	if (s === "" || s === "0" || s === "false" || s === "no" || s === "off") return { dormant: true };
+	const runFns = await import("./fns/run");
+	const PENDING = new Set(["queued", "running", "waiting", "paused"]);
+	const runs = await runFns.listDurableRuns(env);
+	if (runs.some((r) => r.opId === "mail-triage-plan" && PENDING.has(r.status))) {
+		return { skipped: "a mail-triage-plan run is already pending" };
+	}
+	const { mail_triage_plan } = await import("./fns/mail_triage_plan");
+	const res = await mail_triage_plan.run(env, { max: 25 });
+	if (res.isError) throw new Error(res.content?.[0]?.text ?? "mail_triage_plan failed");
+	return JSON.parse(res.content?.[0]?.text ?? "{}");
+}
+
 // One weekly recall-digest cycle, riding the SAME daily cron. FAIL-CLOSED: no-ops entirely
 // unless WEEKLY_RECALL_ENABLED is set, and a once-per-ISO-week ledger gate means it does real
 // work (recall fan-out + vault append) at most once every seven days — the other six daily
@@ -778,6 +802,7 @@ export default {
 		if (event.cron === METRICS_CRON) {
 			ctx.waitUntil(shipMetricsSnapshot(env, ctx).catch((e) => console.warn(`sux scheduled metrics: snapshot push skipped: ${String((e as Error)?.message ?? e)}`)));
 			ctx.waitUntil(runSubJob(env, "mail_triage", () => mailTriageTick(env)));
+			ctx.waitUntil(runSubJob(env, "mail_triage_plan", () => mailTriagePlanTick(env)));
 			ctx.waitUntil(runSubJob(env, "ask_gate_reminder", () => askGateReminderTick(env)));
 			return;
 		}
