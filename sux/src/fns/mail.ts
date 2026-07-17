@@ -23,6 +23,8 @@ export const MAIL_ACTIONS: Record<string, Dispatch> = {
 	attachments: "mail_attachments",
 	archive: "mail_archive",
 	move: "mail_move",
+	label_add: { tool: "mail_label", inject: { add: true } },
+	label_remove: { tool: "mail_label", inject: { add: false } },
 	quota: "mail_quota",
 	vacation_get: { tool: "mail_vacation", inject: { action: "get" } },
 	vacation_set: { tool: "mail_vacation", inject: { action: "set" } },
@@ -39,7 +41,7 @@ export const MAIL_ACTIONS: Record<string, Dispatch> = {
 export const mail: Fn = namespaceFn({
 	name: "mail",
 	description:
-		"Fastmail email through the one /mcp connector. {action, ...args}: search·read·thread·mailboxes·mailbox_create·mailbox_rename·mailbox_delete·identities·draft·send·scheduled·unschedule·upload·attachments·archive·move·quota·vacation_get·vacation_set·masked_list·masked_create·masked_disable·masked_enable·masked_delete·push_subscribe·push_unsubscribe·push_status. Each action's remaining args are that mail_* tool's own — e.g. mail({action:'send', to, subject, text}), mail({action:'move', ids:['msg1'], mailbox:'junk'}) — the target arg is `mailbox` (role like inbox/archive/junk/trash, a display name, or a raw id), not `mailboxId`/`to`; mail({action:'mailbox_create', name:'Follow-up'}), mail({action:'mailbox_delete', mailbox:'Follow-up', force:true}); mail({action:'attachments', items:[{blobId}], dest:'store'}) exports attachments server-side to R2/Dropbox; mail({action:'push_subscribe'}) — arms near-real-time triage (Fastmail pushes on new mail instead of the ~5min cron wait); check readiness with mail({action:'push_status'}). send/mailbox_delete STAGE a preview by default (re-call with commit_token, or force:true to apply in one shot). Calendars/tasks are the 'calendar' verb; contacts the 'contact' verb.",
+		"Fastmail email through the one /mcp connector. {action, ...args}: search·read·thread·mailboxes·mailbox_create·mailbox_rename·mailbox_delete·identities·draft·send·scheduled·unschedule·upload·attachments·archive·move·label_add·label_remove·quota·vacation_get·vacation_set·masked_list·masked_create·masked_disable·masked_enable·masked_delete·push_subscribe·push_unsubscribe·push_status. Each action's remaining args are that mail_* tool's own — e.g. mail({action:'send', to, subject, text}), mail({action:'move', ids:['msg1'], mailbox:'junk'}) — the target arg is `mailbox` (role like inbox/archive/junk/trash, a display name, or a raw id), not `mailboxId`/`to`; mail({action:'mailbox_create', name:'Follow-up'}), mail({action:'mailbox_delete', mailbox:'Follow-up', force:true}); mail({action:'label_add', ids:['msg1'], label:'junk'}) / mail({action:'label_remove', ids:['msg1'], label:'junk'}) toggles a reversible keyword — mail({action:'search', label:'junk'}) finds which messages currently carry one; mail({action:'attachments', items:[{blobId}], dest:'store'}) exports attachments server-side to R2/Dropbox; mail({action:'push_subscribe'}) — arms near-real-time triage (Fastmail pushes on new mail instead of the ~5min cron wait); check readiness with mail({action:'push_status'}). send/mailbox_delete STAGE a preview by default (re-call with commit_token, or force:true to apply in one shot). Calendars/tasks are the 'calendar' verb; contacts the 'contact' verb.",
 	tools: () => MAIL_TOOLS,
 	actions: MAIL_ACTIONS,
 	// Declare the array-shaped params so MCP clients serialize them through the front door intact

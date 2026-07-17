@@ -444,6 +444,7 @@ async function buildFilter(env: RtEnv, a: any): Promise<Record<string, unknown>>
 		// id just yields no matches) — only the mutating verbs (move/rename/delete) hard-fail on it.
 		conds.inMailbox = resolveMailboxId(map, String(a.mailbox)) ?? String(a.mailbox);
 	}
+	if (a?.label) conds.hasKeyword = keywordFor(String(a.label));
 	if (a?.unread === true) {
 		// unread = NOT $seen. JMAP composes with an operator node.
 		return { operator: "AND", conditions: [conds, { operator: "NOT", conditions: [{ hasKeyword: "$seen" }] }] };
@@ -458,7 +459,7 @@ const ok = (v: unknown): ToolResult => ({ content: [{ type: "text", text: jstr(v
 const TOOLS: MailTool[] = [
 	{
 		name: "mail_search",
-		description: "Search mail — returns message references (id, subject, from, preview), never bodies. Filter by query text, mailbox (role like inbox/archive or a name), from, subject, unread, after/before (ISO dates). Page past the first 50 with `position` (0-based offset into the result set); flip to oldest-first with `ascending:true`. Returns total (full match count) + position so you can page. Read one with mail_read.",
+		description: "Search mail — returns message references (id, subject, from, preview), never bodies. Filter by query text, mailbox (role like inbox/archive or a name), from, subject, label (a keyword applied by mail_label, e.g. junk/mailing_list/notification), unread, after/before (ISO dates). Page past the first 50 with `position` (0-based offset into the result set); flip to oldest-first with `ascending:true`. Returns total (full match count) + position so you can page. Read one with mail_read.",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -467,6 +468,7 @@ const TOOLS: MailTool[] = [
 				mailbox: { type: "string", description: "Mailbox role (inbox, archive, sent, drafts, trash, junk) or display name." },
 				from: { type: "string", description: "Filter by sender." },
 				subject: { type: "string", description: "Filter by subject." },
+				label: { type: "string", description: "Only messages carrying this keyword/label (as applied by mail_label or mail_sieve_backfill), e.g. 'junk', 'mailing_list'." },
 				unread: { type: "boolean", description: "Only unread messages." },
 				after: { type: "string", description: "Only messages after this ISO date/time." },
 				before: { type: "string", description: "Only messages before this ISO date/time." },
@@ -812,6 +814,21 @@ const TOOLS: MailTool[] = [
 		description: "Move messages to a mailbox (by role like inbox/archive/junk/trash, a display name, or a raw id). Reversible.",
 		inputSchema: { type: "object", additionalProperties: false, required: ["ids", "mailbox"], properties: { ids: { type: "array", items: { type: "string" } }, mailbox: { type: "string" } } },
 		run: async (env, a) => moveMessages(env, a?.ids, String(a?.mailbox ?? "")),
+	},
+	{
+		name: "mail_label",
+		description: "Add or remove a keyword ('label') on messages — a flag toggle, not a move; the message stays exactly where it is. Fully reversible (add then remove is a no-op). Same op mail_sieve_backfill uses to apply its coarse tags; use mail_search with `label` to find which messages currently carry one.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["ids", "label"],
+			properties: {
+				ids: { type: "array", items: { type: "string" }, description: "Email ids." },
+				label: { type: "string", description: "The keyword to toggle, e.g. 'junk', 'mailing_list'." },
+				add: { type: "boolean", default: true, description: "true (default) applies the label; false removes it." },
+			},
+		},
+		run: async (env, a) => labelMessages(env, a?.ids, String(a?.label ?? ""), a?.add !== false),
 	},
 	{
 		name: "mail_masked",

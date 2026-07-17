@@ -169,6 +169,30 @@ describe("mail_* ergonomic tools", () => {
 		expect(q).toMatchObject({ position: 50, calculateTotal: true, sort: [{ property: "receivedAt", isAscending: true }] });
 	});
 
+	it("mail_search filters by label via hasKeyword, using the same keyword mapping as mail_label", async () => {
+		const f = installFetch();
+		await tool("mail_search").run(env(), { label: "mailing_list", limit: 10 });
+		const body = JSON.parse(f.mock.calls.find((c: any) => String(c[0]).includes("/jmap/api"))![1].body);
+		const q = body.methodCalls.find((c: any) => c[0] === "Email/query")[1];
+		expect(q.filter).toMatchObject({ hasKeyword: "mailing_list" });
+	});
+
+	it("mail_label adds a keyword by default, and removes it with add:false — same op mail_sieve_backfill uses", async () => {
+		installFetch();
+		lastEmailSet = null;
+		await tool("mail_label").run(env(), { ids: ["e1"], label: "junk" });
+		expect(lastEmailSet.update.e1).toEqual({ "keywords/junk": true });
+
+		lastEmailSet = null;
+		await tool("mail_label").run(env(), { ids: ["e1"], label: "junk", add: false });
+		expect(lastEmailSet.update.e1).toEqual({ "keywords/junk": null });
+	});
+
+	it("mail_label requires ids and label", async () => {
+		const r = await tool("mail_label").run(env(), { ids: [] });
+		expect(r.isError).toBe(true);
+	});
+
 	it("mail_read returns the plain-text body", async () => {
 		installFetch();
 		const out = parse(await tool("mail_read").run(env(), { id: "e1" }));
