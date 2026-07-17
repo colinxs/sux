@@ -5,6 +5,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 // the copyright invariant (only the compressed index is stored) without a configured vault.
 vi.mock("./obsidian", () => ({ obsidian: { run: vi.fn(async () => ({ content: [{ type: "text", text: "{}" }] })) } }));
 
+// dropbox.ts's real hasDropbox/sharedLink hit the network (dropboxRpc) — mock so the
+// Mode A path tests below (#768) exercise study's own branching, not Dropbox's HTTP API.
+const dropboxMock = { hasDropbox: vi.fn((_env?: unknown) => false), sharedLink: vi.fn(async (_env?: unknown, _path?: unknown) => undefined as string | undefined) };
+vi.mock("./dropbox", () => ({
+	hasDropbox: (env: unknown) => dropboxMock.hasDropbox(env),
+	sharedLink: (env: unknown, path: unknown) => dropboxMock.sharedLink(env, path),
+}));
+
 import { DATA_CLOSE, DATA_OPEN } from "../ai";
 import { maybeDecompressString } from "./_gzip";
 import { study } from "./study";
@@ -139,6 +147,30 @@ describe("study — learn (url / pdf)", () => {
 		expect(r.isError).toBe(true);
 		expect(r.errorCode).toBe("upstream_error");
 		expect(r.content[0].text).toMatch(/toMarkdown|extract the text yourself/i);
+	});
+
+	it("a Dropbox app-folder path (Mode A) is read via a shared link before requiring Mode B (#768)", async () => {
+		const { env, kv, toMarkdown } = makeEnv({ toMarkdown: async () => [{ data: "Notes from the app-folder file." }] });
+		dropboxMock.hasDropbox.mockReturnValue(true);
+		dropboxMock.sharedLink.mockResolvedValue("https://www.dropbox.com/s/abc/notes.pdf?dl=0");
+		fetchMock.mockImplementation(async () => new Response(new Uint8Array([0x25, 0x50, 0x44, 0x46]), { status: 200 }));
+
+		const j = parse(await study.run(env, { source: "/notes.pdf", topic: "notes" }));
+		expect(j).toMatchObject({ kind: "pdf", whitelisted: true });
+		expect(dropboxMock.sharedLink).toHaveBeenCalledWith(env, "/notes.pdf");
+		// The raw-download URL (dl=1), not the HTML preview link, is what got fetched.
+		expect(String(fetchMock.mock.calls[0][0])).toContain("dl=1");
+		expect(toMarkdown).toHaveBeenCalledTimes(1);
+		const stored = await kbFor(kv, "notes");
+		expect(stored.whitelist).toMatchObject({ kind: "pdf", via: "study" });
+	});
+
+	it("a Dropbox path with neither Mode A nor Mode B configured fails cleanly", async () => {
+		const { env } = makeEnv();
+		dropboxMock.hasDropbox.mockReturnValue(false);
+		const r = await study.run(env, { source: "/notes.pdf", topic: "notes" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/app-folder Dropbox binding|Mode B/i);
 	});
 });
 
