@@ -145,6 +145,18 @@ test("vault-notes sink is a no-op on an empty batch (never an error)", async () 
 	expect(out).toEqual({ merged: 0 });
 });
 
+test("vault-notes sink skips the append on a retry — `archive` already carries this item's merge pointer", async () => {
+	obsidianRun.mockClear();
+	obsidianRun.mockImplementation(async (_env: unknown, args: any) => {
+		if (args.action === "read") return { content: [{ type: "text", text: "existing body\n\n> [!note] Merged into [[A.md]] by vault-consolidate-plan on 2024-01-01 — see there for the combined content." }] };
+		return { content: [{ type: "text", text: "{}" }] };
+	});
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	const out = await sinks["vault-notes"].write([{ keep: "A.md", archive: "B.md", mergedContent: "x", key: "k" }], { clock: { now: () => 0 } } as unknown as Caps);
+	expect(out).toEqual({ merged: 1, groups: 1 });
+	expect(obsidianRun).not.toHaveBeenCalledWith({}, expect.objectContaining({ action: "append" }));
+});
+
 test("vault-notes sink skips (doesn't throw) an item whose write fails, and counts it as failed", async () => {
 	obsidianRun.mockClear();
 	obsidianRun.mockResolvedValueOnce({ isError: true, content: [{ type: "text", text: "conflict" }] });

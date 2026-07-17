@@ -170,11 +170,21 @@ function vaultNotesSink(env: RtEnv): SinkTarget {
 					failed++;
 					continue;
 				}
-				const note = `> [!note] Merged into [[${keep}]] by vault-consolidate-plan on ${stamp} — see there for the combined content.`;
-				const a = await obsidian.run(env, { action: "append", path: archive, content: note, backend: "git" });
-				if (a.isError) {
-					failed++;
-					continue;
+				const pointer = `Merged into [[${keep}]] by vault-consolidate-plan`;
+				const note = `> [!note] ${pointer} on ${stamp} — see there for the combined content.`;
+				// The write above is idempotent (same deterministic mergedContent every retry), but
+				// append is NOT — a step.do retry after a mid-batch eviction (durable.ts's `sink`
+				// step wraps this whole loop as ONE memoized step) would otherwise double the
+				// merge-pointer block in `archive`. Skip the append if that note already carries a
+				// pointer to this `keep` from a prior attempt (#740).
+				const r = await obsidian.run(env, { action: "read", path: archive, backend: "git" });
+				const already = !r.isError && typeof r.content?.[0]?.text === "string" && r.content[0].text.includes(pointer);
+				if (!already) {
+					const a = await obsidian.run(env, { action: "append", path: archive, content: note, backend: "git" });
+					if (a.isError) {
+						failed++;
+						continue;
+					}
 				}
 				merged++;
 			}
