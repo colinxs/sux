@@ -34,6 +34,11 @@ export type RtEnv = Env &
 
 		COINGECKO_API_KEY?: string;
 		R2?: R2Bucket;
+		// Workers Analytics Engine dataset (#220) — see wrangler.jsonc's
+		// analytics_engine_datasets comment for why this rides AE over Pipelines.
+		// AnalyticsEngineDataset is declared ambiently by wrangler's generated
+		// worker-configuration.d.ts.
+		ANALYTICS?: AnalyticsEngineDataset;
 
 		BRAVE_API_KEY?: string;
 
@@ -148,6 +153,18 @@ export type RtEnv = Env &
 		// 404s (feature off). Set via `wrangler secret`. Raw payloads land under the
 		// private R2 phi/ prefix (§5), never dropbox, never a /s/ link.
 		HEALTH_INGEST_TOKEN?: string;
+
+		// Outbound Web Push (VAPID, #219) — sux pushing OUT to Colin's devices, distinct
+		// from #213's inbound JMAP PushSubscription (Fastmail pushing INTO sux). All
+		// absent ⇒ the webpush fn and every cron push hook are inert (not_configured),
+		// like monarch/dropbox/mychart. Set via `wrangler secret` — generate a keypair
+		// with e.g. `npx web-push generate-vapid-keys` (or any RFC8291-compatible
+		// generator); VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY are the raw base64url P-256
+		// point/scalar it prints. VAPID_SUBJECT is the mailto:/https: contact URL the
+		// spec requires in the JWT `sub` claim.
+		VAPID_PUBLIC_KEY?: string;
+		VAPID_PRIVATE_KEY?: string;
+		VAPID_SUBJECT?: string;
 
 		BESTBUY_API_KEY?: string;
 

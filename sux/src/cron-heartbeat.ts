@@ -1,3 +1,4 @@
+import { recordAnalyticsEvent } from "./analytics";
 import { type RtEnv } from "./registry";
 
 // Per-subsystem heartbeats for the daily cron. After each unattended sub-job
@@ -28,6 +29,9 @@ export async function recordHeartbeat(env: RtEnv, name: CronJob, ok: boolean, er
 		const beat: Heartbeat = { ok, at: Date.now() };
 		if (error) beat.error = error.slice(0, 300);
 		await env.OAUTH_KV?.put(PREFIX + name, JSON.stringify(beat));
+		// Queryable analytics (#220): "which cron sub-job fails most often" over time,
+		// not just the latest scalar heartbeat this KV key holds.
+		recordAnalyticsEvent(env, "cron_heartbeat", { blobs: [name, ok ? "ok" : "fail", beat.error ?? null], doubles: [ok ? 1 : 0] });
 	} catch {
 		// heartbeat is observability-only; never let it fail the tick.
 	}

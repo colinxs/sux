@@ -129,6 +129,7 @@ import { mail_triage_plan } from "./mail_triage_plan";
 import { uw } from "./uw";
 import { run } from "./run";
 import { vault_consolidate_plan } from "./vault_consolidate_plan";
+import { webpush } from "./webpush";
 
 export const FUNCTIONS: Fn[] = [
 	search,
@@ -256,4 +257,5 @@ export const FUNCTIONS: Fn[] = [
 	uw,
 	run,
 	vault_consolidate_plan,
+	webpush,
 ];

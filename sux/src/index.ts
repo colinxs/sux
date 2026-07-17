@@ -591,7 +591,31 @@ async function mailTriageTick(env: RtEnv): Promise<unknown> {
 	const mod = await import("./fns/_mail_triage");
 	if (!mod.hasMailTriage(env)) return { dormant: true };
 	const deps = await mod.defaultDeps();
-	return mod.runTriage(env, { max: 25 }, deps);
+	const report = await mod.runTriage(env, { max: 25 }, deps);
+	await notifyMailTriageSummary(env, report);
+	return report;
+}
+
+// Outbound Web Push (#219) after a real triage cycle — "mail_triage push '3
+// high-priority emails triaged' instead of purely append-and-wait." Best-effort and
+// silent for a dormant/errored/empty cycle, so an armed-but-idle inbox never pages for
+// nothing; a push failure must never affect the triage cycle's own recorded outcome.
+async function notifyMailTriageSummary(env: RtEnv, report: unknown): Promise<void> {
+	try {
+		const r = report as { dormant?: boolean; error?: string; acted?: unknown[]; suggested?: unknown[] };
+		if (r?.dormant || r?.error) return;
+		const actedCount = r?.acted?.length ?? 0;
+		const suggestedCount = r?.suggested?.length ?? 0;
+		if (actedCount + suggestedCount === 0) return;
+		const { hasWebPush, notify } = await import("./fns/_webpush");
+		if (!hasWebPush(env)) return;
+		const parts: string[] = [];
+		if (actedCount) parts.push(`${actedCount} acted`);
+		if (suggestedCount) parts.push(`${suggestedCount} suggested`);
+		await notify(env, { title: "sux: mail triage", body: parts.join(", ") });
+	} catch {
+		// best-effort — see comment above.
+	}
 }
 
 // One ask-gate reminder sweep, riding the SAME frequent (~5min) cron as mail-triage —

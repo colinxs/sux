@@ -50,6 +50,7 @@
 // a merge, and it never fetches a workflow path under the dot-github directory.
 import type { RtEnv } from "../registry";
 import { TOOL_ANNOTATIONS } from "../registry";
+import { recordAnalyticsEvent } from "../analytics";
 import { type FeedbackEntry, type FeedbackKind, readFeedback } from "./_feedback";
 import { cappedKvLog } from "./_capped_kv_log";
 import { githubAuthHeaders } from "../github-auth";
@@ -388,6 +389,9 @@ const findingsLog = (env: RtEnv) => cappedKvLog<Finding>(env, FINDINGS_KEY, FIND
 
 async function recordFinding(env: RtEnv, finding: Finding): Promise<void> {
 	await findingsLog(env).push(finding);
+	// Queryable analytics (#220): self-improve's finding-to-shipped-PR ratio needs the
+	// finding side tracked durably, not just the capped-array KV log's latest 200.
+	recordAnalyticsEvent(env, "self_improve_finding", { blobs: [finding.lane, finding.confidence, finding.kind] });
 }
 
 // ── Single-flight lease (serialize overlapping ticks — see LOCK_KEY) ───────────

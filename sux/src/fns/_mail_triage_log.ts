@@ -6,6 +6,7 @@
 // cycle id) to REVERSE each move, which a feedback entry never needs.
 import { keyedSerialize } from "../keyed-serialize";
 import type { RtEnv } from "../registry";
+import { recordAnalyticsEvent } from "../analytics";
 import { cappedKvLog } from "./_capped_kv_log";
 import { errMsg } from "./_util";
 
@@ -61,6 +62,9 @@ const saveLog = (env: RtEnv, items: TriageEntry[]) => log(env).save(items);
 /** Prepend a batch of entries (newest-first), capped. Returns the new total. */
 export async function appendTriageEntries(env: RtEnv, entries: TriageEntry[]): Promise<number> {
 	if (!entries.length) return 0;
+	// Queryable analytics (#220): "how many emails has triage archived this month"
+	// needs per-decision events, not just the capped-array KV log's latest 500.
+	for (const e of entries) recordAnalyticsEvent(env, "mail_triage_decision", { blobs: [e.action, e.label, e.op ?? null], doubles: [e.confidence] });
 	return keyedSerialize(logChains, KEY, async () => {
 		// Prepend newest-first: reverse so the last-processed message ends up first.
 		const items = await log(env).push(...[...entries].reverse());

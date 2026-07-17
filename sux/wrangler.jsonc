@@ -19,6 +19,14 @@
 	"images": { "binding": "IMAGES" },
 	// R2 object storage for `store` (content-addressed blobs; KV maps uuid→object).
 	"r2_buckets": [{ "binding": "R2", "bucket_name": "sux-mcp" }],
+	// Workers Analytics Engine (#220) — durable, SQL-queryable event log for cron
+	// heartbeats, mail-triage decisions, and self-improve findings, replacing "grep
+	// wrangler tail" as the only way to answer e.g. "which cron sub-job fails most
+	// often." Bind-only: unlike Cloudflare Pipelines (needs a separately-provisioned
+	// R2/Iceberg destination via `wrangler pipelines create`), an Analytics Engine
+	// dataset is auto-provisioned on first write once this binding is deployed — no
+	// extra account-level resource creation needed.
+	"analytics_engine_datasets": [{ "binding": "ANALYTICS", "dataset": "sux_events" }],
 	// Durable op runtime — the `run` front-verb starts OpWorkflow instances that
 	// interpret a suxlib Op tree step-by-step, so a run survives isolate eviction,
 	// step retries, and multi-day human (ask) pauses. See src/op-engine/durable.ts.
