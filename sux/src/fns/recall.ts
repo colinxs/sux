@@ -9,6 +9,7 @@ import { embedOne } from "./_embed";
 import { classifyKnn, listExamples } from "./_examples";
 import { maybeDecompressString } from "./_gzip";
 import { topKByCosine, vaultSemanticIndex } from "./_vault_semantic";
+import { mailSemanticIndex, topKMailByCosine } from "./_mail_semantic";
 import { errMsg, oj } from "./_util";
 
 // recall — "what do I know about X?" answered from YOUR life. It fans out server-side
@@ -96,7 +97,15 @@ async function fromVaultSemantic(env: RtEnv, question: string): Promise<Gathered
 	return { material: parts.join("\n\n"), refs };
 }
 
-/** Mail: text-search the mailbox (Email/query→get in one JMAP round-trip), excerpt subjects + previews. */
+/** Mail: text-search the mailbox (Email/query→get in one JMAP round-trip) for exact-keyword
+ *  hits, THEN (when Workers-AI is configured) rank the incrementally-maintained mail semantic
+ *  index (_mail_semantic.ts, the vault_semantic pattern applied to mail — #708/#712's git-HEAD
+ *  keying replaced by JMAP's Email state + Email/changes, since mail has no single content sha)
+ *  by MEANING and merge in whatever the keyword leg missed. Same complementary pairing as
+ *  fromVault/fromVaultSemantic: JMAP's server-side `text` filter is pure keyword, so 'what did
+ *  my oncologist say about the scan?' misses an email that says 'imaging results' but never
+ *  'scan'. A semantic hiccup degrades silently (caught, not thrown) — the keyword leg already
+ *  gives fromMail a working result without it. */
 async function fromMail(env: RtEnv, question: string): Promise<Gathered> {
 	const r = await jmap.run(env, {
 		calls: [
@@ -109,11 +118,30 @@ async function fromMail(env: RtEnv, question: string): Promise<Gathered> {
 	const list = (mr?.[1]?.list ?? []) as any[];
 	const parts: string[] = [];
 	const refs: string[] = [];
+	const seenIds = new Set<string>();
 	for (const e of list.slice(0, 5)) {
 		const subj = e?.subject || "(no subject)";
 		const from = e?.from?.[0]?.email || e?.from?.[0]?.name || "";
 		parts.push(`[mail:${subj}] from ${from}${e?.receivedAt ? ` on ${e.receivedAt}` : ""}\n${e?.preview || ""}`);
 		refs.push(`mail:${subj}`);
+		if (e?.id) seenIds.add(String(e.id));
+	}
+	if (hasAI(env)) {
+		try {
+			const idx = await mailSemanticIndex(env);
+			if (idx) {
+				const vec = await embedOne(env, question);
+				const hits = topKMailByCosine(vec, idx.chunks, 5).filter((h) => !seenIds.has(h.id));
+				for (const h of hits) {
+					parts.push(`[mail:${h.subject}] from ${h.from}${h.receivedAt ? ` on ${h.receivedAt}` : ""}\n${h.text}`);
+					refs.push(`mail:${h.subject}`);
+					seenIds.add(h.id);
+				}
+			}
+		} catch {
+			/* the keyword leg above already produced a (possibly empty) result — a semantic index
+			 * failure (JMAP hiccup, embed error) must not sink fromMail entirely. */
+		}
 	}
 	return { material: parts.join("\n\n"), refs };
 }

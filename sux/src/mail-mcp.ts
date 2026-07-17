@@ -1,7 +1,10 @@
 import { fail, failWith, type RtEnv, type ToolResult } from "./registry";
+import { hasAI } from "./ai";
 import { staged } from "./stage";
 import { jmap } from "./fns/jmap";
 import { doUpload, downloadBlobBytes, jstr, scopeProbe, submissionMaxDelayedSend } from "./fns/_jmap";
+import { embedOne } from "./fns/_embed";
+import { mailSemanticIndex, topKMailByCosine } from "./fns/_mail_semantic";
 import { buildVEvent, buildVTodo, CALDAV_NOT_CONFIGURED, type CalendarRef, caldavFetch, calendarHome, dateProp, hasCalDav, icalDateToIso, listCalendars, parseICal, replaceProps, reportObjects, textProp } from "./fns/_caldav";
 import { htmlToMd } from "./fns/_markup";
 import { errMsg, putBlob, storeBase } from "./fns/_util";
@@ -573,6 +576,35 @@ const TOOLS: MailTool[] = [
 				});
 				const emails = (resultFor(resp, "Email/get")?.list ?? []).slice().sort(byReceived(true)); // chronological thread order
 				return ok({ threadId, count: emails.length, messages: emails.map(shapeRef) });
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "mail_semantic",
+		description:
+			"Semantic search over mail via Workers-AI embeddings — finds messages by MEANING, not keyword (complements mail_search's server-side JMAP text filter). Brute-force cosine kNN over the most recent messages' subject+preview, chunked+embedded and KV-cached, INCREMENTALLY maintained against JMAP's Email state (Email/changes adds new mail and drops deleted, rather than re-embedding the whole mailbox each call). Returns the top-k matching messages with their id (mail_read to open one). Needs the Workers-AI binding.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["q"],
+			properties: {
+				q: { type: "string", description: "Natural-language query." },
+				k: { type: "integer", minimum: 1, maximum: 50, description: "How many messages to return (default 8)." },
+			},
+		},
+		run: async (env, a) => {
+			const q = typeof a?.q === "string" ? a.q.trim() : "";
+			if (!q) return failWith("bad_input", "mail_semantic requires a non-empty `q`.");
+			if (!hasAI(env)) return failWith("not_configured", 'Workers AI binding not configured (add "ai" to wrangler) — needed to embed the mailbox and the query.');
+			try {
+				const idx = await mailSemanticIndex(env);
+				if (!idx) return failWith("not_configured", "Fastmail JMAP not configured — needed to build/read the mail semantic index.");
+				const vec = await embedOne(env, q);
+				const k = Math.min(50, Math.max(1, Number(a?.k) || 8));
+				const hits = topKMailByCosine(vec, idx.chunks, k);
+				return ok({ q, count: hits.length, hits, scanned: idx.chunks.length, total: idx.total, truncated: idx.truncated });
 			} catch (e) {
 				return fail(errMsg(e));
 			}
