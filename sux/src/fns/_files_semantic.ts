@@ -170,6 +170,7 @@ async function applyChanges(env: RtEnv, cached: FilesSemanticIndex): Promise<{ i
 	const changedPaths = new Set<string>();
 	const toEmbedPaths = new Set<string>();
 	const deletedPaths = new Set<string>();
+	let pageCapped = false;
 	for (let page = 0; page < MAX_LIST_PAGES; page++) {
 		let r: Awaited<ReturnType<typeof listFullChanges>>;
 		try {
@@ -190,6 +191,7 @@ async function applyChanges(env: RtEnv, cached: FilesSemanticIndex): Promise<{ i
 		for (const p of r.deleted) deletedPaths.add(p);
 		cursor = r.cursor || cursor;
 		if (!r.has_more) break;
+		if (page === MAX_LIST_PAGES - 1) pageCapped = true; // hit the page cap with more still pending
 	}
 	// Nothing to persist: same chunk set, so a re-serialize + KV `put` would buy nothing but a
 	// bumped `at`. `changed: false` tells the caller to skip the write; the next call simply
@@ -205,7 +207,7 @@ async function applyChanges(env: RtEnv, cached: FilesSemanticIndex): Promise<{ i
 	// keep the just-changed/new chunks over stale ones, mirroring mail's recency-ordered eviction
 	// (#734/#731) — files have no receivedAt to sort by, but "just touched" is the same signal.
 	let chunks = [...fresh, ...keptOld];
-	const truncated = cached.truncated || chunks.length > INDEX_MAX;
+	const truncated = cached.truncated || pageCapped || chunks.length > INDEX_MAX;
 	if (chunks.length > INDEX_MAX) chunks = chunks.slice(0, INDEX_MAX);
 	return { index: { cursor, version: VERSION, at: Date.now(), total: new Set(chunks.map((c) => c.path)).size, truncated, chunks }, changed: true };
 }

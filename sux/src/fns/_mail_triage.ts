@@ -454,7 +454,15 @@ export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps):
 	// the same single page as before.
 	const PAGE_SIZE = 50;
 	const MAX_PAGES = sweepBacklog ? 40 : 1;
-	let position = 0;
+	// A sweep's position must survive across calls (sweep_backlog is invoked manually, per call —
+	// no auto-loop) or every call restarts at 0, re-fetches the same newest page, finds it all
+	// already-seen, and never reaches older backlog mail. Persisted per-mailbox so different
+	// mailboxes sweep independently. Reset to 0 once the backlog is exhausted (see below) so the
+	// NEXT sweep re-checks for newly-arrived mail at the top instead of sitting at the tail forever.
+	const cursorKey = `sweep-position::${mailbox}`;
+	const storedPosition = sweepBacklog ? Number(await led.get(cursorKey)) : NaN;
+	let position = Number.isFinite(storedPosition) && storedPosition >= 0 ? storedPosition : 0;
+	let exhausted = false;
 	let pages = 0;
 	sweep: while (pages < MAX_PAGES && scanned < max) {
 		if (Date.now() >= deadline) {
@@ -464,7 +472,10 @@ export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps):
 		const pageLimit = sweepBacklog ? PAGE_SIZE : max;
 		const msgs = await deps.search(env, { mailbox, unread, limit: pageLimit, position });
 		pages++;
-		if (!msgs.length) break; // backlog exhausted
+		if (!msgs.length) {
+			exhausted = true;
+			break; // backlog exhausted
+		}
 
 		for (const m of msgs) {
 			if (Date.now() >= deadline) {
@@ -571,9 +582,13 @@ export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps):
 			if (entry) await appendTriageEntries(env, [entry]);
 			if (markSeen) await led.mark(m.id);
 		}
-		if (msgs.length < pageLimit) break; // short page ⇒ nothing older left in the mailbox
+		if (msgs.length < pageLimit) {
+			exhausted = true;
+			break; // short page ⇒ nothing older left in the mailbox
+		}
 		position += msgs.length;
 	}
+	if (sweepBacklog) await led.mark(cursorKey, String(exhausted ? 0 : position));
 
 	// Digest: best-effort, idempotent per cycle id (a double cron-fire won't double-append).
 	let digestWritten = false;
