@@ -594,6 +594,18 @@ async function mailTriageTick(env: RtEnv): Promise<unknown> {
 	return mod.runTriage(env, { max: 25 }, deps);
 }
 
+// One ask-gate reminder sweep, riding the SAME frequent (~5min) cron as mail-triage —
+// NOT the daily one — because an unanswered `ask` gate fails closed at 24h
+// (op-engine/registry.ts), so a once-a-day check could miss the whole window. FAIL-
+// CLOSED: no-ops entirely unless ASK_GATE_REMINDER_ENABLED. Dynamically imported so the
+// cron path pulls in the run/mail surface only when armed.
+async function askGateReminderTick(env: RtEnv): Promise<unknown> {
+	const mod = await import("./fns/_ask_gate_reminder");
+	if (!mod.hasAskGateReminder(env)) return { dormant: true };
+	const deps = await mod.defaultDeps();
+	return mod.runAskGateReminder(env, deps);
+}
+
 // One weekly recall-digest cycle, riding the SAME daily cron. FAIL-CLOSED: no-ops entirely
 // unless WEEKLY_RECALL_ENABLED is set, and a once-per-ISO-week ledger gate means it does real
 // work (recall fan-out + vault append) at most once every seven days — the other six daily
@@ -758,12 +770,15 @@ export default {
 		// Prometheus metrics snapshot AND runs mail-triage on a ~5-min cadence — a label is
 		// only useful before you next open mail, and triage is idempotent via its seen-
 		// ledger + a dormant no-op unless MAIL_TRIAGE_ENABLED, so a frequent tick is cheap
-		// and only ever processes new unread mail. The daily trigger runs the rest of the
+		// and only ever processes new unread mail. It ALSO sweeps for paused ask-gates
+		// (askGateReminderTick) on the same frequent cadence, since a gate fails closed at
+		// 24h and a daily check could miss the window entirely. The daily trigger runs the rest of the
 		// maintenance suite + self-improve (maintenanceTick pushes a snapshot too, so the
 		// daily run is also covered).
 		if (event.cron === METRICS_CRON) {
 			ctx.waitUntil(shipMetricsSnapshot(env, ctx).catch((e) => console.warn(`sux scheduled metrics: snapshot push skipped: ${String((e as Error)?.message ?? e)}`)));
 			ctx.waitUntil(runSubJob(env, "mail_triage", () => mailTriageTick(env)));
+			ctx.waitUntil(runSubJob(env, "ask_gate_reminder", () => askGateReminderTick(env)));
 			return;
 		}
 		ctx.waitUntil(maintenanceTick(env, ctx));

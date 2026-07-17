@@ -232,6 +232,23 @@ export type RtEnv = Env &
 		AGENDA_ENABLED?: string;
 		AGENDA_EMAIL?: string;
 
+		// Ask-gate reminder (fns/_ask_gate_reminder.ts) — proactively surfaces durable
+		// `run` instances paused on a human `ask` gate (op-engine) instead of relying on
+		// someone remembering to poll `run {action:'list'}`. Rides the FREQUENT cron (same
+		// one mail_triage/metrics use), not the daily one, since an unanswered gate fails
+		// closed at 24h. Same two-stage fail-closed gate as AGENDA_*/BRIEFING_*: unset
+		// ASK_GATE_REMINDER_ENABLED ⇒ total no-op. ASK_GATE_REMINDER_EMAIL additionally
+		// mails the digest to the vault owner's own address (else vault-append only).
+		// ASK_GATE_REMINDER_AFTER_MINUTES / _COOLDOWN_MINUTES override the default 30min
+		// "worth mentioning" age and 360min (6h) per-instance re-notify cooldown. It only
+		// ever READS the durable-run index + a gate's static prompt text and WRITES a
+		// vault append (+ optional self-mail) describing the pending gate and the exact
+		// `run {action:'answer', ...}` call to unblock it — it never answers a gate itself.
+		ASK_GATE_REMINDER_ENABLED?: string;
+		ASK_GATE_REMINDER_EMAIL?: string;
+		ASK_GATE_REMINDER_AFTER_MINUTES?: string;
+		ASK_GATE_REMINDER_COOLDOWN_MINUTES?: string;
+
 		// Manual ops trigger for the daily cron ticks (POST /admin/tick?job=…), bearer-gated
 		// by this token. Unset ⇒ the endpoint 404s (feature off). Lets an operator run a
 		// mail-triage / self-improve / maintenance cycle on demand instead of waiting for cron.
