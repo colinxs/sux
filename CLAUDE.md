@@ -89,6 +89,13 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   (#682). `sux/src/op-engine/durable.ts`'s `isWaitForEventTimeout` sniffs
   `error.name`/`.message` for a timeout-shaped string as the least-bad available
   signal — reuse that heuristic rather than re-deriving it.
+- **A bot-build sandbox's `../suxlib` git remote is READ-only**, even though it's
+  cloned with an embedded `x-access-token` that looks like it could push — `git push`
+  there 403s ("Write access to repository not granted"). An issue phrased as "a
+  future build with suxlib write access should do X" is not buildable by an
+  automated session today; don't spend gate/turn budget implementing the suxlib-side
+  half only to find you can't land it — check `git push` (or just try it early)
+  before doing real work there, and drop the issue back to the queue instead.
 
 ## House style
 
