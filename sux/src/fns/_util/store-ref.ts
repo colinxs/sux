@@ -56,8 +56,13 @@ export async function getBlob(env: RtEnv, uuid: string): Promise<{ bytes: Uint8A
 	}
 	const obj = await env.R2.get(ref.key);
 	if (!obj) return null;
+	const stored = new Uint8Array(await obj.arrayBuffer());
 	// Stored bytes may be a transparent-gzip frame — inflate back to the original.
-	const bytes = await maybeDecompress(new Uint8Array(await obj.arrayBuffer()));
+	// maybeCompress only frames bytes it actually shrank; an incompressible raw
+	// payload that happens to start with our marker+gzip-magic prefix (00 1f 8b)
+	// looks framed but isn't. Fall back to the raw bytes on a decode failure
+	// rather than surfacing that collision as permanent data loss.
+	const bytes = await maybeDecompress(stored).catch(() => stored);
 	return { bytes, contentType: ref.content_type ?? obj.httpMetadata?.contentType ?? "application/octet-stream" };
 }
 
