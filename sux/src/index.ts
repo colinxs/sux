@@ -632,7 +632,28 @@ async function askGateReminderTick(env: RtEnv): Promise<unknown> {
 	const mod = await import("./fns/_ask_gate_reminder");
 	if (!mod.hasAskGateReminder(env)) return { dormant: true };
 	const deps = await mod.defaultDeps();
-	return mod.runAskGateReminder(env, deps);
+	const report = await mod.runAskGateReminder(env, deps);
+	await notifyAskGateReminderSummary(env, report);
+	return report;
+}
+
+// Outbound Web Push (#219/#856) for a fresh ask-gate reminder — the gap this was built to
+// close: an unanswered durable-run `ask` gate fails closed at 24h (op-engine's registry.ts),
+// so a silent vault-only digest could go unseen until the window's nearly gone. Best-effort
+// and silent for a dormant/empty/errored sweep; a push failure must never affect the sweep's
+// own recorded outcome.
+async function notifyAskGateReminderSummary(env: RtEnv, report: unknown): Promise<void> {
+	try {
+		const r = report as { dormant?: boolean; error?: string; reminded?: number };
+		if (r?.dormant || r?.error) return;
+		const remindedCount = r?.reminded ?? 0;
+		if (!remindedCount) return;
+		const { hasWebPush, notify } = await import("./fns/_webpush");
+		if (!hasWebPush(env)) return;
+		await notify(env, { title: "sux: approvals waiting", body: `${remindedCount} durable run${remindedCount === 1 ? "" : "s"} waiting on your approval` });
+	} catch {
+		// best-effort — see comment above.
+	}
 }
 
 // One durable mail-triage-plan auto-start, riding the SAME frequent cron as mail-triage
@@ -669,7 +690,24 @@ async function weeklyRecallTick(env: RtEnv): Promise<unknown> {
 	const mod = await import("./fns/_weekly_recall");
 	if (!mod.hasWeeklyRecall(env)) return { dormant: true };
 	const deps = await mod.defaultDeps();
-	return mod.runWeeklyRecall(env, {}, deps);
+	const report = await mod.runWeeklyRecall(env, {}, deps);
+	await notifyWeeklyRecallSummary(env, report);
+	return report;
+}
+
+// Outbound Web Push (#219/#856) after a real weekly-recall write — mirrors
+// notifyMailTriageSummary's shape. Best-effort and silent for a dormant/skipped/errored/
+// no-write cycle, so the once-a-week digest only pages when it actually wrote something new.
+async function notifyWeeklyRecallSummary(env: RtEnv, report: unknown): Promise<void> {
+	try {
+		const r = report as { dormant?: boolean; skipped?: boolean; error?: string; digest_written?: boolean; questions?: number };
+		if (r?.dormant || r?.skipped || r?.error || !r?.digest_written) return;
+		const { hasWebPush, notify } = await import("./fns/_webpush");
+		if (!hasWebPush(env)) return;
+		await notify(env, { title: "sux: weekly recall", body: `this week's recall digest is in the vault (${r?.questions ?? 0} question${r?.questions === 1 ? "" : "s"})` });
+	} catch {
+		// best-effort — see comment above.
+	}
 }
 
 // One weekly vault-consolidation sweep, riding the SAME daily cron. FAIL-CLOSED: no-ops
@@ -681,7 +719,30 @@ async function consolidateTick(env: RtEnv): Promise<unknown> {
 	const mod = await import("./fns/_consolidate");
 	if (!mod.hasConsolidate(env)) return { dormant: true };
 	const deps = await mod.defaultDeps();
-	return mod.runConsolidate(env, {}, deps);
+	const report = await mod.runConsolidate(env, {}, deps);
+	await notifyConsolidateSummary(env, report);
+	return report;
+}
+
+// Outbound Web Push (#219/#856) after a real consolidate sweep finds something —
+// mirrors notifyMailTriageSummary's shape. Best-effort and silent for a dormant/skipped/
+// errored/empty sweep, so a clean vault never pages for nothing.
+async function notifyConsolidateSummary(env: RtEnv, report: unknown): Promise<void> {
+	try {
+		const r = report as { dormant?: boolean; skipped?: boolean; error?: boolean | string; stale_count?: number; duplicate_count?: number };
+		if (r?.dormant || r?.skipped || r?.error) return;
+		const staleCount = r?.stale_count ?? 0;
+		const dupeCount = r?.duplicate_count ?? 0;
+		if (staleCount + dupeCount === 0) return;
+		const { hasWebPush, notify } = await import("./fns/_webpush");
+		if (!hasWebPush(env)) return;
+		const parts: string[] = [];
+		if (staleCount) parts.push(`${staleCount} stale`);
+		if (dupeCount) parts.push(`${dupeCount} duplicate`);
+		await notify(env, { title: "sux: vault consolidate", body: parts.join(", ") });
+	} catch {
+		// best-effort — see comment above.
+	}
 }
 
 // One watch-directory sweep, riding the SAME daily cron (#899). FAIL-CLOSED: no-ops
@@ -705,7 +766,30 @@ async function briefingTick(env: RtEnv): Promise<unknown> {
 	const mod = await import("./fns/_briefing");
 	if (!mod.hasBriefing(env)) return { dormant: true };
 	const deps = await mod.defaultDeps();
-	return mod.runBriefing(env, {}, deps);
+	const report = await mod.runBriefing(env, {}, deps);
+	await notifyBriefingSummary(env, report);
+	return report;
+}
+
+// Outbound Web Push (#219/#856) after a real morning briefing with something worth
+// surfacing early — mirrors notifyMailTriageSummary's shape. Best-effort and silent for a
+// dormant/dry-run cycle or one with nothing flagged/staged, so a quiet morning never pages.
+async function notifyBriefingSummary(env: RtEnv, report: unknown): Promise<void> {
+	try {
+		const r = report as { dormant?: boolean; dry_run?: boolean; flagged?: unknown[]; drafts_staged?: number };
+		if (r?.dormant || r?.dry_run) return;
+		const flaggedCount = r?.flagged?.length ?? 0;
+		const draftsCount = r?.drafts_staged ?? 0;
+		if (flaggedCount + draftsCount === 0) return;
+		const { hasWebPush, notify } = await import("./fns/_webpush");
+		if (!hasWebPush(env)) return;
+		const parts: string[] = [];
+		if (flaggedCount) parts.push(`${flaggedCount} flagged`);
+		if (draftsCount) parts.push(`${draftsCount} draft${draftsCount === 1 ? "" : "s"} staged`);
+		await notify(env, { title: "sux: morning briefing", body: parts.join(", ") });
+	} catch {
+		// best-effort — see comment above.
+	}
 }
 
 // One daily agenda cycle (the "figure out what to do" loop) on the same Cron Trigger.

@@ -783,7 +783,8 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 					/* an email failure must never fail the cycle — the proposals are already recorded */
 				}
 			}
-			await dled.mark(digKey);
+			// Mark AFTER a successful write so a failed append retries next tick (mirrors _weekly_recall.ts).
+			if (digestWritten) await dled.mark(digKey);
 		}
 	}
 

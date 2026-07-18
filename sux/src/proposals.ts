@@ -83,13 +83,13 @@ function stripUnsafeArgs(args: Record<string, unknown>): Record<string, unknown>
 // before either write lands and double-execute the payload.
 const approveChains = new Map<string, Promise<unknown>>();
 
+// Deliberately does NOT swallow errors: a genuinely-absent key (`get` resolving to
+// null) means "no index yet" and returns []; a thrown error (transient KV failure,
+// malformed JSON) propagates instead of being treated the same way — callers must
+// not mistake "the read failed" for "the index is empty" and overwrite it (#855).
 async function readIndex(env: RtEnv): Promise<string[]> {
-	try {
-		const raw = await env.OAUTH_KV?.get(INDEX_KEY);
-		return raw ? JSON.parse(raw) : [];
-	} catch {
-		return [];
-	}
+	const raw = await env.OAUTH_KV?.get(INDEX_KEY);
+	return raw ? JSON.parse(raw) : [];
 }
 async function writeIndex(env: RtEnv, ids: string[]): Promise<void> {
 	await env.OAUTH_KV?.put(INDEX_KEY, JSON.stringify(ids.slice(0, MAX_OPEN)));
