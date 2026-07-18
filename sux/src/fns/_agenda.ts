@@ -300,7 +300,7 @@ export function detectMonarchDrops(date: string, accounts: MonarchAccountRef[], 
 			drops.push({
 				kind: "bill_due",
 				urgency: "soon",
-				dedupe: `monarch::bill_due::${b.categoryId || b.category}::${month}`,
+				dedupe: `monarch::bill_due::${b.categoryId || b.category}::${month}::${Math.round(b.remaining)}`,
 				title: `Bill due soon: ${b.category} ($${remaining} remaining)`,
 				emoji: "🧾",
 				action: task(`Pay/handle ${b.category} — $${remaining} remaining this month`),
@@ -401,7 +401,7 @@ export function detectSavingsRateDrop(date: string, rate: number | undefined, pr
 			{
 				kind: "savings_rate_negative",
 				urgency: "soon",
-				dedupe: `monarch::savings_rate_negative::${month}`,
+				dedupe: `monarch::savings_rate_negative::${month}::${Math.round(rate * 100)}`,
 				title: `Savings rate negative this cycle (${pct}%)`,
 				emoji: "📉",
 				action: task(`Review spending — savings rate is negative this cycle (${pct}%)`),
@@ -414,7 +414,7 @@ export function detectSavingsRateDrop(date: string, rate: number | undefined, pr
 			{
 				kind: "savings_rate_drop",
 				urgency: "fyi",
-				dedupe: `monarch::savings_rate_drop::${month}`,
+				dedupe: `monarch::savings_rate_drop::${month}::${Math.round(rate * 100)}`,
 				title: `Savings rate dropped to ${pct}% (was ${(priorRate * 100).toFixed(0)}%)`,
 				emoji: "📉",
 				action: task(`Review savings rate drop — now ${pct}%, was ${(priorRate * 100).toFixed(0)}%`),
