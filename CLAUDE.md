@@ -228,6 +228,13 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   and drop chained issues that depend on the stuck PR merging (e.g. #865-#867 depending
   on #864's #870) back to the queue until a maintainer restores `SuxOS/.github` or the
   branch protection rule is adjusted.
+- **An issue whose body says "depends on #N" and whose fix is "teach the dispatcher/
+  queue to check that" (e.g. #869) isn't buildable from inside this repo** — the
+  batch dispatcher that hands issues to bot-build sessions is external tooling, not
+  code that lives in `sux/`; a grep for `dispatch` here only turns up unrelated MCP
+  tool-call dispatch (`dispatch-guards.ts`). Verify the dependency's own state instead
+  (`gh issue view #N --json state`) and drop the dependent issue back to the queue if
+  it isn't merged yet, same as the `#865-#867` case above.
 
 ## House style
 

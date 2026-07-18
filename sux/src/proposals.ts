@@ -160,10 +160,18 @@ export async function propose(
 		expiresAt: t + days(p.ttlDays ?? DEFAULT_TTL_DAYS),
 	};
 	await putProposal(env, proposal);
-	await keyedSerialize(approveChains, INDEX_KEY, async () => {
-		const idx = await readIndex(env);
-		await writeIndex(env, [proposal.id, ...idx.filter((x) => x !== proposal.id)]);
-	});
+	try {
+		await keyedSerialize(approveChains, INDEX_KEY, async () => {
+			const idx = await readIndex(env);
+			await writeIndex(env, [proposal.id, ...idx.filter((x) => x !== proposal.id)]);
+		});
+	} catch (e) {
+		// Index update failed after the proposal record was already durably written —
+		// best-effort delete it rather than leave an orphan invisible to listProposals
+		// for its full TTL (#918).
+		await env.OAUTH_KV?.delete(PREFIX + proposal.id).catch(() => {});
+		throw e;
+	}
 	return proposal;
 }
 
