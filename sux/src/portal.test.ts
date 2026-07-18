@@ -125,6 +125,28 @@ describe("portal", () => {
 		expect(body).not.toContain("secret");
 	});
 
+	it("re-derives visibility from the freshly-read body, not a stale scan snapshot (#848)", async () => {
+		// Simulates a #portal tag being removed by a commit that lands between the
+		// scan (which builds the served snapshot) and the explicit re-read that
+		// fetches the note's current body for rendering.
+		let reads = 0;
+		routes.handler = (url) => {
+			if (url.includes("/git/trees/")) return new Response(JSON.stringify({ tree: [{ type: "blob", path: "Public/race.md" }] }), { status: 200 });
+			const m = /\/contents\/(.+?)(\?|$)/.exec(url);
+			const path = m ? decodeURIComponent(m[1]) : "";
+			if (path !== "Public/race.md") return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+			reads++;
+			const content = reads === 1 ? "#portal\n\nOld public content." : "No longer public.";
+			return new Response(JSON.stringify({ content: b64(content), sha: "s1" }), { status: 200 });
+		};
+		const res = await get(ENV, "/portal/race");
+		expect(res!.status).toBe(200);
+		const body = await res!.text();
+		expect(body).toContain("isn't public");
+		expect(body).not.toContain("Old public content");
+		expect(body).not.toContain("No longer public");
+	});
+
 	it("429s when OBS_RATE_LIMITER denies", async () => {
 		serveNotes(NOTES);
 		const env = { ...ENV, OBS_RATE_LIMITER: { limit: async () => ({ success: false }) } };

@@ -25,7 +25,7 @@ import { obsidian, vaultCfg } from "./fns/obsidian";
 import { obsRateLimited } from "./observability";
 import type { RtEnv } from "./registry";
 import { scanVault, type VaultRecord } from "./vault-mcp";
-import { noteBasename } from "./vault-graph";
+import { extractTags, noteBasename, parseFrontmatter } from "./vault-graph";
 
 const DEFAULT_PORTAL_HOST = "portal.suxos.net";
 
@@ -183,5 +183,10 @@ export async function handlePortalRoutes(url: URL, request: Request, env: RtEnv)
 	const r = await obsidian.run(env, { action: "read", path: readPath, backend: "git" });
 	if (r.isError) return new Response("not found", { status: 404 });
 	const body = Array.isArray(r.content) ? String(r.content[0]?.text ?? "") : "";
+	// The scanVault snapshot can be stale by the time this fresh read lands (a commit
+	// removing #portal could've landed between the two calls) — re-derive visibility
+	// from the just-fetched content itself rather than trusting the cached tags/fm.
+	const freshFm = parseFrontmatter(body);
+	if (!isPortalVisible({ fm: freshFm, tags: extractTags(body, freshFm) })) return renderStub();
 	return renderNote(match, body);
 }
