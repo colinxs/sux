@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { composeDigest, type AgendaDeps, type Drop, detectDrops, detectKnowledgeDrops, detectMonarchDrops, detectPortfolioDrops, detectSavingsRateDrop, detectTextDrops, computeSavingsRate, type EventRef, type MailRef, type TextThreadRef, rankDropsLearned, runAgenda } from "./_agenda";
+import { composeDigest, type AgendaDeps, type Drop, detectDrops, detectKnowledgeDrops, detectMonarchDrops, detectMyChartDrops, detectPortfolioDrops, detectSavingsRateDrop, detectTextDrops, computeSavingsRate, type EventRef, type MailRef, type TextThreadRef, rankDropsLearned, runAgenda } from "./_agenda";
 import { listProposals } from "../proposals";
 import { recordOutcome } from "./_learning";
 
@@ -33,6 +33,7 @@ const deps = (over: Partial<AgendaDeps> = {}): AgendaDeps => ({
 	monarchCashflow: vi.fn(async () => null),
 	monarchHoldings: vi.fn(async () => []),
 	textThreads: vi.fn(async () => []),
+	mychartSummary: vi.fn(async () => null),
 	...over,
 });
 
@@ -226,6 +227,34 @@ describe("agenda — text detectors (iMessage, #849)", () => {
 	});
 });
 
+describe("agenda — MyChart detectors (W6)", () => {
+	it("flags lab/vital results, refills due, new conditions/documents — every drop stays redacted", () => {
+		const drops = detectMyChartDrops(
+			[{ id: "obs1", category: "laboratory", direction: "high" }],
+			[{ id: "med1", name: "Atorvastatin", dueDate: "2026-07-25" }],
+			[{ id: "cond1" }],
+			[{ id: "doc1", docType: "After Visit Summary" }],
+		);
+		const kinds = drops.map((d) => d.kind);
+		expect(kinds).toEqual(expect.arrayContaining(["mychart_lab_flag", "mychart_refill_due", "mychart_new_condition", "mychart_new_document"]));
+		for (const d of drops) expect(d.action.fn).toBe("todoist");
+		const labDrop = drops.find((d) => d.kind === "mychart_lab_flag");
+		expect(labDrop?.title).not.toMatch(/\d/); // no raw lab value leaks into the digest line
+		const condDrop = drops.find((d) => d.kind === "mychart_new_condition");
+		expect(condDrop?.title).toBe("New condition added to your chart — check MyChart"); // never the diagnosis name
+	});
+
+	it("dedupe is purely per resource id (no date) — a still-flagged result only ever proposes once", () => {
+		const first = detectMyChartDrops([{ id: "obs1", category: "laboratory", direction: "low" }], [], [], []);
+		const second = detectMyChartDrops([{ id: "obs1", category: "laboratory", direction: "low" }], [], [], []);
+		expect(first[0].dedupe).toBe(second[0].dedupe);
+	});
+
+	it("no drops when the summary is empty", () => {
+		expect(detectMyChartDrops([], [], [], [])).toHaveLength(0);
+	});
+});
+
 describe("agenda — learned ranking (W8)", () => {
 	const drop = (kind: string, urgency: "today" | "soon" | "fyi"): Drop => ({
 		kind,
@@ -390,6 +419,31 @@ describe("agenda — loop", () => {
 
 		const r = await runAgenda(e, { date: "2026-07-18" }, deps({ monarchHoldings: vi.fn(async () => [{ ticker: "AAPL", value: 9000 }, { ticker: "MSFT", value: 1000 }]) }));
 		expect(r.proposals?.map((p) => p.kind)).toContain("portfolio_drift");
+	});
+
+	it("wires MyChart health signals (W6) in only when EPIC_CLIENT_ID/SECRET/FHIR_BASE are set", async () => {
+		const e = env({ EPIC_CLIENT_ID: "cid", EPIC_CLIENT_SECRET: "csec", EPIC_FHIR_BASE: "https://fhir.example.org/R4" });
+		const d = deps({ mychartSummary: vi.fn(async () => ({ labFlags: [{ id: "obs1", category: "laboratory", direction: "high" }], refillsDue: [], newConditions: [], newDocuments: [] })) });
+		const r = await runAgenda(e, {}, d);
+		expect(r.proposals?.map((p) => p.kind)).toEqual(expect.arrayContaining(["mychart_lab_flag"]));
+		expect(r.sources.mychart).toMatch(/lab flag/);
+		expect(d.mychartSummary).toHaveBeenCalled();
+	});
+
+	it("skips MyChart entirely (not_configured) when EPIC_* is unset", async () => {
+		const e = env();
+		const d = deps();
+		const r = await runAgenda(e, {}, d);
+		expect(r.sources.mychart).toBe("not_configured");
+		expect(d.mychartSummary).not.toHaveBeenCalled();
+	});
+
+	it("MyChart configured but never connected (no grant) reads as not_connected, no drops", async () => {
+		const e = env({ EPIC_CLIENT_ID: "cid", EPIC_CLIENT_SECRET: "csec", EPIC_FHIR_BASE: "https://fhir.example.org/R4" });
+		const d = deps({ mychartSummary: vi.fn(async () => null) });
+		const r = await runAgenda(e, {}, d);
+		expect(r.sources.mychart).toBe("not_connected");
+		expect(r.proposals?.map((p) => p.kind)).not.toContain("mychart_lab_flag");
 	});
 
 	it("dry_run never persists the Monarch snapshot", async () => {
