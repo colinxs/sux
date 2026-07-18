@@ -29,7 +29,7 @@ const CATEGORIES = [
 	["Knowledge / learning", ["recall", "oracle", "study", "advise", "learn", "preferences", "life_wiki", "agenda"]],
 	["Mail (JMAP)", ["jmap", "mail_triage", "mail_triage_plan", "mail_sieve", "mail_sieve_hc", "mail_sieve_backfill", "mail_domain_backfill", "briefing"]],
 	["Personal namespaces (one /mcp)", ["vault", "mail", "files", "calendar", "contact", "imessage"]],
-	["Agent / autonomy", ["proposals"]],
+	["Agent / autonomy", ["proposals", "webpush"]],
 	["Personal finance", ["monarch"]],
 	["Personal health", ["mychart"]],
 	["Feedback / meta", ["issue", "suggest"]],
