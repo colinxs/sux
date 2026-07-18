@@ -122,11 +122,15 @@ export async function learnTopic(
 	knowledge: string,
 	provenance?: Whitelist,
 ): Promise<{ source: string; chunk_count: number; distilled: string; whitelisted: boolean }> {
-	// 1. Resolve the material and record where it came from.
+	// 1. Resolve the material and record where it came from. `provenance.source` (when
+	// given) is the caller's intended label — e.g. study.ts's `dropbox:`-prefixed path for
+	// a PDF learned from a Dropbox file, which isn't recoverable from `knowledge` itself
+	// (that's the extracted plain text, not the URL/path) — so it takes precedence over
+	// the generic "inline text"/URL default below.
 	let content = knowledge;
-	let source = "inline text";
+	let source = provenance?.source ?? "inline text";
 	if (isHttpUrl(knowledge)) {
-		source = knowledge;
+		source = provenance?.source ?? knowledge;
 		const fetched = await fetchText(env, knowledge, { maxBytes: FETCH_CAP });
 		if (fetched.status >= 400) throw new Error(`Fetch failed: HTTP ${fetched.status} for ${knowledge}`);
 		const body = looksLikeHtml(fetched.text, fetched.headers.get("content-type")) ? await htmlToText(env, fetched.text) : fetched.text;
