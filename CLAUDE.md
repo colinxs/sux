@@ -66,6 +66,13 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   added (e.g. #712 needed #708/#710's `_vault_semantic.ts`, absent from the branch's own base).
   `git fetch origin main && git rebase origin/main` before assuming a referenced file/symbol
   is missing or the issue is stale — it's often just that your branch hasn't caught up yet.
+- **If a referenced file/symbol is STILL missing after rebasing onto `origin/main`, check
+  `gh pr list --state open` before concluding the issue is stale** — a suxbot audit issue can be
+  filed against a concurrent builder's still-OPEN (unmerged) PR, not just a just-merged one (e.g.
+  #788/#794 both named `_agenda_reply.ts`/`_learning.ts`'s `insights` action from PR #787's
+  then-unmerged `bot/issue-build-29614608666` branch). That issue isn't buildable yet regardless
+  of rebasing — drop it back to the queue; it'll resolve itself (or need re-filing) once the
+  other PR actually merges.
 - **When a code-audit finding hinges on the exact contents of a regex or other
   code containing non-printable/control characters, verify with `od -c`/`cat -A`
   (or execute the code against the claimed-failing input) before filing or
