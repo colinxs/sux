@@ -13,7 +13,7 @@ import type { RtEnv } from "../registry";
 import { smartFetch } from "../proxy";
 import { looksBlocked } from "../retail-render";
 import { unlockerRender } from "../unlocker-render";
-import { errMsg, isHttpUrl, oj } from "../prim";
+import { errMsg, isHttpUrl, isHttpUrlStr, oj } from "../prim";
 import { storeRefUuid, getBlob } from "./_util/store-ref";
 import { fetchDedupActive, fetchCacheGet, fetchCacheSet, FETCH_CACHE_MAX_TEXT } from "./_util/fetch-cache";
 import { fromB64, clampBytes } from "./_util/bytes";
@@ -21,7 +21,7 @@ import { fromB64, clampBytes } from "./_util/bytes";
 // Re-exported for the ~100 fns that import these alongside the blob-store/registry
 // helpers below — the definitions themselves live in ../prim (dependency-free,
 // so proxy.ts can import errMsg without a proxy.ts <-> fns/_util.ts cycle, #620).
-export { errMsg, isHttpUrl, oj };
+export { errMsg, isHttpUrl, isHttpUrlStr, oj };
 
 export * from "./_util/bytes";
 export * from "./_util/fanout";
