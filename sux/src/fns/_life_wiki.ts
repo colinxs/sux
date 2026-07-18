@@ -102,7 +102,7 @@ export const FACETS: Facet[] = [
 // signals, not the web. Mirrors onboard's ONBOARD_SOURCES (_onboard.ts) — the facet questions
 // above (health's appointments, timeline's upcoming events, people's connections) need
 // calendar/contacts to be answerable at all.
-const WIKI_SOURCES = ["vault", "files", "mail", "calendar", "contacts", "learned"];
+const WIKI_SOURCES = ["vault", "files", "mail", "calendar", "contacts", "learned", "imessage"];
 
 // ── Deps (injectable — tests pass fakes) ─────────────────────────────────────────────
 export type FacetResult = { slug: string; title: string; file: string; answer: string; citations: string[]; sourceStatus: Record<string, string> };

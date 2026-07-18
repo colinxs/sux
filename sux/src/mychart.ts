@@ -330,6 +330,127 @@ export async function pull(env: RtEnv, opts?: { types?: string[]; since?: string
 	return { patient, counts, pages, binaries, keys, ...(truncated ? { truncated } : {}) };
 }
 
+// ---------------- summarize: last-pull → redacted agenda signal (W6) ----------------
+
+/** All pages sharing the newest stamp under `phi/mychart/{patient}/{label}/` — the most
+ * recently pulled snapshot for one resource label (e.g. "Observation.laboratory",
+ * "MedicationRequest"), merged into a flat resource list. [] when never pulled, R2 is
+ * unbound, or nothing parses. Server-side only: callers must keep raw resource content
+ * out of anything that leaves the Worker (vault/mail/logs) — see the PHI invariants at
+ * the top of this file. */
+async function latestPulledResources(env: RtEnv, patient: string, label: string): Promise<any[]> {
+	if (!env.R2) return [];
+	const prefix = `${PHI_PREFIX}mychart/${patient}/${label}/`;
+	const listing = await env.R2.list({ prefix, limit: 1000 });
+	let latestStamp: string | null = null;
+	for (const o of listing.objects) {
+		const m = /\/([^/]+)-p\d+\.json$/.exec(o.key);
+		if (m && (!latestStamp || m[1] > latestStamp)) latestStamp = m[1];
+	}
+	if (!latestStamp) return [];
+	const pageKeys = listing.objects.map((o) => o.key).filter((k) => k.startsWith(`${prefix}${latestStamp}-p`));
+	const resources: any[] = [];
+	for (const key of pageKeys) {
+		const obj = await env.R2.get(key);
+		if (!obj) continue;
+		const bundle = safeParseJson<any>(await obj.text(), null);
+		const entries: any[] = Array.isArray(bundle?.entry) ? bundle.entry : [];
+		for (const e of entries) if (e?.resource) resources.push(e.resource);
+	}
+	return resources;
+}
+
+// USCDI ObservationInterpretation codes (http://terminology.hl7.org/CodeSystem/v3-
+// ObservationInterpretation) this cares about — everything else (incl. "N" normal) is
+// left unflagged. High/Low/Abnormal only; critical variants collapse into the same
+// direction bucket (a redacted "high"/"low" flag, never the raw value driving it).
+const INTERPRETATION_DIRECTION: Record<string, "high" | "low" | "abnormal"> = {
+	H: "high", HH: "high", HU: "high",
+	L: "low", LL: "low", LU: "low",
+	A: "abnormal", AA: "abnormal", AS: "abnormal",
+};
+
+function interpretationDirection(resource: any): "high" | "low" | "abnormal" | null {
+	const codings: any[] = Array.isArray(resource?.interpretation) ? resource.interpretation.flatMap((i: any) => (Array.isArray(i?.coding) ? i.coding : [])) : [];
+	for (const c of codings) {
+		const code = typeof c?.code === "string" ? c.code.toUpperCase() : "";
+		if (INTERPRETATION_DIRECTION[code]) return INTERPRETATION_DIRECTION[code];
+	}
+	return null;
+}
+
+function codeableConceptText(cc: any): string | undefined {
+	const text = cc?.text || (Array.isArray(cc?.coding) ? cc.coding.find((c: any) => typeof c?.display === "string")?.display : undefined);
+	return typeof text === "string" && text ? text : undefined;
+}
+
+export type MyChartLabFlag = { id: string; category: "laboratory" | "vital-signs"; direction: "high" | "low" | "abnormal" };
+export type MyChartRefillDue = { id: string; name?: string; dueDate?: string };
+export type MyChartEntry = { id: string; docType?: string };
+export type MyChartSummary = { patient: string; labFlags: MyChartLabFlag[]; refillsDue: MyChartRefillDue[]; newConditions: MyChartEntry[]; newDocuments: MyChartEntry[] };
+
+const REFILL_WINDOW_DAYS_DEFAULT = 14;
+// A validityPeriod.end this far in the past is treated as stale data (a since-renewed
+// or discontinued order Epic hasn't re-marked) rather than a live refill-due signal —
+// avoids a perpetual once-ever "refill due" drop for an old MedicationRequest whose
+// status field lags reality.
+const REFILL_STALE_DAYS = 30;
+
+/** Summarize the LAST pulled FHIR snapshot into a REDACTED, agenda-ready form (W6) —
+ * never raw lab values or diagnosis names, only enough to prompt "go check MyChart":
+ * out-of-range lab/vital flags (direction only, no value/test name), medication
+ * refill-due windows (name + due date — the same sensitivity level the mail-based
+ * rx_ready cue in fns/_agenda.ts already surfaces from pharmacy email subjects), and
+ * bare ids for new Condition/DocumentReference entries (DocumentReference keeps only
+ * its generic type, e.g. "After Visit Summary" — never a Condition's diagnosis name).
+ * "New" here just means "present in this pass" — detectMyChartDrops's caller dedupes
+ * by resource id via the agenda proposal ledger, which is what turns this into a
+ * one-time-ever notification without this function needing its own pull-to-pull
+ * cursor. Returns null when unconfigured or never connected (no grant → never pulled). */
+export async function summarizeMyChart(env: RtEnv, opts?: { refillWindowDays?: number; now?: string }): Promise<MyChartSummary | null> {
+	if (!mychartConfigured(env)) return null;
+	const grant = await readGrant(env);
+	if (!grant?.patient) return null;
+	const patient = grant.patient;
+	const refillWindowDays = opts?.refillWindowDays ?? REFILL_WINDOW_DAYS_DEFAULT;
+	const now = opts?.now ? new Date(`${opts.now}T00:00:00Z`) : new Date();
+
+	const [labs, vitals, meds, conditions, documents] = await Promise.all([
+		latestPulledResources(env, patient, "Observation.laboratory"),
+		latestPulledResources(env, patient, "Observation.vital-signs"),
+		latestPulledResources(env, patient, "MedicationRequest"),
+		latestPulledResources(env, patient, "Condition"),
+		latestPulledResources(env, patient, "DocumentReference"),
+	]);
+
+	const labFlags: MyChartLabFlag[] = [];
+	for (const [category, resources] of [["laboratory", labs] as const, ["vital-signs", vitals] as const]) {
+		for (const r of resources) {
+			if (!r?.id) continue;
+			const direction = interpretationDirection(r);
+			if (direction) labFlags.push({ id: String(r.id), category, direction });
+		}
+	}
+
+	const refillsDue: MyChartRefillDue[] = [];
+	for (const r of meds) {
+		if (!r?.id || r?.status !== "active") continue;
+		const end = r?.dispenseRequest?.validityPeriod?.end;
+		if (typeof end !== "string" || !end) continue;
+		const endDate = new Date(end);
+		if (Number.isNaN(endDate.getTime())) continue;
+		const daysUntil = Math.round((endDate.getTime() - now.getTime()) / 86_400_000);
+		if (daysUntil <= refillWindowDays && daysUntil >= -REFILL_STALE_DAYS) {
+			refillsDue.push({ id: String(r.id), name: codeableConceptText(r.medicationCodeableConcept), dueDate: end.slice(0, 10) });
+		}
+	}
+
+	const newConditions: MyChartEntry[] = conditions.filter((r) => r?.id).map((r) => ({ id: String(r.id) }));
+	const newDocuments: MyChartEntry[] = documents.filter((r) => r?.id).map((r) => ({ id: String(r.id), docType: codeableConceptText(r.type) }));
+
+	return { patient, labFlags, refillsDue, newConditions, newDocuments };
+}
+
 /** Resolve a DocumentReference's Binary attachments (content[].attachment.url →
  * Binary/{id}). Returns the raw fetched bodies keyed by Binary id. Skips non-Binary
  * or off-base attachment URLs. */

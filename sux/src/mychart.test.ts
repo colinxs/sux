@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { handleAppleHealth, handleMychartRoutes, isUnderFhirBase, mintAccessToken, mychartFetch, readGrant, resolveFhirPath } from "./mychart";
+import { handleAppleHealth, handleMychartRoutes, isUnderFhirBase, mintAccessToken, mychartFetch, readGrant, resolveFhirPath, summarizeMyChart } from "./mychart";
 import { handleObservability } from "./observability";
 
 const BASE = "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4";
@@ -32,6 +32,11 @@ function r2Stub() {
 			if (!o) return null;
 			const bytes = typeof o.body === "string" ? new TextEncoder().encode(o.body) : new Uint8Array(o.body);
 			return { size: bytes.length, httpMetadata: { contentType: o.contentType }, arrayBuffer: async () => bytes.buffer, text: async () => new TextDecoder().decode(bytes) };
+		}),
+		list: vi.fn(async (opts?: { prefix?: string }) => {
+			const prefix = opts?.prefix ?? "";
+			const objects = [...map.keys()].filter((k) => k.startsWith(prefix)).map((key) => ({ key, size: 0, uploaded: new Date() }));
+			return { objects, truncated: false };
 		}),
 	};
 }
@@ -254,5 +259,75 @@ describe("PHI gate: /s/ handler refuses phi/ keys", () => {
 		const env = { OAUTH_KV: kv, R2: r2 } as any;
 		const resp = await handleObservability(new URL("https://suxos.net/s/11111111-1111-1111-1111-111111111111"), new Request("https://suxos.net/s/11111111-1111-1111-1111-111111111111"), env);
 		expect(resp?.status).toBe(404);
+	});
+});
+
+describe("summarizeMyChart — redacted last-pull summary for the agenda detector (W6)", () => {
+	async function seedGrant(env: ReturnType<typeof baseEnv>, patient = "P1") {
+		await env.OAUTH_KV.put("sux:mychart:grant", JSON.stringify({ refresh_token: "rt", patient, issued_at: Date.now() }));
+	}
+	async function seedBundle(env: ReturnType<typeof baseEnv>, patient: string, label: string, stamp: string, resources: any[]) {
+		const bundle = { resourceType: "Bundle", entry: resources.map((resource) => ({ resource })) };
+		await env.R2.put(`phi/mychart/${patient}/${label}/${stamp}-p1.json`, JSON.stringify(bundle), { httpMetadata: { contentType: "application/fhir+json" } });
+	}
+
+	it("returns null when unconfigured or never connected", async () => {
+		expect(await summarizeMyChart({} as any)).toBeNull();
+		const env = baseEnv();
+		expect(await summarizeMyChart(env)).toBeNull(); // configured, but no grant yet
+	});
+
+	it("flags an out-of-range lab/vital observation by direction only, never the value", async () => {
+		const env = baseEnv();
+		await seedGrant(env);
+		await seedBundle(env, "P1", "Observation.laboratory", "2026-07-18T00-00-00-000Z", [
+			{ resourceType: "Observation", id: "obs1", interpretation: [{ coding: [{ code: "H" }] }], valueQuantity: { value: 999 } },
+			{ resourceType: "Observation", id: "obs2", interpretation: [{ coding: [{ code: "N" }] }], valueQuantity: { value: 5 } },
+		]);
+		const summary = await summarizeMyChart(env);
+		expect(summary?.labFlags).toEqual([{ id: "obs1", category: "laboratory", direction: "high" }]);
+		expect(JSON.stringify(summary)).not.toContain("999"); // the raw value never leaves latestPulledResources
+	});
+
+	it("flags an active MedicationRequest whose validityPeriod ends inside the refill window, skips one far out or inactive", async () => {
+		const env = baseEnv();
+		await seedGrant(env);
+		await seedBundle(env, "P1", "MedicationRequest", "2026-07-18T00-00-00-000Z", [
+			{ resourceType: "MedicationRequest", id: "med1", status: "active", medicationCodeableConcept: { text: "Atorvastatin" }, dispenseRequest: { validityPeriod: { end: "2026-07-25" } } },
+			{ resourceType: "MedicationRequest", id: "med2", status: "active", dispenseRequest: { validityPeriod: { end: "2027-01-01" } } }, // far out
+			{ resourceType: "MedicationRequest", id: "med3", status: "stopped", dispenseRequest: { validityPeriod: { end: "2026-07-19" } } }, // inactive
+		]);
+		const summary = await summarizeMyChart(env, { now: "2026-07-18", refillWindowDays: 14 });
+		expect(summary?.refillsDue).toEqual([{ id: "med1", name: "Atorvastatin", dueDate: "2026-07-25" }]);
+	});
+
+	it("treats a long-stale validityPeriod as stale data, not a live refill-due signal", async () => {
+		const env = baseEnv();
+		await seedGrant(env);
+		await seedBundle(env, "P1", "MedicationRequest", "2026-07-18T00-00-00-000Z", [
+			{ resourceType: "MedicationRequest", id: "med1", status: "active", dispenseRequest: { validityPeriod: { end: "2025-01-01" } } },
+		]);
+		const summary = await summarizeMyChart(env, { now: "2026-07-18" });
+		expect(summary?.refillsDue).toHaveLength(0);
+	});
+
+	it("returns bare ids for Condition, and id + generic doc type for DocumentReference — never a diagnosis name", async () => {
+		const env = baseEnv();
+		await seedGrant(env);
+		await seedBundle(env, "P1", "Condition", "2026-07-18T00-00-00-000Z", [{ resourceType: "Condition", id: "cond1", code: { text: "should never appear" } }]);
+		await seedBundle(env, "P1", "DocumentReference", "2026-07-18T00-00-00-000Z", [{ resourceType: "DocumentReference", id: "doc1", type: { text: "After Visit Summary" } }]);
+		const summary = await summarizeMyChart(env);
+		expect(summary?.newConditions).toEqual([{ id: "cond1" }]);
+		expect(summary?.newDocuments).toEqual([{ id: "doc1", docType: "After Visit Summary" }]);
+		expect(JSON.stringify(summary)).not.toContain("should never appear");
+	});
+
+	it("only reads the most recent pull's stamp per label, ignoring an older one", async () => {
+		const env = baseEnv();
+		await seedGrant(env);
+		await seedBundle(env, "P1", "Condition", "2026-07-01T00-00-00-000Z", [{ resourceType: "Condition", id: "old-cond" }]);
+		await seedBundle(env, "P1", "Condition", "2026-07-18T00-00-00-000Z", [{ resourceType: "Condition", id: "new-cond" }]);
+		const summary = await summarizeMyChart(env);
+		expect(summary?.newConditions).toEqual([{ id: "new-cond" }]);
 	});
 });
