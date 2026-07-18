@@ -263,6 +263,13 @@ export type RtEnv = Env &
 		// Monarch surface. Read-only: these thresholds only decide what gets PROPOSED, never acted on.
 		MONARCH_LOW_BALANCE_THRESHOLD?: string;
 		MONARCH_UNUSUAL_CHARGE_THRESHOLD?: string;
+		// W7.1 — portfolio-drift + savings-rate detector thresholds (fns/_agenda.ts's
+		// detectPortfolioDrops/detectSavingsRateDrop), 0..1 fractions (e.g. "0.35" = 35%). All
+		// optional; unset ⇒ sane defaults (35% concentration, 10pt drift, 15pt savings-rate drop).
+		// Same read-only/proposal-only contract as the W7 thresholds above.
+		MONARCH_PORTFOLIO_CONCENTRATION_THRESHOLD?: string;
+		MONARCH_PORTFOLIO_DRIFT_THRESHOLD?: string;
+		MONARCH_SAVINGS_RATE_DROP_THRESHOLD?: string;
 
 		// Ask-gate reminder (fns/_ask_gate_reminder.ts) — proactively surfaces durable
 		// `run` instances paused on a human `ask` gate (op-engine) instead of relying on

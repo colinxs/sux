@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { composeDigest, type AgendaDeps, type Drop, detectDrops, detectKnowledgeDrops, detectMonarchDrops, type EventRef, type MailRef, rankDropsLearned, runAgenda } from "./_agenda";
+import { composeDigest, type AgendaDeps, type Drop, detectDrops, detectKnowledgeDrops, detectMonarchDrops, detectPortfolioDrops, detectSavingsRateDrop, computeSavingsRate, type EventRef, type MailRef, rankDropsLearned, runAgenda } from "./_agenda";
 import { listProposals } from "../proposals";
 import { recordOutcome } from "./_learning";
 
@@ -30,6 +30,8 @@ const deps = (over: Partial<AgendaDeps> = {}): AgendaDeps => ({
 	monarchAccounts: vi.fn(async () => []),
 	monarchTransactions: vi.fn(async () => []),
 	monarchBudgets: vi.fn(async () => []),
+	monarchCashflow: vi.fn(async () => null),
+	monarchHoldings: vi.fn(async () => []),
 	...over,
 });
 
@@ -120,6 +122,68 @@ describe("agenda — detectors", () => {
 			[],
 		);
 		expect(drops).toHaveLength(0);
+	});
+});
+
+describe("agenda — detectors: portfolio drift + savings rate (W7.1, #803)", () => {
+	it("flags a concentrated position with no prior snapshot needed", () => {
+		const drops = detectPortfolioDrops(
+			"2026-07-18",
+			[{ ticker: "AAPL", value: 8000 }, { ticker: "MSFT", value: 2000 }],
+			null,
+		);
+		const kinds = drops.map((d) => d.kind);
+		expect(kinds).toContain("portfolio_concentration");
+		expect(kinds).not.toContain("portfolio_drift"); // nothing to compare against yet
+	});
+
+	it("flags drift once allocation has moved more than the threshold since the last check", () => {
+		const prior = { AAPL: 0.5, MSFT: 0.5 };
+		const drops = detectPortfolioDrops(
+			"2026-07-18",
+			[{ ticker: "AAPL", value: 9000 }, { ticker: "MSFT", value: 1000 }],
+			prior,
+		);
+		expect(drops.map((d) => d.kind)).toContain("portfolio_drift");
+	});
+
+	it("a fully sold-off ticker still reads as drift (compares against 0)", () => {
+		const prior = { AAPL: 0.5, MSFT: 0.5 };
+		const drops = detectPortfolioDrops("2026-07-18", [{ ticker: "MSFT", value: 5000 }], prior);
+		const drift = drops.find((d) => d.kind === "portfolio_drift" && (d.evidence as any)?.key === "AAPL");
+		expect(drift).toBeTruthy();
+	});
+
+	it("no drops when allocation barely moves and nothing is concentrated", () => {
+		const prior = { AAPL: 0.34, MSFT: 0.33, CASH: 0.33 };
+		const drops = detectPortfolioDrops(
+			"2026-07-18",
+			[{ ticker: "AAPL", value: 3450 }, { ticker: "MSFT", value: 3350 }, { ticker: "CASH", value: 3200 }],
+			prior,
+		);
+		expect(drops).toHaveLength(0);
+	});
+
+	it("computeSavingsRate derives from sumIncome/savings, not the undocumented raw field (#807)", () => {
+		expect(computeSavingsRate({ sumIncome: 5000, savings: 1000, savingsRate: 999 })).toBeCloseTo(0.2);
+		expect(computeSavingsRate({ savingsRate: 0.33 })).toBeCloseTo(0.33); // falls back w/o income
+		expect(computeSavingsRate({})).toBeUndefined();
+		expect(computeSavingsRate(null)).toBeUndefined();
+	});
+
+	it("detectSavingsRateDrop always flags a negative rate, even with no prior snapshot", () => {
+		const drops = detectSavingsRateDrop("2026-07-03", -0.1, null);
+		expect(drops.map((d) => d.kind)).toEqual(["savings_rate_negative"]);
+	});
+
+	it("detectSavingsRateDrop flags a sharp drop from the prior checked cycle", () => {
+		const drops = detectSavingsRateDrop("2026-07-18", 0.05, 0.3);
+		expect(drops.map((d) => d.kind)).toEqual(["savings_rate_drop"]);
+	});
+
+	it("detectSavingsRateDrop is quiet on a healthy, stable rate or when there's no reading", () => {
+		expect(detectSavingsRateDrop("2026-07-18", 0.25, 0.3)).toHaveLength(0);
+		expect(detectSavingsRateDrop("2026-07-18", undefined, 0.3)).toHaveLength(0);
 	});
 });
 
@@ -251,5 +315,33 @@ describe("agenda — loop", () => {
 		const r = await runAgenda(e, {}, d);
 		expect(r.sources.monarch).toBe("not_configured");
 		expect(d.monarchAccounts).not.toHaveBeenCalled();
+	});
+
+	it("wires Monarch portfolio + savings-rate signals (W7.1, #803) in only when MONARCH_TOKEN is set", async () => {
+		const e = env({ MONARCH_TOKEN: "tok" });
+		const d = deps({
+			monarchHoldings: vi.fn(async () => [{ ticker: "AAPL", value: 9000 }, { ticker: "MSFT", value: 1000 }]),
+			monarchCashflow: vi.fn(async () => ({ sumIncome: 1000, sumExpense: 1200, savings: -200, savingsRate: 999 })),
+		});
+		const r = await runAgenda(e, {}, d);
+		expect(r.proposals?.map((p) => p.kind)).toEqual(expect.arrayContaining(["portfolio_concentration", "savings_rate_negative"]));
+		expect(d.monarchHoldings).toHaveBeenCalled();
+		expect(d.monarchCashflow).toHaveBeenCalled();
+	});
+
+	it("caches the Monarch snapshot across cycles so drift compares to the last check, not from scratch", async () => {
+		const e = env({ MONARCH_TOKEN: "tok" });
+		await runAgenda(e, { date: "2026-07-17" }, deps({ monarchHoldings: vi.fn(async () => [{ ticker: "AAPL", value: 5000 }, { ticker: "MSFT", value: 5000 }]) }));
+
+		const r = await runAgenda(e, { date: "2026-07-18" }, deps({ monarchHoldings: vi.fn(async () => [{ ticker: "AAPL", value: 9000 }, { ticker: "MSFT", value: 1000 }]) }));
+		expect(r.proposals?.map((p) => p.kind)).toContain("portfolio_drift");
+	});
+
+	it("dry_run never persists the Monarch snapshot", async () => {
+		const e = env({ MONARCH_TOKEN: "tok" });
+		await runAgenda(e, { date: "2026-07-17", dry_run: true }, deps({ monarchHoldings: vi.fn(async () => [{ ticker: "AAPL", value: 5000 }, { ticker: "MSFT", value: 5000 }]) }));
+
+		const r = await runAgenda(e, { date: "2026-07-18" }, deps({ monarchHoldings: vi.fn(async () => [{ ticker: "AAPL", value: 9000 }, { ticker: "MSFT", value: 1000 }]) }));
+		expect(r.proposals?.map((p) => p.kind)).not.toContain("portfolio_drift");
 	});
 });
