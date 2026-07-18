@@ -215,6 +215,19 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   (for the `LIMIT`) then calls `messages.reverse()` before returning, undocumented in either
   file. A consumer wanting the THREAD'S LATEST message (e.g. `_agenda.ts`'s `unanswered_text`
   detector, #849) must read the LAST array element, not the first.
+- **`op-engine/durable.ts`'s `Op` node vocabulary (`"leaf" | "pipe" | "map" | "reconcile" |
+  "sink" | "ask"`) is a type imported FROM `@suxos/lib` (`suxlib/src/op/types.ts`), not defined
+  in this repo** — adding a genuinely new pause/node KIND (e.g. #880's proposed "wait for a
+  threaded reply" primitive, distinct from the existing Colin-only `ask` gate) means editing
+  that union in suxlib, which is the same read-only-in-sandbox sibling repo as the `../suxlib`
+  gotcha above; a bot-build can't land that half. A design that stays inside sux's own repo
+  instead: don't extend the `Op` tag union at all — write a bespoke `WorkflowEntrypoint` class
+  (parallel to `OpWorkflow`, its own `"workflows"` entry in `wrangler.jsonc`, no migrations
+  stanza needed) that calls `step.waitForEvent`/`step.do` directly rather than going through
+  `interpretDurable`. That sidesteps the suxlib blocker, but #880 is still a large build even
+  that way (a thread-id→instance-id correlation store, new JMAP-poll-sweep wiring to fire the
+  event on an inbound reply, a multi-round state machine, and accept/decline/counter parsing) —
+  don't assume the bespoke-Workflow path makes it a small lift.
 
 ## House style
 
