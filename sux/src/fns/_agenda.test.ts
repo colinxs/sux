@@ -218,6 +218,12 @@ describe("agenda — text detectors (iMessage, #849)", () => {
 		expect(detectTextDrops([{ id: "1", lastFromMe: true }])).toHaveLength(0);
 		expect(detectTextDrops([{ id: "1" }])).toHaveLength(0); // lastFromMe undefined — can't tell, so skip
 	});
+
+	it("skips a last message that's a tapback/reaction placeholder, not real text (#852)", () => {
+		expect(detectTextDrops([{ id: "1", lastFromMe: false, lastText: "[unparsed rich message]" }])).toHaveLength(0);
+		expect(detectTextDrops([{ id: "1", lastFromMe: false, lastText: "" }])).toHaveLength(0);
+		expect(detectTextDrops([{ id: "1", lastFromMe: false }])).toHaveLength(0); // no lastText at all
+	});
 });
 
 describe("agenda — learned ranking (W8)", () => {

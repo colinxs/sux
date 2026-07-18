@@ -163,16 +163,23 @@ export function detectDrops(mail: MailRef[], events: EventRef[]): Drop[] {
  *  every other detector here. */
 export type TextThreadRef = { id: string; contact?: string; name?: string; lastText?: string; lastFromMe?: boolean; lastAt?: string };
 
+/** Placeholder imessage-service returns for a message with no decodable text (reactions/
+ *  tapbacks, some rich attachments) — see imessage_server.py's _decode_text (#852). Not a real
+ *  text asking for a reply, so it's skipped the same as an empty/missing lastText. */
+const UNPARSEABLE_TEXT = "[unparsed rich message]";
+
 /** Texts are mail, structurally (#849): the same "unanswered personal note" cue detectDrops
  *  applies to mail applies here — a thread whose last message was sent BY THE OTHER PERSON
  *  (lastFromMe === false) is a text still waiting on a reply. `lastFromMe` anything other than
  *  exactly `false` (undefined/true) is skipped — fail-closed, mirrors every other detector's
  *  precision-over-recall stance (a missed drop is caught next tick; a false one is a junk task
- *  one tap away). */
+ *  one tap away). A last message that's a tapback/reaction rather than real text (#852) is
+ *  skipped the same way — it isn't asking for a reply. */
 export function detectTextDrops(threads: TextThreadRef[]): Drop[] {
 	const drops: Drop[] = [];
 	for (const t of threads) {
 		if (t.lastFromMe !== false) continue;
+		if (!t.lastText || t.lastText === UNPARSEABLE_TEXT) continue;
 		const who = t.name || t.contact || "someone";
 		const preview = (t.lastText || "(message)").slice(0, 120);
 		drops.push({ kind: "unanswered_text", urgency: "fyi", dedupe: `reply_text::${t.id}`, title: `Reply to ${who} (text): ${preview}`, emoji: "💬", action: task(`Reply to ${who} (text) — ${preview}`), evidence: { id: t.id, contact: t.contact } });
