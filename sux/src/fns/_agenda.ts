@@ -217,7 +217,7 @@ export function detectKnowledgeDrops(consolidate: ConsolidateFindings | null, we
 			drops.push({
 				kind: "consolidate_stale",
 				urgency: "fyi",
-				dedupe: `consolidate::stale::${consolidate.week}::${fingerprint(consolidate.stale.map((s) => s.path))}`,
+				dedupe: `consolidate::stale::${consolidate.week}::${fingerprint([...consolidate.stale.map((s) => s.path), String(staleCount)])}`,
 				title: `${staleCount} stale vault note(s) need review`,
 				emoji: "🗂️",
 				action: task(`Review ${staleCount} stale vault note(s) — see Consolidation/${consolidate.week}.md`),
@@ -229,7 +229,7 @@ export function detectKnowledgeDrops(consolidate: ConsolidateFindings | null, we
 			drops.push({
 				kind: "consolidate_dupes",
 				urgency: "fyi",
-				dedupe: `consolidate::dupes::${consolidate.week}::${fingerprint(consolidate.duplicate_candidates.map((d) => `${d.a}|${d.b}`))}`,
+				dedupe: `consolidate::dupes::${consolidate.week}::${fingerprint([...consolidate.duplicate_candidates.map((d) => `${d.a}|${d.b}`), String(duplicateCount)])}`,
 				title: `${duplicateCount} possible duplicate vault note(s)`,
 				emoji: "🗂️",
 				action: task(`Review ${duplicateCount} possible duplicate vault note(s) — see Consolidation/${consolidate.week}.md`),
@@ -736,7 +736,10 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 	// Advance the "since last check" baseline every successful Monarch fetch, regardless of
 	// whether anything crossed a threshold this cycle — dry_run must never persist state.
 	if (!dryRun && monarchOk) {
-		await saveMonarchSnapshot(env, { date, allocation: computePortfolioAllocation(monarchHoldings), savingsRate: currentSavingsRate });
+		// A transient/incomplete cashflow response yields an undefined currentSavingsRate for
+		// this cycle only — fall back to the prior snapshot's rate so one bad cycle doesn't
+		// clobber the known-good baseline detectSavingsRateDrop compares against (#874).
+		await saveMonarchSnapshot(env, { date, allocation: computePortfolioAllocation(monarchHoldings), savingsRate: currentSavingsRate ?? priorMonarchSnapshot?.savingsRate });
 	}
 
 	// Propose each NEW drop (idempotent per dedupe key). dry_run records nothing.

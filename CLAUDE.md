@@ -215,6 +215,19 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   (for the `LIMIT`) then calls `messages.reverse()` before returning, undocumented in either
   file. A consumer wanting the THREAD'S LATEST message (e.g. `_agenda.ts`'s `unanswered_text`
   detector, #849) must read the LAST array element, not the first.
+- **A PR stuck with `security-review` (or `skill-sync`) failing isn't necessarily a real
+  finding** — both are reusable workflows checked out from `SuxOS/.github` (see
+  `.github/workflows/security-review.yml`'s `uses: SuxOS/.github/.github/workflows/
+  security-review.yml@main`), and as of 2026-07-18 that repo 404s ("Repository not
+  found") for both `gh api repos/SuxOS/.github` and the CI runner's own checkout step —
+  confirmed on PR #870's failing run. That's an org-level infra outage, not a code
+  problem in this repo, and it fails EVERY PR's security-review/skill-sync check the
+  same way, not just one. Don't spend a build session trying to "fix" the finding by
+  editing the PR's diff; check the failing job's raw log (`gh run view <id> --log-failed`)
+  for a bare git-checkout 404 before assuming there's a real security issue to address,
+  and drop chained issues that depend on the stuck PR merging (e.g. #865-#867 depending
+  on #864's #870) back to the queue until a maintainer restores `SuxOS/.github` or the
+  branch protection rule is adjusted.
 
 ## House style
 
