@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { hasWebPush, listSubscriptions, notify, subscribe, unsubscribe } from "./_webpush";
+import { hasWebPush, listSubscriptions, notify, subscribe, unsubscribe, validSubscription } from "./_webpush";
 
 // Outbound Web Push (VAPID, #219). Landing point for a client to register the
 // PushSubscription it obtained via the browser Push API, and for sux to fan a
@@ -41,7 +41,7 @@ export const webpush: Fn = {
 		switch (action) {
 			case "subscribe": {
 				const sub = args?.subscription;
-				if (!sub?.endpoint || !sub?.keys?.p256dh || !sub?.keys?.auth) return fail("subscription.endpoint, subscription.keys.p256dh, and subscription.keys.auth are required.");
+				if (!validSubscription(sub)) return fail("subscription.endpoint (a valid URL), subscription.keys.p256dh, and subscription.keys.auth are required.");
 				await subscribe(env, sub);
 				return ok(`Subscribed ${new URL(sub.endpoint).origin}.`);
 			}

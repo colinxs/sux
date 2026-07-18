@@ -227,13 +227,18 @@ export const run: Fn = {
 					const entry = await getIndexedRun(env, instanceId);
 					if (entry) {
 						let asks: AskGate[] = [];
+						let resolved = false;
 						try {
 							asks = describeOp(entry.opId).asks;
+							resolved = true;
 						} catch {
 							// unknown/removed opId — nothing to validate against, fall through to send
 						}
-						if (asks.length && !asks.some((g) => g.prompt === prompt)) {
-							return failWith("not_found", `run answer: '${prompt}' matches no ask gate on '${entry.opId}'. Valid prompts: ${asks.map((g) => g.prompt).join(", ")}.`);
+						// `resolved` (not `asks.length`) gates validation: an op that resolved with
+						// ZERO ask gates must still reject every prompt (nothing it could ever be
+						// waiting on), not fall through as if opId resolution had failed (#817).
+						if (resolved && !asks.some((g) => g.prompt === prompt)) {
+							return failWith("not_found", `run answer: '${prompt}' matches no ask gate on '${entry.opId}'. Valid prompts: ${asks.map((g) => g.prompt).join(", ") || "(none — this op has no ask gates)"}.`);
 						}
 					}
 					await answerVerb(instanceId, prompt, a?.payload, env);

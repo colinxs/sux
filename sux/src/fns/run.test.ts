@@ -161,6 +161,17 @@ test("run fn's answer action rejects a prompt that matches no gate on the instan
 	expect(rec.events).toEqual([]); // never sent — no false sent:true
 });
 
+test("run fn's answer action rejects EVERY prompt when the instance's op resolves with ZERO ask gates — no false sent:true (#817)", async () => {
+	const kv = fakeKv();
+	await kv.put("sux:run:idx:instance-1", JSON.stringify({ instanceId: "instance-1", opId: "echo", startedAt: 1 }));
+	const rec = { events: [] as Array<{ type: string; payload: unknown }>, terminated: false };
+	const env = { OAUTH_KV: kv, OP_WORKFLOW: { get: async () => fakeInstance({ status: "waiting" }, rec) } } as any;
+
+	const res = await run.run(env, { action: "answer", instanceId: "instance-1", prompt: "anything" });
+	expect(res.isError).toBe(true);
+	expect(rec.events).toEqual([]); // never sent — no false sent:true
+});
+
 test("run fn's answer action sends the event when the prompt matches the instance's op's ask gate", async () => {
 	const kv = fakeKv();
 	await kv.put("sux:run:idx:instance-1", JSON.stringify({ instanceId: "instance-1", opId: "assimilate-pdfs", startedAt: 1 }));

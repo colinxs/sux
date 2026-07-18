@@ -18,7 +18,10 @@ import { cosine, decodeEmbedding, embed, encodeEmbedding } from "./_embed";
 import { readTriageEntries, type TriageEntry } from "./_mail_triage_log";
 import type { Classification, TriageLabel, TriageMsg } from "./_mail_triage";
 
-const VERSION = 1;
+// Bumped 1 -> 2 for #778: embedText() now folds from/preview into the composite
+// instead of embedding subject alone, so cached entries under the old version must
+// be invalidated to force a full re-embed with the richer text (#810).
+const VERSION = 2;
 // Never larger than the training signal itself — _mail_triage_log.ts's log is capped at 500.
 const CAP = 500;
 const KV_KEY = "sux:mail_triage:semantic";

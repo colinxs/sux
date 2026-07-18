@@ -152,6 +152,15 @@ def h_messages(body):
         conn.close()
 
 
+def _as_literal(s):
+    # AppleScript string literals only understand `\"` and `\\` as escapes —
+    # there's no `\uXXXX` unicode-escape syntax, so json.dumps() (ensure_ascii)
+    # would compile non-ASCII text (emoji, accented letters) into literal garbage
+    # instead of escaping it. Escape only what AppleScript needs and pass the
+    # actual UTF-8 text through untouched.
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def h_send(body):
     if not ALLOW_SEND:
         return {"error": "send disabled on this node (IMESSAGE_ALLOW_SEND!=1)"}
@@ -165,8 +174,8 @@ def h_send(body):
     script = f'''
     tell application "Messages"
         set targetService to 1st service whose service type = iMessage
-        set targetBuddy to buddy {json.dumps(to)} of targetService
-        send {json.dumps(text)} to targetBuddy
+        set targetBuddy to buddy {_as_literal(to)} of targetService
+        send {_as_literal(text)} to targetBuddy
     end tell
     '''
     try:
