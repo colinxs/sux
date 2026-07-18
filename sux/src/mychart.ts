@@ -341,14 +341,26 @@ export async function pull(env: RtEnv, opts?: { types?: string[]; since?: string
 async function latestPulledResources(env: RtEnv, patient: string, label: string): Promise<any[]> {
 	if (!env.R2) return [];
 	const prefix = `${PHI_PREFIX}mychart/${patient}/${label}/`;
-	const listing = await env.R2.list({ prefix, limit: 1000 });
+	// R2 lists a prefix in ASCENDING key order, and our ISO stamps sort ascending too — the
+	// newest stamp is always on the LAST page. A single unpaginated list() call would silently
+	// pin this to the OLDEST pull once a label accumulates more than one page (1000 objects,
+	// plausible after months of pulls), so every page must be walked. Bounded to 50 pages
+	// (50k objects) as a runaway-loop backstop, not an expected ceiling.
+	const keys: string[] = [];
+	let cursor: string | undefined;
+	for (let i = 0; i < 50; i++) {
+		const listing = await env.R2.list({ prefix, cursor, limit: 1000 });
+		for (const o of listing.objects) keys.push(o.key);
+		if (!listing.truncated || !listing.cursor) break;
+		cursor = listing.cursor;
+	}
 	let latestStamp: string | null = null;
-	for (const o of listing.objects) {
-		const m = /\/([^/]+)-p\d+\.json$/.exec(o.key);
+	for (const k of keys) {
+		const m = /\/([^/]+)-p\d+\.json$/.exec(k);
 		if (m && (!latestStamp || m[1] > latestStamp)) latestStamp = m[1];
 	}
 	if (!latestStamp) return [];
-	const pageKeys = listing.objects.map((o) => o.key).filter((k) => k.startsWith(`${prefix}${latestStamp}-p`));
+	const pageKeys = keys.filter((k) => k.startsWith(`${prefix}${latestStamp}-p`));
 	const resources: any[] = [];
 	for (const key of pageKeys) {
 		const obj = await env.R2.get(key);

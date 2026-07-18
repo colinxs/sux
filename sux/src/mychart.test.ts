@@ -33,10 +33,16 @@ function r2Stub() {
 			const bytes = typeof o.body === "string" ? new TextEncoder().encode(o.body) : new Uint8Array(o.body);
 			return { size: bytes.length, httpMetadata: { contentType: o.contentType }, arrayBuffer: async () => bytes.buffer, text: async () => new TextDecoder().decode(bytes) };
 		}),
-		list: vi.fn(async (opts?: { prefix?: string }) => {
+		list: vi.fn(async (opts?: { prefix?: string; cursor?: string; limit?: number }) => {
 			const prefix = opts?.prefix ?? "";
-			const objects = [...map.keys()].filter((k) => k.startsWith(prefix)).map((key) => ({ key, size: 0, uploaded: new Date() }));
-			return { objects, truncated: false };
+			const limit = opts?.limit ?? 1000;
+			// Mirrors real R2: ascending key order, cursor = a plain page offset here (only this
+			// stub needs to understand it).
+			const all = [...map.keys()].filter((k) => k.startsWith(prefix)).sort();
+			const start = opts?.cursor ? Number(opts.cursor) : 0;
+			const page = all.slice(start, start + limit);
+			const truncated = start + limit < all.length;
+			return { objects: page.map((key) => ({ key, size: 0, uploaded: new Date() })), truncated, cursor: truncated ? String(start + limit) : undefined };
 		}),
 	};
 }
@@ -329,5 +335,18 @@ describe("summarizeMyChart — redacted last-pull summary for the agenda detecto
 		await seedBundle(env, "P1", "Condition", "2026-07-18T00-00-00-000Z", [{ resourceType: "Condition", id: "new-cond" }]);
 		const summary = await summarizeMyChart(env);
 		expect(summary?.newConditions).toEqual([{ id: "new-cond" }]);
+	});
+
+	it("paginates past R2's per-call listing cap to find the true latest stamp, not just the oldest page", async () => {
+		const env = baseEnv();
+		await seedGrant(env);
+		// R2 lists ascending by key — a label that's accumulated >1000 pull-page objects over
+		// months would sink an unpaginated list() call to only ever see the OLDEST page.
+		for (let i = 0; i < 1005; i++) {
+			env.R2.map.set(`phi/mychart/P1/Condition/2020-01-${String(i).padStart(4, "0")}T00-00-00-000Z-p1.json`, { body: JSON.stringify({ resourceType: "Bundle", entry: [] }) });
+		}
+		await seedBundle(env, "P1", "Condition", "2026-07-18T00-00-00-000Z", [{ resourceType: "Condition", id: "true-latest" }]);
+		const summary = await summarizeMyChart(env);
+		expect(summary?.newConditions).toEqual([{ id: "true-latest" }]);
 	});
 });
