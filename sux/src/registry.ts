@@ -324,6 +324,16 @@ export type RtEnv = Env &
 		// mail-triage / self-improve / maintenance cycle on demand instead of waiting for cron.
 		SUX_CRON_TOKEN?: string;
 
+		// Raw-bytes upload door (POST /s/up), bearer-gated by this token. Unset ⇒ 404 (feature
+		// off). The write-twin of the public GET /s/<uuid> read route: a local shell curls a
+		// file's bytes straight into R2 (never through the model context) and gets back a
+		// /s/<uuid> ref that mail_send / files_upload / ingest already consume — the on-ramp
+		// that closes the "can't attach a session-local binary without inline base64" gap.
+		// Dedicated (not reusing SUX_CRON_TOKEN) so a leak is bounded to blob-upload and
+		// rotates independently. Same egress class as store_put (mints a world-readable URL),
+		// so the token IS the containment.
+		SUX_UPLOAD_TOKEN?: string;
+
 		// Recovery dead-drop (src/recovery.ts) — the out-of-band control channel the home
 		// router (owl-tegu) phones home to when it's unreachable inbound. All fail-closed,
 		// default OFF, set via `wrangler secret` (NOT declared in wrangler.jsonc — like

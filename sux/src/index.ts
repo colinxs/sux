@@ -27,6 +27,7 @@ import { handlePortalRoutes } from "./portal";
 import { normalizeArgs, normalizeText } from "./normalize";
 import { cancelTask, createTask, getTask, isTerminal, listTasks, toPublicTask, toTaskResult, waitForTerminal } from "./tasks";
 import { timingSafeEqual } from "./crypto-util";
+import { putBlob } from "./fns/_util";
 
 type Props = { login: string; name: string; email: string; accessToken: string };
 
@@ -910,6 +911,55 @@ export default {
 		// src/portal.ts.
 		const portal = await handlePortalRoutes(new URL(request.url), request, env);
 		if (portal) return portal;
+
+		// Raw-bytes upload door — POST /s/up, bearer-gated by SUX_UPLOAD_TOKEN (unset ⇒ 404).
+		// The write-twin of the public GET /s/<uuid> read route (observability.ts): a local
+		// shell curls a file's bytes STRAIGHT into R2 and gets back a /s/<uuid> ref, so a
+		// session-local binary (a generated PDF, an export) becomes a ~100-token handle that
+		// mail_send / files_upload / ingest already take as input — WITHOUT round-tripping the
+		// whole payload as inline base64 through the model context, which is infeasible past a
+		// few KB and is the one on-ramp gap that stranded local files. Served here (pre-OAuth,
+		// like /admin/tick) because the point is a plain `curl --data-binary` with no MCP/OAuth
+		// dance; the bearer token IS the containment, same egress class as store_put. Handled
+		// before handleObservability's GET-only /s/<uuid> reader can see it (that returns null
+		// for non-GET), so there's no path collision. `?ttl=` overrides the default handle TTL;
+		// `?name=`/Content-Type ride onto the stored blob's metadata.
+		{
+			const u = new URL(request.url);
+			if (request.method === "POST" && u.pathname === "/s/up") {
+				const token = env.SUX_UPLOAD_TOKEN;
+				if (!token) return new Response("not found", { status: 404 });
+				const auth = request.headers.get("authorization") ?? "";
+				const presented = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+				if (!presented || !timingSafeEqual(token, presented)) return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: { "content-type": "application/json" } });
+				if (!env.R2) return new Response(JSON.stringify({ error: "R2 not enabled" }), { status: 503, headers: { "content-type": "application/json" } });
+				const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+				// Reject on the declared length before buffering when the header is present and
+				// oversized; the post-read guard still backstops a missing/lying header.
+				const declared = Number(request.headers.get("content-length") ?? "");
+				if (Number.isFinite(declared) && declared > MAX_UPLOAD_BYTES) return new Response(JSON.stringify({ error: "payload too large", limit: MAX_UPLOAD_BYTES }), { status: 413, headers: { "content-type": "application/json" } });
+				const bytes = new Uint8Array(await request.arrayBuffer());
+				if (bytes.length === 0) return new Response(JSON.stringify({ error: "empty body — POST the raw file bytes (curl --data-binary @file)" }), { status: 400, headers: { "content-type": "application/json" } });
+				if (bytes.length > MAX_UPLOAD_BYTES) return new Response(JSON.stringify({ error: "payload too large", limit: MAX_UPLOAD_BYTES, got: bytes.length }), { status: 413, headers: { "content-type": "application/json" } });
+				// Default TTL (1h) keeps uploads from accumulating as permanent world-readable
+				// blobs — a ref only needs to survive long enough for the consuming verb to
+				// stream it. `?ttl=0` opts into a permanent handle; a positive `?ttl=` overrides.
+				const ttlParam = u.searchParams.get("ttl");
+				let ttlSeconds: number | undefined = 3600;
+				if (ttlParam !== null) {
+					const n = Number(ttlParam);
+					if (!Number.isFinite(n) || n < 0) return new Response(JSON.stringify({ error: "ttl must be a non-negative integer (seconds); 0 = permanent" }), { status: 400, headers: { "content-type": "application/json" } });
+					ttlSeconds = n === 0 ? undefined : Math.floor(n);
+				}
+				const ct = request.headers.get("content-type") || "application/octet-stream";
+				try {
+					const ref = await putBlob(env, bytes, ct, ttlSeconds !== undefined ? { ttlSeconds } : undefined);
+					return new Response(JSON.stringify({ ok: true, ref: ref.url, uuid: ref.uuid, url: ref.url, sha256: ref.sha256, size: ref.size, content_type: ct, ...(ref.expiry ? { expiry: ref.expiry } : {}) }, null, 2), { status: 200, headers: { "content-type": "application/json" } });
+				} catch (e) {
+					return new Response(JSON.stringify({ error: String((e as Error)?.message ?? e) }), { status: 500, headers: { "content-type": "application/json" } });
+				}
+			}
+		}
 
 		// Manual ops trigger for the daily cron ticks — POST /admin/tick?job=mail-triage|
 		// self-improve|maintenance, bearer-gated by SUX_CRON_TOKEN (unset ⇒ 404, feature off).
