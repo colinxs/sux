@@ -140,6 +140,21 @@ describe("study — learn (url / pdf)", () => {
 		expect(stored.whitelist).toMatchObject({ kind: "pdf", via: "study" });
 	});
 
+	it("source_label overrides the inferred provenance source (the sweep→study call shape, #822)", async () => {
+		const { env, kv, toMarkdown } = makeEnv({ toMarkdown: async () => [{ data: "Notes from a Dropbox-sourced PDF, fetched via a shared link." }] });
+		fetchMock.mockImplementation(async () => new Response(new Uint8Array([0x25, 0x50, 0x44, 0x46]), { status: 200 }));
+
+		// A Dropbox shared link (http(s) URL) — same shape _learning_folder.ts hands study —
+		// but with an explicit source_label so the KB records the dropbox: path, not the URL.
+		const j = parse(
+			await study.run(env, { source: "https://www.dropbox.com/s/xyz/report.pdf?dl=1", kind: "pdf", topic: "reports", source_label: "dropbox:/learning/report.pdf" }),
+		);
+		expect(j).toMatchObject({ kind: "pdf", whitelisted: true, source: "dropbox:/learning/report.pdf" });
+		const stored = await kbFor(kv, "reports");
+		expect(stored.whitelist).toMatchObject({ source: "dropbox:/learning/report.pdf" });
+		expect(toMarkdown).toHaveBeenCalledTimes(1);
+	});
+
 	it("a pdf source with no toMarkdown binding fails cleanly, telling the caller to pass extracted text", async () => {
 		const { env } = makeEnv(); // no toMarkdown
 		fetchMock.mockImplementation(async () => new Response(new Uint8Array([0x25, 0x50, 0x44, 0x46]), { status: 200 }));

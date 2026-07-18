@@ -41,7 +41,7 @@ export type LearningFolderDeps = {
 	listFolder: (env: RtEnv) => Promise<LearningFolderEntry[]>;
 	listStudiedPaths: (env: RtEnv) => Promise<Set<string>>;
 	shareUrl: (env: RtEnv, path: string) => Promise<string | undefined>;
-	studyPdf: (env: RtEnv, url: string, topic: string, title: string) => Promise<{ ok: boolean; error?: string }>;
+	studyPdf: (env: RtEnv, url: string, topic: string, title: string, sourceLabel: string) => Promise<{ ok: boolean; error?: string }>;
 };
 
 async function defaultListFolder(env: RtEnv): Promise<LearningFolderEntry[]> {
@@ -79,8 +79,8 @@ async function defaultListStudiedPaths(env: RtEnv): Promise<Set<string>> {
 	return studied;
 }
 
-async function defaultStudyPdf(env: RtEnv, url: string, topic: string, title: string): Promise<{ ok: boolean; error?: string }> {
-	const r = await study.run(env, { action: "learn", source: url, kind: "pdf", topic, title });
+async function defaultStudyPdf(env: RtEnv, url: string, topic: string, title: string, sourceLabel: string): Promise<{ ok: boolean; error?: string }> {
+	const r = await study.run(env, { action: "learn", source: url, kind: "pdf", topic, title, source_label: sourceLabel });
 	if (r.isError) return { ok: false, error: r.content?.[0]?.text };
 	return { ok: true };
 }
@@ -112,7 +112,7 @@ export async function runLearningFolderSync(env: RtEnv, deps: LearningFolderDeps
 			errors.push(`${entry.path}: could not mint a shared link`);
 			continue;
 		}
-		const r = await deps.studyPdf(env, dropboxRawUrl(url), topic, entry.name);
+		const r = await deps.studyPdf(env, dropboxRawUrl(url), topic, entry.name, `dropbox:${normPath(entry.path)}`);
 		if (r.ok) studied.push(entry.path);
 		else errors.push(`${entry.path}: ${r.error ?? "study failed"}`);
 	}

@@ -174,6 +174,11 @@ export const study: Fn = {
 			kind: { type: "string", enum: ["text", "url", "pdf", "auto"], default: "auto", description: "How to read `source` (default auto: infers url/pdf/text)." },
 			topic: { type: "string", description: "The knowledge-base namespace (a whitelisted oracle topic). Required for learn/forget." },
 			title: { type: "string", description: "A human label for the source, recorded in the provenance ledger." },
+			source_label: {
+				type: "string",
+				description:
+					"Override the provenance `source` string that gets stamped/dedup-matched instead of inferring it from `source` (e.g. a caller resolving a Dropbox file to an http(s) URL to fetch its bytes, but wanting the KB to record `dropbox:<path>` for dedup).",
+			},
 			action: { type: "string", enum: ["learn", "list", "forget"], default: "learn", description: "learn (default) | list (audit the whitelisted topics) | forget (delete a topic's KB)." },
 		},
 	},
@@ -235,6 +240,8 @@ export const study: Fn = {
 				material = rawSource;
 				sourceLabel = `inline text (${material.length} chars)`;
 			}
+			const sourceLabelOverride = typeof args?.source_label === "string" ? args.source_label.trim() : "";
+			if (sourceLabelOverride) sourceLabel = sourceLabelOverride;
 
 			const provenance: Whitelist = { source: sourceLabel, kind: resolved, learned_at: Date.now(), via: "study", ...(title ? { title } : extractedName ? { title: extractedName } : {}) };
 
