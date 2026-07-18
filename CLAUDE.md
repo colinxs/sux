@@ -215,6 +215,13 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   (for the `LIMIT`) then calls `messages.reverse()` before returning, undocumented in either
   file. A consumer wanting the THREAD'S LATEST message (e.g. `_agenda.ts`'s `unanswered_text`
   detector, #849) must read the LAST array element, not the first.
+- **An issue about the dispatcher/queue itself (issue clustering, batch sizing,
+  dependency-aware assignment) is NOT buildable from this sandbox** — that logic
+  lives in the reusable workflow `SuxOS/.github/.github/workflows/issue-build.yml`
+  (referenced from `.github/workflows/issue-build.yml`), a separate repo the bot's
+  GitHub App token has no access to (`gh api orgs/SuxOS/repos` only lists `sux`).
+  Drop such an issue back to the queue rather than looking for equivalent logic
+  inside this repo — there isn't any (#869).
 
 ## House style
 
