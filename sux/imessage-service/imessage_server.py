@@ -121,7 +121,7 @@ def h_messages(body):
     thread = body.get("thread")
     if not thread:
         return {"error": "missing_thread"}
-    limit = min(int(body.get("limit") or 50), 500)
+    limit = max(1, min(int(body.get("limit") or 50), 500))
     conn = _open_ro()
     try:
         rows = conn.execute(

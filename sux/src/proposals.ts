@@ -95,13 +95,41 @@ async function writeIndex(env: RtEnv, ids: string[]): Promise<void> {
 	await env.OAUTH_KV?.put(INDEX_KEY, JSON.stringify(ids.slice(0, MAX_OPEN)));
 }
 
+// Thrown by getProposal when the KV read itself fails (transient blip, rate limit, …) —
+// distinct from a clean miss (raw === null), which means the key is genuinely gone
+// (expired or never existed). listProposals relies on this distinction: only a clean
+// miss should prune an id from the index (#889).
+export class ProposalReadError extends Error {}
+
 export async function getProposal(env: RtEnv, id: string): Promise<Proposal | null> {
+	let raw: string | undefined | null;
 	try {
-		const raw = await env.OAUTH_KV?.get(PREFIX + id);
-		return raw ? (JSON.parse(raw) as Proposal) : null;
+		raw = await env.OAUTH_KV?.get(PREFIX + id);
+	} catch (e) {
+		throw new ProposalReadError(String((e as Error)?.message ?? e));
+	}
+	if (!raw) return null;
+	try {
+		return JSON.parse(raw) as Proposal;
 	} catch {
 		return null;
 	}
+}
+
+// approve/reject/snooze all want the same "no proposal '<id>' (expired or unknown)"
+// error whether the id is genuinely gone or KV just blipped on this read — unlike
+// listProposals, they have no index to mis-prune, so collapsing the distinction here
+// is safe and keeps their existing error message.
+async function getProposalOrThrow(env: RtEnv, id: string): Promise<Proposal> {
+	let p: Proposal | null;
+	try {
+		p = await getProposal(env, id);
+	} catch (e) {
+		if (e instanceof ProposalReadError) p = null;
+		else throw e;
+	}
+	if (!p) throw new Error(`no proposal '${id}' (expired or unknown).`);
+	return p;
 }
 async function putProposal(env: RtEnv, p: Proposal): Promise<void> {
 	const ttl = Math.max(60, Math.ceil((p.expiresAt - now()) / 1000));
@@ -149,8 +177,17 @@ export async function listProposals(env: RtEnv, opts: { includeSnoozed?: boolean
 		const out: Proposal[] = [];
 		const live: string[] = [];
 		for (const id of idx) {
-			const p = await getProposal(env, id);
-			if (!p) continue; // KV-expired: fall out of the index
+			let p: Proposal | null;
+			try {
+				p = await getProposal(env, id);
+			} catch (e) {
+				if (e instanceof ProposalReadError) {
+					live.push(id); // transient read failure — keep it in the index, just skip listing it this time
+					continue;
+				}
+				throw e;
+			}
+			if (!p) continue; // KV-expired (clean miss): fall out of the index
 			live.push(id);
 			if (p.status === "snoozed" && p.snoozedUntil && p.snoozedUntil > t && !opts.includeSnoozed) continue;
 			out.push(p);
@@ -175,8 +212,7 @@ async function runProposalFn(env: RtEnv, fn: string, args: Record<string, unknow
  *  status whose result is a StageResult means "approved, now needs the tool's own commit". */
 export async function approveProposal(env: RtEnv, id: string): Promise<Proposal> {
 	return keyedSerialize(approveChains, id, async () => {
-		const p = await getProposal(env, id);
-		if (!p) throw new Error(`no proposal '${id}' (expired or unknown).`);
+		const p = await getProposalOrThrow(env, id);
 		if (p.status === "committed") return p; // idempotent
 		if (p.status === "rejected") throw new Error(`proposal '${id}' was rejected.`);
 		if (!PROPOSABLE_FNS.has(p.payload.fn) || p.reversible !== true) throw new Error(`proposal '${id}' is no longer executable (fn not allow-listed or not reversible).`);
@@ -205,8 +241,7 @@ export async function approveProposal(env: RtEnv, id: string): Promise<Proposal>
  *  it at the same priority — the kind still gets proposed, just sorted lower. */
 export async function rejectProposal(env: RtEnv, id: string): Promise<Proposal> {
 	return keyedSerialize(approveChains, id, async () => {
-		const p = await getProposal(env, id);
-		if (!p) throw new Error(`no proposal '${id}' (expired or unknown).`);
+		const p = await getProposalOrThrow(env, id);
 		if (p.status === "rejected") return p; // idempotent
 		if (p.status === "committed" || p.status === "failed") throw new Error(`proposal '${id}' already ${p.status}; can't reject.`);
 		const updated: Proposal = { ...p, status: "rejected" };
@@ -220,8 +255,7 @@ export async function rejectProposal(env: RtEnv, id: string): Promise<Proposal> 
 /** Snooze → defer. Default 1 day; the item drops out of the default list until then. */
 export async function snoozeProposal(env: RtEnv, id: string, untilMs?: number): Promise<Proposal> {
 	return keyedSerialize(approveChains, id, async () => {
-		const p = await getProposal(env, id);
-		if (!p) throw new Error(`no proposal '${id}' (expired or unknown).`);
+		const p = await getProposalOrThrow(env, id);
 		if (p.status === "snoozed") return p; // idempotent
 		if (p.status === "committed" || p.status === "failed" || p.status === "rejected") throw new Error(`proposal '${id}' already ${p.status}; can't snooze.`);
 		const updated: Proposal = { ...p, status: "snoozed", snoozedUntil: untilMs ?? now() + days(1) };
