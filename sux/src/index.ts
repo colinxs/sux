@@ -700,7 +700,29 @@ async function agendaTick(env: RtEnv): Promise<unknown> {
 	const mod = await import("./fns/_agenda");
 	if (!mod.hasAgenda(env)) return { dormant: true };
 	const deps = await mod.defaultDeps();
-	return mod.runAgenda(env, {}, deps);
+	const report = await mod.runAgenda(env, {}, deps);
+	await notifyAgendaSummary(env, report);
+	return report;
+}
+
+// Outbound Web Push (#219) for the agenda loop's highest-signal drops — mirrors
+// notifyMailTriageSummary's shape. The roadmap's Layer 3 ("Proposal inbox") wants
+// today-urgency proposals to reach the phone in near-real-time instead of only sitting
+// in a vault note/inbox until Colin happens to check it. Best-effort and silent for a
+// dormant/dry-run/empty cycle or an unconfigured push; a push failure must never affect
+// the agenda cycle's own recorded outcome.
+async function notifyAgendaSummary(env: RtEnv, report: unknown): Promise<void> {
+	try {
+		const r = report as { dormant?: boolean; dry_run?: boolean; proposals?: Array<{ urgency?: string }> };
+		if (r?.dormant || r?.dry_run) return;
+		const todayCount = (r?.proposals ?? []).filter((p) => p.urgency === "today").length;
+		if (!todayCount) return;
+		const { hasWebPush, notify } = await import("./fns/_webpush");
+		if (!hasWebPush(env)) return;
+		await notify(env, { title: "sux: agenda", body: `${todayCount} thing${todayCount === 1 ? "" : "s"} need${todayCount === 1 ? "s" : ""} you today` });
+	} catch {
+		// best-effort — see comment above.
+	}
 }
 
 // The frequent Cron Trigger (must match the second entry in wrangler.jsonc's
