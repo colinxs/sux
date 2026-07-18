@@ -127,6 +127,7 @@ import { mail_domain_backfill } from "./mail_domain_backfill";
 import { mail_sieve_hc } from "./mail_sieve_hc";
 import { mail_triage_plan } from "./mail_triage_plan";
 import { uw } from "./uw";
+import { onboard } from "./onboard";
 import { run } from "./run";
 import { vault_consolidate_plan } from "./vault_consolidate_plan";
 import { webpush } from "./webpush";
@@ -255,6 +256,7 @@ export const FUNCTIONS: Fn[] = [
 	mail_sieve_hc,
 	mail_triage_plan,
 	uw,
+	onboard,
 	run,
 	vault_consolidate_plan,
 	webpush,
