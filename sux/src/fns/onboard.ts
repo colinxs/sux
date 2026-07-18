@@ -18,10 +18,10 @@ export const onboard: Fn = {
 	cacheable: false,
 	cost: 5,
 	description:
-		"'Sux, learn about me' — the self-model flagship. Fans recall's cross-store gather (vault/files/mail/calendar/contacts/learned — never the web) INWARD to synthesize a structured personal profile across 5 dimensions: interests, expertise, relationships, projects, goals. " +
+		"'Sux, learn about me' — the self-model flagship. Fans recall's cross-store gather (vault/files/mail/calendar/contacts/learned — never the web) INWARD to synthesize a structured personal profile across 6 dimensions: interests, expertise, relationships, projects, goals, courses. The courses dimension additionally best-effort-fetches a couple of syllabus/course-page URLs found IN that gathered material (never a web search) to synthesize what's been covered. " +
 		"action:'profile' (default, READ-only) returns the synthesized profile plus up to 2 high-signal `questions` — the biggest gaps a direct answer would fill. Pass those back as `answers` ([{question, answer}]) on a follow-up call: they're folded in as trusted material ahead of everything gathered, sharpening the synthesis and shrinking the remaining gaps. " +
 		"action:'init' writes the profile into the vault: one note per dimension plus a \"Who I Am\" root MOC linking them (and listing any still-open questions) — default dir 'Who I Am/', override with `dir`. Every note is a git commit, so history is the undo; re-running init overwrites with a fresh synthesis. " +
-		"`dimensions` limits either action to a subset of [interests, expertise, relationships, projects, goals] (default: all). Needs the Workers-AI binding; each source degrades quietly when unconfigured, same as recall.",
+		"`dimensions` limits either action to a subset of [interests, expertise, relationships, projects, goals, courses] (default: all). Needs the Workers-AI binding; each source degrades quietly when unconfigured, same as recall.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,

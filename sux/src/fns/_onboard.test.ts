@@ -76,6 +76,50 @@ describe("synthesizeProfile — dimension synthesis", () => {
 	});
 });
 
+describe("synthesizeProfile — courses dimension", () => {
+	it("fetches urls found in the gathered material and folds them in as [syllabus:] material", async () => {
+		const fetched: string[] = [];
+		const deps = mkDeps({
+			gather: async () => ({ materials: ["[mail:receipt]\nEnrolled in CS101, see https://school.edu/cs101/syllabus for the syllabus."], citations: ["mail:receipt"], status: {} }),
+		});
+		deps.fetchUrl = async (_env, url) => {
+			fetched.push(url);
+			return "Week 1: intro. Week 2: recursion.";
+		};
+		const report = await synthesizeProfile(envWith(), { dimensions: ["courses"] }, deps);
+		expect(fetched).toEqual(["https://school.edu/cs101/syllabus"]);
+		expect(report.dimensions[0].citations).toContain("syllabus:https://school.edu/cs101/syllabus");
+	});
+
+	it("caps fetched urls at MAX_COURSE_LINKS and isolates a failing fetch", async () => {
+		const deps = mkDeps({
+			gather: async () => ({
+				materials: ["see https://a.edu/x and https://b.edu/y and https://c.edu/z"],
+				citations: [],
+				status: {},
+			}),
+		});
+		let calls = 0;
+		deps.fetchUrl = async (_env, url) => {
+			calls++;
+			if (url.includes("a.edu")) throw new Error("fetch failed");
+			return `material for ${url}`;
+		};
+		const report = await synthesizeProfile(envWith(), { dimensions: ["courses"] }, deps);
+		expect(calls).toBe(2); // MAX_COURSE_LINKS caps candidates before any fetch runs
+		expect(report.dimensions[0].citations).not.toContain("syllabus:https://a.edu/x");
+		expect(report.dimensions[0].citations).toContain("syllabus:https://b.edu/y");
+	});
+
+	it("skips fetching entirely when deps.fetchUrl is not provided", async () => {
+		const deps = mkDeps({
+			gather: async () => ({ materials: ["see https://a.edu/x"], citations: [], status: {} }),
+		});
+		const report = await synthesizeProfile(envWith(), { dimensions: ["courses"] }, deps);
+		expect(report.dimensions[0].answer).toBe("A synthesized answer.");
+	});
+});
+
 describe("synthesizeProfile — gap-fill", () => {
 	it("returns [] when the synthesizer says NONE", async () => {
 		const deps = mkDeps();

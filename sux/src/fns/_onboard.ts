@@ -2,7 +2,7 @@
 // "Flagship experience"). Fans recall's EXISTING cross-store gather (gatherRecall — no
 // new retrieval is invented here) INWARD across the user's own signals (vault/files/
 // mail/calendar/contacts/learned) to synthesize a structured self-model — one section per
-// dimension (interests, expertise, relationships, projects & work, goals) — identifies
+// dimension (interests, expertise, relationships, projects & work, goals, courses) — identifies
 // up to a couple of high-signal GAPS and returns them as `questions`, folds any `answers`
 // back in as trusted material on a follow-up call, and (action:'init') writes the result
 // into the vault as one note per dimension plus a "Who I Am" root MOC.
@@ -14,11 +14,18 @@
 // (default dir DEFAULT_DIR, override with `dir`), git-backed so history is the undo —
 // same reversibility story as every other vault write in this repo.
 //
-// Scope: this is steps 1-3 of the north-star flagship decomposition only (self-model +
-// gap-fill + vault init). "Courses + material", "safe mutations" (learned email
-// labeling), and "therapy-aligned growth" are explicitly OUT of scope — the doc's own
-// most-sensitive-data section calls for a separate zero-trust design pass before any of
-// that lands.
+// The "courses" dimension (north-star step 2) additionally best-effort-fetches a couple
+// of syllabus/course-page URLs found IN the gathered material (own mail/files/calendar —
+// never a web search) via `readability`, so "what's been covered" can be synthesized from
+// the actual course page, not just a receipt/calendar title. Bounded (MAX_COURSE_LINKS)
+// and per-URL isolated (see synthesizeDimension) — a fetch failure never sinks the
+// dimension, mirroring every other degrade-quietly path in this fn.
+//
+// Scope: this is steps 1-3 of the north-star flagship decomposition (self-model + gap-
+// fill + vault init) plus a slice of step 2 (course detection + a bounded syllabus
+// fetch). "Safe mutations" (learned email labeling) and "therapy-aligned growth" are
+// explicitly OUT of scope — the doc's own most-sensitive-data section calls for a
+// separate zero-trust design pass before any of that lands.
 import type { RtEnv } from "../registry";
 import { errMsg } from "./_util";
 
@@ -33,7 +40,32 @@ export const DIMENSIONS: Dimension[] = [
 	{ slug: "relationships", title: "Relationships", file: "Relationships.md", question: "Who are the important people in my life — family, friends, colleagues, and care providers — and what's my relationship with each of them?" },
 	{ slug: "projects", title: "Projects & Work", file: "Projects.md", question: "What are my active projects, work commitments, and obligations right now, and what's their status?" },
 	{ slug: "goals", title: "Goals", file: "Goals.md", question: "What goals, ambitions, or things am I actively working toward?" },
+	{
+		slug: "courses",
+		title: "Courses & Material",
+		file: "Courses.md",
+		question: "What courses, classes, or structured learning material am I taking or have I taken — detected from email receipts, files, or calendar events — and what has been covered in each?",
+	},
 ];
+
+/** At most this many syllabus/course-page URLs fetched per courses-dimension synthesis —
+ *  bounded egress, per the file-header note above (never a web search, only URLs already
+ *  present in the user's own gathered material). */
+export const MAX_COURSE_LINKS = 2;
+
+/** Pull up to MAX_COURSE_LINKS distinct http(s) URLs out of the gathered material text —
+ *  the candidate syllabus/course pages to fetch for the courses dimension. */
+function extractCandidateUrls(materials: string[]): string[] {
+	const found = new Set<string>();
+	const re = /https?:\/\/[^\s)"'<>\]]+/gi;
+	for (const m of materials) {
+		for (const match of m.matchAll(re)) {
+			found.add(match[0].replace(/[.,;:]+$/, ""));
+			if (found.size >= MAX_COURSE_LINKS) return [...found];
+		}
+	}
+	return [...found];
+}
 
 // The stores fanned across — mirrors life_wiki's WIKI_SOURCES (your own signals, never
 // the open web) plus calendar/contacts, per the north-star doc's explicit "mail/files/
@@ -62,6 +94,10 @@ export type OnboardDeps = {
 	synthesize: (env: RtEnv, system: string, material: string) => Promise<string>;
 	/** Overwrite a note at a FULL vault path with content (git-backed; history is the undo). */
 	write: (env: RtEnv, fullPath: string, content: string) => Promise<void>;
+	/** Best-effort fetch + extract the readable text of ONE url (used only by the courses
+	 *  dimension, on urls found inside the user's own gathered material). Optional — tests
+	 *  that don't exercise the courses dimension's fetch can omit it. */
+	fetchUrl?: (env: RtEnv, url: string) => Promise<string>;
 };
 
 const dimensionSystem = (d: Dimension): string =>
@@ -82,11 +118,26 @@ const gapSystem = (): string =>
 async function synthesizeDimension(env: RtEnv, d: Dimension, answers: Answer[], deps: OnboardDeps): Promise<DimensionResult> {
 	try {
 		const { materials, citations, status } = await deps.gather(env, d.question, ONBOARD_SOURCES);
+		const fetchedCites: string[] = [];
+		const courseMaterials: string[] = [];
+		if (d.slug === "courses" && deps.fetchUrl) {
+			for (const url of extractCandidateUrls(materials)) {
+				try {
+					const text = await deps.fetchUrl(env, url);
+					if (text.trim()) {
+						courseMaterials.push(`[syllabus:${url}]\n${text.trim().slice(0, 4000)}`);
+						fetchedCites.push(`syllabus:${url}`);
+					}
+				} catch {
+					// one bad fetch never sinks the courses dimension — quietly skip it
+				}
+			}
+		}
 		const answeredBlock = answers.length ? `[you answered]\n${answers.map((a) => `Q: ${a.question}\nA: ${a.answer}`).join("\n\n")}` : "";
-		const allMaterials = answeredBlock ? [answeredBlock, ...materials] : materials;
+		const allMaterials = [...(answeredBlock ? [answeredBlock] : []), ...materials, ...courseMaterials];
 		if (!allMaterials.length) return { slug: d.slug, title: d.title, file: d.file, answer: "Nothing found for this yet across your stores.", citations: [], sources: status };
 		const answer = (await deps.synthesize(env, dimensionSystem(d), allMaterials.join("\n\n---\n\n"))).trim();
-		const citesOut = answeredBlock ? ["you answered", ...citations] : citations;
+		const citesOut = [...(answeredBlock ? ["you answered"] : []), ...citations, ...fetchedCites];
 		return { slug: d.slug, title: d.title, file: d.file, answer: answer || "(the synthesizer returned nothing)", citations: citesOut, sources: status };
 	} catch (e) {
 		return { slug: d.slug, title: d.title, file: d.file, answer: `(synthesis failed: ${errMsg(e)})`, citations: [], sources: {} };
@@ -199,12 +250,19 @@ export async function defaultDeps(): Promise<OnboardDeps> {
 	const { gatherRecall } = await import("./recall");
 	const { obsidian } = await import("./obsidian");
 	const { llm } = await import("../ai");
+	const { readability } = await import("./readability");
 	return {
 		gather: gatherRecall,
 		synthesize: (env, system, material) => llm(env, system, material.slice(0, 14_000), 700, "onboard self-model synthesis"),
 		write: async (env, fullPath, content) => {
 			const r = await obsidian.run(env, { action: "write", path: fullPath, content, backend: "git" });
 			if (r.isError) throw new Error(r.content?.[0]?.text ?? "vault write failed");
+		},
+		fetchUrl: async (env, url) => {
+			const r = await readability.run(env, { url });
+			if (r.isError) throw new Error(r.content?.[0]?.text ?? "fetch failed");
+			const parsed = JSON.parse(r.content?.[0]?.text ?? "{}") as { text?: string };
+			return parsed.text ?? "";
 		},
 	};
 }
