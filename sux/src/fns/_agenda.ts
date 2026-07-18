@@ -70,6 +70,20 @@ const task = (content: string, due?: string): Drop["action"] => ({ fn: "todoist"
 const URGENCY_RANK: Record<Urgency, number> = { today: 0, soon: 1, fyi: 2 };
 const sortByUrgency = (drops: Drop[]): Drop[] => [...drops].sort((a, b) => URGENCY_RANK[a.urgency] - URGENCY_RANK[b.urgency]);
 
+/** sortByUrgency, but within each urgency tier a kind's learned weight (W8 — approve/
+ *  reject history, see fns/_learning.ts) breaks ties: a repeatedly-approved kind sorts
+ *  first, a repeatedly-rejected one sinks toward the bottom of its tier. Urgency stays
+ *  the primary sort — this only reorders WITHIN "today"/"soon"/"fyi", never promotes a
+ *  "soon" ahead of a "today". Never suppresses a kind entirely — the epic's hard
+ *  no-self-arm constraint applies here too: this only ever reorders what's shown. */
+export async function rankDropsLearned(env: RtEnv, drops: Drop[]): Promise<Drop[]> {
+	if (!drops.length) return drops;
+	const { getKindWeight } = await import("./_learning");
+	const weighted = await Promise.all(drops.map(async (d) => ({ d, w: await getKindWeight(env, d.kind) })));
+	weighted.sort((a, b) => URGENCY_RANK[a.d.urgency] - URGENCY_RANK[b.d.urgency] || b.w - a.w);
+	return weighted.map((x) => x.d);
+}
+
 // ── Detectors (rung-0 rules over the mail + calendar stream) ─────────────────────
 // Each is a pure function: (mail|events) → Drop[]. Ordered most-consequential first.
 // Cues are deliberately tight (precision over recall) — a missed drop is caught next
@@ -423,7 +437,7 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 
 	const lowBalanceThreshold = numClamp(env.MONARCH_LOW_BALANCE_THRESHOLD, 0, 1_000_000, 100);
 	const unusualChargeThreshold = numClamp(env.MONARCH_UNUSUAL_CHARGE_THRESHOLD, 0, 1_000_000, 500);
-	const drops = sortByUrgency([
+	const drops = await rankDropsLearned(env, [
 		...detectDrops(mail, events),
 		...detectKnowledgeDrops(consolidateFindings, weeklyRecallFindings),
 		...detectMonarchDrops(date, monarchAccounts, monarchTransactions, monarchBudgets, { lowBalanceThreshold, unusualChargeThreshold }),

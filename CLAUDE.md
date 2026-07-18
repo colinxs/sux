@@ -173,6 +173,14 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   so a fresh `wrangler types` run silently DROPS fields like `TS_OAUTH_CLIENT_ID`/`DROPBOX_FULL_*`
   from `Env` instead of adding to it (#219/#220). Add a new binding's type directly to `RtEnv` in
   `registry.ts` instead (`R2Bucket`'s hand-rolled override is the existing precedent for this).
+- **A prior bot-build attempt on an issue can leave a complete, well-reasoned implementation
+  sitting on an orphaned commit** (a PR that got closed rather than merged, e.g. because gates
+  failed for an unrelated reason like the `../suxlib` sandbox gotcha above) — `git log --all
+  --oneline | grep -i <keyword>` before rebuilding an issue from scratch. If found, `git show
+  <sha> -- <path>` to read the diff; reuse whatever part still applies cleanly and adapt/drop
+  whatever's since been superseded by other merged work (#749 found #747+#749's prior combined
+  attempt this way — #747's half had since landed differently, but #749's `_learning.ts`/ranking
+  half was untouched and reusable as-is).
 
 ## House style
 

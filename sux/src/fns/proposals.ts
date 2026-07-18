@@ -1,6 +1,7 @@
 import { type Fn, failWith, ok } from "../registry";
 import { errMsg, oj } from "./_util";
 import { approveProposal, getProposal, listProposals, type Proposal, rejectProposal, snoozeProposal } from "../proposals";
+import { listKindWeights } from "./_learning";
 
 // The proposal inbox — Colin's one place to review and act on everything the agent
 // wants to do on his behalf (docs/design/personal-agent-roadmap.md, epic #228, W1).
@@ -28,13 +29,13 @@ export const proposals: Fn = {
 	surface: "front",
 	cacheable: false,
 	description:
-		"The agent's proposal inbox — review and act on everything sux wants to do on your behalf. {action}: list (pending proposals, newest-first; add include_snoozed:true to see snoozed ones) | get {id} (full detail incl. the exact fn+args that would run and the evidence behind it) | approve {id} (RUN it through the fail-closed proposal kernel — only allow-listed REVERSIBLE actions, executed without force so any irreversible sub-step still hits the target tool's own stage gate) | reject {id} (decline + record as a learning signal) | snooze {id, until?} (defer; ISO-8601 `until`, default +1 day). Propose-only by design: nothing here ever acted without your approve. The agent RECORDS proposals internally (the agenda loop) — this fn is the human side, so it never creates them.",
+		"The agent's proposal inbox — review and act on everything sux wants to do on your behalf. {action}: list (pending proposals, newest-first; add include_snoozed:true to see snoozed ones) | get {id} (full detail incl. the exact fn+args that would run and the evidence behind it) | approve {id} (RUN it through the fail-closed proposal kernel — only allow-listed REVERSIBLE actions, executed without force so any irreversible sub-step still hits the target tool's own stage gate) | reject {id} (decline + record as a learning signal) | snooze {id, until?} (defer; ISO-8601 `until`, default +1 day) | insights (per-kind approve/reject counts + the learned ranking weight each kind currently carries — read-only, W8; a low weight only means that kind sorts lower within its urgency tier, it is never suppressed or auto-armed). Propose-only by design: nothing here ever acted without your approve. The agent RECORDS proposals internally (the agenda loop) — this fn is the human side, so it never creates them.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
 		required: ["action"],
 		properties: {
-			action: { type: "string", enum: ["list", "get", "approve", "reject", "snooze"] },
+			action: { type: "string", enum: ["list", "get", "approve", "reject", "snooze", "insights"] },
 			id: { type: "string", description: "Proposal id (get/approve/reject/snooze)." },
 			include_snoozed: { type: "boolean", description: "list: also show currently-snoozed proposals." },
 			until: { type: "string", description: "snooze: ISO-8601 time to defer until (default +1 day)." },
@@ -47,6 +48,11 @@ export const proposals: Fn = {
 			if (action === "list") {
 				const items = await listProposals(env, { includeSnoozed: a?.include_snoozed === true });
 				return ok(oj({ count: items.length, proposals: items.map(brief) }));
+			}
+			if (action === "insights") {
+				const items = await listProposals(env, { includeSnoozed: true });
+				const kinds = await listKindWeights(env, items.map((p) => p.kind));
+				return ok(oj({ count: kinds.length, kinds }));
 			}
 			const id = a?.id ? String(a.id) : "";
 			if (!id && action !== "list") return failWith("bad_input", `proposals ${action} requires an \`id\`.`);

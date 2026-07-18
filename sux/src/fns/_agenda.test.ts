@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { composeDigest, type AgendaDeps, detectDrops, detectKnowledgeDrops, detectMonarchDrops, type EventRef, type MailRef, runAgenda } from "./_agenda";
+import { composeDigest, type AgendaDeps, type Drop, detectDrops, detectKnowledgeDrops, detectMonarchDrops, type EventRef, type MailRef, rankDropsLearned, runAgenda } from "./_agenda";
 import { listProposals } from "../proposals";
+import { recordOutcome } from "./_learning";
 
 function kvStub() {
 	const map = new Map<string, string>();
@@ -109,6 +110,39 @@ describe("agenda — detectors", () => {
 		const far = detectMonarchDrops("2026-07-05", [], [], [{ category: "Utilities", remaining: 60 }]);
 		expect(near.map((d) => d.kind)).toContain("bill_due");
 		expect(far).toHaveLength(0);
+	});
+});
+
+describe("agenda — learned ranking (W8)", () => {
+	const drop = (kind: string, urgency: "today" | "soon" | "fyi"): Drop => ({
+		kind,
+		urgency,
+		dedupe: `${kind}::x`,
+		title: kind,
+		emoji: "•",
+		action: { fn: "todoist", args: { action: "add", content: kind } },
+	});
+
+	it("breaks ties WITHIN an urgency tier by learned weight, never crosses tiers", async () => {
+		const e = { OAUTH_KV: kvStub() } as any;
+		for (let i = 0; i < 5; i++) await recordOutcome(e, "liked_kind", "approved");
+		for (let i = 0; i < 5; i++) await recordOutcome(e, "disliked_kind", "rejected");
+
+		const drops = [drop("disliked_kind", "fyi"), drop("liked_kind", "fyi"), drop("neutral_kind", "today")];
+		const ranked = await rankDropsLearned(e, drops);
+		// "today" always sorts first regardless of weight.
+		expect(ranked[0].kind).toBe("neutral_kind");
+		// within "fyi", the approved kind outranks the rejected one.
+		expect(ranked[1].kind).toBe("liked_kind");
+		expect(ranked[2].kind).toBe("disliked_kind");
+	});
+
+	it("a rejected kind still gets ranked (never suppressed), just sorted lower", async () => {
+		const e = { OAUTH_KV: kvStub() } as any;
+		for (let i = 0; i < 50; i++) await recordOutcome(e, "very_disliked", "rejected");
+		const ranked = await rankDropsLearned(e, [drop("very_disliked", "fyi")]);
+		expect(ranked).toHaveLength(1);
+		expect(ranked[0].kind).toBe("very_disliked");
 	});
 });
 

@@ -150,19 +150,18 @@ export async function weightedRateLimit(
 	}
 	const extra = requestCost(effectiveName, effectiveArgs);
 	for (let i = 0; i < extra; i++) {
-		// Fail OPEN for THIS token if the limiter throws — an unavailable limiter
-		// must never itself become an outage (mirrors the presence-check fail-open
-		// above) — but keep charging the rest of the loop. A `break` here let one
-		// transient error zero out backpressure for every remaining token of a
-		// high-cost call (a 100-render batch dodging the limiter on one blip); a
-		// real outage still fails every token open, same net effect, while a
-		// one-off error no longer excuses the whole request (#415).
-		let success = true;
+		// Fail CLOSED for THIS token if the limiter throws — mirrors obsRateLimited's
+		// #414 flip: this path bills real per-call cost (render, Kagi/SerpAPI, Workers
+		// AI), so an unhealthy limiter must not reopen unlimited spend just because
+		// OAuth already bounds WHO can reach it. Unlike the pre-#415 behavior this
+		// replaces, a throw now denies immediately rather than letting the rest of a
+		// high-cost call's tokens through free (#754).
+		let success: boolean;
 		try {
 			success = (await env.MCP_RATE_LIMITER.limit({ key: login })).success;
 		} catch (e) {
-			console.warn(`weighted rate limiter threw for token ${i + 1}/${extra}, failing open for this token: ${String((e as Error)?.message ?? e)}`);
-			continue;
+			console.warn(`weighted rate limiter threw for token ${i + 1}/${extra}, failing closed: ${String((e as Error)?.message ?? e)}`);
+			return rateLimited();
 		}
 		if (!success) return rateLimited();
 	}

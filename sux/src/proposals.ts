@@ -181,6 +181,12 @@ export async function approveProposal(env: RtEnv, id: string): Promise<Proposal>
 			const text = res?.content?.[0]?.type === "text" ? res.content[0].text : undefined;
 			const updated: Proposal = { ...p, status: res?.isError ? "failed" : "committed", result: text ?? res };
 			await putProposal(env, updated);
+			if (!res?.isError) {
+				// The learning signal (W8) — a fn returning isError never counts as approval
+				// (the human said yes, but the action itself failed, so it's not "wanted" data).
+				const { recordOutcome } = await import("./fns/_learning");
+				await recordOutcome(env, p.kind, "approved");
+			}
 			return updated;
 		} catch (e) {
 			const updated: Proposal = { ...p, status: "failed", result: String((e as Error)?.message ?? e) };
@@ -190,13 +196,16 @@ export async function approveProposal(env: RtEnv, id: string): Promise<Proposal>
 	});
 }
 
-/** Reject → the learning signal (W8 will read these). Keeps the record (status:rejected)
- *  so a rejected kind can be down-weighted rather than silently re-proposed. */
+/** Reject → the learning signal (W8). Keeps the record (status:rejected) and down-
+ *  weights the kind's ranking (see fns/_learning.ts) rather than silently re-proposing
+ *  it at the same priority — the kind still gets proposed, just sorted lower. */
 export async function rejectProposal(env: RtEnv, id: string): Promise<Proposal> {
 	const p = await getProposal(env, id);
 	if (!p) throw new Error(`no proposal '${id}' (expired or unknown).`);
 	const updated: Proposal = { ...p, status: "rejected" };
 	await putProposal(env, updated);
+	const { recordOutcome } = await import("./fns/_learning");
+	await recordOutcome(env, p.kind, "rejected");
 	return updated;
 }
 

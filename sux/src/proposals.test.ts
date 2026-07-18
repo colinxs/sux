@@ -11,6 +11,7 @@ vi.mock("./fns", () => ({
 }));
 
 import { approveProposal, listProposals, propose, rejectProposal, snoozeProposal } from "./proposals";
+import { getKindWeight } from "./fns/_learning";
 
 function kvStub() {
 	const map = new Map<string, string>();
@@ -59,6 +60,26 @@ describe("proposal kernel", () => {
 		const p = await propose(e, { ...base, payload: { fn: "obsidian", args: {} } });
 		expect((await rejectProposal(e, p.id)).status).toBe("rejected");
 		await expect(approveProposal(e, p.id)).rejects.toThrow(/rejected/);
+	});
+
+	it("a successful approve raises the kind's learned weight, a reject lowers it (W8)", async () => {
+		const e = env();
+		const before = await getKindWeight(e, base.kind);
+		const p = await propose(e, { ...base, payload: { fn: "obsidian", args: {} } });
+		await approveProposal(e, p.id);
+		expect(await getKindWeight(e, base.kind)).toBeGreaterThan(before);
+
+		const p2 = await propose(e, { ...base, kind: "noisy_kind", payload: { fn: "obsidian", args: {} } });
+		const beforeReject = await getKindWeight(e, "noisy_kind");
+		await rejectProposal(e, p2.id);
+		expect(await getKindWeight(e, "noisy_kind")).toBeLessThan(beforeReject);
+	});
+
+	it("a `failed` approve (fn returned isError) does NOT count as an approval learning signal", async () => {
+		const e = env();
+		const p = await propose(e, { ...base, kind: "flaky_kind", payload: { fn: "mail", args: { action: "archive" } } });
+		await approveProposal(e, p.id);
+		expect(await getKindWeight(e, "flaky_kind")).toBe(1); // neutral — not bumped by a failed run
 	});
 
 	it("snooze hides from the default list, shows with include_snoozed", async () => {

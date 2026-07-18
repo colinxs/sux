@@ -228,4 +228,9 @@ def main():
 
 
 if __name__ == "__main__":
+    # Same fail-closed startup check render_server.py used (pre-#742 removal): an
+    # empty/short secret would otherwise let _verify's HMAC succeed against an
+    # empty key, silently authenticating every request including `send`.
+    if len(SECRET) < 16:
+        raise SystemExit("set IMESSAGE_SECRET (>=16 chars)")
     main()
