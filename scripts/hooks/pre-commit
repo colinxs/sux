@@ -28,7 +28,7 @@ echo "· pre-commit: regenerating the function index…"
 npm run gen:index --silent >/dev/null 2>&1 || echo "  (npm run gen:index failed — leaving index.ts as-is)"
 # Local convenience only — FUNCTIONS.md is gitignored, so this refreshes it on
 # disk for humans browsing the repo but is never staged.
-npm run docs --silent >/dev/null 2>&1 || true
+npm run docs --silent >/dev/null 2>&1 || echo "  (npm run docs failed — check for a CATEGORIES-drift error)"
 
 git add -- sux/src/fns/index.ts >/dev/null 2>&1 || true
 
