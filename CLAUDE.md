@@ -228,6 +228,15 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   and drop chained issues that depend on the stuck PR merging (e.g. #865-#867 depending
   on #864's #870) back to the queue until a maintainer restores `SuxOS/.github` or the
   branch protection rule is adjusted.
+- **`fns/_infer.ts`'s `InferDomain` (#864) has no `"vault"` member** — it's exactly the design
+  doc's five consent domains (mail/purchases/calendar/files/health), but the doc's own "first
+  slice" (§4) is *vault+mail* emerging-topic. `fns/_infer_drift.ts`'s `detectEmergingTopic`
+  (#865) resolves this by reading BOTH the `mail` and `files` domains and merging whichever are
+  armed — vault content is expected to be signal-logged under the `files` domain's arm, tagged
+  via `source_tag` (e.g. `vault:<path>`), not a domain of its own. A later issue that ingests
+  real vault/mail events into the signal log (nothing calls `appendInferSignal` yet — #864/#865/
+  #866 only build the substrate/detector/deletion path, not the write-in) should follow this same
+  mapping rather than adding a `"vault"` `InferDomain` member.
 
 ## House style
 
