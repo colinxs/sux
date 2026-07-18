@@ -61,6 +61,30 @@ describe("rung-memory", () => {
 		expect(await learnedRung(env, "https://example.com")).toBeNull();
 	});
 
+	it("does not let a cheaper rung downgrade a live learned pin", async () => {
+		const { kv } = fakeKv();
+		const env = { OAUTH_KV: kv } as any;
+		await recordRung(env, "https://example.com/product", "unlocker");
+		await recordRung(env, "https://example.com/robots.txt", "scrape");
+		expect(await learnedRung(env, "https://example.com")).toBe("unlocker");
+	});
+
+	it("still allows an upgrade to a more expensive rung", async () => {
+		const { kv } = fakeKv();
+		const env = { OAUTH_KV: kv } as any;
+		await recordRung(env, "https://example.com/product", "render");
+		await recordRung(env, "https://example.com/product", "unlocker");
+		expect(await learnedRung(env, "https://example.com")).toBe("unlocker");
+	});
+
+	it("allows a downgrade once the existing pin has expired", async () => {
+		const { kv, store } = fakeKv();
+		const env = { OAUTH_KV: kv } as any;
+		store.set("rung:example.com", JSON.stringify({ rung: "unlocker", at: 0 }));
+		await recordRung(env, "https://example.com/robots.txt", "scrape");
+		expect(await learnedRung(env, "https://example.com")).toBe("scrape");
+	});
+
 	it("rungAtLeast orders scrape < render < unlocker", () => {
 		expect(rungAtLeast("unlocker", "render")).toBe(true);
 		expect(rungAtLeast("render", "unlocker")).toBe(false);

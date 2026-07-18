@@ -94,8 +94,11 @@ def h_threads(body):
         params = []
         where = []
         if contact:
-            where.append("c.chat_identifier LIKE ?")
-            params.append(f"%{contact}%")
+            # Escape LIKE metacharacters so a literal `_`/`%` in a handle (e.g. an
+            # email like john_doe@icloud.com) doesn't wildcard-match other handles.
+            escaped = contact.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            where.append("c.chat_identifier LIKE ? ESCAPE '\\'")
+            params.append(f"%{escaped}%")
         if where:
             q += " WHERE " + " AND ".join(where)
         q += " GROUP BY c.ROWID ORDER BY last_date DESC LIMIT 100"
