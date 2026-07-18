@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { composeDigest, type AgendaDeps, type Drop, detectDrops, detectKnowledgeDrops, detectMonarchDrops, detectPortfolioDrops, detectSavingsRateDrop, detectTextDrops, computeSavingsRate, type EventRef, type MailRef, type TextThreadRef, rankDropsLearned, runAgenda } from "./_agenda";
+import { composeDigest, type AgendaDeps, type Drop, detectDrops, detectKnowledgeDrops, detectMonarchDrops, detectPortfolioDrops, detectSavingsRateDrop, detectTextDrops, detectWatchDrops, computeSavingsRate, type EventRef, type MailRef, type TextThreadRef, rankDropsLearned, runAgenda } from "./_agenda";
 import { listProposals } from "../proposals";
 import { recordOutcome } from "./_learning";
 
@@ -27,6 +27,7 @@ const deps = (over: Partial<AgendaDeps> = {}): AgendaDeps => ({
 	sendDigest: vi.fn(async () => {}),
 	consolidateFindings: vi.fn(async () => null),
 	weeklyRecallFindings: vi.fn(async () => null),
+	watchFindings: vi.fn(async () => null),
 	monarchAccounts: vi.fn(async () => []),
 	monarchTransactions: vi.fn(async () => []),
 	monarchBudgets: vi.fn(async () => []),
@@ -81,6 +82,24 @@ describe("agenda — detectors", () => {
 	it("no knowledge drops when there's nothing to report", () => {
 		expect(detectKnowledgeDrops(null, null)).toHaveLength(0);
 		expect(detectKnowledgeDrops({ week: "2026-W28", stale: [], duplicate_candidates: [] }, { week: "2026-W28", questions: 0, content_hash: "abc" })).toHaveLength(0);
+	});
+
+	it("wires the watch sweep's changed pages in as fyi drops (#899), keyed on the new hash", () => {
+		const drops = detectWatchDrops({
+			checked_at: "2026-07-18T00:00:00.000Z",
+			changed_count: 1,
+			changed: [{ url: "https://example.com/price", label: "price watch", hash: "new-hash", previous_hash: "old-hash", checked_at: "2026-07-18T00:00:00.000Z" }],
+		});
+		expect(drops).toHaveLength(1);
+		expect(drops[0]).toMatchObject({ kind: "watch_changed", urgency: "fyi" });
+		expect(drops[0].dedupe).toContain("new-hash");
+		expect(drops[0].title).toContain("price watch");
+		expect(drops[0].action.fn).toBe("todoist");
+	});
+
+	it("no watch drops when there's nothing to report", () => {
+		expect(detectWatchDrops(null)).toHaveLength(0);
+		expect(detectWatchDrops({ checked_at: "2026-07-18T00:00:00.000Z", changed_count: 0, changed: [] })).toHaveLength(0);
 	});
 
 	it("detects Monarch financial signals (W7): low balance, unusual charge, bill due soon", () => {
@@ -334,6 +353,21 @@ describe("agenda — loop", () => {
 		const r = await runAgenda(e, {}, d);
 		expect(r.proposed).toBe(9); // 7 mail/cal + consolidate_stale + weekly_recall_ready
 		expect(r.proposals?.map((p) => p.kind)).toEqual(expect.arrayContaining(["consolidate_stale", "weekly_recall_ready"]));
+	});
+
+	it("proposes a drop from the watch sweep's cached findings alongside mail+calendar (#899)", async () => {
+		const e = env();
+		const d = deps({
+			watchFindings: vi.fn(async () => ({
+				checked_at: "2026-07-18T00:00:00.000Z",
+				changed_count: 1,
+				changed: [{ url: "https://example.com/price", hash: "new-hash", previous_hash: "old-hash", checked_at: "2026-07-18T00:00:00.000Z" }],
+			})),
+		});
+		const r = await runAgenda(e, {}, d);
+		expect(r.proposed).toBe(8); // 7 mail/cal + watch_changed
+		expect(r.proposals?.map((p) => p.kind)).toEqual(expect.arrayContaining(["watch_changed"]));
+		expect(r.sources.watch).toMatch(/1 changed/);
 	});
 
 	it("wires Monarch financial signals (W7) in only when MONARCH_TOKEN is set", async () => {

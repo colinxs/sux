@@ -680,6 +680,18 @@ async function consolidateTick(env: RtEnv): Promise<unknown> {
 	return mod.runConsolidate(env, {}, deps);
 }
 
+// One watch-directory sweep, riding the SAME daily cron (#899). FAIL-CLOSED: no-ops
+// entirely unless WATCH_SWEEP_ENABLED is set. Re-checks a bounded, rotating slice of the
+// sux:watch:index directory `watch` itself maintains; a changed page feeds _agenda.ts's
+// detectWatchDrops the same way consolidate/weekly_recall's findings do. Dynamically
+// imported so the cron path pulls in the fetch surface only when armed.
+async function watchSweepTick(env: RtEnv): Promise<unknown> {
+	const mod = await import("./fns/_watch_sweep");
+	if (!mod.hasWatchSweep(env)) return { dormant: true };
+	const deps = await mod.defaultDeps();
+	return mod.runWatchSweep(env, {}, deps);
+}
+
 // One daily morning-briefing cycle, driven by the same Cron Trigger. FAIL-CLOSED: early-returns
 // doing nothing unless BRIEFING_ENABLED is set — and even then it only STAGES reply drafts (to
 // Drafts, never sent) when BRIEFING_STAGE_DRAFTS is also set; otherwise it composes a
@@ -755,6 +767,7 @@ async function maintenanceTick(env: RtEnv, ctx: ExecutionContext): Promise<void>
 	await runSubJob(env, "mychart_token", () => refreshMychartToken(env));
 	await runSubJob(env, "weekly_recall", () => weeklyRecallTick(env));
 	await runSubJob(env, "consolidate", () => consolidateTick(env));
+	await runSubJob(env, "watch_sweep", () => watchSweepTick(env));
 	await runSubJob(env, "briefing", () => briefingTick(env));
 	await runSubJob(env, "agenda", () => agendaTick(env));
 	// Rebuild the cosmetic-adblock engine blob in R2 — staleness-gated, so the

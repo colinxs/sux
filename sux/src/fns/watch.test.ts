@@ -8,7 +8,7 @@ vi.mock("../proxy", () => ({
 }));
 
 import { smartFetch } from "../proxy";
-import { watch } from "./watch";
+import { listWatches, watch } from "./watch";
 
 function fakeEnv() {
 	const store = new Map<string, string>();
@@ -47,12 +47,17 @@ describe("watch", () => {
 		expect(j.previous_hash).toBeUndefined();
 		expect(typeof j.hash).toBe("string");
 		expect(j.hash).toHaveLength(64);
-		// The hash was persisted under a sux:watch: key.
+		// The hash was persisted under a sux:watch: key, plus the directory index (#899).
 		const keys = [...store.keys()];
-		expect(keys).toHaveLength(1);
-		expect(keys[0]).toMatch(/^sux:watch:/);
-		expect(store.get(keys[0])).toBe(j.hash);
+		expect(keys).toHaveLength(2);
+		const hashKey = keys.find((k) => k !== "sux:watch:index")!;
+		expect(hashKey).toMatch(/^sux:watch:/);
+		expect(store.get(hashKey)).toBe(j.hash);
 		expect(r.noCache).toBe(true);
+		// The directory index now knows about this watch.
+		const index = JSON.parse(store.get("sux:watch:index")!);
+		expect(index).toHaveLength(1);
+		expect(index[0]).toMatchObject({ url: "https://example.com/a" });
 	});
 
 	it("identical content on a later check reports changed:false", async () => {
@@ -65,7 +70,8 @@ describe("watch", () => {
 		expect(second.changed).toBe(false);
 		expect(second.hash).toBe(first.hash);
 		expect(second.previous_hash).toBe(first.hash);
-		expect(store.size).toBe(1);
+		// A no-change recheck touches neither the hash key nor the directory index (#899).
+		expect(store.size).toBe(2);
 	});
 
 	it("changed content reports changed:true with previous_hash and updates the store", async () => {
@@ -107,7 +113,10 @@ describe("watch", () => {
 		// A different label is its own watch → first sight, not a comparison.
 		expect(other.first_seen).toBe(true);
 		expect(other.label).toBe("two");
-		expect(store.size).toBe(2);
+		// 2 hash keys + the shared directory index.
+		expect(store.size).toBe(3);
+		const index = JSON.parse(store.get("sux:watch:index")!);
+		expect(index).toHaveLength(2);
 	});
 
 	it("reset drops the baseline (no fetch) so the next check re-baselines", async () => {
@@ -115,9 +124,10 @@ describe("watch", () => {
 		body("<h1>seed</h1>");
 		const first = parse(await watch.run(env, { url: "https://example.com/r" }));
 		expect(first.first_seen).toBe(true);
-		expect(store.size).toBe(1);
+		expect(store.size).toBe(2);
 
-		// reset deletes the stored hash without fetching (no body() queued).
+		// reset deletes the stored hash without fetching (no body() queued), and prunes the
+		// directory index entry — with nothing else watched, the index key itself is removed.
 		const cleared = parse(await watch.run(env, { url: "https://example.com/r", reset: true }));
 		expect(cleared.reset).toBe(true);
 		expect(cleared.existed).toBe(true);
@@ -142,5 +152,47 @@ describe("watch", () => {
 		const r = await watch.run(env, { url: "https://example.com/down" });
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toMatch(/\[upstream_error\]/);
+	});
+
+	describe("directory index (#899)", () => {
+		it("listWatches enumerates every active watch for a cron sweep to re-check", async () => {
+			const { env } = fakeEnv();
+			body("<h1>a</h1>");
+			await watch.run(env, { url: "https://example.com/f", label: "one" });
+			body("<h1>b</h1>");
+			await watch.run(env, { url: "https://example.com/g" });
+			const entries = await listWatches(env);
+			expect(entries).toHaveLength(2);
+			expect(entries.map((e) => e.url).sort()).toEqual(["https://example.com/f", "https://example.com/g"]);
+			expect(entries.find((e) => e.url === "https://example.com/f")?.label).toBe("one");
+		});
+
+		it("listWatches degrades to an empty list when nothing is watched", async () => {
+			const { env } = fakeEnv();
+			expect(await listWatches(env)).toEqual([]);
+		});
+
+		it("reset prunes only that watch from the index, leaving others intact", async () => {
+			const { env } = fakeEnv();
+			body("<h1>a</h1>");
+			await watch.run(env, { url: "https://example.com/h" });
+			body("<h1>b</h1>");
+			await watch.run(env, { url: "https://example.com/i" });
+			await watch.run(env, { url: "https://example.com/h", reset: true });
+			const entries = await listWatches(env);
+			expect(entries).toHaveLength(1);
+			expect(entries[0].url).toBe("https://example.com/i");
+		});
+
+		it("a no-change recheck leaves the index entry as-is (no extra KV write)", async () => {
+			const { env } = fakeEnv();
+			body("<h1>same</h1>");
+			await watch.run(env, { url: "https://example.com/j" });
+			const before = await listWatches(env);
+			body("<h1>same</h1>");
+			await watch.run(env, { url: "https://example.com/j" });
+			const after = await listWatches(env);
+			expect(after).toEqual(before);
+		});
 	});
 });

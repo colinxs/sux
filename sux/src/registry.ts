@@ -141,6 +141,19 @@ export type RtEnv = Env &
 		CONSOLIDATE_ENABLED?: string;
 		CONSOLIDATE_STALE_DAYS?: string;
 
+		// Watch-directory cron sweep (fns/_watch_sweep.ts, rides the daily cron) — the
+		// proactive half of `watch` (#899): re-checks the sux:watch:index directory (which
+		// `watch` itself now maintains, upserted on first_seen/change, pruned on reset:true)
+		// instead of requiring a manual re-call. Fail-closed, default OFF, set via
+		// `wrangler secret` (NOT declared in wrangler.jsonc — like CONSOLIDATE_*). Unset ⇒
+		// dormant no-op. Changed pages feed _agenda.ts's detectWatchDrops the same way
+		// consolidate/weekly_recall's findings do.
+		//   WATCH_SWEEP_ENABLED — master enable (toggle); unset/"0"/"false"/"off" ⇒ inert.
+		//   WATCH_SWEEP_MAX     — optional cap on watches re-checked per tick (bounds
+		//                         residential-proxy fetch cost); default 10, clamped [1,50].
+		WATCH_SWEEP_ENABLED?: string;
+		WATCH_SWEEP_MAX?: string;
+
 		EXA_API_KEY?: string;
 
 		KROGER_CLIENT_ID?: string;

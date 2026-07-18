@@ -33,6 +33,7 @@ import { classifyMessage } from "./_mail_triage";
 import { hasImessage, imessage } from "./imessage";
 import { hasMonarch, monarch } from "./monarch";
 import { errMsg, vaultToday } from "./_util";
+import type { WatchFindings } from "./_watch_sweep";
 import type { WeeklyRecallFindings } from "./_weekly_recall";
 
 // ── Gates ────────────────────────────────────────────────────────────────────
@@ -248,6 +249,29 @@ export function detectKnowledgeDrops(consolidate: ConsolidateFindings | null, we
 		});
 	}
 	return drops;
+}
+
+/** Turn the watch sweep's last cycle findings (#899) into drops — same read-only-sense/
+ *  reversible-propose contract as detectKnowledgeDrops, just fed from _watch_sweep's cache
+ *  instead of a live re-check. The dedupe key mixes in the new hash, not just the url/label,
+ *  so a page that changes again after being proposed once produces a fresh proposal instead
+ *  of being silently swallowed by the ledger. */
+export function detectWatchDrops(findings: WatchFindings | null): Drop[] {
+	if (!findings) return [];
+	const drops: Drop[] = [];
+	for (const c of findings.changed) {
+		const label = c.label ? ` (${c.label})` : "";
+		drops.push({
+			kind: "watch_changed",
+			urgency: "fyi",
+			dedupe: `watch::${c.url}::${c.label ?? ""}::${c.hash}`,
+			title: `Watched page changed${label}: ${c.url}`,
+			emoji: "👀",
+			action: task(`Check watched page — changed${label}: ${c.url}`),
+			evidence: { url: c.url, label: c.label, hash: c.hash, previous_hash: c.previous_hash },
+		});
+	}
+	return sortByUrgency(drops);
 }
 
 /** Monarch's read-only accounts/transactions/budgets/holdings/cashflow ops (W7/W7.1), trimmed
@@ -536,6 +560,9 @@ export type AgendaDeps = {
 	/** The weekly-recall loop's most recent findings (W5) — a ledger-cache read, never a fresh
 	 *  recall fan-out. */
 	weeklyRecallFindings: (env: RtEnv) => Promise<WeeklyRecallFindings | null>;
+	/** The watch sweep's most recent findings (#899) — a ledger-cache read, never a fresh
+	 *  page re-check. */
+	watchFindings: (env: RtEnv) => Promise<WatchFindings | null>;
 	/** Monarch account balances (W7) — only called when hasMonarch(env). */
 	monarchAccounts: (env: RtEnv) => Promise<MonarchAccountRef[]>;
 	/** Monarch transactions in a window (W7) — only called when hasMonarch(env). */
@@ -612,6 +639,7 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 	let events: EventRef[] = [];
 	let consolidateFindings: ConsolidateFindings | null = null;
 	let weeklyRecallFindings: WeeklyRecallFindings | null = null;
+	let watchFindings: WatchFindings | null = null;
 	let monarchAccounts: MonarchAccountRef[] = [];
 	let monarchTransactions: MonarchTxnRef[] = [];
 	let monarchBudgets: MonarchBudgetRef[] = [];
@@ -643,6 +671,12 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 			status.weekly_recall = weeklyRecallFindings ? `week ${weeklyRecallFindings.week}` : "no findings yet";
 		})().catch((e) => {
 			status.weekly_recall = `unavailable (${errMsg(e).slice(0, 90)})`;
+		}),
+		(async () => {
+			watchFindings = await deps.watchFindings(env);
+			status.watch = watchFindings ? `${watchFindings.changed_count} changed as of ${watchFindings.checked_at}` : "no findings yet";
+		})().catch((e) => {
+			status.watch = `unavailable (${errMsg(e).slice(0, 90)})`;
 		}),
 		(async () => {
 			if (!hasMonarch(env)) {
@@ -690,6 +724,7 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		...detectDrops(mail, events),
 		...detectTextDrops(textThreads),
 		...detectKnowledgeDrops(consolidateFindings, weeklyRecallFindings),
+		...detectWatchDrops(watchFindings),
 		...detectMonarchDrops(date, monarchAccounts, monarchTransactions, monarchBudgets, { lowBalanceThreshold, unusualChargeThreshold }),
 		...detectPortfolioDrops(date, monarchHoldings, priorMonarchSnapshot?.allocation ?? null, { concentrationThreshold: portfolioConcentrationThreshold, driftThreshold: portfolioDriftThreshold }),
 		...detectSavingsRateDrop(date, currentSavingsRate, priorMonarchSnapshot?.savingsRate ?? null, { dropThreshold: savingsRateDropThreshold }),
@@ -770,6 +805,7 @@ export async function defaultDeps(): Promise<AgendaDeps> {
 	const { obsidian } = await import("./obsidian");
 	const { lastConsolidateFindings } = await import("./_consolidate");
 	const { lastWeeklyRecallFindings } = await import("./_weekly_recall");
+	const { lastWatchFindings } = await import("./_watch_sweep");
 	const tool = (name: string) => mail.MAIL_TOOLS.find((t) => t.name === name);
 
 	return {
@@ -821,6 +857,7 @@ export async function defaultDeps(): Promise<AgendaDeps> {
 		},
 		consolidateFindings: lastConsolidateFindings,
 		weeklyRecallFindings: lastWeeklyRecallFindings,
+		watchFindings: lastWatchFindings,
 		monarchAccounts: async (env) => {
 			const r = await monarch.run(env, { op: "accounts" });
 			if (r.isError) throw new Error(r.content?.[0]?.text ?? "monarch accounts failed");
