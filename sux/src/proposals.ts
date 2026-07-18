@@ -132,8 +132,10 @@ export async function propose(
 		expiresAt: t + days(p.ttlDays ?? DEFAULT_TTL_DAYS),
 	};
 	await putProposal(env, proposal);
-	const idx = await readIndex(env);
-	await writeIndex(env, [proposal.id, ...idx.filter((x) => x !== proposal.id)]);
+	await keyedSerialize(approveChains, INDEX_KEY, async () => {
+		const idx = await readIndex(env);
+		await writeIndex(env, [proposal.id, ...idx.filter((x) => x !== proposal.id)]);
+	});
 	return proposal;
 }
 
@@ -141,19 +143,21 @@ export async function propose(
  *  any that KV has already expired out from under the index. Snoozed items are included
  *  but flagged by their status; a caller can filter on `snoozedUntil`. */
 export async function listProposals(env: RtEnv, opts: { includeSnoozed?: boolean } = {}): Promise<Proposal[]> {
-	const idx = await readIndex(env);
-	const out: Proposal[] = [];
-	const live: string[] = [];
 	const t = now();
-	for (const id of idx) {
-		const p = await getProposal(env, id);
-		if (!p) continue; // KV-expired: fall out of the index
-		live.push(id);
-		if (p.status === "snoozed" && p.snoozedUntil && p.snoozedUntil > t && !opts.includeSnoozed) continue;
-		out.push(p);
-	}
-	if (live.length !== idx.length) await writeIndex(env, live); // prune expired ids
-	return out;
+	return keyedSerialize(approveChains, INDEX_KEY, async () => {
+		const idx = await readIndex(env);
+		const out: Proposal[] = [];
+		const live: string[] = [];
+		for (const id of idx) {
+			const p = await getProposal(env, id);
+			if (!p) continue; // KV-expired: fall out of the index
+			live.push(id);
+			if (p.status === "snoozed" && p.snoozedUntil && p.snoozedUntil > t && !opts.includeSnoozed) continue;
+			out.push(p);
+		}
+		if (live.length !== idx.length) await writeIndex(env, live); // prune expired ids
+		return out;
+	});
 }
 
 /** Execute an allow-listed reversible fn WITHOUT force (lock #3), through the real

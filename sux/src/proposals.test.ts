@@ -167,6 +167,16 @@ describe("proposal kernel", () => {
 		expect(JSON.parse(String(done.result)).got).toEqual({ action: "append" });
 	});
 
+	it("concurrent propose() calls both land in the index — neither silently drops the other (#846)", async () => {
+		const e = env();
+		const [p1, p2] = await Promise.all([
+			propose(e, { ...base, kind: "race_a", payload: { fn: "obsidian", args: {} } }),
+			propose(e, { ...base, kind: "race_b", payload: { fn: "mail", args: {} } }),
+		]);
+		const list = await listProposals(e);
+		expect(list.map((x) => x.id).sort()).toEqual([p1.id, p2.id].sort());
+	});
+
 	it("concurrent approvals of the same proposal execute the payload only once", async () => {
 		const e = env();
 		const p = await propose(e, { ...base, payload: { fn: "obsidian", args: { action: "append", path: "x.md" } } });

@@ -114,6 +114,12 @@ describe("agenda — detectors", () => {
 		expect(far).toHaveLength(0);
 	});
 
+	it("Monarch: bill_due's dedupe key changes with the remaining amount, so a later worse reading isn't swallowed (#847)", () => {
+		const early = detectMonarchDrops("2026-07-28", [], [], [{ category: "Rent", categoryId: "cat1", remaining: 100 }]);
+		const later = detectMonarchDrops("2026-07-29", [], [], [{ category: "Rent", categoryId: "cat1", remaining: 900 }]);
+		expect(early[0].dedupe).not.toBe(later[0].dedupe);
+	});
+
 	it("Monarch: a large incoming deposit is not flagged as an unusual charge", () => {
 		const drops = detectMonarchDrops(
 			"2026-07-05",
@@ -184,6 +190,12 @@ describe("agenda — detectors: portfolio drift + savings rate (W7.1, #803)", ()
 	it("detectSavingsRateDrop is quiet on a healthy, stable rate or when there's no reading", () => {
 		expect(detectSavingsRateDrop("2026-07-18", 0.25, 0.3)).toHaveLength(0);
 		expect(detectSavingsRateDrop("2026-07-18", undefined, 0.3)).toHaveLength(0);
+	});
+
+	it("detectSavingsRateDrop's dedupe key changes with the rate, so a materially worse same-month reading isn't swallowed (#847)", () => {
+		const early = detectSavingsRateDrop("2026-07-05", -0.2, null);
+		const later = detectSavingsRateDrop("2026-07-28", -0.35, null);
+		expect(early[0].dedupe).not.toBe(later[0].dedupe);
 	});
 });
 
