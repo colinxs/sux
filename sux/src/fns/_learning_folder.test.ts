@@ -51,7 +51,14 @@ describe("runLearningFolderSync", () => {
 		expect(r.total).toBe(2);
 		expect(r.studied).toEqual(["/learning/b.pdf"]);
 		expect(d.studyPdf).toHaveBeenCalledTimes(1);
-		expect(d.studyPdf).toHaveBeenCalledWith(expect.anything(), expect.stringContaining("dl=1"), "learning", "b.pdf");
+		expect(d.studyPdf).toHaveBeenCalledWith(expect.anything(), expect.stringContaining("dl=1"), "learning", "b.pdf", "dropbox:/learning/b.pdf");
+	});
+
+	it("passes a dropbox:-prefixed sourceLabel (not the fetched URL) so the studied-set dedup actually matches next run", async () => {
+		const d = deps();
+		await runLearningFolderSync(env(), d);
+		const calls = (d.studyPdf as any).mock.calls;
+		expect(calls.map((c: any[]) => c[4])).toEqual(["dropbox:/learning/a.pdf", "dropbox:/learning/b.pdf"]);
 	});
 
 	it("forces the shared link to a raw download (dl=1) before handing it to study", async () => {

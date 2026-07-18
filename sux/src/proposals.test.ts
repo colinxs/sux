@@ -62,6 +62,27 @@ describe("proposal kernel", () => {
 		await expect(approveProposal(e, p.id)).rejects.toThrow(/rejected/);
 	});
 
+	it("reject after commit throws and does not overwrite the committed record", async () => {
+		const e = env();
+		const p = await propose(e, { ...base, payload: { fn: "obsidian", args: {} } });
+		await approveProposal(e, p.id);
+		await expect(rejectProposal(e, p.id)).rejects.toThrow(/committed/);
+		const list = await listProposals(e);
+		expect(list.find((x) => x.id === p.id)?.status).toBe("committed");
+	});
+
+	it("double reject is a no-op and only records the learning signal once", async () => {
+		const e = env();
+		const before = await getKindWeight(e, "double_reject_kind");
+		const p = await propose(e, { ...base, kind: "double_reject_kind", payload: { fn: "obsidian", args: {} } });
+		await rejectProposal(e, p.id);
+		const afterFirst = await getKindWeight(e, "double_reject_kind");
+		expect(afterFirst).toBeLessThan(before);
+		const second = await rejectProposal(e, p.id);
+		expect(second.status).toBe("rejected");
+		expect(await getKindWeight(e, "double_reject_kind")).toBe(afterFirst); // unchanged — no double-count
+	});
+
 	it("a successful approve raises the kind's learned weight, a reject lowers it (W8)", async () => {
 		const e = env();
 		const before = await getKindWeight(e, base.kind);

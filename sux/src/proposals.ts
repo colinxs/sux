@@ -200,13 +200,17 @@ export async function approveProposal(env: RtEnv, id: string): Promise<Proposal>
  *  weights the kind's ranking (see fns/_learning.ts) rather than silently re-proposing
  *  it at the same priority — the kind still gets proposed, just sorted lower. */
 export async function rejectProposal(env: RtEnv, id: string): Promise<Proposal> {
-	const p = await getProposal(env, id);
-	if (!p) throw new Error(`no proposal '${id}' (expired or unknown).`);
-	const updated: Proposal = { ...p, status: "rejected" };
-	await putProposal(env, updated);
-	const { recordOutcome } = await import("./fns/_learning");
-	await recordOutcome(env, p.kind, "rejected");
-	return updated;
+	return keyedSerialize(approveChains, id, async () => {
+		const p = await getProposal(env, id);
+		if (!p) throw new Error(`no proposal '${id}' (expired or unknown).`);
+		if (p.status === "rejected") return p; // idempotent
+		if (p.status === "committed" || p.status === "failed") throw new Error(`proposal '${id}' already ${p.status}; can't reject.`);
+		const updated: Proposal = { ...p, status: "rejected" };
+		await putProposal(env, updated);
+		const { recordOutcome } = await import("./fns/_learning");
+		await recordOutcome(env, p.kind, "rejected");
+		return updated;
+	});
 }
 
 /** Snooze → defer. Default 1 day; the item drops out of the default list until then. */
