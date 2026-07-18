@@ -7,6 +7,16 @@ import { hasBriefing, hasBriefingStageDrafts } from "./_briefing";
 import { hasWeeklyRecall } from "./_weekly_recall";
 import { hasConsolidate } from "./_consolidate";
 import { hasAgenda, hasAgendaEmail } from "./_agenda";
+import { hasAskGateReminder, hasAskGateReminderEmail } from "./_ask_gate_reminder";
+import { hasLifeWiki } from "./_life_wiki";
+import { hasLearningFolder } from "./_learning_folder";
+
+// Mirrors index.ts's mailTriagePlanTick's own fail-closed string check — MAIL_TRIAGE_PLAN_ENABLED
+// has no shared `has*` helper (its gate lives inline in the cron tick, not a fns/_mail_triage_plan.ts).
+const hasMailTriagePlan = (env: { MAIL_TRIAGE_PLAN_ENABLED?: string }): boolean => {
+	const s = String(env.MAIL_TRIAGE_PLAN_ENABLED ?? "").trim().toLowerCase();
+	return s !== "" && s !== "0" && s !== "false" && s !== "no" && s !== "off";
+};
 
 // "What can act on my behalf right now" — a single read-only mirror of the Worker-side
 // autonomy gates. Several consequential surfaces (mail-triage, Mode-B Dropbox writes,
@@ -46,6 +56,11 @@ export const autonomy_status: Fn = {
 		const consolidateOn = hasConsolidate(env);
 		const agendaOn = hasAgenda(env);
 		const agendaEmail = hasAgendaEmail(env);
+		const mailTriagePlanOn = hasMailTriagePlan(env);
+		const askGateReminderOn = hasAskGateReminder(env);
+		const askGateReminderEmail = hasAskGateReminderEmail(env);
+		const lifeWikiOn = hasLifeWiki(env);
+		const learningFolderOn = hasLearningFolder(env);
 
 		const surfaces: Surface[] = [
 			{
@@ -103,6 +118,34 @@ export const autonomy_status: Fn = {
 				mode: !agendaOn ? "dormant" : agendaEmail ? "armed (records reversible task proposals + emails you the digest)" : "armed (records reversible task proposals; digest to vault note only)",
 				reversible: true,
 				consequence: "scans mail+calendar for life 'drops' and RECORDS a reversible Todoist-task proposal for each — nothing acts until you approve via the `proposals` verb. Appends a digest to the Daily note; when AGENDA_EMAIL is set, ALSO mails the digest to your OWN address (the only send — never a third party). Never moves/deletes/auto-approves.",
+			},
+			{
+				surface: "mail_triage_plan",
+				armed: mailTriagePlanOn,
+				mode: mailTriagePlanOn ? "armed (durable ask-gated run: auto-starts, pauses for approval)" : "dormant",
+				reversible: true,
+				consequence: "auto-starts a durable mail-triage-plan run on the frequent cron and pauses at an ask-gate for your approval before acting — a distinct flag from `mail_triage`'s. Dedup-guarded against piling up concurrent runs.",
+			},
+			{
+				surface: "ask_gate_reminder",
+				armed: askGateReminderOn,
+				mode: !askGateReminderOn ? "dormant" : askGateReminderEmail ? "armed (nudges + emails you on a stalled ask-gate)" : "armed (nudges only, no email)",
+				reversible: true,
+				consequence: "reminds you when a durable run's ask-gate has been waiting; when ASK_GATE_REMINDER_EMAIL is set, ALSO emails a nudge to your OWN address. Never approves/acts on your behalf — only reminds.",
+			},
+			{
+				surface: "life_wiki",
+				armed: lifeWikiOn,
+				mode: lifeWikiOn ? "armed (cron-driven, overwrites vault self-model notes)" : "dormant",
+				reversible: true,
+				consequence: "fans recall out across vault/files/mail/learned and overwrites a set of vault notes (People/Health/Projects/Timeline/Interests) with the synthesis — vault-write, git-reversible. Read-only upstream.",
+			},
+			{
+				surface: "learning_folder",
+				armed: learningFolderOn,
+				mode: learningFolderOn ? "armed (cron-driven Dropbox folder sync + study ingestion)" : "dormant",
+				reversible: true,
+				consequence: "syncs a configured Dropbox folder and studies new files into the vault as notes — vault-write, git-reversible. Does not write back to Dropbox.",
 			},
 		];
 

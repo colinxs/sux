@@ -71,7 +71,7 @@ function extractCandidateUrls(materials: string[]): string[] {
 // the open web) plus calendar/contacts, per the north-star doc's explicit "mail/files/
 // vault/calendar/contacts" list for the self-model fan-out. Each degrades quietly when
 // unconfigured (gatherRecall's own contract), so this list is safe regardless of creds.
-export const ONBOARD_SOURCES = ["vault", "files", "mail", "calendar", "contacts", "learned"];
+export const ONBOARD_SOURCES = ["vault", "files", "mail", "calendar", "contacts", "learned", "imessage"];
 
 // At most this many gap-fill questions per profile — "1-2 high-signal questions" per the
 // issue's own framing; low-noise over exhaustive, per the north-star doc's 4th principle.

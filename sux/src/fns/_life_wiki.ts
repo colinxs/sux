@@ -99,7 +99,7 @@ export const FACETS: Facet[] = [
 // The stores each facet fans out over. mail/files degrade quietly when unconfigured (recall
 // reports them as "no matches"/"unavailable"), so this list is safe regardless of which
 // creds are set. web is intentionally EXCLUDED: the wiki is about YOUR signals, not the web.
-const WIKI_SOURCES = ["vault", "files", "mail", "learned"];
+const WIKI_SOURCES = ["vault", "files", "mail", "learned", "imessage"];
 
 // ── Deps (injectable — tests pass fakes) ─────────────────────────────────────────────
 export type FacetResult = { slug: string; title: string; file: string; answer: string; citations: string[]; sourceStatus: Record<string, string> };
