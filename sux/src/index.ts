@@ -67,11 +67,14 @@ const MAX_ARG_BYTES = 256_000;
 // MCP Tasks primitive (see src/tasks.ts) — the tools genuinely long-running or
 // fan-out-shaped enough to be worth polling instead of holding a request open:
 // pipe/batch compose many leaf calls server-side, render/crawl/batch_fetch/shop
-// can run close to FN_DEADLINE_MS today. Everything else stays request/response
-// only (execution.taskSupport omitted ⇒ "forbidden", the spec default) — most
-// of sux's ~95 fns are fast enough that task augmentation would just add a
-// round-trip. Extend this set as more fns want it; no dispatch change needed.
-const TASK_CAPABLE_TOOLS = new Set(["pipe", "batch", "render", "crawl", "batch_fetch", "shop"]);
+// can run close to FN_DEADLINE_MS today; onboard/recall fan out recall's own
+// multi-source gather (vault/files/mail/imessage/calendar/contacts/web/learned/
+// oracle) — onboard 6x over, recall once — with no async fallback otherwise.
+// Everything else stays request/response only (execution.taskSupport omitted
+// ⇒ "forbidden", the spec default) — most of sux's ~95 fns are fast enough
+// that task augmentation would just add a round-trip. Extend this set as more
+// fns want it; no dispatch change needed.
+const TASK_CAPABLE_TOOLS = new Set(["pipe", "batch", "render", "crawl", "batch_fetch", "shop", "onboard", "recall"]);
 
 // Race a fn.run against a hard deadline so no fn can hang the isolate. On timeout
 // we RESOLVE (not reject) with a clean isError ToolResult and abandon the run
