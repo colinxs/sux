@@ -96,10 +96,13 @@ export const FACETS: Facet[] = [
 	},
 ];
 
-// The stores each facet fans out over. mail/files degrade quietly when unconfigured (recall
-// reports them as "no matches"/"unavailable"), so this list is safe regardless of which
-// creds are set. web is intentionally EXCLUDED: the wiki is about YOUR signals, not the web.
-const WIKI_SOURCES = ["vault", "files", "mail", "learned"];
+// The stores each facet fans out over. mail/files/calendar/contacts degrade quietly when
+// unconfigured (recall reports them as "no matches"/"unavailable"), so this list is safe
+// regardless of which creds are set. web is intentionally EXCLUDED: the wiki is about YOUR
+// signals, not the web. Mirrors onboard's ONBOARD_SOURCES (_onboard.ts) — the facet questions
+// above (health's appointments, timeline's upcoming events, people's connections) need
+// calendar/contacts to be answerable at all.
+const WIKI_SOURCES = ["vault", "files", "mail", "calendar", "contacts", "learned"];
 
 // ── Deps (injectable — tests pass fakes) ─────────────────────────────────────────────
 export type FacetResult = { slug: string; title: string; file: string; answer: string; citations: string[]; sourceStatus: Record<string, string> };

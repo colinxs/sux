@@ -147,6 +147,26 @@ async function ecdhDeriveBits(otherPublicKey: CryptoKey, privateKey: CryptoKey):
 
 const textEncoder = new TextEncoder();
 
+// RFC 8188 §2: a record's encrypted length (plaintext + 1-byte pad delimiter + 16-byte
+// AEAD tag) must not exceed the declared `rs`. This file always sends a single record
+// (no multi-record splitting), so the plaintext itself must fit within rs - 17.
+export const WEBPUSH_RECORD_SIZE = 4096;
+export const WEBPUSH_MAX_PLAINTEXT_BYTES = WEBPUSH_RECORD_SIZE - 17;
+
+/** Shrink `message.body` (if needed) so `JSON.stringify(message)` fits within a single
+ *  RFC 8188 record — a push service typically 4xx's an oversized aes128gcm body, which
+ *  sendToSubscription's catch-all would otherwise swallow into an undiagnosable `false`. */
+export function truncateMessageToFit(message: PushMessage): PushMessage {
+	if (textEncoder.encode(JSON.stringify(message)).length <= WEBPUSH_MAX_PLAINTEXT_BYTES) return message;
+	let body = message.body;
+	while (body.length > 0) {
+		const candidate: PushMessage = { ...message, body: body.length < message.body.length ? `${body}…` : body };
+		if (textEncoder.encode(JSON.stringify(candidate)).length <= WEBPUSH_MAX_PLAINTEXT_BYTES) return candidate;
+		body = body.slice(0, -1);
+	}
+	return { ...message, body: "" };
+}
+
 /** Encrypt `plaintext` to a subscriber per RFC 8291 §3.3–3.4 / RFC 8188 §2. Exported
  *  for the round-trip test — sux is always the sender (UA-side decrypt is spec'd, never
  *  implemented here). */
@@ -175,7 +195,7 @@ export async function encryptPayload(plaintext: Uint8Array, p256dhB64: string, a
 	const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, cekKey, concatBytes(plaintext, new Uint8Array([2]))));
 
 	const recordSize = new Uint8Array(4);
-	new DataView(recordSize.buffer).setUint32(0, 4096, false);
+	new DataView(recordSize.buffer).setUint32(0, WEBPUSH_RECORD_SIZE, false);
 	// aes128gcm body header (RFC 8188 §2.1): salt(16) || rs(4, BE) || idlen(1) || keyid.
 	// keyid IS the sender's raw public key — aes128gcm embeds it here instead of a
 	// separate Crypto-Key header (the older, now-unsupported aesgcm content-coding).
@@ -187,7 +207,7 @@ export async function encryptPayload(plaintext: Uint8Array, p256dhB64: string, a
 export async function sendToSubscription(env: RtEnv, sub: PushSubscriptionInfo, message: PushMessage, ttlSeconds = 60): Promise<boolean> {
 	if (!hasWebPush(env)) return false;
 	try {
-		const body = await encryptPayload(textEncoder.encode(JSON.stringify(message)), sub.keys.p256dh, sub.keys.auth);
+		const body = await encryptPayload(textEncoder.encode(JSON.stringify(truncateMessageToFit(message))), sub.keys.p256dh, sub.keys.auth);
 		const res = await fetch(sub.endpoint, {
 			method: "POST",
 			headers: {

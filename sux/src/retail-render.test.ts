@@ -103,6 +103,29 @@ describe("retailRender rung memory (#844)", () => {
 		await retailRender(kvEnv, { url: "https://example.com/s" });
 		expect(JSON.parse(kvEnv.__store.get("rung:example.com"))).toMatchObject({ rung: "unlocker" });
 	});
+
+	// #900 — a pinned domain whose unlocker call itself fails must not fail outright;
+	// it should fall back to cf (mirroring _util.ts's fetchTextOkEscalating) instead of
+	// staying stuck on the failing paid rung for the pin's whole lifetime.
+	it("falls back to cf when the unlocker fails while pinned to the unlocker rung", async () => {
+		const kvEnv = envWithKv();
+		kvEnv.__store.set("rung:example.com", JSON.stringify({ rung: "unlocker", at: Date.now() }));
+		unlockerRenderMock.mockResolvedValueOnce({ ok: false, error: "unlocker transient timeout" });
+		cfRenderMock.mockResolvedValueOnce({ ok: true, contentType: "text/html", body: CF_HTML });
+		const r = await retailRender(kvEnv, { url: "https://example.com/s" });
+		expect(r).toMatchObject({ ok: true, body: CF_HTML });
+		expect(unlockerRenderMock).toHaveBeenCalledTimes(1);
+		expect(cfRenderMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("surfaces the real unlocker error when both legs fail while pinned to the unlocker rung", async () => {
+		const kvEnv = envWithKv();
+		kvEnv.__store.set("rung:example.com", JSON.stringify({ rung: "unlocker", at: Date.now() }));
+		unlockerRenderMock.mockResolvedValueOnce({ ok: false, error: "unlocker transient timeout" });
+		cfRenderMock.mockResolvedValueOnce({ ok: false, error: "cf primary error" });
+		const r = await retailRender(kvEnv, { url: "https://example.com/s" });
+		expect(r).toEqual({ ok: false, error: "unlocker transient timeout" });
+	});
 });
 
 // looksBlocked is THE canonical bot-wall check the retail scrapers (ace/lowes/costco)

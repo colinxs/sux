@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { encryptPayload, hasWebPush, listSubscriptions, notify, sendToSubscription, subscribe, unsubscribe } from "./_webpush";
+import { encryptPayload, hasWebPush, listSubscriptions, notify, sendToSubscription, subscribe, truncateMessageToFit, unsubscribe, WEBPUSH_MAX_PLAINTEXT_BYTES } from "./_webpush";
 
 const fakeKV = (init: Record<string, string> = {}) => {
 	const store = new Map(Object.entries(init));
@@ -98,6 +98,20 @@ async function decryptAsSubscriber(body: Uint8Array, uaKeyPair: CryptoKeyPair, u
 	return new TextDecoder().decode(paddedPlain.slice(0, -1));
 }
 
+describe("truncateMessageToFit (#906)", () => {
+	it("leaves a short message untouched", () => {
+		const message = { title: "t", body: "short body", url: "https://example.com" };
+		expect(truncateMessageToFit(message)).toEqual(message);
+	});
+
+	it("shrinks a body that would overflow a single RFC 8188 record so the JSON-encoded plaintext fits", () => {
+		const message = { title: "t", body: "x".repeat(10_000), url: "https://example.com" };
+		const fitted = truncateMessageToFit(message);
+		expect(new TextEncoder().encode(JSON.stringify(fitted)).length).toBeLessThanOrEqual(WEBPUSH_MAX_PLAINTEXT_BYTES);
+		expect(fitted.body.endsWith("…")).toBe(true);
+	});
+});
+
 describe("hasWebPush", () => {
 	it("requires all three VAPID fields", () => {
 		expect(hasWebPush({} as any)).toBe(false);
@@ -176,6 +190,25 @@ describe("sendToSubscription / notify", () => {
 		const ok = await sendToSubscription(env, sub, { title: "t", body: "b" });
 		expect(ok).toBe(false);
 		expect(await listSubscriptions(env)).toEqual([]);
+	});
+
+	it("truncates an oversized message body before encrypting, instead of producing an over-record ciphertext (#906)", async () => {
+		const kv = fakeKV();
+		const env = { OAUTH_KV: kv, ...(await makeVapidEnv()) } as any;
+		const sub = await makeSubscription("https://push.example.com/abc");
+		await subscribe(env, sub);
+		let sentBody: ArrayBuffer | undefined;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_url: string, init: RequestInit) => {
+				sentBody = init.body as ArrayBuffer;
+				return new Response(null, { status: 201 });
+			}),
+		);
+		const ok = await sendToSubscription(env, sub, { title: "t", body: "x".repeat(10_000) });
+		expect(ok).toBe(true);
+		// salt(16) + rs(4) + idlen(1) + keyid(65) + ciphertext must not exceed the declared record size.
+		expect(sentBody!.byteLength).toBeLessThanOrEqual(16 + 4 + 1 + 65 + 4096);
 	});
 
 	it("notify aggregates sent/failed across subscriptions without throwing on a fetch error", async () => {
