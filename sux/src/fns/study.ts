@@ -3,7 +3,7 @@ import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { appendOnWhitelist } from "./_kb";
 import { hasDropboxFull, normFull, readFull } from "./_dropbox-full";
 import { hasDropbox, sharedLink } from "./dropbox";
-import { dropboxRawUrl, errMsg, fromB64, isHttpUrl, loadBytes, oj } from "./_util";
+import { dropboxRawUrl, errMsg, fromB64, isHttpUrl, isHttpUrlStr, loadBytes, oj } from "./_util";
 import { KV_PREFIX, loadKb, learnTopic, oracle, type Whitelist } from "./oracle";
 
 // study — the WHITELISTED-KNOWLEDGE verb. You hand sux material you OWN or have the right to
@@ -77,7 +77,7 @@ async function extractDocText(env: RtEnv, source: string): Promise<{ text: strin
 	let bytes: Uint8Array;
 	let name: string;
 
-	if (isHttpUrl(s)) {
+	if (isHttpUrlStr(s)) {
 		const loaded = await loadBytes(env, { url: s });
 		bytes = loaded.bytes;
 		try {
@@ -90,7 +90,7 @@ async function extractDocText(env: RtEnv, source: string): Promise<{ text: strin
 		// deployments actually have configured, #768) via a shared link forced to a raw
 		// download; only require Mode B (whole-account) when Mode A isn't configured or the
 		// path isn't reachable through it (e.g. a path outside the app folder).
-		const path = String(s); // isHttpUrl's type guard narrows `s` to `never` in this branch
+		const path = s;
 		let modeAUrl: string | undefined;
 		if (hasDropbox(env)) {
 			try {

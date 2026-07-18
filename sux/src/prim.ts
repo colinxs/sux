@@ -17,6 +17,14 @@ export function isHttpUrl(u: unknown): u is string {
 	return typeof u === "string" && /^https?:\/\//i.test(u);
 }
 
+/** Same test as isHttpUrl, for a caller whose value is already typed `string` —
+ *  isHttpUrl's `u is string` guard narrows an already-`string` input to `never`
+ *  in the else branch, so a call site with a pre-narrowed string (e.g. after a
+ *  `.trim()`) should use this instead of reaching for a `String(x)` escape hatch. */
+export function isHttpUrlStr(s: string): boolean {
+	return /^https?:\/\//i.test(s);
+}
+
 /** Shared cap: index.ts's checkArgs rejects tools/call args nested deeper than
  *  this, and rate-limit.ts's weightedRateLimit rejects the same payloads before
  *  pricing them (#626) — one source of truth for both gates. */

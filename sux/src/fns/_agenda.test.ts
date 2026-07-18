@@ -111,6 +111,16 @@ describe("agenda — detectors", () => {
 		expect(near.map((d) => d.kind)).toContain("bill_due");
 		expect(far).toHaveLength(0);
 	});
+
+	it("Monarch: a large incoming deposit is not flagged as an unusual charge", () => {
+		const drops = detectMonarchDrops(
+			"2026-07-05",
+			[],
+			[{ id: "txn1", amount: 3200, merchant: "Employer Payroll" }],
+			[],
+		);
+		expect(drops).toHaveLength(0);
+	});
 });
 
 describe("agenda — learned ranking (W8)", () => {
