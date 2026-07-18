@@ -2,7 +2,10 @@ import { type Fn, fail, ok } from "../registry";
 import { htmlToMd } from "./_markup";
 import { clampBytes, loadBytes, putBlob, vaultToday, oj } from "./_util";
 import { dropboxPut, hasDropbox } from "./dropbox";
+import { embedOne } from "./_embed";
+import { appendInferSignal, hasInferArm } from "./_infer";
 import { type VaultCfg, vaultCfg, vaultPut } from "./obsidian";
+import { redactPII } from "./redact";
 
 // Capture — the intake half of the knowledge core (docs/proposals/domains.md §3).
 // Exactly one source in (url | text | query), one provenance-stamped markdown
@@ -72,6 +75,25 @@ async function vaultPutNoClobber(
 		if (!w.exists) return { ok: false, error: w.error };
 	}
 	return { ok: false, error: `ingest: '${path}' and its disambiguations are all taken — retry` };
+}
+
+const SIGNAL_SNIPPET_MAX = 1000;
+
+/** Best-effort feed into the infer signal log (#864's substrate) — a no-op unless INFER_ARM_FILES
+ *  is set, checked first so a dormant domain costs zero embed calls. Never throws into the
+ *  caller: a failed embed/append must not affect a capture that already landed in the vault.
+ *  Hooked here (capture's own write) rather than obsidian.ts's shared noteWritten so the signal
+ *  log tracks actual new-content items, not sux's own internal bookkeeping writes (digests,
+ *  ledgers) that also flow through that choke point. */
+async function logFilesSignal(env: any, notePath: string, title: string, body: string): Promise<void> {
+	if (!hasInferArm(env, "files")) return;
+	try {
+		const { redacted } = redactPII(`${title}\n${body}`.slice(0, SIGNAL_SNIPPET_MAX));
+		const vec = await embedOne(env, redacted);
+		await appendInferSignal(env, "files", { ts: Date.now(), vec, redacted_snippet: redacted, source_tag: `files:${notePath}` });
+	} catch (e) {
+		console.warn(`infer: files signal log failed for ${notePath} — ${(e as Error)?.message ?? e}`);
+	}
 }
 
 export const ingest: Fn = {
@@ -218,6 +240,7 @@ export const ingest: Fn = {
 				w = nc;
 			}
 			if (!w.ok) return fail(w.error);
+			await logFilesSignal(env, notePath, title, body);
 			return ok(oj({ ok: true, note: notePath, created: w.created, commit: w.commit, source, ...(pass ? { pass } : {}), ...(blob ? { blob } : {}) }));
 		} catch (e) {
 			return fail(`ingest failed: ${String((e as Error).message ?? e)}`);

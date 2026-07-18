@@ -8,6 +8,7 @@ vi.mock("../proxy", () => ({
 }));
 
 import { ingest } from "./ingest";
+import { readInferSignals } from "./_infer";
 
 const ENV = { OBSIDIAN_VAULT_REPO: "me/vault" } as any;
 const date = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
@@ -321,6 +322,36 @@ describe("ingest (capture → vault)", () => {
 		expect(out.blob.link).toBe("https://www.dropbox.com/s/x/big.zip");
 		expect(gh.puts[out.note]).toContain("(public shared link)");
 		expect(gh.puts[out.note]).toContain("[big.zip](https://www.dropbox.com/s/x/big.zip)");
+	});
+
+	it("does not feed the infer signal log when INFER_ARM_FILES is unset (dormant by default)", async () => {
+		const gh = ghMock();
+		routes.handler = gh.handler;
+		const store = new Map<string, string>();
+		const OAUTH_KV = { get: async (k: string) => store.get(k) ?? null, put: async (k: string, v: string) => void store.set(k, v) };
+		const aiRun = vi.fn(async () => ({ data: [[0.1, 0.2]] }));
+		const env = { ...ENV, OAUTH_KV, AI: { run: aiRun } };
+		await ingest.run(env, { text: "Some captured note body." });
+		expect(aiRun).not.toHaveBeenCalled();
+		expect(await readInferSignals(env, "files")).toEqual([]);
+	});
+
+	it("feeds a redacted, embedded signal into the infer log when INFER_ARM_FILES is armed", async () => {
+		const gh = ghMock();
+		routes.handler = gh.handler;
+		const store = new Map<string, string>();
+		const OAUTH_KV = { get: async (k: string) => store.get(k) ?? null, put: async (k: string, v: string) => void store.set(k, v) };
+		const aiRun = vi.fn(async () => ({ data: [[0.1, 0.2, 0.3]] }));
+		const env = { ...ENV, OAUTH_KV, AI: { run: aiRun }, INFER_ARM_FILES: "1" };
+		const r = await ingest.run(env, { text: "Reach me at colin@example.com about this.", title: "Contact note" });
+		const out = JSON.parse(r.content[0].text);
+		expect(aiRun).toHaveBeenCalledTimes(1);
+		const signals = await readInferSignals(env, "files");
+		expect(signals).toHaveLength(1);
+		expect(signals[0].vec).toEqual([0.1, 0.2, 0.3]);
+		expect(signals[0].source_tag).toBe(`files:${out.note}`);
+		expect(signals[0].redacted_snippet).not.toContain("colin@example.com");
+		expect(signals[0].redacted_snippet).toMatch(/\[REDACTED:email\]/);
 	});
 
 	it("flags the Dropbox link as public and degrades honestly when none is minted", async () => {

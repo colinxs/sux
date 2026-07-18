@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ACTION_FOR, ARCHIVE_CONFIDENCE_THRESHOLD, AUTO_ACT_OPS, CONFIDENCE_THRESHOLD, DRAFT_REPLY_CONFIDENCE_THRESHOLD, classify, classifyMessage, detectReplyDraft, hasMailTriage, hasMailTriageAct, isAutoActAllowed, isSensitiveSender, resolveOp, runTriage, type TriageDeps, type TriageLabel, type TriageMsg, type TriageOp } from "./_mail_triage";
 import { appendTriageEntries, bulkUndo, readTriageEntries } from "./_mail_triage_log";
+import { readInferSignals } from "./_infer";
 
 // A single OAUTH_KV stub, TTL-aware only enough for the ledger (opts ignored). Mirrors the
 // fakeKV in _dropbox-full.test.ts / vault-batch's obsidian-mock style — no real Fastmail,
@@ -707,5 +708,39 @@ describe("action log + bulk undo", () => {
 		expect(x.map((e) => e.id)).toEqual(["1"]);
 		const all = await readTriageEntries(env);
 		expect(all[0].id).toBe("2"); // newest-first (last appended is first)
+	});
+});
+
+describe("runTriage — infer signal wiring (#913)", () => {
+	it("does not feed the infer signal log when INFER_ARM_MAIL is unset (dormant by default)", async () => {
+		const deps = mkDeps(SAMPLE);
+		const env = envWith({ MAIL_TRIAGE_ENABLED: "1" });
+		env.AI = { run: vi.fn(async () => ({ data: [[0.1, 0.2]] })) };
+		await runTriage(env, { cycle_id: "sig1" }, deps);
+		expect(env.AI.run).not.toHaveBeenCalled();
+		expect(await readInferSignals(env, "mail")).toEqual([]);
+	});
+
+	it("feeds a redacted, embedded signal per scanned message when INFER_ARM_MAIL is armed", async () => {
+		const deps = mkDeps(SAMPLE);
+		const env = envWith({ MAIL_TRIAGE_ENABLED: "1", INFER_ARM_MAIL: "1" });
+		env.AI = { run: vi.fn(async () => ({ data: [[0.1, 0.2]] })) };
+		await runTriage(env, { cycle_id: "sig2" }, deps);
+		expect(env.AI.run).toHaveBeenCalledTimes(SAMPLE.length);
+		const signals = await readInferSignals(env, "mail");
+		expect(signals).toHaveLength(SAMPLE.length);
+		expect(signals.map((s) => s.source_tag).sort()).toEqual(SAMPLE.map((m) => `mail:${m.id}`).sort());
+	});
+
+	it("a signal-log failure (e.g. AI down) is swallowed — the triage cycle still completes", async () => {
+		const deps = mkDeps(SAMPLE);
+		const env = envWith({ MAIL_TRIAGE_ENABLED: "1", INFER_ARM_MAIL: "1" });
+		env.AI = { run: vi.fn(async () => { throw new Error("AI unavailable"); }) };
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const report = await runTriage(env, { cycle_id: "sig3" }, deps);
+		expect(report.dormant).toBeUndefined();
+		expect(report.suggested!.length + report.acted!.length).toBe(SAMPLE.length);
+		expect(warn).toHaveBeenCalledWith(expect.stringMatching(/infer: mail signal log failed/));
+		warn.mockRestore();
 	});
 });
