@@ -11,6 +11,7 @@ vi.mock("./fns/dropbox", () => ({
 
 import { FILES_TOOLS } from "./files-mcp";
 import { dropbox } from "./fns/dropbox";
+import { toB64 } from "./fns/_util";
 
 const env = () => ({}) as any;
 const fakeKV = () => {
@@ -83,6 +84,46 @@ describe("files_* tools", () => {
 	it("files_upload forwards op:put with base64", async () => {
 		const out = parse(await tool("files_upload").run(env(), { path: "img.png", base64: "AAAA" }));
 		expect(out).toMatchObject({ op: "put", path: "img.png", base64: "AAAA" });
+	});
+
+	// A `ref` (a sux /s/<uuid> CAS handle) resolves to bytes server-side so a session-
+	// local binary lands in Dropbox WITHOUT the caller inlining base64 through context —
+	// the write side of the same /s/ handle mail_send already accepts as an attachment.
+	describe("files_upload ref → bytes (R2 CAS handle, no inline base64)", () => {
+		const seeded = (uuid: string, key: string, bytes: Uint8Array, contentType = "application/pdf") =>
+			({
+				OAUTH_KV: { get: async (k: string) => (k === `store:${uuid}` ? JSON.stringify({ key, content_type: contentType }) : null), put: async () => {}, delete: async () => {} },
+				R2: { get: async (k: string) => (k === key ? { arrayBuffer: async () => bytes.slice().buffer, httpMetadata: { contentType }, size: bytes.length, customMetadata: {} } : null), put: async () => {} },
+			}) as any;
+
+		it("resolves a /s/<uuid> ref to bytes and forwards op:put with the decoded base64", async () => {
+			const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 5, 6, 7]);
+			const e = seeded("11111111-1111-1111-1111-111111111111", "cas/abc", bytes);
+			const out = parse(await tool("files_upload").run(e, { path: "doc.pdf", ref: "https://sux.example.dev/s/11111111-1111-1111-1111-111111111111" }));
+			expect(out).toMatchObject({ op: "put", path: "doc.pdf", base64: toB64(bytes) });
+		});
+
+		it("accepts a bare uuid as the ref", async () => {
+			const bytes = new Uint8Array([1, 2, 3, 4]);
+			const e = seeded("22222222-2222-2222-2222-222222222222", "cas/def", bytes);
+			const out = parse(await tool("files_upload").run(e, { path: "x.bin", ref: "22222222-2222-2222-2222-222222222222" }));
+			expect(out).toMatchObject({ op: "put", base64: toB64(bytes) });
+		});
+
+		it("a missing/expired ref → not_found, no dropbox write", async () => {
+			const e = { OAUTH_KV: { get: async () => null }, R2: { get: async () => null } } as any;
+			const r = await tool("files_upload").run(e, { path: "x.bin", ref: "33333333-3333-3333-3333-333333333333" });
+			expect(r.isError).toBe(true);
+			expect(r.errorCode).toBe("not_found");
+			expect(runMock).not.toHaveBeenCalled();
+		});
+
+		it("requires base64 or ref — neither is a bad_input", async () => {
+			const r = await tool("files_upload").run(kvEnv(), { path: "x.bin" });
+			expect(r.isError).toBe(true);
+			expect(r.errorCode).toBe("bad_input");
+			expect(runMock).not.toHaveBeenCalled();
+		});
 	});
 
 	it("files_share forwards op:share", async () => {

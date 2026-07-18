@@ -112,8 +112,8 @@ function renderStub(): Response {
 	return page("private", `<div class="stub">This note exists but isn't public.</div><a class="back" href="/portal">&larr; portal</a>`);
 }
 
-function renderNote(record: VaultRecord, body: string): Response {
-	const title = noteTitle(record);
+function renderNote(record: VaultRecord, body: string, fm?: VaultRecord["fm"]): Response {
+	const title = noteTitle(fm ? { path: record.path, fm } : record);
 	return page(title, `<h1>${esc(title)}</h1>${renderBody(body)}<a class="back" href="/portal">&larr; portal</a>`);
 }
 
@@ -188,5 +188,5 @@ export async function handlePortalRoutes(url: URL, request: Request, env: RtEnv)
 	// from the just-fetched content itself rather than trusting the cached tags/fm.
 	const freshFm = parseFrontmatter(body);
 	if (!isPortalVisible({ fm: freshFm, tags: extractTags(body, freshFm) })) return renderStub();
-	return renderNote(match, body);
+	return renderNote(match, body, freshFm);
 }

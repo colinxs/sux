@@ -51,15 +51,32 @@ export async function learnedRung(env: RtEnv, url: string): Promise<Rung | null>
 	}
 }
 
-/** Record that `rung` won the ladder for `url`'s domain just now. Best-effort —
- * swallows KV errors, since a failed write only costs the future latency win,
- * never correctness (the ladder still ran the leg that actually succeeded). */
+/** Record that `rung` won the ladder for `url`'s domain just now. Won't
+ * downgrade a live (unexpired) higher-rung pin — a different, easier same-
+ * domain fetch succeeding at `scrape` shouldn't discard a learned `unlocker`/
+ * `render` pin; only TTL expiry or the reprobe fraction is allowed to walk a
+ * domain back down. Best-effort — swallows KV errors, since a failed write
+ * only costs the future latency win, never correctness (the ladder still ran
+ * the leg that actually succeeded). */
 export async function recordRung(env: RtEnv, url: string, rung: Rung): Promise<void> {
 	const kv = env.OAUTH_KV;
 	const domain = domainOf(url);
 	if (!kv || !domain) return;
+	const key = KV_PREFIX + domain;
+	const raw = await kv.get(key).catch(() => null);
+	if (raw) {
+		try {
+			const parsed = JSON.parse(raw) as { rung?: unknown; at?: unknown };
+			const existing = parsed.rung as Rung;
+			const at = Number(parsed.at);
+			const live = RUNG_ORDER.includes(existing) && Number.isFinite(at) && Date.now() - at <= RUNG_TTL_MS;
+			if (live && RUNG_ORDER.indexOf(existing) > RUNG_ORDER.indexOf(rung)) return;
+		} catch {
+			// malformed entry — fall through and overwrite it
+		}
+	}
 	const body = JSON.stringify({ rung, at: Date.now() });
-	await kv.put(KV_PREFIX + domain, body, { expirationTtl: Math.ceil(RUNG_TTL_MS / 1000) }).catch(() => {});
+	await kv.put(key, body, { expirationTtl: Math.ceil(RUNG_TTL_MS / 1000) }).catch(() => {});
 }
 
 /** Whether rung `a` is at or past rung `b` in the ladder — lets a caller ask

@@ -78,8 +78,17 @@ export async function retailRender(env: RtEnv, spec: RetailRenderSpec): Promise<
 	// doomed rung (#844) — still re-probed periodically by learnedRung itself, so a
 	// domain that's stopped needing it drifts back down rather than staying pinned.
 	const learned = await learnedRung(env, spec.url);
-	let cfError: string;
-	if (learned !== "unlocker") {
+	if (learned === "unlocker") {
+		// Learned shortcut: try the unlocker first, skipping cf's doomed rung (#844).
+		// If the unlocker itself fails (transient timeout/rate-limit, or the site no
+		// longer needs it), fall through to cf below rather than failing outright —
+		// mirrors _util.ts's fetchTextOkEscalating fallback-from-the-bottom pattern.
+		const u = await unlockerRender(env, { url: spec.url, timeout_ms: UNLOCKER_LEG_MS });
+		if (u.ok && !looksBlocked(u.body)) {
+			await recordRung(env, spec.url, "unlocker");
+			return { ok: true, contentType: u.contentType, body: u.body };
+		}
+		const unlockerError = u.ok ? "unlocker render blocked (bot wall)" : u.error;
 		const cf = await cfRender(env, {
 			url: spec.url,
 			as: "html",
@@ -90,16 +99,30 @@ export async function retailRender(env: RtEnv, spec: RetailRenderSpec): Promise<
 			residential: true,
 			stealth: true,
 		});
-		// cf cleared transport but may have fetched a bot wall — a "successful" block page.
-		// Treat it as a failure so the ladder escalates to the paid unlocker.
 		if (cf.ok && "body" in cf && !looksBlocked(cf.body)) {
 			await recordRung(env, spec.url, "render");
 			return { ok: true, contentType: cf.contentType, body: cf.body };
 		}
-		cfError = cf.ok ? ("body" in cf ? "cf render blocked (bot wall)" : "cf render returned a non-HTML result") : cf.error;
-	} else {
-		cfError = "cf render skipped (domain learned to need the unlocker rung)";
+		return { ok: false, error: unlockerError };
 	}
+
+	const cf = await cfRender(env, {
+		url: spec.url,
+		as: "html",
+		wait_until: spec.wait_until,
+		wait_ms: spec.wait_ms,
+		block_resources: spec.block_resources,
+		timeout_ms: budget,
+		residential: true,
+		stealth: true,
+	});
+	// cf cleared transport but may have fetched a bot wall — a "successful" block page.
+	// Treat it as a failure so the ladder escalates to the paid unlocker.
+	if (cf.ok && "body" in cf && !looksBlocked(cf.body)) {
+		await recordRung(env, spec.url, "render");
+		return { ok: true, contentType: cf.contentType, body: cf.body };
+	}
+	const cfError = cf.ok ? ("body" in cf ? "cf render blocked (bot wall)" : "cf render returned a non-HTML result") : cf.error;
 
 	// Fallback: the paid residential unlocker (no-ops instantly when UNLOCKER_API_* is unset).
 	const u = await unlockerRender(env, { url: spec.url, timeout_ms: UNLOCKER_LEG_MS });
