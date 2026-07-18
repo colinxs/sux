@@ -224,7 +224,8 @@ export async function snoozeProposal(env: RtEnv, id: string, untilMs?: number): 
 		if (!p) throw new Error(`no proposal '${id}' (expired or unknown).`);
 		if (p.status === "snoozed") return p; // idempotent
 		if (p.status === "committed" || p.status === "failed" || p.status === "rejected") throw new Error(`proposal '${id}' already ${p.status}; can't snooze.`);
-		const updated: Proposal = { ...p, status: "snoozed", snoozedUntil: untilMs ?? now() + days(1) };
+		const snoozedUntil = untilMs ?? now() + days(1);
+		const updated: Proposal = { ...p, status: "snoozed", snoozedUntil, expiresAt: Math.max(p.expiresAt, snoozedUntil) };
 		await putProposal(env, updated);
 		return updated;
 	});

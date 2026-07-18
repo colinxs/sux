@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { composeDigest, type AgendaDeps, type Drop, detectDrops, detectKnowledgeDrops, detectMonarchDrops, detectPortfolioDrops, detectSavingsRateDrop, detectTextDrops, computeSavingsRate, type EventRef, type MailRef, type TextThreadRef, rankDropsLearned, runAgenda } from "./_agenda";
+import { composeDigest, type AgendaDeps, type Drop, detectDrops, detectKnowledgeDrops, detectMonarchDrops, detectPortfolioDrops, detectSavingsRateDrop, detectTextDrops, detectWatchDrops, computeSavingsRate, type EventRef, type MailRef, type TextThreadRef, rankDropsLearned, runAgenda } from "./_agenda";
 import { listProposals } from "../proposals";
 import { recordOutcome } from "./_learning";
 
@@ -27,6 +27,7 @@ const deps = (over: Partial<AgendaDeps> = {}): AgendaDeps => ({
 	sendDigest: vi.fn(async () => {}),
 	consolidateFindings: vi.fn(async () => null),
 	weeklyRecallFindings: vi.fn(async () => null),
+	watchFindings: vi.fn(async () => null),
 	monarchAccounts: vi.fn(async () => []),
 	monarchTransactions: vi.fn(async () => []),
 	monarchBudgets: vi.fn(async () => []),
@@ -83,10 +84,28 @@ describe("agenda — detectors", () => {
 		expect(detectKnowledgeDrops({ week: "2026-W28", stale: [], duplicate_candidates: [] }, { week: "2026-W28", questions: 0, content_hash: "abc" })).toHaveLength(0);
 	});
 
+	it("wires the watch sweep's changed pages in as fyi drops (#899), keyed on the new hash", () => {
+		const drops = detectWatchDrops({
+			checked_at: "2026-07-18T00:00:00.000Z",
+			changed_count: 1,
+			changed: [{ url: "https://example.com/price", label: "price watch", hash: "new-hash", previous_hash: "old-hash", checked_at: "2026-07-18T00:00:00.000Z" }],
+		});
+		expect(drops).toHaveLength(1);
+		expect(drops[0]).toMatchObject({ kind: "watch_changed", urgency: "fyi" });
+		expect(drops[0].dedupe).toContain("new-hash");
+		expect(drops[0].title).toContain("price watch");
+		expect(drops[0].action.fn).toBe("todoist");
+	});
+
+	it("no watch drops when there's nothing to report", () => {
+		expect(detectWatchDrops(null)).toHaveLength(0);
+		expect(detectWatchDrops({ checked_at: "2026-07-18T00:00:00.000Z", changed_count: 0, changed: [] })).toHaveLength(0);
+	});
+
 	it("detects Monarch financial signals (W7): low balance, unusual charge, bill due soon", () => {
 		const drops = detectMonarchDrops(
 			"2026-07-28", // 3 days left in July
-			[{ id: "acct1", name: "Checking", balance: 42.5 }],
+			[{ id: "acct1", name: "Checking", balance: 42.5, type: "depository" }],
 			[{ id: "txn1", amount: -733.2, merchant: "Some LLC", date: "2026-07-27" }],
 			[{ category: "Rent", categoryId: "cat1", remaining: 900 }],
 		);
@@ -96,6 +115,19 @@ describe("agenda — detectors", () => {
 			expect(d.action.fn).toBe("todoist");
 			expect(d.action.args).toMatchObject({ action: "add" });
 		}
+	});
+
+	it("Monarch: low_balance ignores non-depository accounts (credit card/loan, #901)", () => {
+		const drops = detectMonarchDrops(
+			"2026-07-05",
+			[
+				{ id: "acct1", name: "Amex", balance: 42, type: "credit" },
+				{ id: "acct2", name: "Mortgage", balance: 10, type: "loan" },
+			],
+			[],
+			[],
+		);
+		expect(drops.map((d) => d.kind)).not.toContain("low_balance");
 	});
 
 	it("Monarch: no drops when balances/charges/bills are all unremarkable", () => {
@@ -336,10 +368,25 @@ describe("agenda — loop", () => {
 		expect(r.proposals?.map((p) => p.kind)).toEqual(expect.arrayContaining(["consolidate_stale", "weekly_recall_ready"]));
 	});
 
+	it("proposes a drop from the watch sweep's cached findings alongside mail+calendar (#899)", async () => {
+		const e = env();
+		const d = deps({
+			watchFindings: vi.fn(async () => ({
+				checked_at: "2026-07-18T00:00:00.000Z",
+				changed_count: 1,
+				changed: [{ url: "https://example.com/price", hash: "new-hash", previous_hash: "old-hash", checked_at: "2026-07-18T00:00:00.000Z" }],
+			})),
+		});
+		const r = await runAgenda(e, {}, d);
+		expect(r.proposed).toBe(8); // 7 mail/cal + watch_changed
+		expect(r.proposals?.map((p) => p.kind)).toEqual(expect.arrayContaining(["watch_changed"]));
+		expect(r.sources.watch).toMatch(/1 changed/);
+	});
+
 	it("wires Monarch financial signals (W7) in only when MONARCH_TOKEN is set", async () => {
 		const e = env({ MONARCH_TOKEN: "tok" });
 		const d = deps({
-			monarchAccounts: vi.fn(async () => [{ id: "acct1", name: "Checking", balance: 10 }]),
+			monarchAccounts: vi.fn(async () => [{ id: "acct1", name: "Checking", balance: 10, type: "depository" }]),
 			monarchTransactions: vi.fn(async () => []),
 			monarchBudgets: vi.fn(async () => []),
 		});

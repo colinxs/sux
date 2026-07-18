@@ -59,7 +59,7 @@ const MAX_CACHED_FINDINGS = 20;
  *  vault bigger than one sweep's cap gets covered in full over several sweeps instead of the
  *  same leading slice forever. Returns the window plus the offset the *next* sweep should
  *  start from. */
-function sweepWindow<T>(items: readonly T[], offset: number, size: number): { window: T[]; nextOffset: number } {
+export function sweepWindow<T>(items: readonly T[], offset: number, size: number): { window: T[]; nextOffset: number } {
 	if (items.length === 0) return { window: [], nextOffset: 0 };
 	const start = ((offset % items.length) + items.length) % items.length;
 	const take = Math.min(size, items.length);

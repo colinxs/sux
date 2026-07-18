@@ -1,10 +1,65 @@
-import { type Fn, fail, failWith, ok } from "../registry";
+import { type RtEnv, type Fn, fail, failWith, ok } from "../registry";
 import { fetchTextOk, isHttpUrl, sha256Hex, oj } from "./_util";
 import { select } from "./select";
 
 /** SHA-256 hex of a UTF-8 string. */
 async function sha256Text(s: string): Promise<string> {
 	return sha256Hex(new TextEncoder().encode(s));
+}
+
+// ── Directory index (#899) ──────────────────────────────────────────────────────
+// A single sux:watch:index key holding every active watch's {keyId, url, selector?,
+// label?, lastChecked} — the only way a cron sweep can enumerate "which watches exist"
+// without knowing every url+selector+label combination up front (the per-watch keys are
+// one-way hashes). Kept in lockstep with the existing first_seen/change-detected write
+// path below (upsert) and reset (remove) rather than touched on every no-change recheck,
+// so a steady page costs no extra KV traffic beyond what watch already did.
+const INDEX_KEY = "sux:watch:index";
+
+export type WatchIndexEntry = { keyId: string; url: string; selector?: string; label?: string; lastChecked: string };
+
+async function readWatchIndex(env: RtEnv): Promise<WatchIndexEntry[]> {
+	try {
+		const raw = await env.OAUTH_KV.get(INDEX_KEY);
+		if (!raw) return [];
+		const parsed = JSON.parse(raw);
+		return Array.isArray(parsed) ? parsed.filter((e): e is WatchIndexEntry => Boolean(e) && typeof e.keyId === "string" && typeof e.url === "string") : [];
+	} catch {
+		return [];
+	}
+}
+
+/** Every active watch, for a cron sweep to enumerate and re-check. Best-effort: a corrupt
+ *  or unreadable index degrades to an empty list rather than throwing. */
+export const listWatches = readWatchIndex;
+
+/** Upsert this watch into the directory — called only from the first_seen/change-detected
+ *  paths (see run() below), never on a no-change recheck. Best-effort: an index write
+ *  failure must never break the check itself, which already succeeded by this point. */
+async function upsertWatchIndex(env: RtEnv, keyId: string, url: string, selector: string, label: string): Promise<void> {
+	try {
+		const entries = await readWatchIndex(env);
+		const entry: WatchIndexEntry = { keyId, url, ...(selector ? { selector } : {}), ...(label ? { label } : {}), lastChecked: new Date().toISOString() };
+		const idx = entries.findIndex((e) => e.keyId === keyId);
+		if (idx >= 0) entries[idx] = entry;
+		else entries.push(entry);
+		await env.OAUTH_KV.put(INDEX_KEY, JSON.stringify(entries));
+	} catch {
+		// best-effort — see comment above.
+	}
+}
+
+/** Remove this watch from the directory — called from reset:true, the only un-watch path. */
+async function removeWatchIndex(env: RtEnv, keyId: string): Promise<void> {
+	try {
+		const entries = await readWatchIndex(env);
+		const next = entries.filter((e) => e.keyId !== keyId);
+		if (next.length === entries.length) return;
+		if (next.length === 0) await env.OAUTH_KV.delete(INDEX_KEY);
+		else await env.OAUTH_KV.put(INDEX_KEY, JSON.stringify(next));
+	} catch {
+		// best-effort — see comment above.
+	}
 }
 
 /**
@@ -57,7 +112,10 @@ export const watch: Fn = {
 			// reach (it only touches the user kv: namespace).
 			if (reset) {
 				const existed = (await env.OAUTH_KV.get(kvKey)) !== null;
-				if (existed) await env.OAUTH_KV.delete(kvKey);
+				if (existed) {
+					await env.OAUTH_KV.delete(kvKey);
+					await removeWatchIndex(env, keyId);
+				}
 				const result = ok(
 					oj({
 						url,
@@ -82,8 +140,12 @@ export const watch: Fn = {
 			const changed = !firstSeen && hash !== previous;
 
 			// Store the new hash whenever it differs from what's recorded (first sight,
-			// or an actual change) — a no-change re-check needs no write.
-			if (firstSeen || changed) await env.OAUTH_KV.put(kvKey, hash);
+			// or an actual change) — a no-change re-check needs no write. The directory index
+			// (#899) rides the same condition, so a cron sweep has something to enumerate.
+			if (firstSeen || changed) {
+				await env.OAUTH_KV.put(kvKey, hash);
+				await upsertWatchIndex(env, keyId, url, selector, label);
+			}
 
 			const out: Record<string, unknown> = {
 				url,

@@ -900,3 +900,91 @@ describe("scheduled (cron-dispatch wiring)", () => {
 		await expect(Promise.all(deferred)).resolves.toBeDefined();
 	});
 });
+
+// The raw-bytes upload door (POST /s/up) — the write-twin of GET /s/<uuid>. Lets a
+// local shell curl a file's bytes straight into R2 and get back a /s/<uuid> ref that
+// mail_send / files_upload / ingest consume, WITHOUT inlining the payload as base64
+// through the model context. Bearer-gated by SUX_UPLOAD_TOKEN; runs in worker.fetch
+// pre-OAuth, before handleObservability's GET-only /s/<uuid> reader can see it.
+describe("POST /s/up — raw-bytes upload door", () => {
+	function makeR2() {
+		const objs = new Map<string, { body: Uint8Array; httpMetadata?: unknown; customMetadata?: unknown }>();
+		const r2 = {
+			put: async (key: string, value: Uint8Array, opts?: { httpMetadata?: unknown; customMetadata?: unknown }) => {
+				objs.set(key, { body: value, httpMetadata: opts?.httpMetadata, customMetadata: opts?.customMetadata });
+			},
+			get: async (key: string) => {
+				const o = objs.get(key);
+				if (!o) return null;
+				return { arrayBuffer: async () => o.body.slice().buffer, size: o.body.length, httpMetadata: o.httpMetadata, customMetadata: o.customMetadata };
+			},
+		};
+		return { objs, r2 };
+	}
+	const uploadEnv = (kv: ReturnType<typeof makeKv>["kv"], r2: unknown, token?: string) => ({ ...makeEnv(kv), R2: r2, SUX_UPLOAD_TOKEN: token }) as unknown as RtEnv;
+	const upReq = (body: BodyInit | null, headers: Record<string, string> = {}, url = "https://sux.example.dev/s/up") => new Request(url, { method: "POST", headers, body });
+
+	it("stores the posted bytes and returns a /s/<uuid> ref with the default TTL", async () => {
+		const { kv } = makeKv();
+		const { objs, r2 } = makeR2();
+		const { ctx } = makeCtx();
+		const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 1, 2, 3]); // "%PDF" + binary
+		const res = await worker.fetch(upReq(bytes, { authorization: "Bearer sekret", "content-type": "application/pdf" }), uploadEnv(kv, r2, "sekret"), ctx);
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { ok: boolean; ref: string; url: string; size: number; content_type: string; expiry?: number };
+		expect(body.ok).toBe(true);
+		expect(body.ref).toMatch(/\/s\/[0-9a-f-]{36}$/i);
+		expect(body.ref).toBe(body.url);
+		expect(body.size).toBe(bytes.length);
+		expect(body.content_type).toBe("application/pdf");
+		expect(body.expiry).toBeGreaterThan(0); // default 1h handle TTL
+		// The exact bytes landed in R2 under a cas/<sha> key (binary is not gzip-framed).
+		const stored = [...objs.values()][0];
+		expect(new Uint8Array(stored.body)).toEqual(bytes);
+	});
+
+	it("404s when SUX_UPLOAD_TOKEN is unset (feature off)", async () => {
+		const { kv } = makeKv();
+		const { r2 } = makeR2();
+		const { ctx } = makeCtx();
+		const res = await worker.fetch(upReq(new Uint8Array([1]), { authorization: "Bearer x" }), uploadEnv(kv, r2, undefined), ctx);
+		expect(res.status).toBe(404);
+	});
+
+	it("401s a wrong or missing bearer token", async () => {
+		const { kv } = makeKv();
+		const { r2 } = makeR2();
+		const { ctx } = makeCtx();
+		const wrong = await worker.fetch(upReq(new Uint8Array([1]), { authorization: "Bearer nope" }), uploadEnv(kv, r2, "sekret"), ctx);
+		expect(wrong.status).toBe(401);
+		const missing = await worker.fetch(upReq(new Uint8Array([1]), {}), uploadEnv(kv, r2, "sekret"), ctx);
+		expect(missing.status).toBe(401);
+	});
+
+	it("400s an empty body", async () => {
+		const { kv } = makeKv();
+		const { r2 } = makeR2();
+		const { ctx } = makeCtx();
+		const res = await worker.fetch(upReq(new Uint8Array([]), { authorization: "Bearer sekret" }), uploadEnv(kv, r2, "sekret"), ctx);
+		expect(res.status).toBe(400);
+	});
+
+	it("413s a body past the 25MB cap", async () => {
+		const { kv } = makeKv();
+		const { r2 } = makeR2();
+		const { ctx } = makeCtx();
+		const oversize = new Uint8Array(25 * 1024 * 1024 + 1);
+		const res = await worker.fetch(upReq(oversize, { authorization: "Bearer sekret" }), uploadEnv(kv, r2, "sekret"), ctx);
+		expect(res.status).toBe(413);
+	});
+
+	it("?ttl=0 mints a permanent handle (no expiry)", async () => {
+		const { kv } = makeKv();
+		const { r2 } = makeR2();
+		const { ctx } = makeCtx();
+		const res = await worker.fetch(upReq(new Uint8Array([9, 9, 9]), { authorization: "Bearer sekret" }, "https://sux.example.dev/s/up?ttl=0"), uploadEnv(kv, r2, "sekret"), ctx);
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { expiry?: number };
+		expect(body.expiry).toBeUndefined();
+	});
+});
