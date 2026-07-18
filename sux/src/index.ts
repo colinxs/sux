@@ -23,6 +23,7 @@ import { handleObservability } from "./observability";
 import { handleDashboardRoutes } from "./dashboard";
 import { handleRecovery } from "./recovery";
 import { handleAppleHealth, handleMychartRoutes, refreshMychartToken } from "./mychart";
+import { handlePortalRoutes } from "./portal";
 import { normalizeArgs, normalizeText } from "./normalize";
 import { cancelTask, createTask, getTask, isTerminal, listTasks, toPublicTask, toTaskResult, waitForTerminal } from "./tasks";
 import { timingSafeEqual } from "./crypto-util";
@@ -889,6 +890,13 @@ export default {
 		if (mychartRoute) return mychartRoute;
 		const appleHealth = await handleAppleHealth(new URL(request.url), request, env);
 		if (appleHealth) return appleHealth;
+
+		// portal.suxos.net's served view of the git vault (only #portal-tagged /
+		// visibility:portal notes) — same pre-gate reason as the routes above; its own
+		// auth model is the tag/frontmatter filter, fail-closed on PORTAL_ENABLED. See
+		// src/portal.ts.
+		const portal = await handlePortalRoutes(new URL(request.url), request, env);
+		if (portal) return portal;
 
 		// Manual ops trigger for the daily cron ticks — POST /admin/tick?job=mail-triage|
 		// self-improve|maintenance, bearer-gated by SUX_CRON_TOKEN (unset ⇒ 404, feature off).

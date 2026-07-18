@@ -54,7 +54,7 @@ type VaultTool = {
 
 const git = (args: Record<string, unknown>) => ({ ...args, backend: "git" });
 
-type VaultRecord = { path: string; fm: Record<string, unknown>; links: string[]; tags: string[]; tasks: VaultTask[]; excerpt: string; keywords: string[] };
+export type VaultRecord = { path: string; fm: Record<string, unknown>; links: string[]; tags: string[]; tasks: VaultTask[]; excerpt: string; keywords: string[] };
 
 const toRecord = (path: string, content: string, fm: Record<string, unknown>): VaultRecord => ({
 	path,
@@ -165,7 +165,7 @@ async function scanVaultDirect(env: RtEnv, folder: string | undefined, cap: numb
  *  back to a direct per-note scan when the index is unavailable. `truncated` flags a
  *  result the caller's `cap` clipped, a vault beyond INDEX_MAX, OR an index with
  *  per-note read holes — the latter two propagate regardless of folder scoping. */
-async function scanVault(env: RtEnv, folder: string | undefined, cap: number): Promise<{ records: VaultRecord[]; total: number; truncated: boolean }> {
+export async function scanVault(env: RtEnv, folder: string | undefined, cap: number): Promise<{ records: VaultRecord[]; total: number; truncated: boolean }> {
 	const cfg = vaultCfg(env);
 	const idx = "error" in cfg ? null : await vaultIndex(env, cfg);
 	if (idx && !("error" in cfg)) {

@@ -193,6 +193,14 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   reports the whole doc as "data", and a plain `grep`/`grep -n` over it silently returns ZERO
   matches for anything, even unrelated terms, with no error. Don't take that as "this isn't
   documented here"; use `grep -a` against this specific file (confirmed while building #803).
+- **`fns/obsidian.ts`'s `readVaultIndexBlob`/`writeVaultIndexBlob` are a SINGLE KV key per vault
+  repo+branch (`cache:vault:git:{repo}@{branch}:index`), single-owned by `vault-mcp.ts`'s
+  `scanVault`/`buildVaultIndex` (the derived {path,fm,tags,links,...} scan behind backlinks/
+  query/tags — and now `portal.ts`, #824). A new consumer that also needs the whole-vault
+  derived scan should import `vault-mcp.ts`'s exported `scanVault`/`VaultRecord` rather than
+  writing its own differently-shaped blob through those two functions directly — two shapes
+  fighting over the same key thrash the cache (each write invalidates the other's `version`
+  check) instead of sharing the one already-built index.
 
 ## House style
 
