@@ -86,3 +86,81 @@ export async function appendInferSignal(env: RtEnv, domain: InferDomain, signal:
 export async function readInferSignals(env: RtEnv, domain: InferDomain): Promise<InferSignal[]> {
 	return signalLog(env, domain).load();
 }
+
+/** Stable identity for a signal — `source_tag` is per-item ("mail:<id>", "vault:<path>", ...) and
+ * `ts` disambiguates re-embeds of the same source, so the pair is unique within one domain's log
+ * without needing a separate id field on `InferSignal` itself. Shared by the drift detector
+ * (evidence-trail ids) and the deletion path below (delete-by-id target). */
+export const inferSignalId = (s: InferSignal): string => `${s.source_tag}@${s.ts}`;
+
+// ── Inference log (append-only, per domain) ───────────────────────────────────
+// A detector's surviving candidate, once it's actually wired to a nudge (a later issue in the
+// #858 split), persists here so the deletion/cascade path below has something concrete to
+// cascade against. `evidenceIds` are `inferSignalId(...)` values into the SAME domain's signal
+// log — deleting a cited signal must delete the inference too (design doc §3 guardrail 3, GDPR
+// erasure: no inference may outlive the evidence it was derived from).
+export type InferInference = {
+	id: string;
+	createdAt: number;
+	cluster: string;
+	evidenceIds: string[];
+};
+
+const INFERENCE_CAP = 500;
+const inferenceLogKey = (domain: InferDomain): string => `kv:infer:${domain}:inferences`;
+const inferenceLog = (env: RtEnv, domain: InferDomain) => cappedKvLog<InferInference>(env, inferenceLogKey(domain), INFERENCE_CAP);
+
+/** Append one inference. Fail-closed like `appendInferSignal` — a dormant/killed domain writes
+ * nothing, so a nudge/inference can never be produced for a domain the user hasn't armed. */
+export async function appendInferInference(env: RtEnv, domain: InferDomain, inference: InferInference): Promise<AppendSignalResult> {
+	if (isInferKilled(env)) return { appended: false, reason: "killed" };
+	if (!hasInferArm(env, domain)) return { appended: false, reason: "dormant" };
+	await inferenceLog(env, domain).push(inference);
+	return { appended: true, reason: "ok" };
+}
+
+/** Read back a domain's inference log (newest-first). Reads are always allowed, gated or not. */
+export async function readInferInferences(env: RtEnv, domain: InferDomain): Promise<InferInference[]> {
+	return inferenceLog(env, domain).load();
+}
+
+export type DeleteSignalResult = { deletedSignals: number; cascadedInferences: number };
+
+/**
+ * Right-to-erasure path (design doc §3 guardrail 3): delete one signal by id, cascading to any
+ * inference that cites it as evidence. Deliberately NOT gated behind `hasInferArm`/`isInferKilled`
+ * — a domain the user has since disarmed (or a globally killed inference loop) must still let
+ * them erase data written while it was armed; the arm/kill gates protect new writes, not the
+ * erasure of past ones.
+ */
+export async function deleteInferSignal(env: RtEnv, domain: InferDomain, signalIdToDelete: string): Promise<DeleteSignalResult> {
+	const signals = await signalLog(env, domain).load();
+	const remaining = signals.filter((s) => inferSignalId(s) !== signalIdToDelete);
+	const deletedSignals = signals.length - remaining.length;
+	if (deletedSignals > 0) await signalLog(env, domain).save(remaining);
+
+	const inferences = await inferenceLog(env, domain).load();
+	const survivors = inferences.filter((i) => !i.evidenceIds.includes(signalIdToDelete));
+	const cascadedInferences = inferences.length - survivors.length;
+	if (cascadedInferences > 0) await inferenceLog(env, domain).save(survivors);
+
+	return { deletedSignals, cascadedInferences };
+}
+
+/** Delete a single inference by id. No downstream cascade needed here — an inference has no
+ * evidence of its own beyond the signals it already cites (a shipped nudge is derived FROM an
+ * inference, but wiring that deletion is a later issue in the split). */
+export async function deleteInferInference(env: RtEnv, domain: InferDomain, inferenceId: string): Promise<{ deleted: number }> {
+	const inferences = await inferenceLog(env, domain).load();
+	const survivors = inferences.filter((i) => i.id !== inferenceId);
+	const deleted = inferences.length - survivors.length;
+	if (deleted > 0) await inferenceLog(env, domain).save(survivors);
+	return { deleted };
+}
+
+/** Purge a whole domain's signal-log + inference-log in one shot — the coarsest erasure control
+ * ("purge a whole domain's signal-log" per the design doc). */
+export async function purgeInferDomain(env: RtEnv, domain: InferDomain): Promise<void> {
+	await signalLog(env, domain).save([]);
+	await inferenceLog(env, domain).save([]);
+}
