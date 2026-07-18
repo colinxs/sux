@@ -62,6 +62,49 @@ describe("retailRender ladder order", () => {
 	});
 });
 
+// #844 — the ladder starts at a domain's learned rung instead of always paying
+// the cheap rung's doomed tax first.
+describe("retailRender rung memory (#844)", () => {
+	function envWithKv() {
+		const store = new Map<string, string>();
+		return {
+			...env,
+			OAUTH_KV: {
+				get: async (k: string) => store.get(k) ?? null,
+				put: async (k: string, v: string) => void store.set(k, v),
+			},
+			__store: store,
+		} as any;
+	}
+
+	beforeEach(() => vi.spyOn(Math, "random").mockReturnValue(0.99)); // never land in the reprobe fraction
+
+	it("skips cf entirely once a domain has learned it needs the unlocker", async () => {
+		const kvEnv = envWithKv();
+		kvEnv.__store.set("rung:example.com", JSON.stringify({ rung: "unlocker", at: Date.now() }));
+		unlockerRenderMock.mockResolvedValueOnce({ ok: true, contentType: "text/html", body: UNLOCKER_HTML });
+		const r = await retailRender(kvEnv, { url: "https://example.com/s" });
+		expect(r).toMatchObject({ ok: true, body: UNLOCKER_HTML });
+		expect(cfRenderMock).not.toHaveBeenCalled();
+		expect(unlockerRenderMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("records the winning rung on a cf success", async () => {
+		const kvEnv = envWithKv();
+		cfRenderMock.mockResolvedValueOnce({ ok: true, contentType: "text/html", body: CF_HTML });
+		await retailRender(kvEnv, { url: "https://example.com/s" });
+		expect(JSON.parse(kvEnv.__store.get("rung:example.com"))).toMatchObject({ rung: "render" });
+	});
+
+	it("records the winning rung on an unlocker success", async () => {
+		const kvEnv = envWithKv();
+		cfRenderMock.mockResolvedValueOnce({ ok: false, error: "cf primary error" });
+		unlockerRenderMock.mockResolvedValueOnce({ ok: true, contentType: "text/html", body: UNLOCKER_HTML });
+		await retailRender(kvEnv, { url: "https://example.com/s" });
+		expect(JSON.parse(kvEnv.__store.get("rung:example.com"))).toMatchObject({ rung: "unlocker" });
+	});
+});
+
 // looksBlocked is THE canonical bot-wall check the retail scrapers (ace/lowes/costco)
 // now route their own zero-products block-vs-layout-change disambiguation through,
 // replacing three regexes that had each drifted from this one (and from each other).

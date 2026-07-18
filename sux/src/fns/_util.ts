@@ -17,6 +17,7 @@ import { errMsg, isHttpUrl, isHttpUrlStr, oj } from "../prim";
 import { storeRefUuid, getBlob } from "./_util/store-ref";
 import { fetchDedupActive, fetchCacheGet, fetchCacheSet, FETCH_CACHE_MAX_TEXT } from "./_util/fetch-cache";
 import { fromB64, clampBytes } from "./_util/bytes";
+import { learnedRung, recordRung, rungAtLeast } from "./_util/rung-memory";
 
 // Re-exported for the ~100 fns that import these alongside the blob-store/registry
 // helpers below — the definitions themselves live in ../prim (dependency-free,
@@ -30,6 +31,7 @@ export * from "./_util/cache-control";
 export * from "./_util/html";
 export * from "./_util/json";
 export * from "./_util/store-ref";
+export * from "./_util/rung-memory";
 
 // Cloudflare's edge-to-origin error family: the CF edge itself answered, but
 // couldn't reach/resolve whatever sits behind it — a dead Tunnel or broken DNS on
@@ -253,13 +255,35 @@ export async function fetchTextOkEscalating(
 	url: unknown,
 	init?: { method?: string; headers?: Record<string, string>; body?: string; maxBytes?: number },
 ): Promise<{ text: string; headers: Headers; status: number } | { error: string }> {
-	const first = await fetchTextOk(env, url, init);
-	if (!("error" in first)) return first;
 	const method = (init?.method ?? "GET").toUpperCase();
-	if (method !== "GET" || !ESCALATABLE_STATUSES.test(first.error)) return first;
+	const canEscalate = method === "GET" && isHttpUrl(url);
+	// A domain previously learned to need render can start there and skip the cheap
+	// fetch's doomed rung entirely — but only for THIS call's escalation path (GET,
+	// no body); a non-escalatable request still goes through the plain fetch below.
+	const learned = canEscalate ? await learnedRung(env, String(url)) : null;
+	if (canEscalate && learned && rungAtLeast(learned, "render")) {
+		try {
+			const html = await renderHtml(env, String(url), { unlocker: false });
+			if (html) {
+				await recordRung(env, String(url), "render");
+				return { text: html, headers: new Headers({ "content-type": "text/html" }), status: 200 };
+			}
+		} catch {
+			// the learned rung didn't pay off this time — fall through to the normal ladder from the bottom.
+		}
+	}
+	const first = await fetchTextOk(env, url, init);
+	if (!("error" in first)) {
+		if (canEscalate) await recordRung(env, String(url), "scrape");
+		return first;
+	}
+	if (!canEscalate || !ESCALATABLE_STATUSES.test(first.error)) return first;
 	try {
 		const html = await renderHtml(env, String(url), { unlocker: false });
-		if (html) return { text: html, headers: new Headers({ "content-type": "text/html" }), status: 200 };
+		if (html) {
+			await recordRung(env, String(url), "render");
+			return { text: html, headers: new Headers({ "content-type": "text/html" }), status: 200 };
+		}
 	} catch {
 		// render couldn't clear it either — surface the original fetch error below.
 	}

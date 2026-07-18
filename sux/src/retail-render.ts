@@ -17,6 +17,7 @@
 import { cfRender } from "./cf-render";
 import type { RtEnv } from "./registry";
 import { unlockerRender } from "./unlocker-render";
+import { learnedRung, recordRung } from "./fns/_util/rung-memory";
 
 // The retail callers only ever want post-JS HTML, so this is the render spec minus
 // `as` (always html).
@@ -73,26 +74,39 @@ export function looksBlocked(html: string | undefined, minBytes = 0): boolean {
 export async function retailRender(env: RtEnv, spec: RetailRenderSpec): Promise<RenderResult> {
 	const budget = Math.min(spec.timeout_ms ?? FIRST_LEG_MS, FIRST_LEG_MS);
 
-	const cf = await cfRender(env, {
-		url: spec.url,
-		as: "html",
-		wait_until: spec.wait_until,
-		wait_ms: spec.wait_ms,
-		block_resources: spec.block_resources,
-		timeout_ms: budget,
-		residential: true,
-		stealth: true,
-	});
-	// cf cleared transport but may have fetched a bot wall — a "successful" block page.
-	// Treat it as a failure so the ladder escalates to the paid unlocker.
-	if (cf.ok && "body" in cf && !looksBlocked(cf.body)) {
-		return { ok: true, contentType: cf.contentType, body: cf.body };
+	// A domain previously learned to need the unlocker can skip straight past cf's
+	// doomed rung (#844) — still re-probed periodically by learnedRung itself, so a
+	// domain that's stopped needing it drifts back down rather than staying pinned.
+	const learned = await learnedRung(env, spec.url);
+	let cfError: string;
+	if (learned !== "unlocker") {
+		const cf = await cfRender(env, {
+			url: spec.url,
+			as: "html",
+			wait_until: spec.wait_until,
+			wait_ms: spec.wait_ms,
+			block_resources: spec.block_resources,
+			timeout_ms: budget,
+			residential: true,
+			stealth: true,
+		});
+		// cf cleared transport but may have fetched a bot wall — a "successful" block page.
+		// Treat it as a failure so the ladder escalates to the paid unlocker.
+		if (cf.ok && "body" in cf && !looksBlocked(cf.body)) {
+			await recordRung(env, spec.url, "render");
+			return { ok: true, contentType: cf.contentType, body: cf.body };
+		}
+		cfError = cf.ok ? ("body" in cf ? "cf render blocked (bot wall)" : "cf render returned a non-HTML result") : cf.error;
+	} else {
+		cfError = "cf render skipped (domain learned to need the unlocker rung)";
 	}
-	const cfError = cf.ok ? ("body" in cf ? "cf render blocked (bot wall)" : "cf render returned a non-HTML result") : cf.error;
 
 	// Fallback: the paid residential unlocker (no-ops instantly when UNLOCKER_API_* is unset).
 	const u = await unlockerRender(env, { url: spec.url, timeout_ms: UNLOCKER_LEG_MS });
-	if (u.ok && !looksBlocked(u.body)) return { ok: true, contentType: u.contentType, body: u.body };
+	if (u.ok && !looksBlocked(u.body)) {
+		await recordRung(env, spec.url, "unlocker");
+		return { ok: true, contentType: u.contentType, body: u.body };
+	}
 
 	return { ok: false, error: cfError }; // surface the primary (cf) backend's error
 }

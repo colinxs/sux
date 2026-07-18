@@ -267,6 +267,41 @@ describe("fetchTextOkEscalating (extract-family scrape→render fallback)", () =
 		expect(renderRun).not.toHaveBeenCalled();
 		expect("text" in r && r.text).toBe("<p>content</p>");
 	});
+
+	// #844 — a domain that previously only ever won at render should skip the
+	// cheap proxy fetch's doomed rung entirely on a later call.
+	describe("rung memory", () => {
+		function envWithKv() {
+			const store = new Map<string, string>();
+			return { OAUTH_KV: { get: async (k: string) => store.get(k) ?? null, put: async (k: string, v: string) => void store.set(k, v) }, __store: store } as any;
+		}
+
+		beforeEach(() => vi.spyOn(Math, "random").mockReturnValue(0.99)); // never land in the reprobe fraction
+
+		it("starts at render for a domain learned to need it, skipping the proxy fetch", async () => {
+			const { smartFetch } = await import("../proxy");
+			vi.mocked(smartFetch as any).mockClear();
+			const env = envWithKv();
+			env.__store.set("rung:ok.example", JSON.stringify({ rung: "render", at: Date.now() }));
+			renderRun.mockResolvedValueOnce({ content: [{ text: "<h1>rendered</h1>" }] });
+			const r = await fetchTextOkEscalating(env, "https://ok.example");
+			expect(smartFetch).not.toHaveBeenCalled();
+			expect("text" in r && r.text).toBe("<h1>rendered</h1>");
+		});
+
+		it("records the scrape rung on a plain fetch success", async () => {
+			const env = envWithKv();
+			await fetchTextOkEscalating(env, "https://ok.example");
+			expect(JSON.parse(env.__store.get("rung:ok.example"))).toMatchObject({ rung: "scrape" });
+		});
+
+		it("records the render rung after an escalated success", async () => {
+			const env = envWithKv();
+			renderRun.mockResolvedValueOnce({ content: [{ text: "<h1>rendered</h1>" }] });
+			await fetchTextOkEscalating(env, "https://blocked.example");
+			expect(JSON.parse(env.__store.get("rung:blocked.example"))).toMatchObject({ rung: "render" });
+		});
+	});
 });
 
 describe("fetchText streaming byte cap", () => {
