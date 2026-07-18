@@ -58,6 +58,10 @@ export type RtEnv = Env &
 		// Remote Obsidian backend: the Funnel'd Local REST API URL + its bearer key.
 		OBSIDIAN_REMOTE_URL?: string;
 		OBSIDIAN_REMOTE_KEY?: string;
+		// portal.ts: serves an unauthenticated, filtered view of the git vault at
+		// /portal (only #portal-tagged / visibility:portal notes) — dormant (404) unless
+		// set, since it's a NEW public surface over what's otherwise a private vault.
+		PORTAL_ENABLED?: string;
 		// Dropbox app-folder blob store (dropbox fn + ingest blob routing), all
 		// App-folder-scoped (can only see /Apps/<app>/). Durable path: a long-lived
 		// REFRESH token + app key/secret → short-lived access tokens minted &
