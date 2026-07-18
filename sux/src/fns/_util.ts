@@ -39,6 +39,20 @@ export * from "./_util/store-ref";
 // its way out of. See #551.
 const CF_ORIGIN_UNREACHABLE_STATUSES = new Set([521, 522, 523, 524, 525, 526, 530]);
 
+/** Force a Dropbox shared link to a raw download instead of the HTML preview page
+ * (`dl=1`) — the shape a plain `loadBytes` fetch needs. Shared by study's Mode A
+ * app-folder read and the learning-folder sweep (#433/#768) so both mint the same
+ * kind of URL from `dropbox.ts`'s `sharedLink`. */
+export function dropboxRawUrl(url: string): string {
+	try {
+		const u = new URL(url);
+		u.searchParams.set("dl", "1");
+		return u.toString();
+	} catch {
+		return url;
+	}
+}
+
 /** A short hint appended to an error message when `status` is one of Cloudflare's
  * edge-to-origin codes — empty string for any other status. */
 export function cfOriginHint(status: number): string {

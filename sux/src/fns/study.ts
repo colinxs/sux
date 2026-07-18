@@ -2,7 +2,8 @@ import { hasAI } from "../ai";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { appendOnWhitelist } from "./_kb";
 import { hasDropboxFull, normFull, readFull } from "./_dropbox-full";
-import { errMsg, fromB64, isHttpUrl, loadBytes, oj } from "./_util";
+import { hasDropbox, sharedLink } from "./dropbox";
+import { dropboxRawUrl, errMsg, fromB64, isHttpUrl, loadBytes, oj } from "./_util";
 import { KV_PREFIX, loadKb, learnTopic, oracle, type Whitelist } from "./oracle";
 
 // study — the WHITELISTED-KNOWLEDGE verb. You hand sux material you OWN or have the right to
@@ -85,20 +86,37 @@ async function extractDocText(env: RtEnv, source: string): Promise<{ text: strin
 			name = "document.pdf";
 		}
 	} else {
-		// A vault/Dropbox path the user uploaded — read it through Mode B (whole-Dropbox).
-		if (!hasDropboxFull(env)) {
-			throw new Error(`Reading '${s}' needs the whole-Dropbox (Mode B) binding (DROPBOX_FULL_*). Pass an http(s) URL, or extract the text yourself and study it as { kind: "text" }.`);
+		// A Dropbox path the user uploaded. Prefer Mode A (the app-folder credential most
+		// deployments actually have configured, #768) via a shared link forced to a raw
+		// download; only require Mode B (whole-account) when Mode A isn't configured or the
+		// path isn't reachable through it (e.g. a path outside the app folder).
+		const path = String(s); // isHttpUrl's type guard narrows `s` to `never` in this branch
+		let modeAUrl: string | undefined;
+		if (hasDropbox(env)) {
+			try {
+				modeAUrl = await sharedLink(env, path.startsWith("/") ? path : `/${path}`);
+			} catch {
+				modeAUrl = undefined; // fall through to Mode B
+			}
 		}
-		const p = normFull(s);
-		const rd = await readFull(env, p);
-		name = String(rd.path ?? p).split("/").pop() || "document.pdf";
-		if (typeof rd.text === "string") return { text: rd.text, name }; // already textual — no transcription needed
-		if (rd.too_large_to_inline && typeof rd.temporary_link === "string") {
-			bytes = (await loadBytes(env, { url: rd.temporary_link })).bytes; // stream the big file via its temp link
-		} else if (typeof rd.base64 === "string") {
-			bytes = fromB64(rd.base64);
+		if (modeAUrl) {
+			bytes = (await loadBytes(env, { url: dropboxRawUrl(modeAUrl) })).bytes;
+			name = path.split("/").pop() || "document.pdf";
 		} else {
-			throw new Error(`Could not read bytes for '${s}' from Dropbox.`);
+			if (!hasDropboxFull(env)) {
+				throw new Error(`Reading '${s}' needs the app-folder Dropbox binding (for a path in /Apps/…) or the whole-Dropbox (Mode B) binding (DROPBOX_FULL_*). Pass an http(s) URL, or extract the text yourself and study it as { kind: "text" }.`);
+			}
+			const p = normFull(s);
+			const rd = await readFull(env, p);
+			name = String(rd.path ?? p).split("/").pop() || "document.pdf";
+			if (typeof rd.text === "string") return { text: rd.text, name }; // already textual — no transcription needed
+			if (rd.too_large_to_inline && typeof rd.temporary_link === "string") {
+				bytes = (await loadBytes(env, { url: rd.temporary_link })).bytes; // stream the big file via its temp link
+			} else if (typeof rd.base64 === "string") {
+				bytes = fromB64(rd.base64);
+			} else {
+				throw new Error(`Could not read bytes for '${s}' from Dropbox.`);
+			}
 		}
 	}
 

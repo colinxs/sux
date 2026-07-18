@@ -155,33 +155,51 @@ export function detectDrops(mail: MailRef[], events: EventRef[]): Drop[] {
 	return sortByUrgency(drops);
 }
 
+/** A short, stable content fingerprint (FNV-1a) over a finding set — used to keep the agenda
+ *  dedupe key sensitive to WHICH findings were proposed, not just which ISO week (#782): a
+ *  forced consolidate re-run mid-week can overwrite the cache with a different slice of the
+ *  vault, and a week-only key would silently swallow those fresh findings. */
+function fingerprint(parts: string[]): string {
+	const joined = parts.join("");
+	let h = 2166136261;
+	for (let i = 0; i < joined.length; i++) {
+		h ^= joined.charCodeAt(i);
+		h = Math.imul(h, 16777619);
+	}
+	return (h >>> 0).toString(36);
+}
+
 /** Turn consolidate's + weekly_recall's cached findings (W5) into drops — the same
  *  read-only-sense/reversible-propose contract as the mail+calendar detectors above, just
  *  fed from the two knowledge loops' last completed cycle instead of a live fan-out. Each
- *  loop already runs at most once per ISO week; the dedupe key includes that week so a
- *  finding surfaces as exactly one proposal per week, not once per daily agenda tick. */
+ *  loop already runs at most once per ISO week, but `force:true` can re-run it mid-week with
+ *  different findings — so the dedupe key mixes in a content fingerprint (#782), not just the
+ *  week, and the displayed/proposed count reads the sweep's real total (`_count`), not the
+ *  cached-and-truncated array's `.length` (#781). */
 export function detectKnowledgeDrops(consolidate: ConsolidateFindings | null, weeklyRecall: WeeklyRecallFindings | null): Drop[] {
 	const drops: Drop[] = [];
 	if (consolidate) {
-		if (consolidate.stale.length) {
+		const staleCount = consolidate.stale_count ?? consolidate.stale.length;
+		if (staleCount) {
 			drops.push({
 				kind: "consolidate_stale",
 				urgency: "fyi",
-				dedupe: `consolidate::stale::${consolidate.week}`,
-				title: `${consolidate.stale.length} stale vault note(s) need review`,
+				dedupe: `consolidate::stale::${consolidate.week}::${fingerprint(consolidate.stale.map((s) => s.path))}`,
+				title: `${staleCount} stale vault note(s) need review`,
 				emoji: "🗂️",
-				action: task(`Review ${consolidate.stale.length} stale vault note(s) — see Consolidation/${consolidate.week}.md`),
+				action: task(`Review ${staleCount} stale vault note(s) — see Consolidation/${consolidate.week}.md`),
 				evidence: { week: consolidate.week, paths: consolidate.stale.map((s) => s.path) },
 			});
 		}
-		if (consolidate.duplicate_candidates.length) {
+		const duplicateCount = consolidate.duplicate_count ?? consolidate.duplicate_candidates.length;
+		if (duplicateCount) {
 			drops.push({
 				kind: "consolidate_dupes",
 				urgency: "fyi",
-				dedupe: `consolidate::dupes::${consolidate.week}`,
-				title: `${consolidate.duplicate_candidates.length} possible duplicate vault note(s)`,
+				dedupe: `consolidate::dupes::${consolidate.week}::${fingerprint(consolidate.duplicate_candidates.map((d) => `${d.a}|${d.b}`))}`,
+				title: `${duplicateCount} possible duplicate vault note(s)`,
 				emoji: "🗂️",
-				action: task(`Review ${consolidate.duplicate_candidates.length} possible duplicate vault note(s) — see Consolidation/${consolidate.week}.md`),
+				action: task(`Review ${duplicateCount} possible duplicate vault note(s) — see Consolidation/${consolidate.week}.md`),
 				evidence: { week: consolidate.week, pairs: consolidate.duplicate_candidates },
 			});
 		}
