@@ -177,6 +177,17 @@ describe("proposal kernel", () => {
 		expect(list.map((x) => x.id).sort()).toEqual([p1.id, p2.id].sort());
 	});
 
+	it("propose() deletes the just-written proposal record if the index update fails, instead of orphaning it (#918)", async () => {
+		const e = env();
+		const putSpy = vi.spyOn(e.OAUTH_KV, "put");
+		putSpy.mockImplementationOnce(async (...args: unknown[]) => void e.OAUTH_KV.map.set(args[0] as string, args[1] as string)); // let the proposal record write succeed
+		putSpy.mockImplementationOnce(async () => {
+			throw new Error("transient KV write failure");
+		}); // then fail the index write
+		await expect(propose(e, { ...base, payload: { fn: "obsidian", args: {} } })).rejects.toThrow(/transient KV write failure/);
+		expect(e.OAUTH_KV.map.size).toBe(0);
+	});
+
 	it("concurrent approvals of the same proposal execute the payload only once", async () => {
 		const e = env();
 		const p = await propose(e, { ...base, payload: { fn: "obsidian", args: { action: "append", path: "x.md" } } });
