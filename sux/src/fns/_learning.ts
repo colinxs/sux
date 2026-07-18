@@ -1,3 +1,4 @@
+import { keyedSerialize } from "../keyed-serialize";
 import type { RtEnv } from "../registry";
 
 // The approval→learning loop (epic #228, W8). Every approve/reject that flows through
@@ -32,14 +33,21 @@ async function writeStats(env: RtEnv, kind: string, stats: KindStats): Promise<v
 	}
 }
 
+// Serializes recordOutcome's read-modify-write per kind so two concurrent approve/reject
+// calls sharing a kind can't both read the same stale stats and clobber one another's
+// increment — the same lost-update class fixed for the proposal index itself (#846).
+const recordChains = new Map<string, Promise<unknown>>();
+
 /** Record one approve/reject outcome for a proposal kind. Never throws — a KV hiccup
  *  here must not break the approve/reject flow it's called from. */
 export async function recordOutcome(env: RtEnv, kind: string, outcome: "approved" | "rejected"): Promise<void> {
 	if (!kind) return;
-	const stats = await readStats(env, kind);
-	if (outcome === "approved") stats.approved += 1;
-	else stats.rejected += 1;
-	await writeStats(env, kind, stats);
+	await keyedSerialize(recordChains, kind, async () => {
+		const stats = await readStats(env, kind);
+		if (outcome === "approved") stats.approved += 1;
+		else stats.rejected += 1;
+		await writeStats(env, kind, stats);
+	});
 }
 
 const WEIGHT_MIN = 0.25;
