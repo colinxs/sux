@@ -4,7 +4,7 @@ import { TEXT_EXT } from "./fns/_dropbox-core";
 import { deleteFull, hasDropboxFull, hasDropboxFullWrite, listFull, moveFull, operateFull, readFull, searchFull, transformFull, writeBytes, writeFull } from "./fns/_dropbox-full";
 import { fingerprint, ledger } from "./ledger";
 import { staged } from "./stage";
-import { errMsg, pool } from "./fns/_util";
+import { errMsg, getBlob, pool, storeRefUuid, toB64 } from "./fns/_util";
 
 // The files MCP server — the personal blob workspace, reached through the `files_`
 // front verbs on the one /mcp connector, behind the same workers-oauth-provider flow
@@ -184,11 +184,22 @@ const TOOLS: FileTool[] = [
 	},
 	{
 		name: "files_upload",
-		description: "Upload binary content (base64) — an image, PDF, or export. Default: the app-folder workspace (returns path + shareable link). `full:true` uploads to an ABSOLUTE whole-Dropbox path (Mode B) under the same write firewall as files_write (stages a preview by default — commit_token/force to apply; overwrite/rev gated, /.sux-trash backup).",
-		inputSchema: { type: "object", additionalProperties: false, required: ["path", "base64"], properties: { path: { type: "string" }, base64: { type: "string", description: "Base64-encoded bytes." }, full: { type: "boolean", description: "Upload into the whole Dropbox (Mode B) instead of the app folder." }, overwrite: { type: "boolean", description: "full mode: allow replacing an existing file." }, rev: { type: "string", description: "full mode: conditional update — write only if the file still has this rev." }, backup: { type: "boolean", description: "full mode: pre-op copy an overwritten file to /.sux-trash (default true)." }, stage: { type: "boolean", description: "Preview only: returns {preview, commit_token}, writes nothing." }, commit_token: { type: "string", description: "Apply a previously staged plan (payload must match)." }, force: { type: "boolean", description: "Apply in one shot, skipping the default stage (the ! override)." } } },
+		description: "Upload binary content — an image, PDF, or export — given `base64` bytes OR a `ref` (a sux /s/<uuid> CAS handle, e.g. from a `store put` or the /s/up raw-upload door): a ref streams R2→Dropbox server-side, so a session-local binary never round-trips through the model context as base64. Default: the app-folder workspace (returns path + shareable link). `full:true` uploads to an ABSOLUTE whole-Dropbox path (Mode B) under the same write firewall as files_write (stages a preview by default — commit_token/force to apply; overwrite/rev gated, /.sux-trash backup).",
+		inputSchema: { type: "object", additionalProperties: false, required: ["path"], properties: { path: { type: "string" }, base64: { type: "string", description: "Base64-encoded bytes (or pass `ref` instead)." }, ref: { type: "string", description: "A sux /s/<uuid> CAS handle (or bare uuid) — resolved to bytes server-side, so the payload never passes through context. Alternative to base64." }, full: { type: "boolean", description: "Upload into the whole Dropbox (Mode B) instead of the app folder." }, overwrite: { type: "boolean", description: "full mode: allow replacing an existing file." }, rev: { type: "string", description: "full mode: conditional update — write only if the file still has this rev." }, backup: { type: "boolean", description: "full mode: pre-op copy an overwritten file to /.sux-trash (default true)." }, stage: { type: "boolean", description: "Preview only: returns {preview, commit_token}, writes nothing." }, commit_token: { type: "string", description: "Apply a previously staged plan (payload must match)." }, force: { type: "boolean", description: "Apply in one shot, skipping the default stage (the ! override)." } } },
 		run: async (env, a) => {
-			if (!a?.path || !a?.base64) return failWith("bad_input", "files_upload requires `path` and `base64`.");
+			if (!a?.path) return failWith("bad_input", "files_upload requires `path`.");
+			if (!a?.base64 && !a?.ref) return failWith("bad_input", "files_upload requires `base64` bytes or a `ref` (a sux /s/<uuid> CAS handle).");
 			try {
+				// A ref (/s/<uuid> handle or bare uuid) resolves to bytes server-side — the
+				// R2→Dropbox streaming path that keeps a session-local binary out of context.
+				// Normalize to base64 up front so both Mode A and Mode B below are unchanged.
+				if (a?.ref && !a?.base64) {
+					const uuid = storeRefUuid(a.ref) ?? (/^[0-9a-f-]{36}$/i.test(String(a.ref).trim()) ? String(a.ref).trim().toLowerCase() : null);
+					if (!uuid) return failWith("bad_input", "`ref` must be a sux /s/<uuid> CAS handle or a bare uuid.");
+					const blob = await getBlob(env, uuid);
+					if (!blob) return failWith("not_found", `no stored object for ref '${uuid}' (expired or never existed).`);
+					a = { ...a, base64: toB64(blob.bytes) };
+				}
 				if (a?.full === true) {
 					const g = gateModeBWrite(env);
 					if (g) return g;
