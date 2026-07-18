@@ -215,9 +215,13 @@ export async function rejectProposal(env: RtEnv, id: string): Promise<Proposal> 
 
 /** Snooze → defer. Default 1 day; the item drops out of the default list until then. */
 export async function snoozeProposal(env: RtEnv, id: string, untilMs?: number): Promise<Proposal> {
-	const p = await getProposal(env, id);
-	if (!p) throw new Error(`no proposal '${id}' (expired or unknown).`);
-	const updated: Proposal = { ...p, status: "snoozed", snoozedUntil: untilMs ?? now() + days(1) };
-	await putProposal(env, updated);
-	return updated;
+	return keyedSerialize(approveChains, id, async () => {
+		const p = await getProposal(env, id);
+		if (!p) throw new Error(`no proposal '${id}' (expired or unknown).`);
+		if (p.status === "snoozed") return p; // idempotent
+		if (p.status === "committed" || p.status === "failed" || p.status === "rejected") throw new Error(`proposal '${id}' already ${p.status}; can't snooze.`);
+		const updated: Proposal = { ...p, status: "snoozed", snoozedUntil: untilMs ?? now() + days(1) };
+		await putProposal(env, updated);
+		return updated;
+	});
 }

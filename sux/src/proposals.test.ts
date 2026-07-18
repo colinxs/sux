@@ -111,6 +111,28 @@ describe("proposal kernel", () => {
 		expect((await listProposals(e, { includeSnoozed: true })).find((x) => x.id === p.id)).toBeDefined();
 	});
 
+	it("double snooze is a no-op (idempotent)", async () => {
+		const e = env();
+		const p = await propose(e, { ...base, payload: { fn: "obsidian", args: {} } });
+		const first = await snoozeProposal(e, p.id);
+		const second = await snoozeProposal(e, p.id);
+		expect(second.status).toBe("snoozed");
+		expect(second.snoozedUntil).toBe(first.snoozedUntil);
+	});
+
+	it("snooze after commit/reject throws and does not overwrite the terminal record (#833)", async () => {
+		const e = env();
+		const committed = await propose(e, { ...base, payload: { fn: "obsidian", args: {} } });
+		await approveProposal(e, committed.id);
+		await expect(snoozeProposal(e, committed.id)).rejects.toThrow(/committed/);
+		expect((await listProposals(e, { includeSnoozed: true })).find((x) => x.id === committed.id)?.status).toBe("committed");
+
+		const rejected = await propose(e, { ...base, payload: { fn: "obsidian", args: {} } });
+		await rejectProposal(e, rejected.id);
+		await expect(snoozeProposal(e, rejected.id)).rejects.toThrow(/rejected/);
+		expect((await listProposals(e, { includeSnoozed: true })).find((x) => x.id === rejected.id)?.status).toBe("rejected");
+	});
+
 	it("approve on an unknown/expired id throws", async () => {
 		await expect(approveProposal(env(), "nope")).rejects.toThrow(/no proposal/);
 	});

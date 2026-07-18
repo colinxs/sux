@@ -186,6 +186,15 @@ function attachDescriptors(atts: AttachmentSpec[]): Array<Record<string, unknown
 	return atts.map((x) => ({ name: x?.name ?? null, type: x?.type ?? null, source: x?.blobId ? "blob" : x?.ref ? "ref" : x?.data ? "data" : "?" }));
 }
 
+/** Pre-send lint (docs/design/north-star.md's "Don't let me send bad emails"), first slice: a body
+ *  mentioning an attachment with none attached. Never blocks — just a warning surfaced on the staged
+ *  preview for the caller/human to notice before committing. */
+const ATTACHMENT_MENTION_RE = /\b(attached|attaching|attachment|see attached|i'?ve attached)\b/i;
+function attachmentMentionWarning(bodyText: string, atts: AttachmentSpec[]): string | undefined {
+	if (atts.length || !ATTACHMENT_MENTION_RE.test(bodyText)) return undefined;
+	return "body mentions an attachment, but none is attached.";
+}
+
 /** Gate a scope-dependent verb: probe the token's reachable capabilities; return a not_configured
  *  message if `cap` isn't granted (contacts/vacation/quota live on a re-scoped FASTMAIL_TOKEN), else null. */
 async function scopeGate(env: RtEnv, cap: "contacts" | "vacationresponse" | "quota"): Promise<string | null> {
@@ -1523,7 +1532,8 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 		};
 		const attDesc = attachDescriptors(atts);
 		const payload = { from: fromEmail, to, cc: cc.length ? cc : null, bcc: bcc.length ? bcc : null, subject: String(subject), text: bodyText, send_at: a?.send_at ?? null, attachments: attDesc };
-		const preview = { action: holdFor > 0 ? "scheduled_send" : "send", from: fromEmail, to, ...(cc.length ? { cc } : {}), ...(bcc.length ? { bcc } : {}), subject: String(subject), body_chars: bodyText.length, ...(attDesc.length ? { attachments: attDesc } : {}), ...(holdFor > 0 ? { send_at: String(a.send_at) } : {}) };
+		const attWarning = attachmentMentionWarning(bodyText, atts);
+		const preview = { action: holdFor > 0 ? "scheduled_send" : "send", from: fromEmail, to, ...(cc.length ? { cc } : {}), ...(bcc.length ? { bcc } : {}), subject: String(subject), body_chars: bodyText.length, ...(attDesc.length ? { attachments: attDesc } : {}), ...(holdFor > 0 ? { send_at: String(a.send_at) } : {}), ...(attWarning ? { warning: attWarning } : {}) };
 		const out = await staged(env, "mail_send", gateArgs(a), payload, preview, doSend);
 		return ok("stageResult" in out ? out.stageResult : out.result);
 	} catch (e) {

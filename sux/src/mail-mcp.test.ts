@@ -352,6 +352,20 @@ describe("mail_* ergonomic tools", () => {
 		expect(done).toMatchObject({ sent: true });
 	});
 
+	it("mail_send pre-send lint: warns in the staged preview when the body mentions an attachment but none is attached (#835)", async () => {
+		installFetch();
+		const out = parse(await tool("mail_send").run(env(), { to: ["x@y.com"], subject: "Hi", text: "see attached for details", stage: true }));
+		expect(out.preview.warning).toMatch(/attachment/i);
+	});
+
+	it("mail_send pre-send lint: no warning when an attachment is actually attached, or when the body doesn't mention one", async () => {
+		installFetch();
+		const withAtt = parse(await tool("mail_send").run(env(), { to: ["x@y.com"], subject: "Hi", text: "see attached for details", stage: true, attachments: [{ blobId: "b1", name: "f.pdf" }] }));
+		expect(withAtt.preview.warning).toBeUndefined();
+		const noMention = parse(await tool("mail_send").run(env(), { to: ["x@y.com"], subject: "Hi", text: "just saying hi", stage: true }));
+		expect(noMention.preview.warning).toBeUndefined();
+	});
+
 	it("mail_send with send_at SCHEDULES via FUTURERELEASE (HOLDFOR envelope + explicit rcptTo)", async () => {
 		const f = installFetch();
 		const out = parse(await tool("mail_send").run(env(), { to: ["x@y.com"], cc: ["c@y.com"], subject: "Later", text: "yo", send_at: "2999-01-01T00:00:00Z", force: true }));
