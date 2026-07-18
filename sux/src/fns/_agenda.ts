@@ -252,7 +252,7 @@ export function detectKnowledgeDrops(consolidate: ConsolidateFindings | null, we
 
 /** Monarch's read-only accounts/transactions/budgets/holdings/cashflow ops (W7/W7.1), trimmed
  *  to what the detectors below need — see fns/monarch.ts for the full shapes. */
-export type MonarchAccountRef = { id: string; name?: string; balance?: number };
+export type MonarchAccountRef = { id: string; name?: string; balance?: number; type?: string; subtype?: string };
 export type MonarchTxnRef = { id: string; amount?: number; date?: string; merchant?: string };
 export type MonarchBudgetRef = { category?: string; categoryId?: string; remaining?: number };
 export type MonarchHoldingRef = { ticker?: string; name?: string; value?: number; quantity?: number };
@@ -299,6 +299,9 @@ export function detectMonarchDrops(date: string, accounts: MonarchAccountRef[], 
 	const unusualChargeThreshold = opts?.unusualChargeThreshold ?? 500;
 
 	for (const a of accounts) {
+		// Depository (checking/savings) only — a liability account (credit card, loan,
+		// mortgage) reading a low balance is the opposite of a cash-crunch risk (#901).
+		if (a.type !== "depository") continue;
 		if (typeof a.balance !== "number" || a.balance >= lowBalanceThreshold) continue;
 		const name = a.name || "account";
 		drops.push({
@@ -825,7 +828,7 @@ export async function defaultDeps(): Promise<AgendaDeps> {
 			const r = await monarch.run(env, { op: "accounts" });
 			if (r.isError) throw new Error(r.content?.[0]?.text ?? "monarch accounts failed");
 			const parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
-			return (parsed.accounts ?? []).map((a: any) => ({ id: String(a?.id ?? ""), name: a?.name, balance: typeof a?.balance === "number" ? a.balance : undefined }));
+			return (parsed.accounts ?? []).map((a: any) => ({ id: String(a?.id ?? ""), name: a?.name, balance: typeof a?.balance === "number" ? a.balance : undefined, type: a?.type, subtype: a?.subtype }));
 		},
 		monarchTransactions: async (env, o) => {
 			const r = await monarch.run(env, { op: "transactions", start: o.start, end: o.end, limit: 100 });

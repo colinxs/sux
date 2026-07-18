@@ -86,7 +86,7 @@ describe("agenda — detectors", () => {
 	it("detects Monarch financial signals (W7): low balance, unusual charge, bill due soon", () => {
 		const drops = detectMonarchDrops(
 			"2026-07-28", // 3 days left in July
-			[{ id: "acct1", name: "Checking", balance: 42.5 }],
+			[{ id: "acct1", name: "Checking", balance: 42.5, type: "depository" }],
 			[{ id: "txn1", amount: -733.2, merchant: "Some LLC", date: "2026-07-27" }],
 			[{ category: "Rent", categoryId: "cat1", remaining: 900 }],
 		);
@@ -96,6 +96,19 @@ describe("agenda — detectors", () => {
 			expect(d.action.fn).toBe("todoist");
 			expect(d.action.args).toMatchObject({ action: "add" });
 		}
+	});
+
+	it("Monarch: low_balance ignores non-depository accounts (credit card/loan, #901)", () => {
+		const drops = detectMonarchDrops(
+			"2026-07-05",
+			[
+				{ id: "acct1", name: "Amex", balance: 42, type: "credit" },
+				{ id: "acct2", name: "Mortgage", balance: 10, type: "loan" },
+			],
+			[],
+			[],
+		);
+		expect(drops.map((d) => d.kind)).not.toContain("low_balance");
 	});
 
 	it("Monarch: no drops when balances/charges/bills are all unremarkable", () => {
@@ -339,7 +352,7 @@ describe("agenda — loop", () => {
 	it("wires Monarch financial signals (W7) in only when MONARCH_TOKEN is set", async () => {
 		const e = env({ MONARCH_TOKEN: "tok" });
 		const d = deps({
-			monarchAccounts: vi.fn(async () => [{ id: "acct1", name: "Checking", balance: 10 }]),
+			monarchAccounts: vi.fn(async () => [{ id: "acct1", name: "Checking", balance: 10, type: "depository" }]),
 			monarchTransactions: vi.fn(async () => []),
 			monarchBudgets: vi.fn(async () => []),
 		});
