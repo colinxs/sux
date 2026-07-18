@@ -48,9 +48,15 @@ async function subKey(endpoint: string): Promise<string> {
 	return SUB_PREFIX + hex;
 }
 
-function validSubscription(sub: unknown): sub is PushSubscriptionInfo {
+export function validSubscription(sub: unknown): sub is PushSubscriptionInfo {
 	const s = sub as PushSubscriptionInfo | undefined;
-	return Boolean(s?.endpoint && s.keys?.p256dh && s.keys?.auth);
+	if (!s?.endpoint || !s.keys?.p256dh || !s.keys?.auth) return false;
+	try {
+		new URL(s.endpoint);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 export async function subscribe(env: RtEnv, sub: PushSubscriptionInfo): Promise<void> {

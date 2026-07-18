@@ -564,6 +564,22 @@ describe("runTriage — sweep_backlog pages through search results", () => {
 		expect(report.scanned).toBe(10);
 		expect(searchSpy).toHaveBeenCalledTimes(1);
 	});
+	it("a page dominated by already-seen ids does NOT exhaust `max` on zero progress — it pages into the next page's new mail (#816)", async () => {
+		const seenPage = Array.from({ length: 50 }, (_, i) => ({ id: `seen-${i}`, from: "someone@randomcorp.example", subject: "hey" }));
+		const newPage = [{ id: "new-1", from: "friend@gmail.com", subject: "lunch tomorrow?" }];
+		const pages = [seenPage, newPage];
+		const searchSpy = vi.fn(async (_env: any, o: any) => pages[o.position / 50] ?? []);
+		const env = envWith({ MAIL_TRIAGE_ENABLED: "1" });
+		// Simulate a prior triage cycle: the entire first page is already in the ledger.
+		for (const m of seenPage) await env.OAUTH_KV.put(`sux:ledger:mail_triage:${m.id}`, "1");
+		const deps = { ...mkDeps([]), search: searchSpy };
+		const report = await runTriage(env, { cycle_id: "sw4", sweep_backlog: true, max: 25 }, deps);
+		// Both pages fetched — the all-seen first page didn't `break sweep` at `max` with zero progress.
+		expect(searchSpy).toHaveBeenCalledTimes(2);
+		expect(report.skipped_seen).toBe(50);
+		expect(report.scanned).toBe(1); // only the genuinely new message counts toward the budget
+		expect(report.suggested!.map((s) => s.id)).toEqual(["new-1"]);
+	});
 });
 
 describe("runTriage — reversibility: undo-log is written BEFORE a message is marked seen", () => {

@@ -443,7 +443,7 @@ export type AgendaReport = {
 	sources: Record<string, string>;
 	drops_detected?: number;
 	proposed?: number;
-	proposals?: Array<{ id: string; kind: string; title: string }>;
+	proposals?: Array<{ id: string; kind: string; title: string; urgency: Urgency }>;
 	digest?: string;
 	digest_written?: boolean;
 	emailed?: boolean;
@@ -635,7 +635,7 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		sources: status,
 		drops_detected: drops.length,
 		proposed: proposed.length,
-		proposals: proposed.map((p) => ({ id: p.proposalId, kind: p.drop.kind, title: p.drop.title })),
+		proposals: proposed.map((p) => ({ id: p.proposalId, kind: p.drop.kind, title: p.drop.title, urgency: p.drop.urgency })),
 		digest: digest.body,
 		digest_written: digestWritten,
 		emailed,

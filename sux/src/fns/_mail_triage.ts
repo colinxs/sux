@@ -471,8 +471,6 @@ export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps):
 				truncated = true;
 				break sweep;
 			}
-			if (scanned >= max) break sweep;
-			scanned++;
 			if (!m?.id) continue;
 			// Idempotency: the message id is a natural last-seen key. We CHECK it up front (skip
 			// already-processed ids so daily cron re-runs are no-ops), but only MARK it seen AFTER
@@ -480,10 +478,16 @@ export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps):
 			// failure must be retried (so we don't mark on failure), and a suggest-ONLY pass must
 			// not block a later ACT pass (so we don't mark when acting is disabled). Enabling ACT
 			// therefore still processes the full backlog.
+			// `scanned` (and its `max` bound) only count messages that clear this seen-check — an
+			// already-seen id is free to page past (see `skipped`) so a sweep page dominated by prior
+			// triage history still makes forward progress instead of exhausting the whole budget on
+			// zero new mail.
 			if (await led.seen(m.id)) {
 				skipped++;
 				continue;
 			}
+			if (scanned >= max) break sweep;
+			scanned++;
 			let c = await (deps.classify ?? classify)(env, m);
 			// A personal message that asks for a reply is upgraded to a draft-reply intent — the one
 			// CREATE op (a reply DRAFT is staged for review, never sent). Kept OUT of the shared
