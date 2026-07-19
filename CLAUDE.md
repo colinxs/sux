@@ -299,6 +299,17 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   one directly (only `cron-heartbeat.ts`'s `CRON_JOBS` array needed a manual merge against
   jobs added since) rather than reimplementing from the issue text — much faster and
   proven-tested.
+- **When an issue has already been dropped several times in a row for the SAME unchanged
+  reason (an `effort:large` self-description, or a fix that lives entirely outside this
+  repo), self-apply the `needs-human` label rather than dropping it yet again** — a comment
+  alone doesn't stop the automated batch dispatcher from re-claiming it, but `needs-human`
+  does (it's already one of the standard EXPAND-exclusion labels). Confirmed 2026-07-19:
+  #920 (`env._budget` ledger) hit its 6th consecutive same-reason drop and #977 (stuck-PR
+  watcher) turned out to be unbuildable for a NEW reason — its actual bug lives in the
+  reusable workflow file inside the external `SuxOS/.github` repo (`pr-watch.yml`, pulled in
+  via `uses: SuxOS/.github/.github/workflows/pr-watch.yml@main`), not anywhere in `sux/`, so
+  no amount of re-reading this repo's code will ever turn up a fix. Both got `needs-human`
+  applied directly rather than left to keep churning the queue.
 
 ## House style
 
