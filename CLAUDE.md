@@ -275,6 +275,14 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   `_infer.ts`'s `purgeInferDomain` cascade "fixed for #953") while both #959/#953 were
   still open/`building` with no landed fix on `origin/main` — skip issues like this
   rather than reimplement the prerequisite fix yourself just to unblock them.
+- **The exact same original issue pair can be dispatched to two different concurrent
+  build sessions** — confirmed 2026-07-19: this session and `bot/issue-build-29673247498`
+  (merged as PR #970 moments before this one) were both independently handed `[869, 880]`
+  as their starting batch, reached the identical drop decision for the identical reasons,
+  and both then expanded into small backlog issues. Before spending a turn re-deriving a
+  drop decision, `gh pr list --state open --search "<issue-number>"` (or check recently
+  merged PRs) for a sibling session that already resolved the same batch — reuse its
+  reasoning instead of re-deriving it from scratch.
 
 ## House style
 
