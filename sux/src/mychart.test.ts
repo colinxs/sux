@@ -651,4 +651,17 @@ describe("crossOrgAllergyGaps — one-sided allergy continuity gap (#1009)", () 
 		await seedBundle(env, ORG2, "P1", "Condition", "2026-07-18T00-00-00-000Z", [{ resourceType: "Condition", id: "cond1" }]);
 		expect(await crossOrgAllergyGaps(env)).toEqual([]);
 	});
+
+	it("does not flag a gap when the OTHER org's matching record is inactive/resolved (#1057)", async () => {
+		const env = baseEnv();
+		await seedGrant(env, ORG, "P1");
+		await seedGrant(env, ORG2, "P1");
+		await seedBundle(env, ORG, "P1", "AllergyIntolerance", "2026-07-18T00-00-00-000Z", [{ resourceType: "AllergyIntolerance", id: "al1", code: { text: "Penicillin" } }]);
+		// ORG2 has a matching record, just marked resolved/entered-in-error — still "has a record of
+		// it at all", so this must NOT read as "org B has no record" the way an empty list would.
+		await seedBundle(env, ORG2, "P1", "AllergyIntolerance", "2026-07-18T00-00-00-000Z", [
+			{ resourceType: "AllergyIntolerance", id: "al2", code: { text: "Penicillin" }, clinicalStatus: { coding: [{ code: "resolved" }] } },
+		]);
+		expect(await crossOrgAllergyGaps(env)).toEqual([]);
+	});
 });

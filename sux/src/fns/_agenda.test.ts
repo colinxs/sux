@@ -185,6 +185,71 @@ describe("agenda — detectors", () => {
 		);
 		expect(drops).toHaveLength(0);
 	});
+
+	it("Monarch: subscription creep flags a recurring merchant whose charge grew over time (#1059)", () => {
+		const drops = detectMonarchDrops(
+			"2026-07-28",
+			[],
+			[
+				{ id: "t1", amount: -9.99, merchant: "Streamflix", date: "2026-05-28" },
+				{ id: "t2", amount: -9.99, merchant: "Streamflix", date: "2026-06-28" },
+				{ id: "t3", amount: -14.99, merchant: "Streamflix", date: "2026-07-28" },
+			],
+			[],
+		);
+		const creep = drops.find((d) => d.kind === "subscription_creep");
+		expect(creep).toBeDefined();
+		expect(creep?.evidence).toMatchObject({ merchant: "Streamflix", firstAmount: 9.99, latestAmount: 14.99, occurrences: 3 });
+	});
+
+	it("Monarch: subscription creep does not flag a flat recurring charge or too few occurrences", () => {
+		const flat = detectMonarchDrops(
+			"2026-07-28",
+			[],
+			[
+				{ id: "t1", amount: -9.99, merchant: "Streamflix", date: "2026-05-28" },
+				{ id: "t2", amount: -9.99, merchant: "Streamflix", date: "2026-06-28" },
+				{ id: "t3", amount: -9.99, merchant: "Streamflix", date: "2026-07-28" },
+			],
+			[],
+		);
+		expect(flat.map((d) => d.kind)).not.toContain("subscription_creep");
+
+		const tooFew = detectMonarchDrops(
+			"2026-07-28",
+			[],
+			[
+				{ id: "t1", amount: -9.99, merchant: "Streamflix", date: "2026-06-28" },
+				{ id: "t2", amount: -14.99, merchant: "Streamflix", date: "2026-07-28" },
+			],
+			[],
+		);
+		expect(tooFew.map((d) => d.kind)).not.toContain("subscription_creep");
+	});
+
+	it("Monarch: subscription creep ignores a bill-sized recurring charge (already covered by bill_due)", () => {
+		const drops = detectMonarchDrops(
+			"2026-07-05",
+			[],
+			[
+				{ id: "t1", amount: -900, merchant: "Landlord LLC", date: "2026-05-05" },
+				{ id: "t2", amount: -900, merchant: "Landlord LLC", date: "2026-06-05" },
+				{ id: "t3", amount: -1200, merchant: "Landlord LLC", date: "2026-07-05" },
+			],
+			[],
+		);
+		expect(drops.map((d) => d.kind)).not.toContain("subscription_creep");
+	});
+
+	it("Monarch: unusual_charge only scans its own recency window even when transactions span the wider subscription-creep lookback", () => {
+		const drops = detectMonarchDrops(
+			"2026-07-28",
+			[],
+			[{ id: "t1", amount: -733.2, merchant: "Old LLC", date: "2026-05-01" }],
+			[],
+		);
+		expect(drops.map((d) => d.kind)).not.toContain("unusual_charge");
+	});
 });
 
 describe("agenda — detectors: portfolio drift + savings rate (W7.1, #803)", () => {
@@ -778,5 +843,26 @@ describe("agenda — pending-delivery queue survives a failed digest write (#996
 		const r3 = await runAgenda(e, { date: "2026-07-11" }, d3);
 		expect(d3.digestAppend).not.toHaveBeenCalled();
 		expect(r3.proposals ?? []).toHaveLength(0);
+	});
+
+	it("email delivery alone marks the digest delivered — a stuck vault write doesn't keep re-sending a growing digest (#1058)", async () => {
+		const e = env({ AGENDA_EMAIL: "1" });
+		const d1 = deps({ mailSearch: vi.fn(async () => [RX_MAIL]), calEvents: vi.fn(async () => []), digestAppend: vi.fn(async () => { throw new Error("vault down"); }) });
+		const r1 = await runAgenda(e, { date: "2026-07-10" }, d1);
+		expect(r1.digest_written).toBe(false); // vault append still failing
+		expect(d1.sendDigest).toHaveBeenCalledTimes(1); // but email succeeded
+
+		// Same cycle, a new drop arrives. The digest is already considered delivered via email —
+		// neither channel should fire again for this cycle.
+		const d2 = deps({ mailSearch: vi.fn(async () => [BILL_MAIL]), calEvents: vi.fn(async () => []) });
+		await runAgenda(e, { date: "2026-07-10" }, d2);
+		expect(d2.sendDigest).not.toHaveBeenCalled();
+		expect(d2.digestAppend).not.toHaveBeenCalled();
+
+		// Next day: nothing carried over — the pending queue was already cleared once email delivered.
+		const d3 = deps({ mailSearch: vi.fn(async () => []), calEvents: vi.fn(async () => []) });
+		await runAgenda(e, { date: "2026-07-11" }, d3);
+		expect(d3.digestAppend).not.toHaveBeenCalled();
+		expect(d3.sendDigest).not.toHaveBeenCalled();
 	});
 });
