@@ -12,11 +12,18 @@
 // Depends on #864 (signal-log + arm gate) and #865 (centroid-drift detector) — both landed
 // (#946) — and #866's cascading deletion path (also #946), which per the design doc's own
 // ordering must land before this ships live; it did.
+//
+// #868 (suggest-only warm-up, design doc §3 guardrail 5 / §4): the first
+// INFER_NUDGE_WARMUP_CYCLES times a candidate would have cleared every cap for a given
+// cluster, the would-be nudge is logged to an auditable KV log instead of the Daily note —
+// mirrors _mail_triage.ts's staged/first-cycle-review precedent. Only once that per-cluster
+// counter reaches the threshold does the write path go live.
 import type { RtEnv } from "../registry";
 import { fingerprint, ledger } from "../ledger";
 import { hasAI, llm } from "../ai";
 import { appendInferInference, hasInferArm, isInferKilled, readInferSignals, type InferDomain, type InferSignal } from "./_infer";
 import { detectCentroidDrift, type DriftCandidate, type DriftOptions } from "./_infer_drift";
+import { cappedKvLog } from "./_capped_kv_log";
 import { errMsg, vaultToday } from "./_util";
 
 const numOr = (v: unknown, dflt: number): number => {
@@ -42,6 +49,46 @@ const cooldownDays = (env: RtEnv): number => numOr(env.INFER_NUDGE_COOLDOWN_DAYS
 
 const RATE_WINDOW_SECONDS = 24 * 3600; // "≤1 inference nudge/domain/day" (design doc §2)
 
+/** How many would-fire cycles a cluster logs suggest-only before its writes go live. Default 3.
+ *  Unlike numOr's other callers, 0 is a legitimate value here (warm-up disabled outright), so
+ *  this only falls back to the default on a genuinely unset/non-numeric/negative value. */
+const warmupCyclesRequired = (env: RtEnv): number => {
+	const n = Number(env.INFER_NUDGE_WARMUP_CYCLES);
+	return Number.isFinite(n) && n >= 0 ? n : 3;
+};
+
+export type InferNudgeWarmupEntry = {
+	ts: number;
+	cluster: string;
+	driftScore: number;
+	evidenceIds: string[];
+	phrasing: string;
+	whyTrail: string[];
+	/** The exact Daily-note block this cycle would have appended, had it not been in warm-up. */
+	wouldWriteDigest: string;
+};
+
+const WARMUP_LOG_CAP = 50;
+const warmupLogKey = (cluster: string): string => `kv:infer:warmup:${cluster}:log`;
+const warmupLog = (env: RtEnv, cluster: string) => cappedKvLog<InferNudgeWarmupEntry>(env, warmupLogKey(cluster), WARMUP_LOG_CAP);
+
+const warmupCountKey = (cluster: string): string => `kv:infer:warmup:${cluster}:count`;
+
+/** How many would-fire cycles this cluster has already logged suggest-only. */
+async function readWarmupCount(env: RtEnv, cluster: string): Promise<number> {
+	const n = Number(await env.OAUTH_KV?.get(warmupCountKey(cluster)));
+	return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+async function writeWarmupCount(env: RtEnv, cluster: string, count: number): Promise<void> {
+	await env.OAUTH_KV?.put(warmupCountKey(cluster), String(count));
+}
+
+/** Read back a cluster's suggest-only audit log (newest-first) — what warm-up logged instead of writing. */
+export async function readInferNudgeWarmupLog(env: RtEnv, cluster: string): Promise<InferNudgeWarmupEntry[]> {
+	return warmupLog(env, cluster).load();
+}
+
 export type InferNudgeDeps = {
 	detectDrift: (env: RtEnv, domains: InferDomain[], opts?: DriftOptions) => Promise<DriftCandidate | null>;
 	signalsFor: (env: RtEnv, domain: InferDomain) => Promise<InferSignal[]>;
@@ -54,6 +101,11 @@ export type InferNudgeDeps = {
 export type InferNudgeReport = {
 	dormant?: boolean;
 	fired?: boolean;
+	/** True when this cycle would have fired but is still within its cluster's suggest-only
+	 *  warm-up window — logged to the warm-up audit log instead of the Daily note. */
+	warmup?: boolean;
+	/** Only set alongside `warmup: true` — how many more would-fire cycles until this cluster goes live. */
+	cyclesRemaining?: number;
 	suppressed?: "no_candidate" | "below_floor" | "rate_capped" | "deduped";
 	cluster?: string;
 	driftScore?: number;
@@ -91,10 +143,13 @@ function buildDigestBlock(candidate: DriftCandidate, phrasing: string, whyTrail:
 /** Run one nudge-write cycle. Fail-closed: dormant unless at least one first-slice domain is
  *  armed (INFER_ARM_VAULT/INFER_ARM_MAIL) and INFER_KILL isn't set. Detects centroid drift over
  *  the armed domains, applies the confidence floor + rate cap (≤1/domain/day) + evidence-dedupe
- *  cooldown, and — only if all three clear — phrases + appends ONE line to the Daily note. Every
- *  successful fire is also logged to the (domain-keyed) inference log so #866's cascading
- *  deletion can find and forget it. A suppressed/no-candidate cycle is the overwhelmingly
- *  common, correct result — never an error. */
+ *  cooldown, and — only if all three clear — phrases what it would say. Every such cycle is also
+ *  logged to the (domain-keyed) inference log so #866's cascading deletion can find and forget it,
+ *  regardless of whether it's a live write or a warm-up log. While the cluster's would-fire count
+ *  is still under its suggest-only warm-up threshold (#868, default 3 — INFER_NUDGE_WARMUP_CYCLES),
+ *  the phrased nudge is logged to the warm-up audit log instead of the Daily note; only once that
+ *  counter clears does it append ONE line to the Daily note. A suppressed/no-candidate cycle is the
+ *  overwhelmingly common, correct result — never an error. */
 export async function runInferNudge(env: RtEnv, opts: { domains?: InferDomain[] }, deps: InferNudgeDeps): Promise<InferNudgeReport> {
 	if (isInferKilled(env)) {
 		return { dormant: true, note: "infer_nudge is dormant — INFER_KILL is set. Fail-closed: no candidate is ever detected or written while killed." };
@@ -153,17 +208,37 @@ export async function runInferNudge(env: RtEnv, opts: { domains?: InferDomain[] 
 		payload: { cluster: candidate.cluster, driftScore: candidate.driftScore },
 	});
 	const inferenceId = rec.id ?? crypto.randomUUID();
+	const digestContent = buildDigestBlock(candidate, phrasing, whyTrail, inferenceId);
 
-	try {
-		await deps.digestAppend(env, `Daily/${vaultToday(env.VAULT_TZ)}.md`, buildDigestBlock(candidate, phrasing, whyTrail, inferenceId));
-	} catch (e) {
-		return { error: `vault append failed: ${errMsg(e)}`, cluster: candidate.cluster, driftScore: candidate.driftScore, inferenceId };
+	const warmupRequired = warmupCyclesRequired(env);
+	const warmupCount = await readWarmupCount(env, candidate.cluster);
+	const inWarmup = warmupCount < warmupRequired;
+
+	if (inWarmup) {
+		await warmupLog(env, candidate.cluster).push({
+			ts: Date.now(),
+			cluster: candidate.cluster,
+			driftScore: candidate.driftScore,
+			evidenceIds: candidate.evidenceIds,
+			phrasing,
+			whyTrail,
+			wouldWriteDigest: digestContent,
+		});
+		await writeWarmupCount(env, candidate.cluster, warmupCount + 1);
+	} else {
+		try {
+			await deps.digestAppend(env, `Daily/${vaultToday(env.VAULT_TZ)}.md`, digestContent);
+		} catch (e) {
+			return { error: `vault append failed: ${errMsg(e)}`, cluster: candidate.cluster, driftScore: candidate.driftScore, inferenceId };
+		}
 	}
 
 	await rate.mark(candidate.cluster);
 	await dedupe.mark(dedupeKey);
 
-	return { fired: true, cluster: candidate.cluster, driftScore: candidate.driftScore, inferenceId };
+	return inWarmup
+		? { warmup: true, cluster: candidate.cluster, driftScore: candidate.driftScore, inferenceId, cyclesRemaining: warmupRequired - (warmupCount + 1) }
+		: { fired: true, cluster: candidate.cluster, driftScore: candidate.driftScore, inferenceId };
 }
 
 // A static, non-diagnostic fallback phrasing (no LLM call) — used when Workers-AI isn't

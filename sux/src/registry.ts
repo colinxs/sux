@@ -144,8 +144,13 @@ export type RtEnv = Env &
 		//   INFER_NUDGE_COOLDOWN_DAYS  — how long a fired inference's evidence-fingerprint is
 		//                         suppressed from re-firing (default 7), on top of the design
 		//                         doc's hard ≤1 nudge/domain/day rate cap.
+		//   INFER_NUDGE_WARMUP_CYCLES  — suggest-only warm-up (#868, design doc §3 guardrail 5):
+		//                         the first N would-fire cycles per cluster log to an audit trail
+		//                         instead of the Daily note (default 3); only after N does that
+		//                         cluster's writes go live.
 		INFER_NUDGE_MIN_CONFIDENCE?: string;
 		INFER_NUDGE_COOLDOWN_DAYS?: string;
+		INFER_NUDGE_WARMUP_CYCLES?: string;
 
 		// IANA tz for the vault owner's "today" (daily-note tools). Default Pacific.
 		VAULT_TZ?: string;
