@@ -875,6 +875,19 @@ async function lifeWikiTick(env: RtEnv): Promise<void> {
 	await mod.runLifeWiki(env, {}, deps);
 }
 
+// The proactive-nudge write path (#858→#867), driven by the same daily Cron Trigger —
+// not the frequent one, since it's rate-capped to ≤1 nudge/domain/day internally
+// (runInferNudge's own ledger check) and isn't a reply loop needing near-real-time
+// pickup like agenda_reply/imessage_reply. FAIL-CLOSED: runInferNudge itself no-ops
+// (dormant) unless INFER_ARM_VAULT/INFER_ARM_MAIL is set and INFER_KILL isn't — no
+// separate `has*` gate needed here, unlike watchSweepTick/lifeWikiTick. Dynamically
+// imported so the cron path pulls in the drift-detection surface only when armed (#960).
+async function inferNudgeTick(env: RtEnv): Promise<unknown> {
+	const mod = await import("./fns/_infer_nudge");
+	const deps = await mod.defaultDeps();
+	return mod.runInferNudge(env, {}, deps);
+}
+
 async function maintenanceTick(env: RtEnv, ctx: ExecutionContext): Promise<void> {
 	await runSubJob(env, "kroger_token", () => refreshKrogerToken(env));
 	// Keep the Epic refresh grant alive (some orgs expire it on inactivity) — a pure
@@ -892,6 +905,7 @@ async function maintenanceTick(env: RtEnv, ctx: ExecutionContext): Promise<void>
 		await refreshAdblockEngine(env);
 	});
 	await runSubJob(env, "life_wiki", () => lifeWikiTick(env));
+	await runSubJob(env, "infer_nudge", () => inferNudgeTick(env));
 	// Learning-folder reconciliation (#433): dormant unless LEARNING_FOLDER_ENABLED is set.
 	await runSubJob(env, "learning_folder", async () => {
 		const { runLearningFolderSync } = await import("./fns/_learning_folder");

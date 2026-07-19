@@ -896,6 +896,7 @@ describe("scheduled (cron-dispatch wiring)", () => {
 		expect(store.has(heartbeatKey("ask_gate_reminder"))).toBe(true);
 		expect(store.has(heartbeatKey("self_improve"))).toBe(false);
 		expect(store.has(heartbeatKey("kroger_token"))).toBe(false);
+		expect(store.has(heartbeatKey("infer_nudge"))).toBe(false);
 	});
 
 	it("a non-METRICS_CRON event fires maintenanceTick + selfImproveTick, not mail_triage", async () => {
@@ -913,6 +914,10 @@ describe("scheduled (cron-dispatch wiring)", () => {
 		expect(store.has(heartbeatKey("mail_triage"))).toBe(false);
 		expect(store.has(heartbeatKey("mail_triage_plan"))).toBe(false);
 		expect(store.has(heartbeatKey("ask_gate_reminder"))).toBe(false);
+		// infer_nudge (#960): fires on the daily maintenance tick, not the frequent one —
+		// runInferNudge itself no-ops (dormant, not an error) with no INFER_ARM_* set, so this
+		// only proves the sub-job was reached, not that it fired a nudge.
+		expect(store.has(heartbeatKey("infer_nudge"))).toBe(true);
 	});
 
 	it("a rejected shipMetricsSnapshot on the frequent path is swallowed, not thrown (#579)", async () => {

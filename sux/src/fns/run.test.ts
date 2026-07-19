@@ -1,5 +1,6 @@
 import { test, expect, vi } from "vitest";
-import { answerVerb, cancelVerb, describeOp, listDurableRuns, run, runVerb, statusVerb } from "./run.js";
+import { ask, catchOp, fixed, map, mapField, op } from "@suxos/lib";
+import { answerVerb, cancelVerb, collectAskGates, describeOp, listDurableRuns, needsDurable, run, runVerb, statusVerb } from "./run.js";
 
 // A minimal in-memory KVNamespace — just enough of put/get/list for the run index.
 // Records the opts each put() was called with so tests can assert on expirationTtl.
@@ -203,6 +204,38 @@ test("describeOp finds an op tree's ask gates without running it", () => {
 
 test("describeOp throws on an unknown op", () => {
 	expect(() => describeOp("nope")).toThrow(/unknown op/);
+});
+
+// No op in registry.ts currently nests an `ask` under `mapField`/`catch`, so these
+// synthetic trees are the only coverage of that shape (#963) — needsDurable/
+// collectAskGates must recurse into it exactly like durable.ts's interpreter does.
+test("needsDurable/collectAskGates recurse into an ask nested under mapField", () => {
+	const gated = mapField("items", "value", ask("approve item?", { timeout: "1 hour", onTimeout: "fail" }), { concurrency: fixed(1) });
+	expect(needsDurable(gated)).toBe(true);
+	expect(collectAskGates(gated)).toEqual([{ prompt: "approve item?", timeout: "1 hour", onTimeout: "fail" }]);
+});
+
+test("needsDurable/collectAskGates recurse into an ask nested under catch's try and catch branches", () => {
+	const tryAsk = ask("try approve?", { timeout: "1 hour", onTimeout: "proceed" });
+	const catchAsk = ask("catch approve?", { timeout: "1 hour", onTimeout: "proceed" });
+	const gated = catchOp(tryAsk, catchAsk);
+	expect(needsDurable(gated)).toBe(true);
+	expect(collectAskGates(gated)).toEqual([
+		{ prompt: "try approve?", timeout: "1 hour", onTimeout: "proceed" },
+		{ prompt: "catch approve?", timeout: "1 hour", onTimeout: "proceed" },
+	]);
+});
+
+test("needsDurable is false for a plain leaf/reconcile/sink pipe with no map/ask anywhere", () => {
+	const plain = mapField("items", "value", op("double", async (n: number) => n * 2, { kind: "pure" }), { concurrency: fixed(1) });
+	expect(needsDurable(plain)).toBe(false);
+	expect(collectAskGates(plain)).toEqual([]);
+});
+
+test("needsDurable is true for a map fanning out an ask (existing map recursion, unchanged)", () => {
+	const gated = map(ask("approve each?", { timeout: "1 hour", onTimeout: "fail" }), { concurrency: fixed(1) });
+	expect(needsDurable(gated)).toBe(true);
+	expect(collectAskGates(gated)).toEqual([{ prompt: "approve each?", timeout: "1 hour", onTimeout: "fail" }]);
 });
 
 test("run fn's describe action returns the op's ask gates without an instanceId", async () => {

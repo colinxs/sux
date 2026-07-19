@@ -83,28 +83,70 @@ export async function listDurableRuns(env: RtEnv): Promise<Array<RunIndexEntry &
 	);
 }
 
-// `auto` routes to the durable runtime exactly when the op needs it: a fan-out (`map`,
-// to run items concurrently under retries) or an `ask` (a human pause that must survive
-// isolate eviction). A flat pure/effect pipe has neither, so it runs inline in-request
-// — cheap, synchronous, no Workflow instance. Recurses through `pipe` since either can nest.
-function needsDurable(n: Op): boolean {
-	if (n.tag === "map" || n.tag === "ask") return true;
-	if (n.tag === "pipe") return n.steps.some(needsDurable);
-	return false;
+// `auto` routes to the durable runtime exactly when the op needs it: a fan-out (`map`/
+// `mapField`, to run items concurrently under retries) or an `ask` (a human pause that
+// must survive isolate eviction). A flat pure/effect pipe has neither, so it runs inline
+// in-request — cheap, synchronous, no Workflow instance. Exhaustive over every Op tag
+// (mirroring durable.ts's interpreter switch, `never` guard included) so a new tag or a
+// nesting shape durable.ts already handles can't silently fall through here unnoticed —
+// this is the recurring bug shape #915/#926/#945/#681 kept hitting (#963).
+export function needsDurable(n: Op): boolean {
+	switch (n.tag) {
+		case "map":
+		case "ask":
+			return true;
+		case "pipe":
+			return n.steps.some(needsDurable);
+		case "mapField":
+			return needsDurable(n.op);
+		case "catch":
+			return needsDurable(n.try) || needsDurable(n.catch);
+		case "leaf":
+		case "reconcile":
+		case "sink":
+			return false;
+		default: {
+			const _exhaustive: never = n;
+			throw new Error(`needsDurable: unhandled op tag: ${(n as Op).tag}`);
+		}
+	}
 }
 
 export type AskGate = { prompt: string; timeout: string; onTimeout: "proceed" | "fail" };
 
 // Every op tree is a static shape per opId (registry factories are pure — see
 // registry.ts), so its `ask` nodes and their exact prompt text can be discovered ahead
-// of any run. Recurses through `pipe`/`map` since either can nest an `ask`. This is what
-// lets a caller learn "what can this op pause on" (`run action:describe`) instead of
-// having to already know — or go read — the op tree's source to construct a matching
-// `run action:answer` call (#715).
-function collectAskGates(n: Op, out: AskGate[] = []): AskGate[] {
-	if (n.tag === "ask") out.push({ prompt: n.prompt, timeout: n.timeout, onTimeout: n.onTimeout });
-	else if (n.tag === "pipe") for (const s of n.steps) collectAskGates(s, out);
-	else if (n.tag === "map") collectAskGates(n.op, out);
+// of any run. Exhaustive over every Op tag (see needsDurable's note) so an `ask` nested
+// under `mapField`/`catch` — which durable.ts's interpreter already recurses into — can't
+// be silently omitted here, leaving a caller with no way to discover its prompt to answer
+// it (#963). This is what lets a caller learn "what can this op pause on"
+// (`run action:describe`) instead of having to already know — or go read — the op tree's
+// source to construct a matching `run action:answer` call (#715).
+export function collectAskGates(n: Op, out: AskGate[] = []): AskGate[] {
+	switch (n.tag) {
+		case "ask":
+			out.push({ prompt: n.prompt, timeout: n.timeout, onTimeout: n.onTimeout });
+			break;
+		case "pipe":
+			for (const s of n.steps) collectAskGates(s, out);
+			break;
+		case "map":
+		case "mapField":
+			collectAskGates(n.op, out);
+			break;
+		case "catch":
+			collectAskGates(n.try, out);
+			collectAskGates(n.catch, out);
+			break;
+		case "leaf":
+		case "reconcile":
+		case "sink":
+			break;
+		default: {
+			const _exhaustive: never = n;
+			throw new Error(`collectAskGates: unhandled op tag: ${(n as Op).tag}`);
+		}
+	}
 	return out;
 }
 
