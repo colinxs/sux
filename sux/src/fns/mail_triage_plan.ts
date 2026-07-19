@@ -1,4 +1,4 @@
-import { type Fn, failWith, ok } from "../registry";
+import { type Fn, type RtEnv, failWith, ok } from "../registry";
 import { runVerb } from "./run";
 import type { TriageMsg } from "./_mail_triage";
 import { errMsg, oj } from "./_util";
@@ -12,6 +12,16 @@ import { errMsg, oj } from "./_util";
 // batch survives isolate eviction and multi-day pauses, and is answerable/cancellable via the
 // `run` front verb.
 const numClamp = (v: unknown, lo: number, hi: number, dflt: number): number => Math.min(hi, Math.max(lo, Math.floor(Number(v) || dflt)));
+
+// Read as a truthy toggle ("0"/"false"/"off"/empty → off) rather than mere presence, so an
+// explicit MAIL_TRIAGE_PLAN_ENABLED=0 stays off — mirrors _mail_triage.ts's flagOn.
+const flagOn = (v: string | undefined): boolean => {
+	const s = String(v ?? "").trim().toLowerCase();
+	return s !== "" && s !== "0" && s !== "false" && s !== "no" && s !== "off";
+};
+
+/** The durable, human-approved triage-plan auto-start loop may run at all. Unset → dormant (no-op). */
+export const hasMailTriagePlan = (env: RtEnv): boolean => flagOn(env.MAIL_TRIAGE_PLAN_ENABLED);
 
 export const mail_triage_plan: Fn = {
 	name: "mail_triage_plan",

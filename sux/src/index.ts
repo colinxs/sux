@@ -667,15 +667,14 @@ async function notifyAskGateReminderSummary(env: RtEnv, report: unknown): Promis
 // terminated/unknown) doesn't block a fresh start. This is what turns the ask-gate +
 // reminder machinery (#723/#725) from code that's never exercised into a live loop (#727).
 async function mailTriagePlanTick(env: RtEnv): Promise<unknown> {
-	const s = String(env.MAIL_TRIAGE_PLAN_ENABLED ?? "").trim().toLowerCase();
-	if (s === "" || s === "0" || s === "false" || s === "no" || s === "off") return { dormant: true };
+	const { hasMailTriagePlan, mail_triage_plan } = await import("./fns/mail_triage_plan");
+	if (!hasMailTriagePlan(env)) return { dormant: true };
 	const runFns = await import("./fns/run");
 	const PENDING = new Set(["queued", "running", "waiting", "paused"]);
 	const runs = await runFns.listDurableRuns(env);
 	if (runs.some((r) => r.opId === "mail-triage-plan" && PENDING.has(r.status))) {
 		return { skipped: "a mail-triage-plan run is already pending" };
 	}
-	const { mail_triage_plan } = await import("./fns/mail_triage_plan");
 	const res = await mail_triage_plan.run(env, { max: 25 });
 	if (res.isError) throw new Error(res.content?.[0]?.text ?? "mail_triage_plan failed");
 	return JSON.parse(res.content?.[0]?.text ?? "{}");
