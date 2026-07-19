@@ -378,6 +378,13 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   a call site of the changed function, invisible to a grep for `sink.fanout`. When a suxlib
   signature/type changes, `npm run type-check` after the named fix (not just editing the named
   lines) is what catches the rest — don't assume the issue's file list is exhaustive.
+- **#1078 (enable `noUncheckedIndexedAccess`) is blocked, not just large** — flipping it in
+  `sux/tsconfig.json` surfaces 92 errors inside `../suxlib`'s own `.ts` sources too (the `file:`
+  dep's raw sources share sux's one global `compilerOptions` block; `skipLibCheck` only exempts
+  `.d.ts`), and `.github/workflows/ci.yml` clones that same raw `.ts` source for real CI — so
+  this isn't a sandbox artifact skip-able by trusting real CI. Don't re-attempt #1078 until
+  suxlib gets its own fix landed first (separate repo/PR — `../suxlib` is read-only here). See
+  `docs/design/improvement-backlog.md` item #10 (#1080).
 
 ## House style
 
