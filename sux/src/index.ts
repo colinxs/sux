@@ -807,6 +807,19 @@ async function agendaTick(env: RtEnv): Promise<unknown> {
 	return report;
 }
 
+// The agenda loop's inbound half (W2.1) — parses approve/snooze/reject replies to the
+// agenda digest and dispatches them through the proposal kernel. Rides the SAME frequent
+// (~5min) cron as mail-triage/ask-gate-reminder — NOT the daily one — so a reply gets
+// acted on within minutes, not up to a day later. FAIL-CLOSED: no-op unless
+// AGENDA_REPLY_ENABLED (and AGENDA_ENABLED). Dynamically imported so the cron path pulls
+// in the mail surface only when armed.
+async function agendaReplyTick(env: RtEnv): Promise<unknown> {
+	const mod = await import("./fns/_agenda_reply");
+	if (!mod.hasAgendaReply(env)) return { dormant: true };
+	const deps = await mod.defaultDeps();
+	return mod.runAgendaReply(env, {}, deps);
+}
+
 // Outbound Web Push (#219) for the agenda loop's highest-signal drops — mirrors
 // notifyMailTriageSummary's shape. The roadmap's Layer 3 ("Proposal inbox") wants
 // today-urgency proposals to reach the phone in near-real-time instead of only sitting
@@ -958,6 +971,7 @@ export default {
 			ctx.waitUntil(runSubJob(env, "mail_triage", () => mailTriageTick(env)));
 			ctx.waitUntil(runSubJob(env, "mail_triage_plan", () => mailTriagePlanTick(env)));
 			ctx.waitUntil(runSubJob(env, "ask_gate_reminder", () => askGateReminderTick(env)));
+			ctx.waitUntil(runSubJob(env, "agenda_reply", () => agendaReplyTick(env)));
 			return;
 		}
 		ctx.waitUntil(maintenanceTick(env, ctx));
@@ -1068,9 +1082,10 @@ export default {
 					else if (job === "weekly-recall") out = await weeklyRecallTick(env);
 					else if (job === "briefing") out = await briefingTick(env);
 					else if (job === "agenda") out = await agendaTick(env);
+					else if (job === "agenda-reply") out = await agendaReplyTick(env);
 					else if (job === "self-improve") out = await selfImproveTick(env);
 					else if (job === "maintenance") { await maintenanceTick(env, ctx); out = { ok: true }; }
-					else return new Response(JSON.stringify({ error: "unknown job", jobs: ["mail-triage", "weekly-recall", "briefing", "agenda", "self-improve", "maintenance"] }), { status: 400, headers: { "content-type": "application/json" } });
+					else return new Response(JSON.stringify({ error: "unknown job", jobs: ["mail-triage", "weekly-recall", "briefing", "agenda", "agenda-reply", "self-improve", "maintenance"] }), { status: 400, headers: { "content-type": "application/json" } });
 					return new Response(JSON.stringify({ ok: true, job, result: out }, null, 2), { headers: { "content-type": "application/json" } });
 				} catch (e) {
 					return new Response(JSON.stringify({ error: String((e as Error)?.message ?? e) }), { status: 500, headers: { "content-type": "application/json" } });

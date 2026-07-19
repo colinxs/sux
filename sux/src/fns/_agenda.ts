@@ -7,9 +7,8 @@
 // proposal via the W1 kernel — a reversible Todoist task that catches the drop. Then
 // compose ONE calm digest of what needs Colin and deliver it: appended to the Daily
 // note, and (when armed) mailed to him. The email IS the interface — see the digest
-// footer's reply syntax; inbound reply-parsing (approve/snooze/reject) is the next
-// increment (W2.1), and every proposal is already approvable now via the `proposals`
-// verb.
+// footer's reply syntax; inbound reply-parsing (approve/snooze/reject) is _agenda_reply.ts
+// (W2.1), and every proposal is also directly approvable via the `proposals` verb.
 //
 // North star: catch the drops, cut the noise. The detectors are all rung-0 rules (the
 // cost ladder) — no model sorts your mail; every drop becomes a reversible task, so a
