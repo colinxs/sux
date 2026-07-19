@@ -440,6 +440,17 @@ export type RtEnv = Env &
 		// `imessage` fn reports not_configured rather than erroring.
 		IMESSAGE_URL?: string;
 		IMESSAGE_SECRET?: string;
+		// iMessage REPLY loop (fns/_imessage_reply.ts, #897) — the agenda proposal kernel's
+		// SECOND inbound channel alongside AGENDA_REPLY_ENABLED's email one: parses
+		// approve/snooze/reject texts and dispatches them the same way. Same two-stage
+		// fail-closed gate, ALSO requires AGENDA_ENABLED. A command is only ever honored from
+		// a message received on a thread whose contact is listed in IMESSAGE_TRUSTED_HANDLES
+		// (comma-separated phone/email handles — the iMessage analogue of mail_identities,
+		// since the Mac-local service has no "list my identities" call); anything else is
+		// ignored untouched, never parsed. Dispatch never bypasses the proposal kernel's own
+		// locks (allow-listed reversible fns only, no force).
+		IMESSAGE_REPLY_ENABLED?: string;
+		IMESSAGE_TRUSTED_HANDLES?: string;
 
 		// UW Person Web Service (PWS) mutual-TLS tier for the `uw` fn. An
 		// `mtls_certificates` binding (a Fetcher that presents the client cert) to
