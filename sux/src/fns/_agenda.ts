@@ -1010,11 +1010,30 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		for (const drop of drops) proposed.push({ proposalId: `dryrun-${drop.dedupe}`, drop });
 	}
 
-	const digest = composeDigest(date, proposed);
+	// agenda_drop's mark above is permanent — once propose() succeeds a drop never resurfaces
+	// via `drops`/`proposed` again, so it can't be the thing a failed digest/email retries.
+	// This queue is what actually carries an undelivered drop's content into the NEXT cycle,
+	// independent of agenda_drop; cleared only once a write actually lands (#996).
+	const pending = ledger(env, "agenda_pending");
+	const PENDING_KEY = "queue";
+	let carried: ProposedDrop[] = [];
+	if (!dryRun) {
+		const raw = await pending.get(PENDING_KEY);
+		if (raw) {
+			try {
+				carried = JSON.parse(raw) as ProposedDrop[];
+			} catch {
+				// corrupt entry — better to drop it than throw the whole cycle.
+			}
+		}
+	}
+	const toDeliver = [...carried, ...proposed];
+
+	const digest = composeDigest(date, toDeliver);
 
 	let digestWritten = false;
 	let emailed = false;
-	if (!dryRun && proposed.length) {
+	if (!dryRun && toDeliver.length) {
 		const dled = ledger(env, "agenda_digest");
 		const digKey = `digest::${cycle}`;
 		if (!(await dled.seen(digKey))) {
@@ -1039,6 +1058,9 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 			// Mark AFTER a successful write so a failed append retries next tick (mirrors _weekly_recall.ts).
 			if (digestWritten) await dled.mark(digKey);
 		}
+		// Clear once the vault write actually lands; otherwise re-queue everything still
+		// undelivered — including this cycle's own new proposals — for the next attempt.
+		await pending.mark(PENDING_KEY, digestWritten ? "[]" : JSON.stringify(toDeliver));
 	}
 
 	return {
@@ -1049,7 +1071,7 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		sources: status,
 		drops_detected: drops.length,
 		proposed: proposed.length,
-		proposals: proposed.map((p) => ({ id: p.proposalId, kind: p.drop.kind, title: p.drop.title, urgency: p.drop.urgency })),
+		proposals: toDeliver.map((p) => ({ id: p.proposalId, kind: p.drop.kind, title: p.drop.title, urgency: p.drop.urgency })),
 		digest: digest.body,
 		digest_written: digestWritten,
 		emailed,
