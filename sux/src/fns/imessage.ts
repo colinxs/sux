@@ -63,6 +63,7 @@ export const imessage: Fn = {
 	name: "imessage",
 	cost: 1,
 	cacheable: false,
+	raw: true,
 	description:
 		"iMessage over a standalone Mac-local service (chat.db read + AppleScript send), reached via Tailscale Funnel + HMAC — the Mac-node spoke domains.md §2 specs. Actions: threads ({since?, contact?}) — recent conversations; messages ({thread, limit?}) — a thread's messages; send ({to, text, allow_send:true}) — GATED, an iMessage is unrecallable once sent (§1 law, jmap parity). Down/asleep Mac → reports the backend as unreachable rather than silently degrading. Needs IMESSAGE_URL + IMESSAGE_SECRET.",
 	inputSchema: {

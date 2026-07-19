@@ -331,6 +331,13 @@ describe("agenda — loop", () => {
 		expect(d.sendDigest).toHaveBeenCalledTimes(1);
 	});
 
+	it("ledgers the sent digest's Message-ID so _agenda_reply.ts can thread-match a later reply", async () => {
+		const e = env({ AGENDA_EMAIL: "1" });
+		const d = deps({ sendDigest: vi.fn(async () => ({ messageId: "abc123@fastmail.com" })) });
+		await runAgenda(e, {}, d);
+		expect(e.OAUTH_KV.map.get("sux:ledger:agenda_digest_msgid:abc123@fastmail.com")).toBe("1");
+	});
+
 	it("is idempotent — a second cycle re-proposes nothing (dedupe ledger)", async () => {
 		const e = env();
 		await runAgenda(e, {}, deps());

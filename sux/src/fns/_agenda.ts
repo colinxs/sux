@@ -7,9 +7,8 @@
 // proposal via the W1 kernel — a reversible Todoist task that catches the drop. Then
 // compose ONE calm digest of what needs Colin and deliver it: appended to the Daily
 // note, and (when armed) mailed to him. The email IS the interface — see the digest
-// footer's reply syntax; inbound reply-parsing (approve/snooze/reject) is the next
-// increment (W2.1), and every proposal is already approvable now via the `proposals`
-// verb.
+// footer's reply syntax; inbound reply-parsing (approve/snooze/reject) is _agenda_reply.ts
+// (W2.1), and every proposal is also directly approvable via the `proposals` verb.
 //
 // North star: catch the drops, cut the noise. The detectors are all rung-0 rules (the
 // cost ladder) — no model sorts your mail; every drop becomes a reversible task, so a
@@ -555,8 +554,11 @@ export type AgendaDeps = {
 	mailSearch: (env: RtEnv, opts: { limit: number }) => Promise<MailRef[]>;
 	calEvents: (env: RtEnv, opts: { start: string; end: string }) => Promise<EventRef[]>;
 	digestAppend: (env: RtEnv, path: string, content: string) => Promise<void>;
-	/** Send the digest to Colin's own primary address. The one send this loop can do. */
-	sendDigest: (env: RtEnv, subject: string, body: string) => Promise<void>;
+	/** Send the digest to Colin's own primary address (the one send this loop can do), and
+	 *  best-effort resolve its own RFC5322 Message-ID (undefined if the lookup fails) so
+	 *  runAgenda can ledger it — _agenda_reply.ts's inbound auth binds a reply to this exact
+	 *  sent digest instead of trusting a guessable subject prefix alone (#937). */
+	sendDigest: (env: RtEnv, subject: string, body: string) => Promise<{ messageId?: string } | void>;
 	/** The vault-consolidation loop's most recent findings (W5) — a ledger-cache read, never a
 	 *  fresh vault scan. */
 	consolidateFindings: (env: RtEnv) => Promise<ConsolidateFindings | null>;
@@ -777,8 +779,12 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 			}
 			if (hasAgendaEmail(env)) {
 				try {
-					await deps.sendDigest(env, digest.subject, digest.body);
+					const sent = await deps.sendDigest(env, digest.subject, digest.body);
 					emailed = true;
+					// Ledger the sent digest's Message-ID (30d TTL, matches the ledger default) so
+					// _agenda_reply.ts can bind an inbound reply to THIS digest via In-Reply-To/
+					// References, instead of trusting the guessable `sux · ` subject prefix alone.
+					if (sent?.messageId) await ledger(env, "agenda_digest_msgid").mark(sent.messageId);
 				} catch {
 					/* an email failure must never fail the cycle — the proposals are already recorded */
 				}
@@ -861,6 +867,28 @@ export async function defaultDeps(): Promise<AgendaDeps> {
 			if (!self) throw new Error("no primary identity to send the digest to");
 			const sr = await sendTool.run(env, { to: [self], subject, text: body, force: true });
 			if (sr.isError) throw new Error(sr.content?.[0]?.text ?? "mail_send failed");
+			// mail_send only returns {sent, submissionId, to} — no email id or Message-ID. Best-effort
+			// resolve the just-filed Sent copy by its (unique-enough, dated) subject, then the raw jmap
+			// escape hatch for the messageId property it doesn't otherwise expose. Never fails the
+			// send itself — a lookup miss just means _agenda_reply.ts's thread-match gate has nothing
+			// to bind to for this cycle's digest.
+			try {
+				const searchTool = tool("mail_search");
+				const jmapTool = tool("jmap");
+				if (!searchTool || !jmapTool) return {};
+				const found = await searchTool.run(env, { mailbox: "sent", subject, limit: 1 });
+				if (found.isError) return {};
+				const sentMsg = JSON.parse(found.content?.[0]?.text ?? "{}").emails?.[0];
+				if (!sentMsg?.id) return {};
+				const got = await jmapTool.run(env, { method: "Email/get", args: { ids: [sentMsg.id], properties: ["messageId"] } });
+				if (got.isError) return {};
+				const mrs = JSON.parse(got.content?.[0]?.text ?? "{}").methodResponses ?? [];
+				const list = mrs.find((mr: any) => mr[0] === "Email/get")?.[1]?.list ?? [];
+				const messageId = list[0]?.messageId?.[0];
+				return messageId ? { messageId: String(messageId) } : {};
+			} catch {
+				return {};
+			}
 		},
 		consolidateFindings: lastConsolidateFindings,
 		weeklyRecallFindings: lastWeeklyRecallFindings,
