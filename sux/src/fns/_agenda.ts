@@ -451,6 +451,21 @@ const PORTFOLIO_DRIFT_THRESHOLD = 0.1;
 // A savings rate this many percentage points below the last checked cycle reads as a real drop,
 // not day-to-day noise in a rolling window.
 const SAVINGS_RATE_DROP_THRESHOLD = 0.15;
+// Subscription-creep detector (#1059, W7): needs several months of transaction history to spot
+// a recurring pattern at all — far wider than unusual_charge's 3-day recency window, so the
+// transactions fetch itself is widened to this and unusual_charge re-filters down to its own
+// window (see detectMonarchDrops).
+const SUBSCRIPTION_LOOKBACK_DAYS = 90;
+// A merchant needs at least this many charges within the lookback window before its pattern is
+// trusted as "recurring" rather than coincidence.
+const SUBSCRIPTION_MIN_OCCURRENCES = 3;
+// A recurring charge growing at least this fraction above its first-seen amount reads as creep
+// (a price hike, plan upgrade, or add-on quietly stacked on) — small billing noise (tax/FX
+// rounding) stays under this.
+const SUBSCRIPTION_GROWTH_THRESHOLD = 0.2;
+// Recurring charges above this read as a bill (rent, insurance) already covered by bill_due,
+// not a subscription.
+const SUBSCRIPTION_MAX_CHARGE = 200;
 
 const daysLeftInMonth = (date: string): number => {
 	const d = new Date(`${date}T00:00:00Z`);
@@ -484,8 +499,12 @@ export function detectMonarchDrops(date: string, accounts: MonarchAccountRef[], 
 		});
 	}
 
+	// unusual_charge only cares about the recent window even though `transactions` may span the
+	// wider SUBSCRIPTION_LOOKBACK_DAYS fetched for the subscription-creep scan below (#1059).
+	const unusualChargeSince = addDays(date, -UNUSUAL_CHARGE_WINDOW_DAYS);
 	for (const t of transactions) {
 		if (typeof t.amount !== "number" || t.amount >= 0 || Math.abs(t.amount) < unusualChargeThreshold) continue;
+		if (t.date && t.date < unusualChargeSince) continue;
 		const who = t.merchant || "a transaction";
 		const amt = Math.abs(t.amount).toFixed(2);
 		drops.push({
@@ -514,6 +533,38 @@ export function detectMonarchDrops(date: string, accounts: MonarchAccountRef[], 
 				evidence: { category: b.category, remaining: b.remaining, month },
 			});
 		}
+	}
+
+	// Subscription creep: group negative-amount charges by merchant across the whole window
+	// (unlike unusual_charge above, which only cares about a single outsized transaction),
+	// and flag a merchant whose charge amount has grown since its first-seen occurrence.
+	const byMerchant = new Map<string, MonarchTxnRef[]>();
+	for (const t of transactions) {
+		if (typeof t.amount !== "number" || t.amount >= 0) continue;
+		const amt = Math.abs(t.amount);
+		if (amt > SUBSCRIPTION_MAX_CHARGE) continue;
+		const merchant = t.merchant?.trim();
+		if (!merchant) continue;
+		const list = byMerchant.get(merchant) ?? [];
+		list.push(t);
+		byMerchant.set(merchant, list);
+	}
+	for (const [merchant, txns] of byMerchant) {
+		if (txns.length < SUBSCRIPTION_MIN_OCCURRENCES) continue;
+		const sorted = [...txns].sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+		const first = Math.abs(sorted[0].amount as number);
+		const latest = sorted[sorted.length - 1];
+		const latestAmount = Math.abs(latest.amount as number);
+		if (first <= 0 || latestAmount < first * (1 + SUBSCRIPTION_GROWTH_THRESHOLD)) continue;
+		drops.push({
+			kind: "subscription_creep",
+			urgency: "fyi",
+			dedupe: `monarch::subscription_creep::${merchant}::${latest.id}`,
+			title: `Subscription creep: ${merchant} rose from $${first.toFixed(2)} to $${latestAmount.toFixed(2)}`,
+			emoji: "📈",
+			action: task(`Review recurring charge growth: ${merchant} ($${first.toFixed(2)} → $${latestAmount.toFixed(2)})`),
+			evidence: { merchant, firstAmount: first, latestAmount, occurrences: sorted.length },
+		});
 	}
 
 	return sortByUrgency(drops);
@@ -997,7 +1048,7 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 				status.monarch = "not_configured";
 				return;
 			}
-			const windowStart = addDays(date, -UNUSUAL_CHARGE_WINDOW_DAYS);
+			const windowStart = addDays(date, -SUBSCRIPTION_LOOKBACK_DAYS);
 			const [accts, txns, budgetRows, cashflow, holdings] = await Promise.all([
 				deps.monarchAccounts(env),
 				deps.monarchTransactions(env, { start: windowStart, end: date }),
@@ -1162,13 +1213,16 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 					/* an email failure must never fail the cycle — the proposals are already recorded */
 				}
 			}
-			// Mark AFTER a successful write so a failed append retries next tick (mirrors _weekly_recall.ts).
-			if (digestWritten) await dled.mark(digKey);
+			// Mark AFTER a successful write on EITHER channel — vault append or email — so a cycle
+			// where only one channel is down doesn't re-send/re-append an ever-growing digest to the
+			// channel that's working (#1058); a failed channel still retries next tick since only ITS
+			// own flag stayed false, not the shared ledger mark.
+			if (digestWritten || emailed) await dled.mark(digKey);
 		}
-		// Clear once the vault write actually lands (this call, or an earlier call this same
+		// Clear once EITHER channel actually delivers (this call, or an earlier call this same
 		// cycle already delivered it); otherwise re-queue everything still undelivered —
-		// including this cycle's own new proposals — for the next attempt (#1041).
-		await pending.mark(PENDING_KEY, digestWritten || alreadyDelivered ? "[]" : JSON.stringify(toDeliver));
+		// including this cycle's own new proposals — for the next attempt (#1041, #1058).
+		await pending.mark(PENDING_KEY, digestWritten || emailed || alreadyDelivered ? "[]" : JSON.stringify(toDeliver));
 	}
 
 	return {
