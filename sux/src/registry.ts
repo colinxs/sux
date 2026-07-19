@@ -348,6 +348,14 @@ export type RtEnv = Env &
 		MONARCH_PORTFOLIO_CONCENTRATION_THRESHOLD?: string;
 		MONARCH_PORTFOLIO_DRIFT_THRESHOLD?: string;
 		MONARCH_SAVINGS_RATE_DROP_THRESHOLD?: string;
+		// W6 — MyChart health-signal detector window (fns/_agenda.ts's detectMyChartDrops via
+		// mychart.ts's summarizeMyChart). Days-ahead window for flagging a MedicationRequest's
+		// validityPeriod.end as "refill due soon". Optional; unset ⇒ 14 days. Only ever read, never
+		// gates whether the detector runs at all — that's EPIC_CLIENT_ID/SECRET/FHIR_BASE (via
+		// mychartConfigured) + an actual connected grant. Same read-only/proposal-only contract as
+		// the Monarch thresholds above; every drop it can produce is redacted (no raw lab values or
+		// diagnosis names — see mychart.ts's summarizeMyChart docstring).
+		MYCHART_REFILL_WINDOW_DAYS?: string;
 
 		// Ask-gate reminder (fns/_ask_gate_reminder.ts) — proactively surfaces durable
 		// `run` instances paused on a human `ask` gate (op-engine) instead of relying on

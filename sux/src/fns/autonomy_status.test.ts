@@ -12,7 +12,20 @@ describe("autonomy_status — read-only gate mirror", () => {
 		const j = await run();
 		expect(j.armed_count).toBe(0);
 		expect(j.armed).toEqual([]);
-		expect(j.surfaces.map((s: any) => s.surface)).toEqual(["mail_triage", "dropbox_full_write", "self_improve", "cron_trigger", "briefing", "weekly_recall", "consolidate", "agenda"]);
+		expect(j.surfaces.map((s: any) => s.surface)).toEqual([
+			"mail_triage",
+			"dropbox_full_write",
+			"self_improve",
+			"cron_trigger",
+			"briefing",
+			"weekly_recall",
+			"consolidate",
+			"agenda",
+			"mail_triage_plan",
+			"ask_gate_reminder",
+			"life_wiki",
+			"learning_folder",
+		]);
 		for (const s of j.surfaces) expect(s.armed).toBe(false);
 	});
 
@@ -65,6 +78,36 @@ describe("autonomy_status — read-only gate mirror", () => {
 		const j = await run({ SUX_CRON_TOKEN: "s3cr3t" });
 		expect(j.armed).toContain("cron_trigger");
 		expect(r_text(j)).not.toContain("s3cr3t");
+	});
+
+	it("mail_triage_plan arms on its own enable flag, separate from mail_triage", async () => {
+		const j = await run({ MAIL_TRIAGE_PLAN_ENABLED: "1" });
+		expect(j.surfaces.find((s: any) => s.surface === "mail_triage_plan")).toMatchObject({ armed: true });
+		expect(j.armed).toContain("mail_triage_plan");
+		expect(j.armed).not.toContain("mail_triage");
+	});
+
+	it("ask_gate_reminder arms on its own two-stage gate — email mode only atop the base flag", async () => {
+		const byName = (j: any) => j.surfaces.find((s: any) => s.surface === "ask_gate_reminder");
+		const base = await run({ ASK_GATE_REMINDER_ENABLED: "1" });
+		expect(byName(base)).toMatchObject({ armed: true, mode: "armed (vault append only)" });
+		const withEmail = await run({ ASK_GATE_REMINDER_ENABLED: "1", ASK_GATE_REMINDER_EMAIL: "1" });
+		expect(byName(withEmail)).toMatchObject({ armed: true, mode: "armed (vault append + emails you the reminder)" });
+		expect((await run({ ASK_GATE_REMINDER_EMAIL: "1" })).armed).not.toContain("ask_gate_reminder");
+	});
+
+	it("life_wiki arms on its own enable flag", async () => {
+		const j = await run({ LIFE_WIKI_ENABLED: "1" });
+		expect(j.surfaces.find((s: any) => s.surface === "life_wiki")).toMatchObject({ armed: true });
+		expect(j.armed).toContain("life_wiki");
+	});
+
+	it("learning_folder arms only when ENABLED is set AND Dropbox is configured", async () => {
+		const enabledOnly = await run({ LEARNING_FOLDER_ENABLED: "1" });
+		expect(enabledOnly.armed).not.toContain("learning_folder");
+		const j = await run({ LEARNING_FOLDER_ENABLED: "1", DROPBOX_TOKEN: "t" });
+		expect(j.surfaces.find((s: any) => s.surface === "learning_folder")).toMatchObject({ armed: true });
+		expect(j.armed).toContain("learning_folder");
 	});
 });
 
