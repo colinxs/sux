@@ -357,6 +357,19 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   issue, `git log --all --oneline | grep -i <keyword>` (per the orphaned-commit gotcha above) —
   it may turn up a MERGED commit, not just an orphaned one. Drop it with `"superseded": true` in
   the disposition so it closes instead of getting rebuilt.
+- **An issue whose auto-build comment thread just says "couldn't get the gates green" (no
+  detail) can hide a specific, checkable cause** — `gh run view <run-id> --log` (or `--json
+  jobs`) on the linked run often shows the real reason before you re-attempt blindly. Confirmed
+  on #1046 (unify `confirm:true` delete gates onto `staged()`): all 6 prior attempts' linked
+  runs showed the identical `Action failed with error: Claude execution failed: Reached maximum
+  number of turns (90)` — the session ran out of turn budget mid-build, not a design/gate
+  problem — which combined with its own `effort:large` label was enough to apply `needs-human`
+  immediately (per the `#920` precedent above) instead of attempting a 7th identical-shaped
+  retry. Also: the issue's own premise can be partly stale even when the label says otherwise —
+  #1046 named calendar's `delete`/`task_delete` as still gated by a bare `confirm:true`, but
+  `fns/calendar.ts` only dispatches into `mail-mcp.ts`'s `cal_delete`, which already routes
+  through `staged()`/`STAGE_KINDS` (added earlier for mail/contact/cal/task) — only the doc
+  string in `calendar.ts` was stale, not the actual gate.
 
 ## House style
 
