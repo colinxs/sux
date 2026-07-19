@@ -341,6 +341,15 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   `INFER_ARM_FILES` today is a genuine no-op, not a latent bug to chase; a real Dropbox-files
   signal feed needs a NEW call site (e.g. in `files.ts`/`dropbox.ts`) before that arm does
   anything.
+- **#986's Part A (MyChart multi-org registry — `MYCHART_ORGS`, per-org KV keys/PHI paths,
+  `/mychart/connect?org=`) is DONE and merged** (commit `22622f7`, PR #991) — `mychart.ts` on
+  `main` already has it. Part B (durable pull on the op-engine: a new `caps.health` effect, a
+  `mychart-pull` op, `StepConfig` threading through `interpretDurable`, `wrangler.jsonc`
+  subrequest limits) is still entirely unbuilt and is `effort:large` in its own right; the
+  design doc's own build order (§7) treats it as a separate PR after Part A. Don't re-verify
+  Part A's state from scratch (`git grep MYCHART_ORGS origin/main` settles it in one call) —
+  go straight to scoping Part B alone, and expect it to need its own dedicated session per the
+  `effort:large` precedent (see the `#920` gotcha above), not a batch slot alongside other work.
 
 ## House style
 

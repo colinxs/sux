@@ -119,6 +119,14 @@ const senderName = (from?: string): string => {
 	return (m?.[1] ?? s.split("@")[0] ?? "someone").trim() || "someone";
 };
 
+/** The bare address out of a `From` header, bracketed ("Name <a@b.com>") or bare
+ *  ("a@b.com") — used to key mailRelationshipThreads' per-contact cadence below. */
+const senderEmail = (from?: string): string | undefined => {
+	const s = String(from ?? "").trim();
+	const raw = s.match(/<([^<>]+)>/)?.[1] ?? s.match(/[^\s<>",]+@[^\s<>",]+/)?.[0];
+	return raw?.toLowerCase();
+};
+
 /** Turn the gathered mail + events into a ranked list of drops. Idempotency and the
  *  actual propose() write happen in the loop; this stays a pure, unit-testable function. */
 export function detectDrops(mail: MailRef[], events: EventRef[]): Drop[] {
@@ -200,8 +208,10 @@ export function detectTextDrops(threads: TextThreadRef[]): Drop[] {
 // #849) as the tracked-people population, rather than fanning `contact.search` for
 // "important/starred" people as the issue first sketched — Fastmail's ContactCard (see
 // mail-mcp.ts's shapeContact) carries no starred/importance field to fan against, so "the
-// people who matter" is approximated as "the people you actually text". Calendar
-// co-attendance and mail-only relationships are left for a future pass.
+// people who matter" is approximated as "the people you actually text" (and, per #981
+// below, "the people you actually email"). Calendar co-attendance is left for a future
+// pass — EventRef carries no attendee list today, so wiring it in needs a calendar-read
+// change this detector alone shouldn't drive.
 const RELATIONSHIP_EWMA_ALPHA = 0.3;
 // Current silence must clear BOTH: at least this many multiples of the contact's own
 // baseline gap, AND at least this many absolute days — the floor keeps a daily-texting
@@ -213,6 +223,27 @@ const RELATIONSHIP_MIN_SILENCE_DAYS = 5;
  *  between contact" baseline, and how many real gaps have fed it — 0 means "no baseline
  *  yet" (seen at most once ever), so detectRelationshipDrops never fires on it. */
 export type RelationshipBaseline = { lastAt: string; baselineDays: number; sampleCount: number };
+
+/** Widens the tracked-people population beyond iMessage threads (#981): turns the personal-
+ *  classified senders in an already-fetched mail batch into the SAME TextThreadRef shape
+ *  detectRelationshipDrops reads, keyed by the sender's own address so each contact gets one
+ *  entry (the latest personal message wins). `id` is prefixed `mail:` so a mail-tracked
+ *  contact's KV baseline never collides with an iMessage thread id, even for someone tracked
+ *  on both channels — cadence stays PER CHANNEL, not merged across them, since mail and
+ *  iMessage have no shared identity to resolve against (Fastmail's ContactCard has no
+ *  phone-number field to join on). Scans the SAME mail detectDrops already reads — no
+ *  separate mailSearch fan-out, so this stays as cheap as the rest of the loop's mail read. */
+export function mailRelationshipThreads(mail: MailRef[]): TextThreadRef[] {
+	const latest = new Map<string, { name?: string; lastAt: string }>();
+	for (const m of mail) {
+		if (!m.date || !isPersonal(m)) continue;
+		const email = senderEmail(m.from);
+		if (!email) continue;
+		const existing = latest.get(email);
+		if (!existing || Date.parse(m.date) > Date.parse(existing.lastAt)) latest.set(email, { name: senderName(m.from), lastAt: m.date });
+	}
+	return Array.from(latest.entries(), ([email, v]) => ({ id: `mail:${email}`, contact: email, name: v.name, lastAt: v.lastAt }));
+}
 
 /** Update each thread's own cadence baseline and flag a drop only when CURRENT silence
  *  significantly exceeds THAT thread's own baseline — never a fixed global threshold
@@ -269,7 +300,7 @@ export function detectRelationshipDrops(
 			// Bucketed by week (not by day, unlike e.g. portfolio_drift) so an ongoing silence
 			// nudges roughly weekly instead of re-proposing a fresh Todoist task every tick.
 			dedupe: `relationship::${t.id}::${Math.floor(silenceDays / 7)}`,
-			title: `Gone quiet on ${who} — ${Math.round(silenceDays)}d since last text (usually ~${Math.round(prior.baselineDays)}d)`,
+			title: `Gone quiet on ${who} — ${Math.round(silenceDays)}d since last contact (usually ~${Math.round(prior.baselineDays)}d)`,
 			emoji: "🌙",
 			action: task(`Check in with ${who} — ${Math.round(silenceDays)}d quiet, unusual for you two`),
 			evidence: { id: t.id, contact: t.contact, silenceDays, baselineDays: prior.baselineDays },
@@ -1033,8 +1064,9 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 	const currentSavingsRate = computeSavingsRate(monarchCashflow);
 	const relationshipSilenceMultiplier = floatClamp(env.AGENDA_RELATIONSHIP_SILENCE_MULTIPLIER, 1, 20, RELATIONSHIP_SILENCE_MULTIPLIER);
 	const relationshipMinSilenceDays = numClamp(env.AGENDA_RELATIONSHIP_MIN_SILENCE_DAYS, 1, 90, RELATIONSHIP_MIN_SILENCE_DAYS);
-	const priorRelationshipBaselines = textThreads.length ? await loadRelationshipBaselines(env, textThreads.map((t) => t.id)) : {};
-	const relationshipResult = detectRelationshipDrops(Date.parse(`${date}T00:00:00Z`), textThreads, priorRelationshipBaselines, {
+	const relationshipThreads = [...textThreads, ...mailRelationshipThreads(mail)];
+	const priorRelationshipBaselines = relationshipThreads.length ? await loadRelationshipBaselines(env, relationshipThreads.map((t) => t.id)) : {};
+	const relationshipResult = detectRelationshipDrops(Date.parse(`${date}T00:00:00Z`), relationshipThreads, priorRelationshipBaselines, {
 		silenceMultiplier: relationshipSilenceMultiplier,
 		minSilenceDays: relationshipMinSilenceDays,
 	});
@@ -1062,7 +1094,7 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		await saveMonarchSnapshot(env, { date, allocation: computePortfolioAllocation(monarchHoldings), savingsRate: currentSavingsRate ?? priorMonarchSnapshot?.savingsRate });
 	}
 	// Same dry_run-never-persists contract as the Monarch snapshot above.
-	if (!dryRun && textThreads.length) await saveRelationshipBaselines(env, relationshipResult.baselines);
+	if (!dryRun && relationshipThreads.length) await saveRelationshipBaselines(env, relationshipResult.baselines);
 
 	// Propose each NEW drop (idempotent per dedupe key). dry_run records nothing.
 	const led = ledger(env, "agenda_drop");
