@@ -135,6 +135,18 @@ export type RtEnv = Env &
 		INFER_ARM_HEALTH?: string;
 		INFER_ARM_VAULT?: string;
 
+		// Nudge-surface write (fns/_infer_nudge.ts, #867) — the daily-note digest append for a
+		// surviving drift candidate. Gated by the arm flags above (no separate enable flag); a
+		// domain with no arm contributes no signals so detectCentroidDrift never surfaces a
+		// candidate for it in the first place.
+		//   INFER_NUDGE_MIN_CONFIDENCE — confidence floor on driftScore (default 0.15, matching
+		//                         _infer_drift.ts's own default threshold).
+		//   INFER_NUDGE_COOLDOWN_DAYS  — how long a fired inference's evidence-fingerprint is
+		//                         suppressed from re-firing (default 7), on top of the design
+		//                         doc's hard ≤1 nudge/domain/day rate cap.
+		INFER_NUDGE_MIN_CONFIDENCE?: string;
+		INFER_NUDGE_COOLDOWN_DAYS?: string;
+
 		// IANA tz for the vault owner's "today" (daily-note tools). Default Pacific.
 		VAULT_TZ?: string;
 

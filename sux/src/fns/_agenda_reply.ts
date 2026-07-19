@@ -114,6 +114,10 @@ export type AgendaReplyDeps = {
 	/** This message's In-Reply-To + References Message-IDs (raw jmap Email/get) — checked
 	 *  against the ledgered sent-digest Message-IDs as the thread-binding auth gate. */
 	threadIds: (env: RtEnv, mailId: string) => Promise<string[]>;
+	/** Full plain-text body (mail_read) — fallen back to only when the (JMAP-truncated)
+	 *  `preview` parses zero commands, since a reply's command line can fall outside the
+	 *  ~256-char preview window (a leading sentence, or a top-posting client). */
+	mailBody: (env: RtEnv, mailId: string) => Promise<string>;
 };
 
 export type AgendaReplyReport = {
@@ -199,7 +203,15 @@ export async function runAgendaReply(env: RtEnv, opts: { max_mail?: number }, de
 			continue;
 		}
 
-		const commands = parseCommands(m.preview ?? "");
+		let commands = parseCommands(m.preview ?? "");
+		if (!commands.length) {
+			// The preview is a JMAP-server-truncated snippet — a command line following a
+			// lead-in sentence, or below a top-posted signature/quoted block, can fall outside
+			// its window. Both auth gates already passed (verified identity + a real digest
+			// thread), so it's safe/cheap to re-parse the full body before giving up.
+			const body = await deps.mailBody(env, m.id).catch(() => "");
+			if (body) commands = parseCommands(body);
+		}
 		if (commands.length) {
 			processed++;
 			// The open queue is re-read per message (not hoisted) so an id acted on by an
@@ -274,6 +286,14 @@ export async function defaultDeps(): Promise<AgendaReplyDeps> {
 			} catch {
 				return [];
 			}
+		},
+		mailBody: async (env, mailId) => {
+			const t = tool("mail_read");
+			if (!t) return "";
+			const r = await t.run(env, { id: mailId });
+			if (r.isError) return "";
+			const parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
+			return String(parsed?.body ?? "");
 		},
 	};
 }

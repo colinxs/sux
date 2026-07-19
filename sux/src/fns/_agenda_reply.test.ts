@@ -28,6 +28,7 @@ const deps = (mail: MailRef[], over: Partial<AgendaReplyDeps> = {}): AgendaReply
 	mailSearch: vi.fn(async () => mail),
 	identities: vi.fn(async () => [SELF]),
 	threadIds: vi.fn(async () => []),
+	mailBody: vi.fn(async () => ""),
 	...over,
 });
 
@@ -141,6 +142,30 @@ describe("agenda_reply — loop", () => {
 		const r = await runAgendaReply(e, {}, deps(mail));
 		expect(r.not_a_reply).toBe(1);
 		expect(r.approved).toEqual([]);
+	});
+
+	it("falls back to the full body when the truncated preview parses zero commands", async () => {
+		const e = env();
+		await ledgerDigest(e);
+		const p = await propose(e, { source: "agenda", kind: "bill_due", intent: "pay the thing", payload: { fn: "todoist", args: { action: "add", content: "pay" } }, reversible: true, stakes: "low" });
+		// The preview has no command tokens (the command line fell outside the truncated
+		// window); the full body carries it after a lead-in sentence.
+		const mail: MailRef[] = [{ id: "m1", from: SELF, subject: "Re: sux · 1 thing needs you (2026-07-13)", preview: "Sounds good, I'll handle the rest myself." }];
+		const mailBody = vi.fn(async () => `Sounds good, I'll handle the rest myself.\n\napprove ${p.id.slice(0, 8)}`);
+		const r = await runAgendaReply(e, {}, deps(mail, { threadIds: vi.fn(async () => [DIGEST_MSG_ID]), mailBody }));
+		expect(mailBody).toHaveBeenCalledWith(e, "m1");
+		expect(r.approved).toEqual([p.id]);
+	});
+
+	it("never fetches the full body when the preview already parses commands", async () => {
+		const e = env();
+		await ledgerDigest(e);
+		const p = await propose(e, { source: "agenda", kind: "bill_due", intent: "pay the thing", payload: { fn: "todoist", args: { action: "add", content: "pay" } }, reversible: true, stakes: "low" });
+		const mail: MailRef[] = [{ id: "m1", from: SELF, subject: "Re: sux · 1 thing needs you (2026-07-13)", preview: `approve ${p.id.slice(0, 8)}` }];
+		const mailBody = vi.fn(async () => "");
+		const r = await runAgendaReply(e, {}, deps(mail, { threadIds: vi.fn(async () => [DIGEST_MSG_ID]), mailBody }));
+		expect(mailBody).not.toHaveBeenCalled();
+		expect(r.approved).toEqual([p.id]);
 	});
 
 	it("an unresolved / ambiguous short id is reported, never thrown", async () => {
