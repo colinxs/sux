@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { InferNudgeDeps } from "./_infer_nudge";
 import { readInferNudgeWarmupLog, runInferNudge } from "./_infer_nudge";
 import type { DriftCandidate } from "./_infer_drift";
-import type { InferSignal } from "./_infer";
+import { readInferInferences, type InferSignal } from "./_infer";
 
 function fakeKv() {
 	const store = new Map<string, string>();
@@ -144,9 +144,18 @@ describe("runInferNudge — digest block", () => {
 		const r = await runInferNudge(env, {}, deps({ digestAppend }));
 		expect(r.error).toContain("vault append failed");
 
+		// The inference record appended before the failed write must not be left orphaned —
+		// it was never surfaced (no Daily-note append), so it shouldn't outlive the failed
+		// cycle in the inference log either (#961).
+		expect(await readInferInferences(env, "mail")).toEqual([]);
+		expect(await readInferInferences(env, "vault")).toEqual([]);
+
 		// The failed write must not have consumed the rate cap — a retry should still fire.
 		const r2 = await runInferNudge(env, {}, deps({ digestAppend: vi.fn(async () => {}) }));
 		expect(r2.fired).toBe(true);
+
+		// And the retry's fresh inference record must survive (not deleted by a stale id).
+		expect((await readInferInferences(env, "mail")).length + (await readInferInferences(env, "vault")).length).toBe(1);
 	});
 });
 
