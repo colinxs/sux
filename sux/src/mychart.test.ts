@@ -1,10 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { handleAppleHealth, handleMychartRoutes, isUnderFhirBase, mintAccessToken, mychartFetch, readGrant, resolveFhirPath, summarizeMyChart } from "./mychart";
+import { MYCHART_ORGS, connectedOrgs, handleAppleHealth, handleMychartRoutes, isUnderFhirBase, mintAccessToken, mychartFetch, readGrant, resolveFhirPath, resolveOrg, summarizeMyChart } from "./mychart";
 import { handleObservability } from "./observability";
 
-const BASE = "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4";
-const AUTHZ = "https://fhir.epic.com/interconnect-fhir-oauth/oauth2/authorize";
-const TOKEN = "https://fhir.epic.com/interconnect-fhir-oauth/oauth2/token";
+const ORG = "uwmedicine";
+const ORG2 = "swedish";
+const BASE = MYCHART_ORGS[ORG].fhirBase;
+const BASE2 = MYCHART_ORGS[ORG2].fhirBase;
+const AUTHZ = `${BASE}/authorize`;
+const TOKEN = `${BASE}/token`;
+const AUTHZ2 = `${BASE2}/authorize`;
+const TOKEN2 = `${BASE2}/token`;
 
 function kvStub() {
 	const map = new Map<string, string>();
@@ -47,55 +52,116 @@ function r2Stub() {
 	};
 }
 
-const baseEnv = (over: Record<string, unknown> = {}) =>
-	({ EPIC_CLIENT_ID: "cid", EPIC_CLIENT_SECRET: "csec", EPIC_FHIR_BASE: BASE, OAUTH_KV: kvStub(), R2: r2Stub(), ...over }) as any;
+const baseEnv = (over: Record<string, unknown> = {}) => ({ EPIC_CLIENT_ID: "cid", EPIC_CLIENT_SECRET: "csec", OAUTH_KV: kvStub(), R2: r2Stub(), ...over }) as any;
 
-const smartCfgResponse = () => new Response(JSON.stringify({ authorization_endpoint: AUTHZ, token_endpoint: TOKEN }), { status: 200 });
+const smartCfgResponse = (authz = AUTHZ, token = TOKEN) => new Response(JSON.stringify({ authorization_endpoint: authz, token_endpoint: token }), { status: 200 });
+
+const fetchRouter =
+	(handlers: Record<string, () => Response>) =>
+	async (u: any, init?: any): Promise<Response> => {
+		const url = String(u);
+		for (const [match, handler] of Object.entries(handlers)) {
+			if (url.includes(match)) return handler();
+		}
+		throw new Error(`unexpected fetch ${url} ${init ? JSON.stringify(init.body ?? "") : ""}`);
+	};
 
 afterEach(() => vi.restoreAllMocks());
 
+describe("MYCHART_ORGS registry", () => {
+	it("seeds the three verified orgs with name + fhirBase", () => {
+		expect(Object.keys(MYCHART_ORGS).sort()).toEqual(["bozeman", "swedish", "uwmedicine"]);
+		for (const org of Object.values(MYCHART_ORGS)) {
+			expect(org.name).toBeTruthy();
+			expect(org.fhirBase).toMatch(/^https:\/\//);
+		}
+	});
+});
+
 describe("mychart FHIR base validation", () => {
 	it("isUnderFhirBase accepts on-base URLs and rejects origin/path escapes", () => {
-		const env = baseEnv();
-		expect(isUnderFhirBase(env, `${BASE}/Observation?patient=1`)).toBe(true);
-		expect(isUnderFhirBase(env, `${BASE}`)).toBe(true);
-		expect(isUnderFhirBase(env, "https://evil.com/interconnect-fhir-oauth/api/FHIR/R4/Observation")).toBe(false);
+		expect(isUnderFhirBase(ORG, `${BASE}/Observation?patient=1`)).toBe(true);
+		expect(isUnderFhirBase(ORG, `${BASE}`)).toBe(true);
+		expect(isUnderFhirBase(ORG, "https://evil.com/Observation")).toBe(false);
 		// prefix that isn't a path-segment boundary must not match
-		expect(isUnderFhirBase(env, "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4x/Observation")).toBe(false);
+		expect(isUnderFhirBase(ORG, `${BASE}x/Observation`)).toBe(false);
+		// an unknown org has no base — always refuses
+		expect(isUnderFhirBase("nope", `${BASE}/Observation`)).toBe(false);
+	});
+
+	it("isUnderFhirBase keeps orgs isolated — org A's base never validates org B's URL", () => {
+		expect(isUnderFhirBase(ORG, `${BASE2}/Observation`)).toBe(false);
+		expect(isUnderFhirBase(ORG2, `${BASE}/Observation`)).toBe(false);
 	});
 
 	it("resolveFhirPath resolves relative paths and refuses escapes", () => {
+		expect(resolveFhirPath(ORG, "Observation?category=laboratory")).toBe(`${BASE}/Observation?category=laboratory`);
+		expect(resolveFhirPath(ORG, "https://evil.com/x")).toBeNull();
+		expect(resolveFhirPath(ORG, "")).toBeNull();
+		expect(resolveFhirPath("nope", "Observation")).toBeNull();
+	});
+});
+
+describe("resolveOrg — explicit org, or default to the sole connected org", () => {
+	it("an explicit known org resolves as-is; an unknown org errors listing valid orgs", async () => {
 		const env = baseEnv();
-		expect(resolveFhirPath(env, "Observation?category=laboratory")).toBe(`${BASE}/Observation?category=laboratory`);
-		expect(resolveFhirPath(env, "https://evil.com/x")).toBeNull();
-		expect(resolveFhirPath(env, "")).toBeNull();
+		expect(await resolveOrg(env, ORG)).toEqual({ org: ORG });
+		const bad = await resolveOrg(env, "nope");
+		expect("error" in bad && bad.error).toMatch(/unknown org 'nope'/);
+	});
+
+	it("omitted org defaults to the sole CONNECTED org", async () => {
+		const env = baseEnv();
+		await env.OAUTH_KV.put(`sux:mychart:grant:${ORG}`, JSON.stringify({ refresh_token: "rt", patient: "P", issued_at: 1 }));
+		expect(await resolveOrg(env, undefined)).toEqual({ org: ORG });
+	});
+
+	it("omitted org is ambiguous with zero or 2+ connected orgs", async () => {
+		const env = baseEnv();
+		expect("error" in (await resolveOrg(env, undefined))).toBe(true);
+		await env.OAUTH_KV.put(`sux:mychart:grant:${ORG}`, JSON.stringify({ refresh_token: "rt", patient: "P", issued_at: 1 }));
+		await env.OAUTH_KV.put(`sux:mychart:grant:${ORG2}`, JSON.stringify({ refresh_token: "rt2", patient: "P2", issued_at: 1 }));
+		const err = await resolveOrg(env, undefined);
+		expect("error" in err).toBe(true);
+	});
+});
+
+describe("connectedOrgs", () => {
+	it("lists only orgs with a stored grant", async () => {
+		const env = baseEnv();
+		expect(await connectedOrgs(env)).toEqual([]);
+		await env.OAUTH_KV.put(`sux:mychart:grant:${ORG2}`, JSON.stringify({ refresh_token: "rt", patient: "P", issued_at: 1 }));
+		expect(await connectedOrgs(env)).toEqual([ORG2]);
 	});
 });
 
 describe("mychart OAuth callback (PKCE round-trip)", () => {
-	it("exchanges code+verifier, persists the grant, caches the access token", async () => {
+	it("exchanges code+verifier, persists the grant under the org from the PKCE state, caches the access token", async () => {
 		const env = baseEnv();
-		await env.OAUTH_KV.put("sux:mychart:pkce:STATE1", JSON.stringify({ verifier: "VERIFIER123", created: Date.now() }));
+		await env.OAUTH_KV.put("sux:mychart:pkce:STATE1", JSON.stringify({ verifier: "VERIFIER123", org: ORG, created: Date.now() }));
 		const seen: any = {};
-		vi.stubGlobal("fetch", vi.fn(async (u: any, init?: any) => {
-			const url = String(u);
-			if (url.includes(".well-known/smart-configuration")) return smartCfgResponse();
-			if (url === TOKEN) {
-				seen.body = init.body;
-				seen.auth = init.headers.Authorization;
-				return new Response(JSON.stringify({ access_token: "AT1", refresh_token: "RT1", patient: "PatientA", scope: "patient/*.read", expires_in: 3600 }), { status: 200 });
-			}
-			throw new Error(`unexpected fetch ${url}`);
-		}));
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (u: any, init?: any) => {
+				const url = String(u);
+				if (url.includes(".well-known/smart-configuration")) return smartCfgResponse();
+				if (url === TOKEN) {
+					seen.body = init.body;
+					seen.auth = init.headers.Authorization;
+					return new Response(JSON.stringify({ access_token: "AT1", refresh_token: "RT1", patient: "PatientA", scope: "patient/*.read", expires_in: 3600 }), { status: 200 });
+				}
+				throw new Error(`unexpected fetch ${url}`);
+			}),
+		);
 		const resp = await handleMychartRoutes(new URL("https://suxos.net/mychart/callback?code=CODE1&state=STATE1"), new Request("https://suxos.net/mychart/callback?code=CODE1&state=STATE1"), env);
 		expect(resp?.status).toBe(200);
 		expect(await resp!.text()).toContain("MyChart connected");
 		expect(seen.body).toContain("grant_type=authorization_code");
 		expect(seen.body).toContain("code_verifier=VERIFIER123");
 		expect(seen.auth).toBe(`Basic ${btoa("cid:csec")}`);
-		const grant = await readGrant(env);
+		const grant = await readGrant(env, ORG);
 		expect(grant).toMatchObject({ refresh_token: "RT1", patient: "PatientA", scope: "patient/*.read" });
-		expect(env.OAUTH_KV.map.get("sux:mychart:token")).toBe("AT1");
+		expect(env.OAUTH_KV.map.get(`sux:mychart:token:${ORG}`)).toBe("AT1");
 		// one-time state consumed
 		expect(env.OAUTH_KV.map.has("sux:mychart:pkce:STATE1")).toBe(false);
 	});
@@ -115,21 +181,35 @@ describe("mychart OAuth callback (PKCE round-trip)", () => {
 		expect(resp?.status).toBe(400);
 		expect(await resp!.text()).toMatch(/CSRF/i);
 	});
+
+	it("refuses a PKCE state whose stored org is missing/unknown (corrupt state)", async () => {
+		const env = baseEnv();
+		await env.OAUTH_KV.put("sux:mychart:pkce:STATE2", JSON.stringify({ verifier: "V", org: "nope", created: Date.now() }));
+		const resp = await handleMychartRoutes(new URL("https://suxos.net/mychart/callback?code=X&state=STATE2"), new Request("https://suxos.net/mychart/callback?code=X&state=STATE2"), env);
+		expect(resp?.status).toBe(400);
+		expect(await resp!.text()).toMatch(/Corrupt PKCE state/i);
+	});
 });
 
-describe("mychart /connect gate", () => {
-	it("404s when the operator token is unset, 401 on mismatch, 302 with S256 when correct", async () => {
+describe("mychart /connect gate — Bearer-authed, org-validated", () => {
+	const req = (u: string, bearer?: string) => new Request(u, bearer ? { headers: { authorization: `Bearer ${bearer}` } } : undefined);
+
+	it("404s when the operator token is unset, 401 on a missing/wrong bearer, 404 on an unknown org, 302 with S256 when correct", async () => {
 		const noGate = baseEnv();
-		expect((await handleMychartRoutes(new URL("https://suxos.net/mychart/connect"), new Request("https://suxos.net/mychart/connect"), noGate))?.status).toBe(404);
+		const u = `https://suxos.net/mychart/connect?org=${ORG}`;
+		expect((await handleMychartRoutes(new URL(u), req(u), noGate))?.status).toBe(404);
 
 		const env = baseEnv({ SUX_CRON_TOKEN: "op-secret" });
-		expect((await handleMychartRoutes(new URL("https://suxos.net/mychart/connect?token=wrong"), new Request("https://suxos.net/mychart/connect?token=wrong"), env))?.status).toBe(401);
+		expect((await handleMychartRoutes(new URL(u), req(u), env))?.status).toBe(401); // no bearer
+		expect((await handleMychartRoutes(new URL(u), req(u, "wrong"), env))?.status).toBe(401);
+		// the raw token in a query string (the OLD gate) must no longer work
+		expect((await handleMychartRoutes(new URL(`${u}&token=op-secret`), req(`${u}&token=op-secret`), env))?.status).toBe(401);
 
-		vi.stubGlobal("fetch", vi.fn(async (u: any) => {
-			if (String(u).includes(".well-known/smart-configuration")) return smartCfgResponse();
-			throw new Error("no other fetch");
-		}));
-		const resp = await handleMychartRoutes(new URL("https://suxos.net/mychart/connect?token=op-secret"), new Request("https://suxos.net/mychart/connect?token=op-secret"), env);
+		const unknownOrgUrl = "https://suxos.net/mychart/connect?org=nope";
+		expect((await handleMychartRoutes(new URL(unknownOrgUrl), req(unknownOrgUrl, "op-secret"), env))?.status).toBe(404);
+
+		vi.stubGlobal("fetch", vi.fn(fetchRouter({ ".well-known/smart-configuration": () => smartCfgResponse() })));
+		const resp = await handleMychartRoutes(new URL(u), req(u, "op-secret"), env);
 		expect(resp?.status).toBe(302);
 		const loc = new URL(resp!.headers.get("location")!);
 		expect(loc.origin + loc.pathname).toBe(AUTHZ);
@@ -137,13 +217,15 @@ describe("mychart /connect gate", () => {
 		expect(loc.searchParams.get("aud")).toBe(BASE);
 		expect(loc.searchParams.get("redirect_uri")).toBe("https://suxos.net/mychart/callback");
 		const state = loc.searchParams.get("state")!;
-		expect(env.OAUTH_KV.map.has(`sux:mychart:pkce:${state}`)).toBe(true);
+		const stored = JSON.parse(env.OAUTH_KV.map.get(`sux:mychart:pkce:${state}`)!);
+		expect(stored.org).toBe(ORG);
 	});
 
 	it("a smartConfig failure is escaped and served with an explicit text content-type (#360)", async () => {
 		const env = baseEnv({ SUX_CRON_TOKEN: "op-secret" });
 		vi.stubGlobal("fetch", vi.fn(async () => new Response("boom", { status: 500 })));
-		const resp = await handleMychartRoutes(new URL("https://suxos.net/mychart/connect?token=op-secret"), new Request("https://suxos.net/mychart/connect?token=op-secret"), env);
+		const u = `https://suxos.net/mychart/connect?org=${ORG}`;
+		const resp = await handleMychartRoutes(new URL(u), req(u, "op-secret"), env);
 		expect(resp?.status).toBe(502);
 		expect(resp?.headers.get("content-type")).toMatch(/text\/plain/);
 		const body = await resp!.text();
@@ -151,58 +233,95 @@ describe("mychart /connect gate", () => {
 	});
 });
 
-describe("mychart token lifecycle (mint / rotate / 401 self-heal)", () => {
-	it("mints from the refresh grant, caches the access token, persists a ROTATED refresh token", async () => {
+describe("mychart token lifecycle (mint / rotate / 401 self-heal), per org", () => {
+	it("mints from the refresh grant, caches the access token, persists a ROTATED refresh token — scoped to one org", async () => {
 		const env = baseEnv();
-		await env.OAUTH_KV.put("sux:mychart:grant", JSON.stringify({ refresh_token: "OLD_RT", patient: "P", issued_at: 1 }));
-		vi.stubGlobal("fetch", vi.fn(async (u: any, init?: any) => {
-			const url = String(u);
-			if (url.includes(".well-known/smart-configuration")) return smartCfgResponse();
-			if (url === TOKEN) {
-				expect(String(init.body)).toContain("grant_type=refresh_token");
-				expect(String(init.body)).toContain("refresh_token=OLD_RT");
-				return new Response(JSON.stringify({ access_token: "AT2", refresh_token: "NEW_RT", expires_in: 3600 }), { status: 200 });
-			}
-			throw new Error(`unexpected ${url}`);
-		}));
-		const tok = await mintAccessToken(env);
+		await env.OAUTH_KV.put(`sux:mychart:grant:${ORG}`, JSON.stringify({ refresh_token: "OLD_RT", patient: "P", issued_at: 1 }));
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (u: any, init?: any) => {
+				const url = String(u);
+				if (url.includes(".well-known/smart-configuration")) return smartCfgResponse();
+				if (url === TOKEN) {
+					expect(String(init.body)).toContain("grant_type=refresh_token");
+					expect(String(init.body)).toContain("refresh_token=OLD_RT");
+					return new Response(JSON.stringify({ access_token: "AT2", refresh_token: "NEW_RT", expires_in: 3600 }), { status: 200 });
+				}
+				throw new Error(`unexpected ${url}`);
+			}),
+		);
+		const tok = await mintAccessToken(env, ORG);
 		expect(tok).toBe("AT2");
-		expect(env.OAUTH_KV.map.get("sux:mychart:token")).toBe("AT2");
-		expect(JSON.parse(env.OAUTH_KV.map.get("sux:mychart:grant")!).refresh_token).toBe("NEW_RT");
+		expect(env.OAUTH_KV.map.get(`sux:mychart:token:${ORG}`)).toBe("AT2");
+		expect(JSON.parse(env.OAUTH_KV.map.get(`sux:mychart:grant:${ORG}`)!).refresh_token).toBe("NEW_RT");
 	});
 
 	it("keeps the old refresh token when the response doesn't rotate it", async () => {
 		const env = baseEnv();
-		await env.OAUTH_KV.put("sux:mychart:grant", JSON.stringify({ refresh_token: "KEEP_RT", patient: "P", issued_at: 1 }));
-		vi.stubGlobal("fetch", vi.fn(async (u: any) => {
-			if (String(u).includes(".well-known/smart-configuration")) return smartCfgResponse();
-			return new Response(JSON.stringify({ access_token: "AT3", expires_in: 3600 }), { status: 200 });
-		}));
-		await mintAccessToken(env);
-		expect(JSON.parse(env.OAUTH_KV.map.get("sux:mychart:grant")!).refresh_token).toBe("KEEP_RT");
+		await env.OAUTH_KV.put(`sux:mychart:grant:${ORG}`, JSON.stringify({ refresh_token: "KEEP_RT", patient: "P", issued_at: 1 }));
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (u: any) => {
+				if (String(u).includes(".well-known/smart-configuration")) return smartCfgResponse();
+				return new Response(JSON.stringify({ access_token: "AT3", expires_in: 3600 }), { status: 200 });
+			}),
+		);
+		await mintAccessToken(env, ORG);
+		expect(JSON.parse(env.OAUTH_KV.map.get(`sux:mychart:grant:${ORG}`)!).refresh_token).toBe("KEEP_RT");
 	});
 
 	it("mychartFetch drops the cached token and re-mints once on a 401", async () => {
 		const env = baseEnv();
-		await env.OAUTH_KV.put("sux:mychart:grant", JSON.stringify({ refresh_token: "RT", patient: "P", issued_at: 1 }));
-		await env.OAUTH_KV.put("sux:mychart:token", "STALE_AT");
+		await env.OAUTH_KV.put(`sux:mychart:grant:${ORG}`, JSON.stringify({ refresh_token: "RT", patient: "P", issued_at: 1 }));
+		await env.OAUTH_KV.put(`sux:mychart:token:${ORG}`, "STALE_AT");
 		let minted = 0;
-		vi.stubGlobal("fetch", vi.fn(async (u: any, init?: any) => {
-			const url = String(u);
-			if (url.includes(".well-known/smart-configuration")) return smartCfgResponse();
-			if (url === TOKEN) {
-				minted++;
-				return new Response(JSON.stringify({ access_token: "FRESH_AT", expires_in: 3600 }), { status: 200 });
-			}
-			// The FHIR resource: 401 with the stale token, 200 with the fresh one.
-			const bearer = init.headers.Authorization;
-			if (bearer === "Bearer STALE_AT") return new Response("unauthorized", { status: 401 });
-			return new Response(JSON.stringify({ resourceType: "Patient", id: "P" }), { status: 200 });
-		}));
-		const resp = await mychartFetch(env, `${BASE}/Patient/P`);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (u: any, init?: any) => {
+				const url = String(u);
+				if (url.includes(".well-known/smart-configuration")) return smartCfgResponse();
+				if (url === TOKEN) {
+					minted++;
+					return new Response(JSON.stringify({ access_token: "FRESH_AT", expires_in: 3600 }), { status: 200 });
+				}
+				// The FHIR resource: 401 with the stale token, 200 with the fresh one.
+				const bearer = init.headers.Authorization;
+				if (bearer === "Bearer STALE_AT") return new Response("unauthorized", { status: 401 });
+				return new Response(JSON.stringify({ resourceType: "Patient", id: "P" }), { status: 200 });
+			}),
+		);
+		const resp = await mychartFetch(env, ORG, `${BASE}/Patient/P`);
 		expect(resp.status).toBe(200);
 		expect(minted).toBe(1);
-		expect(env.OAUTH_KV.map.get("sux:mychart:token")).toBe("FRESH_AT");
+		expect(env.OAUTH_KV.map.get(`sux:mychart:token:${ORG}`)).toBe("FRESH_AT");
+	});
+
+	it("keeps two orgs' grants/tokens fully isolated — minting for one never reads or writes the other's", async () => {
+		const env = baseEnv();
+		await env.OAUTH_KV.put(`sux:mychart:grant:${ORG}`, JSON.stringify({ refresh_token: "RT_A", patient: "PA", issued_at: 1 }));
+		await env.OAUTH_KV.put(`sux:mychart:grant:${ORG2}`, JSON.stringify({ refresh_token: "RT_B", patient: "PB", issued_at: 1 }));
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (u: any, init?: any) => {
+				const url = String(u);
+				if (url.includes(".well-known/smart-configuration")) return url.startsWith(BASE2) ? smartCfgResponse(AUTHZ2, TOKEN2) : smartCfgResponse();
+				if (url === TOKEN) {
+					expect(String(init.body)).toContain("refresh_token=RT_A");
+					return new Response(JSON.stringify({ access_token: "AT_A", expires_in: 3600 }), { status: 200 });
+				}
+				if (url === TOKEN2) {
+					expect(String(init.body)).toContain("refresh_token=RT_B");
+					return new Response(JSON.stringify({ access_token: "AT_B", expires_in: 3600 }), { status: 200 });
+				}
+				throw new Error(`unexpected ${url}`);
+			}),
+		);
+		await mintAccessToken(env, ORG);
+		expect(env.OAUTH_KV.map.get(`sux:mychart:token:${ORG}`)).toBe("AT_A");
+		expect(env.OAUTH_KV.map.has(`sux:mychart:token:${ORG2}`)).toBe(false);
+		await mintAccessToken(env, ORG2);
+		expect(env.OAUTH_KV.map.get(`sux:mychart:token:${ORG2}`)).toBe("AT_B");
+		expect(env.OAUTH_KV.map.get(`sux:mychart:token:${ORG}`)).toBe("AT_A"); // untouched
 	});
 });
 
@@ -260,21 +379,21 @@ describe("PHI gate: /s/ handler refuses phi/ keys", () => {
 	it("404s a store handle that resolves to the private phi/ prefix", async () => {
 		const kv = kvStub();
 		const r2 = r2Stub();
-		await r2.put("phi/mychart/P/Patient/x.json", '{"resourceType":"Patient"}', { httpMetadata: { contentType: "application/fhir+json" } });
-		await kv.put("store:11111111-1111-1111-1111-111111111111", JSON.stringify({ key: "phi/mychart/P/Patient/x.json", content_type: "application/fhir+json" }));
+		await r2.put(`phi/mychart/${ORG}/P/Patient/x.json`, '{"resourceType":"Patient"}', { httpMetadata: { contentType: "application/fhir+json" } });
+		await kv.put("store:11111111-1111-1111-1111-111111111111", JSON.stringify({ key: `phi/mychart/${ORG}/P/Patient/x.json`, content_type: "application/fhir+json" }));
 		const env = { OAUTH_KV: kv, R2: r2 } as any;
 		const resp = await handleObservability(new URL("https://suxos.net/s/11111111-1111-1111-1111-111111111111"), new Request("https://suxos.net/s/11111111-1111-1111-1111-111111111111"), env);
 		expect(resp?.status).toBe(404);
 	});
 });
 
-describe("summarizeMyChart — redacted last-pull summary for the agenda detector (W6)", () => {
-	async function seedGrant(env: ReturnType<typeof baseEnv>, patient = "P1") {
-		await env.OAUTH_KV.put("sux:mychart:grant", JSON.stringify({ refresh_token: "rt", patient, issued_at: Date.now() }));
+describe("summarizeMyChart — redacted last-pull summary for the agenda detector (W6), multi-org", () => {
+	async function seedGrant(env: ReturnType<typeof baseEnv>, org: string, patient: string) {
+		await env.OAUTH_KV.put(`sux:mychart:grant:${org}`, JSON.stringify({ refresh_token: "rt", patient, issued_at: Date.now() }));
 	}
-	async function seedBundle(env: ReturnType<typeof baseEnv>, patient: string, label: string, stamp: string, resources: any[]) {
+	async function seedBundle(env: ReturnType<typeof baseEnv>, org: string, patient: string, label: string, stamp: string, resources: any[]) {
 		const bundle = { resourceType: "Bundle", entry: resources.map((resource) => ({ resource })) };
-		await env.R2.put(`phi/mychart/${patient}/${label}/${stamp}-p1.json`, JSON.stringify(bundle), { httpMetadata: { contentType: "application/fhir+json" } });
+		await env.R2.put(`phi/mychart/${org}/${patient}/${label}/${stamp}-p1.json`, JSON.stringify(bundle), { httpMetadata: { contentType: "application/fhir+json" } });
 	}
 
 	it("returns null when unconfigured or never connected", async () => {
@@ -285,8 +404,8 @@ describe("summarizeMyChart — redacted last-pull summary for the agenda detecto
 
 	it("flags an out-of-range lab/vital observation by direction only, never the value", async () => {
 		const env = baseEnv();
-		await seedGrant(env);
-		await seedBundle(env, "P1", "Observation.laboratory", "2026-07-18T00-00-00-000Z", [
+		await seedGrant(env, ORG, "P1");
+		await seedBundle(env, ORG, "P1", "Observation.laboratory", "2026-07-18T00-00-00-000Z", [
 			{ resourceType: "Observation", id: "obs1", interpretation: [{ coding: [{ code: "H" }] }], valueQuantity: { value: 999 } },
 			{ resourceType: "Observation", id: "obs2", interpretation: [{ coding: [{ code: "N" }] }], valueQuantity: { value: 5 } },
 		]);
@@ -297,8 +416,8 @@ describe("summarizeMyChart — redacted last-pull summary for the agenda detecto
 
 	it("flags an active MedicationRequest whose validityPeriod ends inside the refill window, skips one far out or inactive", async () => {
 		const env = baseEnv();
-		await seedGrant(env);
-		await seedBundle(env, "P1", "MedicationRequest", "2026-07-18T00-00-00-000Z", [
+		await seedGrant(env, ORG, "P1");
+		await seedBundle(env, ORG, "P1", "MedicationRequest", "2026-07-18T00-00-00-000Z", [
 			{ resourceType: "MedicationRequest", id: "med1", status: "active", medicationCodeableConcept: { text: "Atorvastatin" }, dispenseRequest: { validityPeriod: { end: "2026-07-25" } } },
 			{ resourceType: "MedicationRequest", id: "med2", status: "active", dispenseRequest: { validityPeriod: { end: "2027-01-01" } } }, // far out
 			{ resourceType: "MedicationRequest", id: "med3", status: "stopped", dispenseRequest: { validityPeriod: { end: "2026-07-19" } } }, // inactive
@@ -309,19 +428,17 @@ describe("summarizeMyChart — redacted last-pull summary for the agenda detecto
 
 	it("treats a long-stale validityPeriod as stale data, not a live refill-due signal", async () => {
 		const env = baseEnv();
-		await seedGrant(env);
-		await seedBundle(env, "P1", "MedicationRequest", "2026-07-18T00-00-00-000Z", [
-			{ resourceType: "MedicationRequest", id: "med1", status: "active", dispenseRequest: { validityPeriod: { end: "2025-01-01" } } },
-		]);
+		await seedGrant(env, ORG, "P1");
+		await seedBundle(env, ORG, "P1", "MedicationRequest", "2026-07-18T00-00-00-000Z", [{ resourceType: "MedicationRequest", id: "med1", status: "active", dispenseRequest: { validityPeriod: { end: "2025-01-01" } } }]);
 		const summary = await summarizeMyChart(env, { now: "2026-07-18" });
 		expect(summary?.refillsDue).toHaveLength(0);
 	});
 
 	it("returns bare ids for Condition, and id + generic doc type for DocumentReference — never a diagnosis name", async () => {
 		const env = baseEnv();
-		await seedGrant(env);
-		await seedBundle(env, "P1", "Condition", "2026-07-18T00-00-00-000Z", [{ resourceType: "Condition", id: "cond1", code: { text: "should never appear" } }]);
-		await seedBundle(env, "P1", "DocumentReference", "2026-07-18T00-00-00-000Z", [{ resourceType: "DocumentReference", id: "doc1", type: { text: "After Visit Summary" } }]);
+		await seedGrant(env, ORG, "P1");
+		await seedBundle(env, ORG, "P1", "Condition", "2026-07-18T00-00-00-000Z", [{ resourceType: "Condition", id: "cond1", code: { text: "should never appear" } }]);
+		await seedBundle(env, ORG, "P1", "DocumentReference", "2026-07-18T00-00-00-000Z", [{ resourceType: "DocumentReference", id: "doc1", type: { text: "After Visit Summary" } }]);
 		const summary = await summarizeMyChart(env);
 		expect(summary?.newConditions).toEqual([{ id: "cond1" }]);
 		expect(summary?.newDocuments).toEqual([{ id: "doc1", docType: "After Visit Summary" }]);
@@ -330,23 +447,51 @@ describe("summarizeMyChart — redacted last-pull summary for the agenda detecto
 
 	it("only reads the most recent pull's stamp per label, ignoring an older one", async () => {
 		const env = baseEnv();
-		await seedGrant(env);
-		await seedBundle(env, "P1", "Condition", "2026-07-01T00-00-00-000Z", [{ resourceType: "Condition", id: "old-cond" }]);
-		await seedBundle(env, "P1", "Condition", "2026-07-18T00-00-00-000Z", [{ resourceType: "Condition", id: "new-cond" }]);
+		await seedGrant(env, ORG, "P1");
+		await seedBundle(env, ORG, "P1", "Condition", "2026-07-01T00-00-00-000Z", [{ resourceType: "Condition", id: "old-cond" }]);
+		await seedBundle(env, ORG, "P1", "Condition", "2026-07-18T00-00-00-000Z", [{ resourceType: "Condition", id: "new-cond" }]);
 		const summary = await summarizeMyChart(env);
 		expect(summary?.newConditions).toEqual([{ id: "new-cond" }]);
 	});
 
 	it("paginates past R2's per-call listing cap to find the true latest stamp, not just the oldest page", async () => {
 		const env = baseEnv();
-		await seedGrant(env);
+		await seedGrant(env, ORG, "P1");
 		// R2 lists ascending by key — a label that's accumulated >1000 pull-page objects over
 		// months would sink an unpaginated list() call to only ever see the OLDEST page.
 		for (let i = 0; i < 1005; i++) {
-			env.R2.map.set(`phi/mychart/P1/Condition/2020-01-${String(i).padStart(4, "0")}T00-00-00-000Z-p1.json`, { body: JSON.stringify({ resourceType: "Bundle", entry: [] }) });
+			env.R2.map.set(`phi/mychart/${ORG}/P1/Condition/2020-01-${String(i).padStart(4, "0")}T00-00-00-000Z-p1.json`, { body: JSON.stringify({ resourceType: "Bundle", entry: [] }) });
 		}
-		await seedBundle(env, "P1", "Condition", "2026-07-18T00-00-00-000Z", [{ resourceType: "Condition", id: "true-latest" }]);
+		await seedBundle(env, ORG, "P1", "Condition", "2026-07-18T00-00-00-000Z", [{ resourceType: "Condition", id: "true-latest" }]);
 		const summary = await summarizeMyChart(env);
 		expect(summary?.newConditions).toEqual([{ id: "true-latest" }]);
+	});
+
+	it("with one connected org, ids stay bare (no ledger-dedupe migration when a second org later connects)", async () => {
+		const env = baseEnv();
+		await seedGrant(env, ORG, "P1");
+		await seedBundle(env, ORG, "P1", "Condition", "2026-07-18T00-00-00-000Z", [{ resourceType: "Condition", id: "cond1" }]);
+		const summary = await summarizeMyChart(env);
+		expect(summary?.newConditions).toEqual([{ id: "cond1" }]);
+	});
+
+	it("with two connected orgs, merges both and prefixes ids with org so identical FHIR ids across orgs never collide", async () => {
+		const env = baseEnv();
+		await seedGrant(env, ORG, "P1");
+		await seedGrant(env, ORG2, "P1"); // deliberately the SAME opaque patient id at a different org
+		await seedBundle(env, ORG, "P1", "Condition", "2026-07-18T00-00-00-000Z", [{ resourceType: "Condition", id: "cond1" }]);
+		await seedBundle(env, ORG2, "P1", "Condition", "2026-07-18T00-00-00-000Z", [{ resourceType: "Condition", id: "cond1" }]); // same id, different org
+		const summary = await summarizeMyChart(env);
+		expect(summary?.newConditions.sort((a, b) => a.id.localeCompare(b.id))).toEqual([{ id: `${ORG2}:cond1` }, { id: `${ORG}:cond1` }]);
+	});
+
+	it("opts.org scopes to a single org even when others are connected", async () => {
+		const env = baseEnv();
+		await seedGrant(env, ORG, "P1");
+		await seedGrant(env, ORG2, "P2");
+		await seedBundle(env, ORG, "P1", "Condition", "2026-07-18T00-00-00-000Z", [{ resourceType: "Condition", id: "only-org-a" }]);
+		await seedBundle(env, ORG2, "P2", "Condition", "2026-07-18T00-00-00-000Z", [{ resourceType: "Condition", id: "only-org-b" }]);
+		const summary = await summarizeMyChart(env, { org: ORG });
+		expect(summary?.newConditions).toEqual([{ id: "only-org-a" }]);
 	});
 });
