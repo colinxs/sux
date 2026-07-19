@@ -177,7 +177,7 @@ export function detectDrops(mail: MailRef[], events: EventRef[]): Drop[] {
  *  detector below. `lastFromMe` undefined means "couldn't determine" (e.g. an unreadable
  *  thread), which the detector treats the same as "already answered": fail-closed, same as
  *  every other detector here. */
-export type TextThreadRef = { id: string; contact?: string; name?: string; lastText?: string; lastFromMe?: boolean; lastAt?: string };
+export type TextThreadRef = { id: string; contact?: string; name?: string; lastText?: string; lastFromMe?: boolean; lastAt?: string; lastMessageId?: string };
 
 /** Placeholder imessage-service returns for a message with no decodable text (reactions/
  *  tapbacks, some rich attachments) — see imessage_server.py's _decode_text (#852). Not a real
@@ -198,7 +198,8 @@ export function detectTextDrops(threads: TextThreadRef[]): Drop[] {
 		if (!t.lastText || t.lastText === UNPARSEABLE_TEXT) continue;
 		const who = t.name || t.contact || "someone";
 		const preview = (t.lastText || "(message)").slice(0, 120);
-		drops.push({ kind: "unanswered_text", urgency: "fyi", dedupe: `reply_text::${t.id}`, title: `Reply to ${who} (text): ${preview}`, emoji: "💬", action: task(`Reply to ${who} (text) — ${preview}`), evidence: { id: t.id, contact: t.contact } });
+		const dedupeSuffix = t.lastMessageId ?? t.lastAt ?? "";
+		drops.push({ kind: "unanswered_text", urgency: "fyi", dedupe: `reply_text::${t.id}::${dedupeSuffix}`, title: `Reply to ${who} (text): ${preview}`, emoji: "💬", action: task(`Reply to ${who} (text) — ${preview}`), evidence: { id: t.id, contact: t.contact } });
 	}
 	return sortByUrgency(drops);
 }
@@ -1321,7 +1322,7 @@ export async function defaultDeps(): Promise<AgendaDeps> {
 					const msgs = (JSON.parse(mr.content?.[0]?.text ?? "{}").messages ?? []) as any[];
 					const last = msgs[msgs.length - 1];
 					if (!last) continue;
-					out.push({ id: String(t.id), contact: t.contact, name: t.name ?? undefined, lastText: last?.text, lastFromMe: Boolean(last?.from_me), lastAt: last?.at });
+					out.push({ id: String(t.id), contact: t.contact, name: t.name ?? undefined, lastText: last?.text, lastFromMe: Boolean(last?.from_me), lastAt: last?.at, lastMessageId: last?.id !== undefined && last?.id !== null ? String(last.id) : undefined });
 				} catch {
 					/* skip a single unreadable thread */
 				}

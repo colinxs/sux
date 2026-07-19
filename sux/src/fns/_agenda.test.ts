@@ -263,10 +263,16 @@ describe("agenda — text detectors (iMessage, #849)", () => {
 		];
 		const drops = detectTextDrops(threads);
 		expect(drops.map((d) => d.kind)).toEqual(["unanswered_text"]);
-		expect(drops[0].dedupe).toBe("reply_text::1");
+		expect(drops[0].dedupe).toBe("reply_text::1::");
 		expect(drops[0].urgency).toBe("fyi");
 		expect(drops[0].action.fn).toBe("todoist");
 		expect(drops[0].action.args).toMatchObject({ action: "add" });
+	});
+
+	it("dedupe key differs for two distinct unanswered texts on the same thread (#1045)", () => {
+		const first = detectTextDrops([{ id: "42", contact: "+15551234", lastText: "you free tomorrow?", lastFromMe: false, lastMessageId: "100" }]);
+		const second = detectTextDrops([{ id: "42", contact: "+15551234", lastText: "did you see my last text?", lastFromMe: false, lastMessageId: "137" }]);
+		expect(first[0].dedupe).not.toBe(second[0].dedupe);
 	});
 
 	it("skips a thread whose last message is already from me, or whose sender is unknown (fail-closed)", () => {

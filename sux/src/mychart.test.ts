@@ -608,8 +608,20 @@ describe("crossOrgAllergyGaps — one-sided allergy continuity gap (#1009)", () 
 		await seedGrant(env, ORG, "P1");
 		await seedGrant(env, ORG2, "P1");
 		await seedBundle(env, ORG, "P1", "AllergyIntolerance", "2026-07-18T00-00-00-000Z", [{ resourceType: "AllergyIntolerance", id: "al1", code: { text: "Penicillin" } }]);
-		await seedBundle(env, ORG2, "P1", "Condition", "2026-07-18T00-00-00-000Z", [{ resourceType: "Condition", id: "cond1" }]); // ORG2 pulled, but no allergies at all
+		await seedBundle(env, ORG2, "P1", "Condition", "2026-07-18T00-00-00-000Z", [{ resourceType: "Condition", id: "cond1" }]);
+		// ORG2 confirmed-empty for AllergyIntolerance specifically (a real pull of that label, zero results) —
+		// distinct from never having pulled the label at all (#1044).
+		await seedBundle(env, ORG2, "P1", "AllergyIntolerance", "2026-07-18T00-00-00-000Z", []);
 		expect(await crossOrgAllergyGaps(env)).toEqual([{ org: ORG, allergyId: "al1", allergySubstance: "Penicillin", missingOrg: ORG2 }]);
+	});
+
+	it("does NOT flag a gap when the other org never pulled AllergyIntolerance at all (#1044)", async () => {
+		const env = baseEnv();
+		await seedGrant(env, ORG, "P1");
+		await seedGrant(env, ORG2, "P1");
+		await seedBundle(env, ORG, "P1", "AllergyIntolerance", "2026-07-18T00-00-00-000Z", [{ resourceType: "AllergyIntolerance", id: "al1", code: { text: "Penicillin" } }]);
+		await seedBundle(env, ORG2, "P1", "Condition", "2026-07-18T00-00-00-000Z", [{ resourceType: "Condition", id: "cond1" }]); // ORG2 pulled Condition only — AllergyIntolerance was never asked for
+		expect(await crossOrgAllergyGaps(env)).toEqual([]);
 	});
 
 	it("does not flag an allergy that both orgs already have on file", async () => {
