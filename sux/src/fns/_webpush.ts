@@ -15,6 +15,7 @@
 // see this file's `.test.ts` for a full encrypt→decrypt round trip against the same
 // derivation a real browser push service performs.
 import type { RtEnv } from "../registry";
+import { isBlockedTarget } from "../proxy";
 
 export type PushSubscriptionInfo = { endpoint: string; keys: { p256dh: string; auth: string } };
 export type PushMessage = { title: string; body: string; url?: string };
@@ -60,6 +61,10 @@ export function validSubscription(sub: unknown): sub is PushSubscriptionInfo {
 
 export async function subscribe(env: RtEnv, sub: PushSubscriptionInfo): Promise<void> {
 	if (!validSubscription(sub)) throw new Error("invalid subscription: endpoint + keys.p256dh + keys.auth are required.");
+	// Same SSRF guard every other outbound-fetch path in this repo applies (proxy.ts's
+	// isBlockedTarget) — reject a private/loopback/link-local/metadata endpoint up front
+	// so a bad subscription can't even be stored, not just refused at send time below.
+	if (isBlockedTarget(sub.endpoint)) throw new Error("invalid subscription: endpoint must be a public http(s) host.");
 	await env.OAUTH_KV.put(await subKey(sub.endpoint), JSON.stringify(sub));
 }
 
@@ -206,6 +211,10 @@ export async function encryptPayload(plaintext: Uint8Array, p256dhB64: string, a
  *  404/410 "gone") rather than throwing, so a dead endpoint can't sink a fan-out send. */
 export async function sendToSubscription(env: RtEnv, sub: PushSubscriptionInfo, message: PushMessage, ttlSeconds = 60): Promise<boolean> {
 	if (!hasWebPush(env)) return false;
+	// Re-check at send time too (not just subscribe()) so a subscription stored before
+	// this guard existed, or one that reached KV some other way, still can't drive an
+	// authenticated VAPID-signed POST to a private/loopback/metadata target (#801).
+	if (isBlockedTarget(sub.endpoint)) return false;
 	try {
 		const body = await encryptPayload(textEncoder.encode(JSON.stringify(truncateMessageToFit(message))), sub.keys.p256dh, sub.keys.auth);
 		const res = await fetch(sub.endpoint, {

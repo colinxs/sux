@@ -171,6 +171,37 @@ describe("cancelTask", () => {
 		expect(r.ok).toBe(false);
 		if (!r.ok && r.error === "terminal") expect(r.status).toBe("completed");
 	});
+
+	it("does not resurrect a task cancelled between finishTask's read and write (TOCTOU, #375)", async () => {
+		const kv = makeKv();
+		const env = makeEnv(kv);
+		const { ctx, deferred } = makeCtx();
+
+		let resolveRun!: (r: ToolResult) => void;
+		const runPromise = new Promise<ToolResult>((r) => (resolveRun = r));
+		const rec = createTask(env, ctx, "pipe", undefined, () => runPromise);
+		await deferred[0]; // initial "working" write lands
+
+		// Simulate a tasks/cancel landing in the gap between finishTask's initial read
+		// and its write: intercept the FIRST kv.get finishTask issues and, before
+		// returning that (now-stale) "working" snapshot, run a real cancelTask to
+		// completion — its own read AND write both land inside the gap, exactly the
+		// window #375 describes (distinct from #357's createTask-vs-finishTask race).
+		const originalGet = kv.get.bind(kv);
+		let getCalls = 0;
+		kv.get = async (key: string) => {
+			getCalls++;
+			const value = await originalGet(key);
+			if (getCalls === 1) await cancelTask(env, rec.taskId);
+			return value;
+		};
+
+		resolveRun(ok("finished after cancel"));
+		await Promise.all(deferred.splice(0));
+
+		const after = await getTask(env, rec.taskId);
+		expect(after?.status).toBe("cancelled");
+	});
 });
 
 describe("waitForTerminal", () => {

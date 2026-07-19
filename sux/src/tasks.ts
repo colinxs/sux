@@ -170,7 +170,13 @@ async function finishTask(env: RtEnv, ctx: { waitUntil(p: Promise<unknown>): voi
 	if (!current || isTerminal(current.status)) return;
 	const status: TaskStatus = result.isError ? "failed" : "completed";
 	const statusMessage = result.isError ? (result.content?.[0]?.text ?? "Tool execution failed.") : undefined;
-	await putTask(env, { ...current, status, statusMessage, result, lastUpdatedAt: nowIso() });
+	// Re-fetch and re-check immediately before the write: KV has no compare-and-swap,
+	// so this can only narrow (not close) the race with a concurrent cancelTask, but a
+	// cancel that lands in the gap between the read above and here must still win —
+	// "once cancelled, a task MUST remain cancelled" (#375).
+	const latest = await getTask(env, taskId);
+	if (!latest || isTerminal(latest.status)) return;
+	await putTask(env, { ...latest, status, statusMessage, result, lastUpdatedAt: nowIso() });
 	const first = Array.isArray(result.content) ? result.content.find((p): p is { type: "text"; text: string } => p?.type === "text" && typeof p.text === "string") : undefined;
 	const event = { tool, ms: Date.now() - startedAt, error: Boolean(result.isError), err: result.isError ? first?.text : undefined };
 	recordCall(env, ctx, event);

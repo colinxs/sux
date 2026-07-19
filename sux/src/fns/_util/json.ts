@@ -17,3 +17,13 @@ export function safeParseJson<T>(raw: string | null | undefined, fallback: T): T
 		return fallback;
 	}
 }
+
+/**
+ * Resolve a dotted path (`"a.b.c"`) against an already-parsed value — best-effort,
+ * `undefined` on a miss or a non-object hop. The one path-digging implementation
+ * shared by pipe.ts's `{{prev.path}}` and batch.ts's `{{item.path}}`/`{{items.path}}`
+ * token substitution (was duplicated verbatim in both — #391).
+ */
+export function dig(value: unknown, path: string): unknown {
+	return path.split(".").reduce<unknown>((v, k) => (v != null && typeof v === "object" ? (v as any)[k] : undefined), value);
+}

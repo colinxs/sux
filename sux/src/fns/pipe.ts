@@ -1,6 +1,6 @@
 import { normalizeArgs, normalizeText } from "../normalize";
 import { type Fn, fail, ok } from "../registry";
-import { clampBytes, FANOUT_BUDGET_MS, oj } from "./_util";
+import { clampBytes, dig, FANOUT_BUDGET_MS, oj } from "./_util";
 
 // Compose: chain sux tools so each step's text output feeds the next step's args
 // — the server-side derivation graph that pairs with the content-addressed store.
@@ -30,11 +30,6 @@ const MAX_STEPS = 25;
 // with batch instead (which enforces MAX_NESTED_CALLS).
 const BLOCKED_STEP_TOOLS = new Set(["pipe", "batch", "batch_fetch", "crawl"]);
 type StepResult = { step: number; tool: string; ok: boolean; text?: string; error?: string };
-
-/** Resolve a dotted path against a parsed value (best-effort; undefined on miss). */
-function dig(value: unknown, path: string): unknown {
-	return path.split(".").reduce<unknown>((v, k) => (v != null && typeof v === "object" ? (v as any)[k] : undefined), value);
-}
 
 /** Replace {{prev}} / {{prev.a.b}} tokens in one arg value using the prior output.
  * `getParsedPrev` is a step-scoped lazy parse of prev-as-JSON, shared across all

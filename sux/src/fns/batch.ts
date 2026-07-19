@@ -1,7 +1,7 @@
 import { hasAI, llm } from "../ai";
 import { normalizeArgs, normalizeText } from "../normalize";
 import { type Fn, fail, ok } from "../registry";
-import { FANOUT_BUDGET_MS, pool, oj } from "./_util";
+import { dig, FANOUT_BUDGET_MS, pool, oj } from "./_util";
 
 // Map-reduce: MAP one sux tool over many argument sets, then optionally REDUCE
 // the successful results into one value. FUNCTIONS is imported dynamically
@@ -29,11 +29,6 @@ const MAX_NESTED_CALLS = 25;
 const SEP = "\n\n---\n\n";
 
 type ItemResult = { ok: boolean; text?: string; error?: string };
-
-/** Resolve a dotted path against a value (best-effort; undefined on miss). */
-function dig(value: unknown, path: string): unknown {
-	return path.split(".").reduce<unknown>((v, k) => (v != null && typeof v === "object" ? (v as any)[k] : undefined), value);
-}
 
 /**
  * Deep-substitute a `{{token}}` across a template's strings. A whole-value

@@ -136,6 +136,15 @@ describe("subscribe / unsubscribe / listSubscriptions", () => {
 		await expect(subscribe(env, { endpoint: "", keys: { p256dh: "", auth: "" } })).rejects.toThrow();
 	});
 
+	it("rejects a subscription whose endpoint targets a private/loopback/metadata host (#801)", async () => {
+		const env = { OAUTH_KV: fakeKV() } as any;
+		for (const endpoint of ["http://169.254.169.254/latest/meta-data/", "http://127.0.0.1:1234/push", "http://localhost/push"]) {
+			const sub = await makeSubscription(endpoint);
+			await expect(subscribe(env, sub)).rejects.toThrow();
+		}
+		expect(await listSubscriptions(env)).toEqual([]);
+	});
+
 	it("skips a corrupt stored entry instead of throwing", async () => {
 		const kv = fakeKV({ "sux:webpush:sub:deadbeef": "not json" });
 		expect(await listSubscriptions({ OAUTH_KV: kv } as any)).toEqual([]);
@@ -176,6 +185,16 @@ describe("sendToSubscription / notify", () => {
 		const sub = await makeSubscription("https://push.example.com/abc");
 		expect(await sendToSubscription(env, sub, { title: "t", body: "b" })).toBe(false);
 		expect(await notify(env, { title: "t", body: "b" })).toEqual({ sent: 0, failed: 0 });
+	});
+
+	it("refuses to fetch a private/loopback/metadata endpoint even if one is already stored (#801)", async () => {
+		const kv = fakeKV();
+		const env = { OAUTH_KV: kv, ...(await makeVapidEnv()) } as any;
+		const sub = await makeSubscription("http://169.254.169.254/latest/meta-data/");
+		const fetchSpy = vi.fn(async () => new Response(null, { status: 201 }));
+		vi.stubGlobal("fetch", fetchSpy);
+		expect(await sendToSubscription(env, sub, { title: "t", body: "b" })).toBe(false);
+		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 
 	it("prunes the subscription on a 410 Gone response", async () => {
