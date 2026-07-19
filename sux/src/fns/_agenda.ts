@@ -187,6 +187,89 @@ export function detectTextDrops(threads: TextThreadRef[]): Drop[] {
 	return sortByUrgency(drops);
 }
 
+// ── Relationship-decay detector ("Relationship Radar", #930) ────────────────────────
+// Reuses the SAME TextThreadRef stream detectTextDrops already reads (iMessage threads,
+// #849) as the tracked-people population, rather than fanning `contact.search` for
+// "important/starred" people as the issue first sketched — Fastmail's ContactCard (see
+// mail-mcp.ts's shapeContact) carries no starred/importance field to fan against, so "the
+// people who matter" is approximated as "the people you actually text". Calendar
+// co-attendance and mail-only relationships are left for a future pass.
+const RELATIONSHIP_EWMA_ALPHA = 0.3;
+// Current silence must clear BOTH: at least this many multiples of the contact's own
+// baseline gap, AND at least this many absolute days — the floor keeps a daily-texting
+// contact's sub-1-day baseline from firing after a single ordinary quiet day.
+const RELATIONSHIP_SILENCE_MULTIPLIER = 2;
+const RELATIONSHIP_MIN_SILENCE_DAYS = 5;
+
+/** Per-thread cadence state: the last observed message time, the EWMA'd "typical days
+ *  between contact" baseline, and how many real gaps have fed it — 0 means "no baseline
+ *  yet" (seen at most once ever), so detectRelationshipDrops never fires on it. */
+export type RelationshipBaseline = { lastAt: string; baselineDays: number; sampleCount: number };
+
+/** Update each thread's own cadence baseline and flag a drop only when CURRENT silence
+ *  significantly exceeds THAT thread's own baseline — never a fixed global threshold
+ *  (mirrors detectPortfolioDrops's per-ticker drift). A thread whose `lastAt` is unchanged
+ *  since the prior cycle is genuinely silent, so its silence is checked against the
+ *  baseline; one whose `lastAt` HAS moved just heard from that person — that gap refines
+ *  the baseline instead (bootstrapped on the very first observed gap), never flagged the
+ *  same cycle a message just landed. A thread with fewer than one real gap on record
+ *  (sampleCount 0 — brand new to this tracker, or seen only once ever) has no established
+ *  "normal" to compare against yet and never fires — same "no prior data, nothing to
+ *  compare" stance as detectPortfolioDrops's null priorAllocation.
+ *
+ *  `now` and every `lastAt` are epoch ms; callers pass the agenda cycle's own `date` (not
+ *  wall-clock Date.now()) so the whole detector stays deterministic/testable, same as
+ *  every other detector in this file. */
+export function detectRelationshipDrops(
+	now: number,
+	threads: TextThreadRef[],
+	priorBaselines: Record<string, RelationshipBaseline>,
+	opts?: { silenceMultiplier?: number; minSilenceDays?: number; alpha?: number },
+): { drops: Drop[]; baselines: Record<string, RelationshipBaseline> } {
+	const alpha = opts?.alpha ?? RELATIONSHIP_EWMA_ALPHA;
+	const silenceMultiplier = opts?.silenceMultiplier ?? RELATIONSHIP_SILENCE_MULTIPLIER;
+	const minSilenceDays = opts?.minSilenceDays ?? RELATIONSHIP_MIN_SILENCE_DAYS;
+	const drops: Drop[] = [];
+	const baselines: Record<string, RelationshipBaseline> = { ...priorBaselines };
+
+	for (const t of threads) {
+		if (!t.lastAt) continue;
+		const lastAtMs = Date.parse(t.lastAt);
+		if (!Number.isFinite(lastAtMs)) continue;
+		const prior = priorBaselines[t.id];
+
+		if (!prior) {
+			baselines[t.id] = { lastAt: t.lastAt, baselineDays: 0, sampleCount: 0 };
+			continue; // first time this thread's been tracked — nothing to compare yet
+		}
+		if (prior.lastAt !== t.lastAt) {
+			const priorAtMs = Date.parse(prior.lastAt);
+			const gapDays = Number.isFinite(priorAtMs) ? Math.max(0, (lastAtMs - priorAtMs) / 86_400_000) : 0;
+			const baselineDays = prior.sampleCount > 0 ? alpha * gapDays + (1 - alpha) * prior.baselineDays : gapDays;
+			baselines[t.id] = { lastAt: t.lastAt, baselineDays, sampleCount: prior.sampleCount + 1 };
+			continue; // just heard from them — a fresh data point, never a drop this same cycle
+		}
+
+		baselines[t.id] = prior;
+		if (prior.sampleCount < 1) continue; // no established cadence yet
+		const silenceDays = (now - lastAtMs) / 86_400_000;
+		if (silenceDays < Math.max(prior.baselineDays * silenceMultiplier, minSilenceDays)) continue;
+		const who = t.name || t.contact || "someone";
+		drops.push({
+			kind: "relationship_drop",
+			urgency: "fyi",
+			// Bucketed by week (not by day, unlike e.g. portfolio_drift) so an ongoing silence
+			// nudges roughly weekly instead of re-proposing a fresh Todoist task every tick.
+			dedupe: `relationship::${t.id}::${Math.floor(silenceDays / 7)}`,
+			title: `Gone quiet on ${who} — ${Math.round(silenceDays)}d since last text (usually ~${Math.round(prior.baselineDays)}d)`,
+			emoji: "🌙",
+			action: task(`Check in with ${who} — ${Math.round(silenceDays)}d quiet, unusual for you two`),
+			evidence: { id: t.id, contact: t.contact, silenceDays, baselineDays: prior.baselineDays },
+		});
+	}
+	return { drops: sortByUrgency(drops), baselines };
+}
+
 /** A short, stable content fingerprint (FNV-1a) over a finding set — used to keep the agenda
  *  dedupe key sensitive to WHICH findings were proposed, not just which ISO week (#782): a
  *  forced consolidate re-run mid-week can overwrite the cache with a different slice of the
@@ -511,6 +594,31 @@ async function saveMonarchSnapshot(env: RtEnv, snapshot: MonarchSnapshot): Promi
 	await ledger(env, "agenda_monarch").mark(MONARCH_SNAPSHOT_KEY, JSON.stringify(snapshot));
 }
 
+/** Load each tracked thread's cached cadence baseline — one KV key per thread id, unlike
+ *  Monarch's single combined snapshot, since there's no fixed shape to bound one key's size
+ *  against. A missing or unparseable entry is simply absent, same as lastMonarchSnapshot
+ *  returning null for a thread detectRelationshipDrops hasn't seen (enough of) before. */
+async function loadRelationshipBaselines(env: RtEnv, ids: string[]): Promise<Record<string, RelationshipBaseline>> {
+	const led = ledger(env, "agenda_relationship");
+	const out: Record<string, RelationshipBaseline> = {};
+	for (const id of ids) {
+		const raw = await led.get(id);
+		if (!raw) continue;
+		try {
+			const parsed = JSON.parse(raw);
+			if (parsed && typeof parsed.lastAt === "string" && typeof parsed.baselineDays === "number" && typeof parsed.sampleCount === "number") out[id] = parsed;
+		} catch {
+			// skip an unparseable entry rather than fail the whole load
+		}
+	}
+	return out;
+}
+
+async function saveRelationshipBaselines(env: RtEnv, baselines: Record<string, RelationshipBaseline>): Promise<void> {
+	const led = ledger(env, "agenda_relationship");
+	for (const [id, b] of Object.entries(baselines)) await led.mark(id, JSON.stringify(b));
+}
+
 // ── Digest (the email interface) ─────────────────────────────────────────────────
 export type ProposedDrop = { proposalId: string; drop: Drop };
 
@@ -725,9 +833,17 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 	const savingsRateDropThreshold = floatClamp(env.MONARCH_SAVINGS_RATE_DROP_THRESHOLD, 0, 1, SAVINGS_RATE_DROP_THRESHOLD);
 	const priorMonarchSnapshot = monarchOk ? await lastMonarchSnapshot(env) : null;
 	const currentSavingsRate = computeSavingsRate(monarchCashflow);
+	const relationshipSilenceMultiplier = floatClamp(env.AGENDA_RELATIONSHIP_SILENCE_MULTIPLIER, 1, 20, RELATIONSHIP_SILENCE_MULTIPLIER);
+	const relationshipMinSilenceDays = numClamp(env.AGENDA_RELATIONSHIP_MIN_SILENCE_DAYS, 1, 90, RELATIONSHIP_MIN_SILENCE_DAYS);
+	const priorRelationshipBaselines = textThreads.length ? await loadRelationshipBaselines(env, textThreads.map((t) => t.id)) : {};
+	const relationshipResult = detectRelationshipDrops(Date.parse(`${date}T00:00:00Z`), textThreads, priorRelationshipBaselines, {
+		silenceMultiplier: relationshipSilenceMultiplier,
+		minSilenceDays: relationshipMinSilenceDays,
+	});
 	const drops = await rankDropsLearned(env, [
 		...detectDrops(mail, events),
 		...detectTextDrops(textThreads),
+		...relationshipResult.drops,
 		...detectKnowledgeDrops(consolidateFindings, weeklyRecallFindings),
 		...detectWatchDrops(watchFindings),
 		...detectMonarchDrops(date, monarchAccounts, monarchTransactions, monarchBudgets, { lowBalanceThreshold, unusualChargeThreshold }),
@@ -743,6 +859,8 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		// clobber the known-good baseline detectSavingsRateDrop compares against (#874).
 		await saveMonarchSnapshot(env, { date, allocation: computePortfolioAllocation(monarchHoldings), savingsRate: currentSavingsRate ?? priorMonarchSnapshot?.savingsRate });
 	}
+	// Same dry_run-never-persists contract as the Monarch snapshot above.
+	if (!dryRun && textThreads.length) await saveRelationshipBaselines(env, relationshipResult.baselines);
 
 	// Propose each NEW drop (idempotent per dedupe key). dry_run records nothing.
 	const led = ledger(env, "agenda_drop");

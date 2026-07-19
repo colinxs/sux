@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { composeDigest, type AgendaDeps, type Drop, detectDrops, detectKnowledgeDrops, detectMonarchDrops, detectPortfolioDrops, detectSavingsRateDrop, detectTextDrops, detectWatchDrops, computeSavingsRate, type EventRef, type MailRef, type TextThreadRef, rankDropsLearned, runAgenda } from "./_agenda";
+import { composeDigest, type AgendaDeps, type Drop, detectDrops, detectKnowledgeDrops, detectMonarchDrops, detectPortfolioDrops, detectRelationshipDrops, detectSavingsRateDrop, detectTextDrops, detectWatchDrops, computeSavingsRate, type EventRef, type MailRef, type RelationshipBaseline, type TextThreadRef, rankDropsLearned, runAgenda } from "./_agenda";
 import { listProposals } from "../proposals";
 import { recordOutcome } from "./_learning";
 
@@ -258,6 +258,52 @@ describe("agenda — text detectors (iMessage, #849)", () => {
 	});
 });
 
+describe("agenda — relationship-decay detector (Relationship Radar, #930)", () => {
+	it("a thread tracked for the first time just seeds a baseline — no drop, no established cadence yet", () => {
+		const threads: TextThreadRef[] = [{ id: "t1", contact: "+1555", name: "Mom", lastAt: "2026-06-01T00:00:00Z" }];
+		const r = detectRelationshipDrops(Date.parse("2026-07-01T00:00:00Z"), threads, {});
+		expect(r.drops).toHaveLength(0);
+		expect(r.baselines.t1).toEqual({ lastAt: "2026-06-01T00:00:00Z", baselineDays: 0, sampleCount: 0 });
+	});
+
+	it("a fresh message refines (never flags) the baseline the same cycle it lands", () => {
+		const prior: Record<string, RelationshipBaseline> = { t1: { lastAt: "2026-06-01T00:00:00Z", baselineDays: 0, sampleCount: 0 } };
+		const threads: TextThreadRef[] = [{ id: "t1", contact: "+1555", name: "Mom", lastAt: "2026-06-04T00:00:00Z" }];
+		const r = detectRelationshipDrops(Date.parse("2026-06-04T00:00:00Z"), threads, prior);
+		expect(r.drops).toHaveLength(0);
+		expect(r.baselines.t1).toEqual({ lastAt: "2026-06-04T00:00:00Z", baselineDays: 3, sampleCount: 1 });
+	});
+
+	it("flags a thread whose current silence significantly exceeds ITS OWN established baseline", () => {
+		const prior: Record<string, RelationshipBaseline> = { t1: { lastAt: "2026-06-01T00:00:00Z", baselineDays: 3, sampleCount: 5 } };
+		const threads: TextThreadRef[] = [{ id: "t1", contact: "+1555", name: "Mom", lastAt: "2026-06-01T00:00:00Z" }]; // unchanged — still silent
+		const r = detectRelationshipDrops(Date.parse("2026-06-18T00:00:00Z"), threads, prior); // 17d quiet, baseline ~3d
+		expect(r.drops.map((d) => d.kind)).toEqual(["relationship_drop"]);
+		expect(r.drops[0].title).toMatch(/Mom/);
+	});
+
+	it("never a fixed global threshold — the same absolute silence is fine for a naturally low-cadence contact", () => {
+		const prior: Record<string, RelationshipBaseline> = { t1: { lastAt: "2026-06-01T00:00:00Z", baselineDays: 20, sampleCount: 5 } };
+		const threads: TextThreadRef[] = [{ id: "t1", contact: "+1555", lastAt: "2026-06-01T00:00:00Z" }];
+		const r = detectRelationshipDrops(Date.parse("2026-06-26T00:00:00Z"), threads, prior); // 25d quiet, but baseline is ~20d
+		expect(r.drops).toHaveLength(0);
+	});
+
+	it("stays quiet within a contact's own normal cadence, even past the absolute floor", () => {
+		const prior: Record<string, RelationshipBaseline> = { t1: { lastAt: "2026-06-01T00:00:00Z", baselineDays: 3, sampleCount: 5 } };
+		const threads: TextThreadRef[] = [{ id: "t1", contact: "+1555", lastAt: "2026-06-01T00:00:00Z" }];
+		const r = detectRelationshipDrops(Date.parse("2026-06-05T00:00:00Z"), threads, prior); // 4d quiet, under both 2x baseline (6) and the 5d floor
+		expect(r.drops).toHaveLength(0);
+	});
+
+	it("never fires for a thread with no established baseline yet, however long silent", () => {
+		const prior: Record<string, RelationshipBaseline> = { t1: { lastAt: "2026-01-01T00:00:00Z", baselineDays: 0, sampleCount: 0 } };
+		const threads: TextThreadRef[] = [{ id: "t1", contact: "+1555", lastAt: "2026-01-01T00:00:00Z" }];
+		const r = detectRelationshipDrops(Date.parse("2026-07-19T00:00:00Z"), threads, prior); // ~200d, but sampleCount is 0
+		expect(r.drops).toHaveLength(0);
+	});
+});
+
 describe("agenda — learned ranking (W8)", () => {
 	const drop = (kind: string, urgency: "today" | "soon" | "fyi"): Drop => ({
 		kind,
@@ -424,6 +470,27 @@ describe("agenda — loop", () => {
 		const r = await runAgenda(e, {}, d);
 		expect(r.sources.imessage).toBe("not_configured");
 		expect(d.textThreads).not.toHaveBeenCalled();
+	});
+
+	it("wires relationship-decay signals in across cycles, once a thread's baseline is established (#930)", async () => {
+		const e = env({ IMESSAGE_URL: "https://mac.ts.net", IMESSAGE_SECRET: "s".repeat(20) });
+		// Cycle 1 — first ever sighting: just seeds the baseline, no drop.
+		await runAgenda(e, { date: "2026-06-01" }, deps({ textThreads: vi.fn(async () => [{ id: "t1", contact: "+15551234", name: "Mom", lastFromMe: true, lastAt: "2026-06-01T12:00:00Z" }]) }));
+		// Cycle 2 — a new message lands 3 days later: refines the baseline (~3d), no drop yet.
+		const r2 = await runAgenda(e, { date: "2026-06-04" }, deps({ textThreads: vi.fn(async () => [{ id: "t1", contact: "+15551234", name: "Mom", lastFromMe: true, lastAt: "2026-06-04T12:00:00Z" }]) }));
+		expect(r2.proposals?.map((p) => p.kind)).not.toContain("relationship_drop");
+		expect(e.OAUTH_KV.map.get("sux:ledger:agenda_relationship:t1")).toContain("\"sampleCount\":1");
+		// Cycle 3 — 20 days of silence since, way past the ~3d baseline: fires.
+		const r3 = await runAgenda(e, { date: "2026-06-24" }, deps({ textThreads: vi.fn(async () => [{ id: "t1", contact: "+15551234", name: "Mom", lastFromMe: true, lastAt: "2026-06-04T12:00:00Z" }]) }));
+		expect(r3.proposals?.map((p) => p.kind)).toContain("relationship_drop");
+	});
+
+	it("dry_run never persists the relationship baseline", async () => {
+		const e = env({ IMESSAGE_URL: "https://mac.ts.net", IMESSAGE_SECRET: "s".repeat(20) });
+		await runAgenda(e, { date: "2026-06-01" }, deps({ textThreads: vi.fn(async () => [{ id: "t1", contact: "+15551234", lastFromMe: true, lastAt: "2026-06-01T12:00:00Z" }]) }));
+		// This cycle would refine the baseline to ~3d, but it's a dry run — must not persist.
+		await runAgenda(e, { date: "2026-06-04", dry_run: true }, deps({ textThreads: vi.fn(async () => [{ id: "t1", contact: "+15551234", lastFromMe: true, lastAt: "2026-06-04T12:00:00Z" }]) }));
+		expect(e.OAUTH_KV.map.get("sux:ledger:agenda_relationship:t1")).toContain("\"sampleCount\":0");
 	});
 
 	it("wires Monarch portfolio + savings-rate signals (W7.1, #803) in only when MONARCH_TOKEN is set", async () => {
