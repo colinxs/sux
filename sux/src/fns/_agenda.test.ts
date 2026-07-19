@@ -595,3 +595,43 @@ describe("agenda — loop", () => {
 		expect(r.proposals?.map((p) => p.kind)).not.toContain("portfolio_drift");
 	});
 });
+
+describe("agenda — pending-delivery queue survives a failed digest write (#996)", () => {
+	const RX_MAIL: MailRef = { id: "rx1", from: "pharmacy@uwmc.org", subject: "Your prescription is ready for pickup" };
+	const BILL_MAIL: MailRef = { id: "bill9", from: "billing@chase.com", subject: "Your statement is ready" };
+
+	it("a digest-append failure carries the drop into the NEXT cycle's digest attempt, merged with anything newly proposed", async () => {
+		const e = env();
+		const d1 = deps({ mailSearch: vi.fn(async () => [RX_MAIL]), calEvents: vi.fn(async () => []), digestAppend: vi.fn(async () => { throw new Error("vault down"); }) });
+		const r1 = await runAgenda(e, { date: "2026-07-10" }, d1);
+		expect(r1.proposed).toBe(1); // propose() itself succeeded — it's only the digest write that failed
+		expect(r1.digest_written).toBe(false);
+		expect((await listProposals(e)).length).toBe(1); // already recorded, not lost
+
+		// Next cycle: the rx mail is gone (already proposed), but a fresh bill lands. digestAppend now succeeds.
+		const d2 = deps({ mailSearch: vi.fn(async () => [BILL_MAIL]), calEvents: vi.fn(async () => []) });
+		const r2 = await runAgenda(e, { date: "2026-07-11" }, d2);
+		expect(r2.proposed).toBe(1); // only the new bill is freshly proposed — rx is already ledgered in agenda_drop
+		expect(r2.digest_written).toBe(true);
+		expect(d2.digestAppend).toHaveBeenCalledTimes(1);
+		const written = (d2.digestAppend as any).mock.calls[0][2] as string;
+		expect(written).toMatch(/[Pp]rescription/); // yesterday's failed drop survived into today's digest
+		expect(written).toMatch(/statement/i); // merged with today's newly proposed drop
+		expect(r2.proposals?.map((p) => p.kind)).toEqual(expect.arrayContaining(["rx_ready", "bill_due"]));
+	});
+
+	it("once delivery succeeds, the pending queue is cleared and the old drop is not retried a third time", async () => {
+		const e = env();
+		const d1 = deps({ mailSearch: vi.fn(async () => [RX_MAIL]), calEvents: vi.fn(async () => []), digestAppend: vi.fn(async () => { throw new Error("vault down"); }) });
+		await runAgenda(e, { date: "2026-07-10" }, d1);
+
+		const d2 = deps({ mailSearch: vi.fn(async () => []), calEvents: vi.fn(async () => []) });
+		const r2 = await runAgenda(e, { date: "2026-07-11" }, d2);
+		expect(r2.digest_written).toBe(true); // the carried rx drop finally lands, clearing the queue
+
+		const d3 = deps({ mailSearch: vi.fn(async () => []), calEvents: vi.fn(async () => []) });
+		const r3 = await runAgenda(e, { date: "2026-07-12" }, d3);
+		expect(d3.digestAppend).not.toHaveBeenCalled(); // nothing left pending — never re-sent
+		expect(r3.proposals ?? []).toHaveLength(0);
+	});
+});

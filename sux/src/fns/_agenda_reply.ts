@@ -3,6 +3,17 @@
 // `approve <id>` / `snooze <id> 3d` / `reject <id>`; this module is what actually reads
 // those replies and dispatches them through the W1 proposal kernel (proposals.ts).
 //
+// Also resolves paused op-engine `ask` gates (run.ts's `answer` action) via a SEPARATE
+// `ask <instanceId-or-prefix> [reject]` grammar (parseAskCommands below) — ported from
+// _imessage_reply.ts (#955), which proved the pattern first and imports this grammar back
+// from here (this module is the shared home so the two inbound channels never diverge). A
+// durable Workflow instanceId is a full UUID, not a Proposal's short hex id, so it needs its
+// own resolver (resolveInstanceToken) over `run action:list`'s own index, not the proposal
+// queue. Gated behind the SAME three auth checks as every other command in this loop — an
+// ask command still only ever reaches dispatch inside a message that already passed the
+// verified-identity + digest-subject + thread-binding gates below; it grants no new
+// capability, same as answering `run {action:'answer'}` directly would.
+//
 // AUTH (the load-bearing part — an inbound email is untrusted content):
 //   1. The message's From must match one of Colin's OWN verified send-from addresses
 //      (mail_identities) — a stranger's mail can never dispatch a command, even one that
@@ -105,6 +116,47 @@ export function resolveShortId(open: Array<{ id: string }>, token: string): stri
 	return undefined;
 }
 
+// ── Ask-gate command grammar (#955/#980) ────────────────────────────────────────────
+// `ask <instanceId-or-prefix> [reject|no|deny]` — deliberately a different verb (not
+// approve/reject/snooze) from the proposal grammar above, so the two id spaces (a durable
+// run's UUID vs. a Proposal's short hex id) never collide, either for the parser or for
+// whoever's reading the command back. Defaults to approve when no reject-shaped word
+// follows (mirrors run.ts's answerVerb defaulting `payload` to {approved:true}). Pure and
+// total, same contract as parseCommands: unparseable tokens are dropped, never thrown.
+export type AskCommand = { token: string; approved: boolean };
+export type AskGateRef = { prompt: string; timeout: string; onTimeout: string };
+
+const ASK_VERB_RE = /^ask$/i;
+const ASK_TOKEN_RE = /^[0-9a-f-]{4,36}$/i;
+const ASK_REJECT_RE = /^(reject|no|deny)$/i;
+
+export function parseAskCommands(text: string): AskCommand[] {
+	const tokens = String(text ?? "")
+		.split(/\s+/)
+		.filter(Boolean)
+		.map((t) => t.replace(/^[("'`]+|[)."'`,;:!?]+$/g, ""));
+	const commands: AskCommand[] = [];
+	for (let i = 0; i < tokens.length; i++) {
+		if (!ASK_VERB_RE.test(tokens[i])) continue;
+		const idTok = tokens[i + 1];
+		if (!idTok || !ASK_TOKEN_RE.test(idTok)) continue;
+		const modTok = tokens[i + 2];
+		commands.push({ token: idTok.toLowerCase(), approved: !(modTok && ASK_REJECT_RE.test(modTok)) });
+	}
+	return commands;
+}
+
+/** Resolve a run instanceId-or-prefix against `run action:list`'s own instances by prefix
+ *  match — the ask-gate analogue of resolveShortId, just over a different candidate set
+ *  (durable run instances, not the open proposal queue). Same "ambiguous" / undefined
+ *  contract: never guess when more than one instance shares the prefix. */
+export function resolveInstanceToken(runs: Array<{ instanceId: string }>, token: string): string | "ambiguous" | undefined {
+	const hits = runs.filter((r) => r.instanceId.toLowerCase().startsWith(token.toLowerCase()));
+	if (hits.length === 1) return hits[0].instanceId;
+	if (hits.length > 1) return "ambiguous";
+	return undefined;
+}
+
 // ── Deps (injectable side-effect surface — mirrors _agenda.ts/_ask_gate_reminder.ts) ──
 export type AgendaReplyDeps = {
 	/** Recent unread inbox messages, newest first (id/from/subject/preview). */
@@ -118,6 +170,15 @@ export type AgendaReplyDeps = {
 	 *  `preview` parses zero commands, since a reply's command line can fall outside the
 	 *  ~256-char preview window (a leading sentence, or a top-posting client). */
 	mailBody: (env: RtEnv, mailId: string) => Promise<string>;
+	/** `run action:list`'s live instances (run.ts's listDurableRuns) — the candidate set
+	 *  resolveInstanceToken matches an ask command's token against (#955/#980). */
+	listRuns: (env: RtEnv) => Promise<Array<{ instanceId: string; opId: string; startedAt: number; status: string }>>;
+	/** `run action:describe`'s static ask-gate prompts for a registered op id (run.ts's
+	 *  describeOp). Empty/throwing means "nothing to validate against" — treated as
+	 *  unresolvable, never guessed. */
+	describeGates: (opId: string) => AskGateRef[];
+	/** Deliver a payload to the instance's ask gate (run.ts's answerVerb). */
+	answerGate: (env: RtEnv, instanceId: string, prompt: string, payload: unknown) => Promise<void>;
 };
 
 export type AgendaReplyReport = {
@@ -131,6 +192,8 @@ export type AgendaReplyReport = {
 	rejected?: string[];
 	snoozed?: string[];
 	unresolved?: string[]; // command tokens that named no (or an ambiguous) open proposal
+	gates_answered?: string[]; // instanceIds whose ask gate was successfully answered (#955/#980)
+	gates_unresolved?: string[]; // ask command tokens that named no (or an ambiguous/unanswerable) gate
 	note?: string;
 	error?: string;
 };
@@ -138,17 +201,20 @@ export type AgendaReplyReport = {
 const numClamp = (v: unknown, lo: number, hi: number, dflt: number): number => Math.min(hi, Math.max(lo, Math.floor(Number(v) || dflt)));
 
 /** Run one reply-scan cycle. Fail-closed: dormant no-op unless AGENDA_REPLY_ENABLED (and
- *  AGENDA_ENABLED). For each unread inbox message that passes BOTH auth gates (from a
- *  verified identity, subject still a digest-thread reply), parses the approve/snooze/
- *  reject grammar and dispatches each resolved id through the real proposal kernel
- *  (approveProposal/rejectProposal/snoozeProposal — the same fns `proposals {action:...}`
- *  uses). Every scanned message is marked in a ledger so a re-run never reprocesses it,
+ *  AGENDA_ENABLED). For each unread inbox message that passes ALL THREE auth gates (from a
+ *  verified identity, subject still a digest-thread reply, thread-bound to a ledgered sent
+ *  digest), parses the approve/snooze/reject grammar and dispatches each resolved id through
+ *  the real proposal kernel (approveProposal/rejectProposal/snoozeProposal — the same fns
+ *  `proposals {action:...}` uses) — and separately parses the `ask <instanceId> [reject]`
+ *  grammar (#955/#980), resolving each token against `run action:list`'s live instances and
+ *  delivering approved:true/false to that instance's own single ask gate via run.ts's
+ *  answerVerb. Every scanned message is marked in a ledger so a re-run never reprocesses it,
  *  regardless of outcome — a typo'd id is simply unresolved, not retried forever. */
 export async function runAgendaReply(env: RtEnv, opts: { max_mail?: number }, deps: AgendaReplyDeps): Promise<AgendaReplyReport> {
 	if (!hasAgendaReply(env)) {
 		return {
 			dormant: true,
-			note: "agenda_reply is disabled — set AGENDA_REPLY_ENABLED (requires AGENDA_ENABLED) to parse inbound 'approve/snooze/reject <id>' replies to the agenda digest and dispatch them through the proposal kernel. Only messages FROM one of your own mail_identities, whose subject is still a digest-thread reply ('sux · …'), AND whose In-Reply-To/References actually name a Message-ID sux ledgered when it sent that digest are ever parsed — everything else is ignored untouched. Fail-closed: nothing runs until the flag is set.",
+			note: "agenda_reply is disabled — set AGENDA_REPLY_ENABLED (requires AGENDA_ENABLED) to parse inbound 'approve/snooze/reject <id>' replies to the agenda digest (dispatched through the proposal kernel) and 'ask <instanceId> [reject]' replies (dispatched through run.ts's answerVerb, for a paused op-engine ask gate — #955/#980). Only messages FROM one of your own mail_identities, whose subject is still a digest-thread reply ('sux · …'), AND whose In-Reply-To/References actually name a Message-ID sux ledgered when it sent that digest are ever parsed — everything else is ignored untouched. Fail-closed: nothing runs until the flag is set.",
 		};
 	}
 
@@ -171,6 +237,8 @@ export async function runAgendaReply(env: RtEnv, opts: { max_mail?: number }, de
 	const rejected: string[] = [];
 	const snoozed: string[] = [];
 	const unresolved: string[] = [];
+	const gatesAnswered: string[] = [];
+	const gatesUnresolved: string[] = [];
 
 	for (const m of messages) {
 		scanned++;
@@ -204,16 +272,20 @@ export async function runAgendaReply(env: RtEnv, opts: { max_mail?: number }, de
 		}
 
 		let commands = parseCommands(m.preview ?? "");
-		if (!commands.length) {
+		let askCommands = parseAskCommands(m.preview ?? "");
+		if (!commands.length && !askCommands.length) {
 			// The preview is a JMAP-server-truncated snippet — a command line following a
 			// lead-in sentence, or below a top-posted signature/quoted block, can fall outside
 			// its window. Both auth gates already passed (verified identity + a real digest
 			// thread), so it's safe/cheap to re-parse the full body before giving up.
 			const body = await deps.mailBody(env, m.id).catch(() => "");
-			if (body) commands = parseCommands(body);
+			if (body) {
+				commands = parseCommands(body);
+				askCommands = parseAskCommands(body);
+			}
 		}
+		if (commands.length || askCommands.length) processed++;
 		if (commands.length) {
-			processed++;
 			// The open queue is re-read per message (not hoisted) so an id acted on by an
 			// earlier message in THIS same scan can't be re-matched by a later one.
 			const open = (await listProposals(env, { includeSnoozed: true })).filter((p) => p.status === "proposed" || p.status === "snoozed");
@@ -242,18 +314,64 @@ export async function runAgendaReply(env: RtEnv, opts: { max_mail?: number }, de
 				}
 			}
 		}
+
+		if (askCommands.length) {
+			// The run index is re-read per message, same reasoning as the open proposal queue
+			// above — this scan's own earlier answers can change what `list` reports (a
+			// fully-answered instance may drop out of "waiting").
+			let runs: Array<{ instanceId: string; opId: string; startedAt: number; status: string }> = [];
+			try {
+				runs = await deps.listRuns(env);
+			} catch {
+				runs = []; // an unreadable run index resolves nothing this cycle, never throws
+			}
+			for (const cmd of askCommands) {
+				const full = resolveInstanceToken(runs, cmd.token);
+				if (!full || full === "ambiguous") {
+					gatesUnresolved.push(cmd.token);
+					continue;
+				}
+				const entry = runs.find((r) => r.instanceId === full);
+				if (entry?.status !== "waiting") {
+					gatesUnresolved.push(cmd.token);
+					continue;
+				}
+				// Only auto-answer when the op has EXACTLY one ask gate — with zero there's
+				// nothing to target, and with more than one there's no way to tell which the
+				// instance is actually paused on from the index alone (durable.ts exposes no
+				// "current wait" prompt), so guessing would risk answering the wrong gate.
+				let gates: AskGateRef[] = [];
+				try {
+					gates = deps.describeGates(entry.opId);
+				} catch {
+					gates = [];
+				}
+				if (gates.length !== 1) {
+					gatesUnresolved.push(cmd.token);
+					continue;
+				}
+				try {
+					await deps.answerGate(env, full, gates[0].prompt, { approved: cmd.approved });
+					gatesAnswered.push(full);
+				} catch {
+					gatesUnresolved.push(cmd.token); // dispatch failed — surfaced, never silently dropped
+				}
+			}
+		}
 		await led.mark(m.id);
 	}
 
-	return { scanned, untrusted, not_a_reply: notReply, not_thread_matched: notThreadMatched, processed, approved, rejected, snoozed, unresolved };
+	return { scanned, untrusted, not_a_reply: notReply, not_thread_matched: notThreadMatched, processed, approved, rejected, snoozed, unresolved, gates_answered: gatesAnswered, gates_unresolved: gatesUnresolved };
 }
 
 // ── Real deps ───────────────────────────────────────────────────────────────────────
-/** Production surface: mail_search (unread inbox) + mail_identities. Dynamically imported
- *  so the cron path pulls in the mail surface only when armed (mirrors _agenda/
- *  _ask_gate_reminder). */
+/** Production surface: mail_search (unread inbox) + mail_identities, plus run.ts's
+ *  listDurableRuns/describeOp/answerVerb for ask-gate resolution (#955/#980). Dynamically
+ *  imported so the cron path pulls in the mail surface (and the op-engine registry) only
+ *  when armed (mirrors _agenda/_ask_gate_reminder). */
 export async function defaultDeps(): Promise<AgendaReplyDeps> {
 	const mail = await import("../mail-mcp");
+	const runFns = await import("./run");
 	const tool = (name: string) => mail.MAIL_TOOLS.find((t) => t.name === name);
 	return {
 		mailSearch: async (env, o) => {
@@ -295,5 +413,14 @@ export async function defaultDeps(): Promise<AgendaReplyDeps> {
 			const parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
 			return String(parsed?.body ?? "");
 		},
+		listRuns: (env) => runFns.listDurableRuns(env),
+		describeGates: (opId) => {
+			try {
+				return runFns.describeOp(opId).asks;
+			} catch {
+				return [];
+			}
+		},
+		answerGate: (env, instanceId, prompt, payload) => runFns.answerVerb(instanceId, prompt, payload, env),
 	};
 }

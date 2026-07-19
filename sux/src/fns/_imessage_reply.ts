@@ -1,17 +1,17 @@
 // The agenda/ask-gate approval loop's SECOND inbound channel (#897) — text
 // `approve <id>` / `snooze <id> 3d` / `reject <id>` back to sux from a trusted phone
 // number, the iMessage sibling of _agenda_reply.ts's inbound email loop (W2.1, #765).
-// Reuses that module's command grammar (parseCommands/resolveShortId/durationMs)
-// rather than re-deriving it — the two channels were always meant to share it.
+// Reuses that module's command grammar (parseCommands/resolveShortId/durationMs/
+// parseAskCommands/resolveInstanceToken) rather than re-deriving it — the two channels
+// were always meant to share it (#980 ported the ask-gate half into the email channel
+// too, once this one proved the pattern).
 //
 // Also resolves paused op-engine `ask` gates (run.ts's `answer` action, #955) via a
-// SEPARATE `ask <instanceId-or-prefix> [reject]` grammar (parseAskCommands below) —
-// a durable Workflow instanceId is a full UUID, not a Proposal's short hex id, and it
-// lives in `run action:list`'s own index, not the proposal queue, so it can't just
-// reuse resolveShortId over listProposals. A distinct verb keeps the two id spaces from
-// ever colliding and makes each command's target obvious to whoever's texting it. Only
-// wired in here (not _agenda_reply.ts's email channel) — that's a separate follow-up
-// once this one's proven out, per #955's own scoping note.
+// SEPARATE `ask <instanceId-or-prefix> [reject]` grammar — a durable Workflow instanceId
+// is a full UUID, not a Proposal's short hex id, and it lives in `run action:list`'s own
+// index, not the proposal queue, so it can't just reuse resolveShortId over
+// listProposals. A distinct verb keeps the two id spaces from ever colliding and makes
+// each command's target obvious to whoever's texting it.
 //
 // AUTH (the load-bearing part — an inbound text is untrusted content, same as an
 // inbound email): a command is only ever parsed from a message that arrives on an
@@ -43,8 +43,13 @@
 import type { RtEnv } from "../registry";
 import { ledger } from "../ledger";
 import { approveProposal, listProposals, rejectProposal, snoozeProposal } from "../proposals";
-import { durationMs, parseCommands, resolveShortId } from "./_agenda_reply";
+import { type AskCommand, type AskGateRef, durationMs, parseAskCommands, parseCommands, resolveInstanceToken, resolveShortId } from "./_agenda_reply";
 import { errMsg } from "./_util";
+
+// `AskCommand`/`AskGateRef`/`parseAskCommands`/`resolveInstanceToken` (#955) now live in
+// _agenda_reply.ts (#980 ported this channel's grammar into the email channel too, so the
+// shared home is there) — re-exported here so existing imports of this module keep working.
+export { type AskCommand, type AskGateRef, parseAskCommands, resolveInstanceToken };
 
 const flagOn = (v: string | undefined): boolean => {
 	const s = String(v ?? "").trim().toLowerCase();
@@ -90,51 +95,7 @@ const numClamp = (v: unknown, lo: number, hi: number, dflt: number): number => M
 export type ImessageThreadRef = { id: string; contact?: string; name?: string };
 export type ImessageMessageRef = { id: string; from_me: boolean; handle?: string; text?: string; at?: string };
 
-// ── Ask-gate command grammar (#955) ──────────────────────────────────────────────
-// `ask <instanceId-or-prefix> [reject|no|deny]` — deliberately a different verb (not
-// approve/reject/snooze) from _agenda_reply.ts's parseCommands, so the two id spaces
-// (a durable run's UUID vs. a Proposal's short hex id) never collide, either for the
-// parser or for whoever's reading the command back. Defaults to approve when no
-// reject-shaped word follows (mirrors run.ts's answerVerb defaulting `payload` to
-// {approved:true}). Pure and total, same contract as parseCommands: unparseable tokens
-// are dropped, never thrown.
-export type AskCommand = { token: string; approved: boolean };
-
-const ASK_VERB_RE = /^ask$/i;
-const ASK_TOKEN_RE = /^[0-9a-f-]{4,36}$/i;
-const ASK_REJECT_RE = /^(reject|no|deny)$/i;
-
-export function parseAskCommands(text: string): AskCommand[] {
-	const tokens = String(text ?? "")
-		.split(/\s+/)
-		.filter(Boolean)
-		.map((t) => t.replace(/^[("'`]+|[)."'`,;:!?]+$/g, ""));
-	const commands: AskCommand[] = [];
-	for (let i = 0; i < tokens.length; i++) {
-		if (!ASK_VERB_RE.test(tokens[i])) continue;
-		const idTok = tokens[i + 1];
-		if (!idTok || !ASK_TOKEN_RE.test(idTok)) continue;
-		const modTok = tokens[i + 2];
-		commands.push({ token: idTok.toLowerCase(), approved: !(modTok && ASK_REJECT_RE.test(modTok)) });
-	}
-	return commands;
-}
-
-/** Resolve a run instanceId-or-prefix against `run action:list`'s own instances by
- *  prefix match — the ask-gate analogue of _agenda_reply.ts's resolveShortId, just over
- *  a different candidate set (durable run instances, not the open proposal queue).
- *  Same "ambiguous" / undefined contract: never guess when more than one instance
- *  shares the prefix. */
-export function resolveInstanceToken(runs: Array<{ instanceId: string }>, token: string): string | "ambiguous" | undefined {
-	const hits = runs.filter((r) => r.instanceId.toLowerCase().startsWith(token.toLowerCase()));
-	if (hits.length === 1) return hits[0].instanceId;
-	if (hits.length > 1) return "ambiguous";
-	return undefined;
-}
-
 // ── Deps (injectable side-effect surface — mirrors _agenda_reply.ts's AgendaReplyDeps) ──
-export type AskGateRef = { prompt: string; timeout: string; onTimeout: string };
-
 export type ImessageReplyDeps = {
 	/** Recent iMessage threads (imessage.ts action:'threads'). */
 	threads: (env: RtEnv, opts: { since?: string }) => Promise<ImessageThreadRef[]>;

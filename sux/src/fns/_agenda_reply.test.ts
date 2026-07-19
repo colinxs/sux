@@ -8,7 +8,7 @@ vi.mock("./index", () => ({
 	FUNCTIONS: [{ name: "todoist", description: "", inputSchema: {}, run: vi.fn(async (_e: any, a: any) => ({ content: [{ type: "text", text: JSON.stringify({ ran: "todoist", got: a }) }] })) }],
 }));
 
-import { type AgendaReplyDeps, durationMs, extractEmail, looksLikeDigestReply, parseCommands, resolveShortId, runAgendaReply } from "./_agenda_reply";
+import { type AgendaReplyDeps, type AskGateRef, durationMs, extractEmail, looksLikeDigestReply, parseAskCommands, parseCommands, resolveInstanceToken, resolveShortId, runAgendaReply } from "./_agenda_reply";
 import { listProposals, propose } from "../proposals";
 import type { MailRef } from "./_agenda";
 import { ledger } from "../ledger";
@@ -29,6 +29,9 @@ const deps = (mail: MailRef[], over: Partial<AgendaReplyDeps> = {}): AgendaReply
 	identities: vi.fn(async () => [SELF]),
 	threadIds: vi.fn(async () => []),
 	mailBody: vi.fn(async () => ""),
+	listRuns: vi.fn(async () => []),
+	describeGates: vi.fn(() => []),
+	answerGate: vi.fn(async () => {}),
 	...over,
 });
 
@@ -209,5 +212,87 @@ describe("agenda_reply — loop", () => {
 		const r = await runAgendaReply(e, {}, deps(mail)); // default threadIds → [], nothing ledgered
 		expect(r.not_thread_matched).toBe(1);
 		expect(r.approved).toEqual([]);
+	});
+});
+
+describe("agenda_reply — ask-gate command grammar (#955/#980)", () => {
+	it("parses 'ask <id>' as an approve by default", () => {
+		expect(parseAskCommands("ask 9dcd0981-8e29-4c9d-a5e1-3af0d3095e5b")).toEqual([{ token: "9dcd0981-8e29-4c9d-a5e1-3af0d3095e5b", approved: true }]);
+	});
+
+	it("parses a reject modifier (reject/no/deny)", () => {
+		expect(parseAskCommands("ask 9dcd0981 reject")[0].approved).toBe(false);
+		expect(parseAskCommands("ask 9dcd0981 no")[0].approved).toBe(false);
+		expect(parseAskCommands("ask 9dcd0981 deny")[0].approved).toBe(false);
+	});
+
+	it("ignores prose with no 'ask' verb, and 'ask' with no valid token following", () => {
+		expect(parseAskCommands("can you ask him about dinner?")).toHaveLength(0);
+		expect(parseAskCommands("ask")).toHaveLength(0);
+	});
+
+	it("resolveInstanceToken: unique prefix resolves, no match is undefined, multiple matches are ambiguous", () => {
+		const runs = [{ instanceId: "9dcd0981-8e29-4c9d-a5e1-3af0d3095e5b" }, { instanceId: "abc12345-0000-0000-0000-000000000000" }];
+		expect(resolveInstanceToken(runs, "9dcd0981")).toBe("9dcd0981-8e29-4c9d-a5e1-3af0d3095e5b");
+		expect(resolveInstanceToken(runs, "ffffffff")).toBeUndefined();
+		expect(resolveInstanceToken([{ instanceId: "aaa111" }, { instanceId: "aaa222" }], "aaa")).toBe("ambiguous");
+	});
+});
+
+describe("agenda_reply — ask-gate dispatch (#955/#980)", () => {
+	const RUN_ID = "9dcd0981-8e29-4c9d-a5e1-3af0d3095e5b";
+	const waitingRun = { instanceId: RUN_ID, opId: "assimilate-pdfs", startedAt: Date.now(), status: "waiting" };
+	const gate: AskGateRef = { prompt: "review master?", timeout: "24 hour", onTimeout: "proceed" };
+
+	it("answers a paused instance's single ask gate, approving by default, through the same digest-reply auth gates", async () => {
+		const e = env();
+		await ledgerDigest(e);
+		const mail: MailRef[] = [{ id: "m1", from: SELF, subject: "Re: sux · 1 thing needs you (2026-07-13)", preview: `ask ${RUN_ID.slice(0, 8)}` }];
+		const d = deps(mail, { threadIds: vi.fn(async () => [DIGEST_MSG_ID]), listRuns: vi.fn(async () => [waitingRun]), describeGates: vi.fn(() => [gate]) });
+		const r = await runAgendaReply(e, {}, d);
+		expect(r.gates_answered).toEqual([RUN_ID]);
+		expect(d.answerGate).toHaveBeenCalledWith(e, RUN_ID, gate.prompt, { approved: true });
+	});
+
+	it("rejects when the reject modifier is present", async () => {
+		const e = env();
+		await ledgerDigest(e);
+		const mail: MailRef[] = [{ id: "m1", from: SELF, subject: "Re: sux · 1 thing needs you (2026-07-13)", preview: `ask ${RUN_ID.slice(0, 8)} reject` }];
+		const d = deps(mail, { threadIds: vi.fn(async () => [DIGEST_MSG_ID]), listRuns: vi.fn(async () => [waitingRun]), describeGates: vi.fn(() => [gate]) });
+		const r = await runAgendaReply(e, {}, d);
+		expect(r.gates_answered).toEqual([RUN_ID]);
+		expect(d.answerGate).toHaveBeenCalledWith(e, RUN_ID, gate.prompt, { approved: false });
+	});
+
+	it("reports unresolved for an unknown token, an instance that isn't waiting, or an op with != 1 ask gate", async () => {
+		const notWaiting = { ...waitingRun, status: "complete" };
+
+		const e1 = env();
+		await ledgerDigest(e1);
+		const missMail: MailRef[] = [{ id: "m1", from: SELF, subject: "Re: sux · 1 thing needs you (2026-07-13)", preview: "ask ffffffff" }];
+		const missR = await runAgendaReply(e1, {}, deps(missMail, { threadIds: vi.fn(async () => [DIGEST_MSG_ID]), listRuns: vi.fn(async () => [waitingRun]) }));
+		expect(missR.gates_unresolved).toEqual(["ffffffff"]);
+
+		const e2 = env();
+		await ledgerDigest(e2);
+		const notWaitingMail: MailRef[] = [{ id: "m1", from: SELF, subject: "Re: sux · 1 thing needs you (2026-07-13)", preview: `ask ${RUN_ID.slice(0, 8)}` }];
+		const notWaitingR = await runAgendaReply(e2, {}, deps(notWaitingMail, { threadIds: vi.fn(async () => [DIGEST_MSG_ID]), listRuns: vi.fn(async () => [notWaiting]) }));
+		expect(notWaitingR.gates_unresolved).toEqual([RUN_ID.slice(0, 8)]);
+
+		const e3 = env();
+		await ledgerDigest(e3);
+		const zeroGatesMail: MailRef[] = [{ id: "m1", from: SELF, subject: "Re: sux · 1 thing needs you (2026-07-13)", preview: `ask ${RUN_ID.slice(0, 8)}` }];
+		const zeroGatesR = await runAgendaReply(e3, {}, deps(zeroGatesMail, { threadIds: vi.fn(async () => [DIGEST_MSG_ID]), listRuns: vi.fn(async () => [waitingRun]), describeGates: vi.fn(() => []) }));
+		expect(zeroGatesR.gates_unresolved).toEqual([RUN_ID.slice(0, 8)]);
+	});
+
+	it("never dispatches an ask command that fails the existing auth gates (untrusted sender)", async () => {
+		const e = env();
+		await ledgerDigest(e);
+		const mail: MailRef[] = [{ id: "m1", from: "spammer@evil.example", subject: "Re: sux · 1 thing needs you (2026-07-13)", preview: `ask ${RUN_ID.slice(0, 8)}` }];
+		const d = deps(mail, { threadIds: vi.fn(async () => [DIGEST_MSG_ID]), listRuns: vi.fn(async () => [waitingRun]), describeGates: vi.fn(() => [gate]) });
+		const r = await runAgendaReply(e, {}, d);
+		expect(r.gates_answered).toEqual([]);
+		expect(d.listRuns).not.toHaveBeenCalled();
 	});
 });

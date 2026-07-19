@@ -210,4 +210,26 @@ describe("runInferNudge — suggest-only warm-up (#868)", () => {
 		const r2 = await runInferNudge(env, {}, deps({ digestAppend, detectDrift: vi.fn(async () => ({ cluster: "mail+vault", driftScore: 0.9, evidenceIds: ["s7", "s8"] })) }));
 		expect(r2.suppressed).toBe("rate_capped");
 	});
+
+	it("a failed warm-up log write surfaces an error and never leaves the inference record orphaned (#997)", async () => {
+		const env = baseEnv();
+		const realPut = env.OAUTH_KV.put;
+		env.OAUTH_KV.put = vi.fn(async (k: string, v: string) => {
+			if (String(k).startsWith("kv:infer:warmup:")) throw new Error("transient KV put failure");
+			return realPut(k, v);
+		});
+		const digestAppend = vi.fn(async () => {});
+		const r = await runInferNudge(env, {}, deps({ digestAppend }));
+		expect(r.error).toContain("warm-up log write failed");
+
+		// The inference record appended before the failed warm-up write must not be left
+		// orphaned — same rollback #961 gave the live-write branch.
+		expect(await readInferInferences(env, "mail")).toEqual([]);
+		expect(await readInferInferences(env, "vault")).toEqual([]);
+
+		// The failed cycle must not have consumed the rate cap — a retry should still fire.
+		env.OAUTH_KV.put = realPut;
+		const r2 = await runInferNudge(env, {}, deps({ digestAppend }));
+		expect(r2.warmup).toBe(true);
+	});
 });

@@ -215,16 +215,21 @@ export async function runInferNudge(env: RtEnv, opts: { domains?: InferDomain[] 
 	const inWarmup = warmupCount < warmupRequired;
 
 	if (inWarmup) {
-		await warmupLog(env, candidate.cluster).push({
-			ts: Date.now(),
-			cluster: candidate.cluster,
-			driftScore: candidate.driftScore,
-			evidenceIds: candidate.evidenceIds,
-			phrasing,
-			whyTrail,
-			wouldWriteDigest: digestContent,
-		});
-		await writeWarmupCount(env, candidate.cluster, warmupCount + 1);
+		try {
+			await warmupLog(env, candidate.cluster).push({
+				ts: Date.now(),
+				cluster: candidate.cluster,
+				driftScore: candidate.driftScore,
+				evidenceIds: candidate.evidenceIds,
+				phrasing,
+				whyTrail,
+				wouldWriteDigest: digestContent,
+			});
+			await writeWarmupCount(env, candidate.cluster, warmupCount + 1);
+		} catch (e) {
+			await deleteInferInference(env, domains[0], inferenceId);
+			return { error: `warm-up log write failed: ${errMsg(e)}`, cluster: candidate.cluster, driftScore: candidate.driftScore, inferenceId };
+		}
 	} else {
 		try {
 			await deps.digestAppend(env, `Daily/${vaultToday(env.VAULT_TZ)}.md`, digestContent);
