@@ -138,12 +138,14 @@ describe("files_* tools", () => {
 		expect(bad.isError).toBe(true);
 	});
 
-	it("files_delete requires confirm:true", async () => {
-		const blocked = await tool("files_delete").run(env(), { path: "x" });
-		expect(blocked.isError).toBe(true);
+	it("files_delete STAGES by default and force:true applies it", async () => {
+		const staged = parse(await tool("files_delete").run(kvEnv(), { path: "x" }));
+		expect(staged).toMatchObject({ staged: true, kind: "dropbox_delete" });
+		expect(staged.commit_token).toBeTruthy();
 		expect(runMock).not.toHaveBeenCalled();
-		const okd = parse(await tool("files_delete").run(env(), { path: "x", confirm: true }));
+		const okd = parse(await tool("files_delete").run(kvEnv(), { path: "x", force: true }));
 		expect(okd).toMatchObject({ op: "delete", path: "x" });
+		expect(runMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ op: "delete", path: "x", force: true }));
 	});
 
 	it("missing required args fail without calling dropbox", async () => {

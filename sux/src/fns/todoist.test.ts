@@ -109,17 +109,27 @@ describe("todoist (REST v2 adapter)", () => {
 		expect(out.reopenedIds).toEqual(["1", "3"]);
 	});
 
-	it("delete_many requires confirm:true, then DELETEs each id", async () => {
-		const blocked = await todoist.run(ENV, { action: "delete_many", ids: ["1", "2"] });
-		expect(blocked.isError).toBe(true);
-		expect(blocked.content[0].text).toMatch(/confirm:true/);
+	it("delete_many STAGES a preview by default (listing the ids), force:true DELETEs each id", async () => {
+		const envKv = { ...ENV, OAUTH_KV: (() => { const s = new Map<string, string>(); return { get: async (k: string) => s.get(k) ?? null, put: async (k: string, v: string) => void s.set(k, v), delete: async (k: string) => void s.delete(k) }; })() };
+		const staged = parse(await todoist.run(envKv, { action: "delete_many", ids: ["1", "2"] }));
+		expect(staged).toMatchObject({ staged: true, kind: "todoist_delete_many" });
+		expect(staged.preview).toMatchObject({ count: 2, ids: ["1", "2"] });
+		expect(staged.commit_token).toBeTruthy();
 		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
 			expect(init.method).toBe("DELETE");
 			return new Response(null, { status: 204 });
 		}));
-		const out = parse(await todoist.run(ENV, { action: "delete_many", ids: ["1", "2"], confirm: true }));
+		const out = parse(await todoist.run(envKv, { action: "delete_many", ids: ["1", "2"], force: true }));
 		expect(out).toMatchObject({ requested: 2, deleted: 2, failed: 0 });
 		expect(out.deletedIds).toEqual(["1", "2"]);
+	});
+
+	it("delete_many flags a large blast radius via the conscience advisory", async () => {
+		const s = new Map<string, string>();
+		const envKv = { ...ENV, OAUTH_KV: { get: async (k: string) => s.get(k) ?? null, put: async (k: string, v: string) => void s.set(k, v), delete: async (k: string) => void s.delete(k) } };
+		const ids = Array.from({ length: 5 }, (_, i) => String(i));
+		const staged = parse(await todoist.run(envKv, { action: "delete_many", ids }));
+		expect(staged.advisory?.some((n: string) => n.includes("5 Todoist tasks"))).toBe(true);
 	});
 
 	it("update needs an id and at least one field", async () => {
@@ -143,16 +153,18 @@ describe("todoist (REST v2 adapter)", () => {
 		}
 	});
 
-	it("delete requires confirm:true, then DELETEs", async () => {
-		const blocked = await todoist.run(ENV, { action: "delete", id: "9" });
-		expect(blocked.isError).toBe(true);
-		expect(blocked.content[0].text).toMatch(/confirm:true/);
+	it("delete STAGES a preview by default, force:true DELETEs", async () => {
+		const s = new Map<string, string>();
+		const envKv = { ...ENV, OAUTH_KV: { get: async (k: string) => s.get(k) ?? null, put: async (k: string, v: string) => void s.set(k, v), delete: async (k: string) => void s.delete(k) } };
+		const staged = parse(await todoist.run(envKv, { action: "delete", id: "9" }));
+		expect(staged).toMatchObject({ staged: true, kind: "todoist_delete" });
+		expect(staged.commit_token).toBeTruthy();
 		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
 			expect(init.method).toBe("DELETE");
 			expect(String(u).endsWith("/tasks/9")).toBe(true);
 			return new Response(null, { status: 204 });
 		}));
-		expect(parse(await todoist.run(ENV, { action: "delete", id: "9", confirm: true }))).toMatchObject({ ok: true, deleted: "9" });
+		expect(parse(await todoist.run(envKv, { action: "delete", id: "9", force: true }))).toMatchObject({ ok: true, deleted: "9" });
 	});
 
 	it("maps upstream statuses to the failure taxonomy", async () => {

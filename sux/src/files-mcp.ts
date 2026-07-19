@@ -298,24 +298,25 @@ const TOOLS: FileTool[] = [
 	},
 	{
 		name: "files_delete",
-		description: "Delete a file (moves it to your Dropbox 'Deleted files' — recoverable there). App-folder mode requires confirm:true. `full:true` deletes an ABSOLUTE whole-Dropbox path (Mode B): stages a preview by default (the plan + commit_token) — re-call with the commit_token, or pass force:true, to apply. Recoverable in Dropbox 'Deleted files'.",
-		inputSchema: { type: "object", additionalProperties: false, required: ["path"], properties: { path: { type: "string" }, confirm: { type: "boolean", description: "Must be true to actually delete — a deliberate two-step." }, full: { type: "boolean", description: "Delete from the whole Dropbox (Mode B) instead of the app folder." }, stage: { type: "boolean", description: "Preview only: returns {preview, commit_token}, writes nothing." }, commit_token: { type: "string", description: "Apply a previously staged plan (payload must match)." }, force: { type: "boolean", description: "Apply in one shot, skipping the default stage (the ! override)." } } },
+		description: "Delete a file (moves it to your Dropbox 'Deleted files' — recoverable there). App-folder mode STAGES A PREVIEW BY DEFAULT — re-call with the commit_token, or pass force:true, to apply in one shot. `full:true` deletes an ABSOLUTE whole-Dropbox path (Mode B): same staged-by-default guard. Recoverable in Dropbox 'Deleted files'.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["path"], properties: { path: { type: "string" }, full: { type: "boolean", description: "Delete from the whole Dropbox (Mode B) instead of the app folder." }, stage: { type: "boolean", description: "Preview only: returns {preview, commit_token}, writes nothing." }, commit_token: { type: "string", description: "Apply a previously staged plan (payload must match)." }, force: { type: "boolean", description: "Apply in one shot, skipping the default stage (the ! override)." } } },
 		run: async (env, a) => {
 			if (!a?.path) return failWith("bad_input", "files_delete requires a `path`.");
+			const path = String(a.path);
 			if (a?.full === true) {
 				const g = gateModeBWrite(env);
 				if (g) return g;
-								try {
-						const path = String(a.path);
-						const preview = await deleteFull(env, { path, dryRun: true });
-						return await guard(env, a, "files_delete_full", { path }, preview, () => deleteFull(env, { path, dryRun: false }));
+				try {
+					const preview = await deleteFull(env, { path, dryRun: true });
+					return await guard(env, a, "files_delete_full", { path }, preview, () => deleteFull(env, { path, dryRun: false }));
 				} catch (e) {
 					return fail(errMsg(e));
 				}
 			}
-			if (a?.confirm !== true) return failWith("bad_input", "files_delete requires confirm:true.");
 			try {
-				return ok(await dbx(env, { op: "delete", path: String(a.path), confirm: true }));
+				// The outer guard() stages/commits the delete; once past it, force the inner
+				// dropbox op through (its own staged() would otherwise gate a second time).
+				return await guard(env, a, "dropbox_delete", { path }, { action: "dropbox delete", path }, () => dbx(env, { op: "delete", path, force: true }));
 			} catch (e) {
 				return fail(errMsg(e));
 			}
