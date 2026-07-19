@@ -370,6 +370,14 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   `fns/calendar.ts` only dispatches into `mail-mcp.ts`'s `cal_delete`, which already routes
   through `staged()`/`STAGE_KINDS` (added earlier for mail/contact/cal/task) — only the doc
   string in `calendar.ts` was stale, not the actual gate.
+- **A suxlib type-shape change can break more call sites than an audit issue names** — #1069
+  named `sink.fanout("r2", "vault")` → `sink.fanout(["r2", "vault"])` at its two literal call
+  sites, but suxlib's `SinkFanoutTarget = string | {name, opts?}` union also broke
+  `op-engine/durable.ts`'s `interpretDurable`'s `"sink"` case, which indexed `caps.sinks[t]`
+  by the whole target instead of extracting `t.name` — a downstream CONSUMER of the type, not
+  a call site of the changed function, invisible to a grep for `sink.fanout`. When a suxlib
+  signature/type changes, `npm run type-check` after the named fix (not just editing the named
+  lines) is what catches the rest — don't assume the issue's file list is exhaustive.
 
 ## House style
 
