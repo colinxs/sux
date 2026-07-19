@@ -13,7 +13,7 @@ export const mail_sieve: Fn = {
 	surface: "leaf",
 	annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
 	description:
-		`Generate a Sieve script that tags mail at Fastmail delivery time — before sux's Worker-side mail_triage ever runs — with the SAME reversible-tag philosophy (addflag only, never fileinto/discard/reject, so every message still reaches the inbox). Covers a curated, objective subset of _mail_triage's rules: junk-subject cues, mailing-list signals (List-Unsubscribe header + bulk-sender cues), known dev/CI service senders (github/gitlab/vercel/circleci), and generic automated-sender notifications. Pass \`categories\` to narrow it (default: all — ${ALL_SIEVE_CATEGORIES.join(", ")}). Output is TEXT ONLY: this fn never calls JMAP or installs anything — copy the script into Fastmail Settings -> Rules -> Custom rule (Sieve) yourself.`,
+		`Generate a Sieve script that tags mail at Fastmail delivery time — before sux's Worker-side mail_triage ever runs — with the SAME reversible-tag philosophy (addflag only, never fileinto/discard/reject, so every message still reaches the inbox). Covers a curated, objective subset of _mail_triage's rules: junk-subject cues, promotional/marketing spam-subject cues, mailing-list signals (List-Unsubscribe header + bulk-sender cues), known dev/CI service senders (github/gitlab/vercel/circleci), and generic automated-sender notifications. Pass \`categories\` to narrow it (default: all — ${ALL_SIEVE_CATEGORIES.join(", ")}). Output is TEXT ONLY: this fn never calls JMAP or installs anything — copy the script into Fastmail Settings -> Rules -> Custom rule (Sieve) yourself.`,
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,

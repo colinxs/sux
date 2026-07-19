@@ -23,9 +23,9 @@
 //     (transaction/receipt/important/personal) stays a Worker-side, full-context decision.
 import { errMsg } from "./_util";
 
-export type SieveCategory = "junk" | "mailing_list" | "service_notification" | "notification";
+export type SieveCategory = "junk" | "mailing_list" | "service_notification" | "notification" | "spam";
 
-export const ALL_SIEVE_CATEGORIES: readonly SieveCategory[] = ["junk", "mailing_list", "service_notification", "notification"];
+export const ALL_SIEVE_CATEGORIES: readonly SieveCategory[] = ["junk", "mailing_list", "service_notification", "notification", "spam"];
 
 /** A single coarse rule: the Sieve boolean-test expression (already Sieve syntax) used by
  *  `compileSieve`, AND a JS predicate over {from, subject, hasListUnsubscribe} used by
@@ -46,6 +46,14 @@ const containsAny = (hay: string, needles: string[]): boolean => needles.some((n
 // Mirrors _mail_triage.ts JUNK_SUBJECT — literal substrings only (Sieve `:contains` has no regex/
 // word-boundary support), so entries here are the least-ambiguous tokens from that pattern.
 const JUNK_SUBJECT_CUES = ["lottery", "you won", "claim your prize", "viagra", "nigerian prince", "wire transfer", "risk-free", "100% free", "crypto giveaway"];
+
+// Mirrors _mail_triage.ts SPAM_SUBJECT_CUE's literal-substring subset — promotional/marketing
+// cues, as distinct from JUNK's outright scam cues. The regex's non-literal parts (the
+// `\d{1,3}%\s*off`/"percent off" percentage match and the "hurry...sale ends" variable-gap
+// pattern) have no safe `:contains` equivalent and are deliberately left out, per this file's
+// COARSE-ON-PURPOSE constraint (header comment) — Sieve only gets tokens exact enough that
+// over-firing costs nothing worse than a stray tag.
+const SPAM_SUBJECT_CUES = ["flash sale", "clearance", "exclusive deal", "act now", "buy now", "free trial", "special offer", "discount code", "shop now", "don't miss out", "last chance"];
 
 // Mirrors _mail_triage.ts MAILING_LIST_FROM — bulk-sender local-parts. `List-Unsubscribe` is a
 // stronger, header-based signal RFC 2369 mail clients set that classifyMessage doesn't check (it
@@ -72,6 +80,13 @@ function allRules(): CoarseRule[] {
 		sieveTest: `header :contains "subject" ${qlist(JUNK_SUBJECT_CUES)}`,
 		flags: ["junk"],
 		matches: (m) => containsAny(String(m.subject ?? "").toLowerCase(), JUNK_SUBJECT_CUES),
+	});
+	rules.push({
+		category: "spam",
+		comment: "Promotional/marketing subject cues (mirrors _mail_triage SPAM_SUBJECT_CUE's literal-substring subset).",
+		sieveTest: `header :contains "subject" ${qlist(SPAM_SUBJECT_CUES)}`,
+		flags: ["spam"],
+		matches: (m) => containsAny(String(m.subject ?? "").toLowerCase(), SPAM_SUBJECT_CUES),
 	});
 	rules.push({
 		category: "mailing_list",
