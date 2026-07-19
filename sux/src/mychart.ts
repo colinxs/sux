@@ -460,6 +460,24 @@ function codeableConceptText(cc: any): string | undefined {
 	return typeof text === "string" && text ? text : undefined;
 }
 
+/** True when a FHIR CodeableConcept's coding array contains `code` (case-insensitive). */
+function codeableConceptHasCode(cc: any, code: string): boolean {
+	const codings: any[] = Array.isArray(cc?.coding) ? cc.coding : [];
+	return codings.some((c) => typeof c?.code === "string" && c.code.toLowerCase() === code);
+}
+
+/** An AllergyIntolerance still counts as a live allergy: no clinicalStatus at all is treated
+ *  as active (many records omit it and absence isn't evidence of resolution), but an EXPLICIT
+ *  "inactive"/"resolved" clinicalStatus, or an explicit "refuted"/"entered-in-error"
+ *  verificationStatus, rules it out (#1011) — mirrors the meds filter's `status === "active"`
+ *  so a resolved/refuted allergy stops permanently tripping the cross-org checks. */
+function isAllergyActive(r: any): boolean {
+	if (r?.clinicalStatus && !codeableConceptHasCode(r.clinicalStatus, "active")) return false;
+	if (codeableConceptHasCode(r?.verificationStatus, "refuted")) return false;
+	if (codeableConceptHasCode(r?.verificationStatus, "entered-in-error")) return false;
+	return true;
+}
+
 export type MyChartLabFlag = { id: string; category: "laboratory" | "vital-signs"; direction: "high" | "low" | "abnormal" };
 export type MyChartRefillDue = { id: string; name?: string; dueDate?: string };
 export type MyChartEntry = { id: string; docType?: string };
@@ -568,7 +586,44 @@ export type MyChartConflict = { medOrg: string; medId: string; medName: string; 
 // Generic pharma filler words that would otherwise trip a false "overlap" between two
 // unrelated substances (e.g. "Aspirin 81mg oral tablet" vs "Penicillin oral suspension"
 // sharing only "oral") — excluded from the significant-word comparison below.
-const SUBSTANCE_STOPWORDS = new Set(["tablet", "tablets", "capsule", "capsules", "oral", "injection", "solution", "cream", "ointment", "daily", "twice", "extended", "release", "delayed", "chewable", "suspension", "patch", "dose", "spray", "drops", "gel", "mg", "ml"]);
+const SUBSTANCE_STOPWORDS = new Set([
+	"tablet",
+	"tablets",
+	"capsule",
+	"capsules",
+	"oral",
+	"injection",
+	"solution",
+	"cream",
+	"ointment",
+	"daily",
+	"twice",
+	"extended",
+	"release",
+	"delayed",
+	"chewable",
+	"suspension",
+	"patch",
+	"dose",
+	"spray",
+	"drops",
+	"gel",
+	"mg",
+	"ml",
+	"vitamin",
+	"sodium",
+	"potassium",
+	"calcium",
+	"acid",
+	"complex",
+	"extra",
+	"strength",
+	"plus",
+	"hcl",
+	"hydrochloride",
+	"generic",
+	"brand",
+]);
 
 function normalizeSubstance(s: string): string {
 	return s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -615,7 +670,7 @@ async function gatherContributingMedsAndAllergies(env: RtEnv): Promise<OrgMedAll
 				.map((r) => ({ id: String(r.id), name: codeableConceptText(r.medicationCodeableConcept) }))
 				.filter((m): m is { id: string; name: string } => Boolean(m.name));
 			const activeAllergies = allergies
-				.filter((r) => r?.id)
+				.filter((r) => r?.id && isAllergyActive(r))
 				.map((r) => ({ id: String(r.id), substance: codeableConceptText(r.code) }))
 				.filter((a): a is { id: string; substance: string } => Boolean(a.substance));
 			return { org, meds: activeMeds, allergies: activeAllergies };
