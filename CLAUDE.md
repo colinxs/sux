@@ -377,3 +377,14 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
 - Bidirectional naming (a reader can go name→behavior and behavior→name).
 - Match surrounding code's idiom, comment density, and structure.
 - One change per cycle; land it green before starting the next.
+
+## Converting a bare `confirm:true` delete onto `stage()`/`STAGE_KINDS` (#1046 series)
+
+- `stage()`'s KV-backed `commit()` (and `stage()` itself) can genuinely THROW (bad/expired/
+  mismatched `commit_token`) — a `raw:true` fn's `run()` calling `staged()` must wrap that
+  call in its own try/catch (or already have an outer one covering it, like `dropbox.ts`/
+  `todoist.ts`) and turn the throw into `fail(...)`. `kv_delete.ts` didn't, and `fuzz.test.ts`
+  (which feeds every fn garbage `commit_token`s) caught it immediately (#1051) — the
+  "fns never throw" invariant applies here same as anywhere else.
+- `ok()` (from `registry.ts`) takes a STRING, not an object — a converted fn returning
+  `staged()`'s `StageResult` must `ok(oj(stageResult))`, not `ok(stageResult)` directly.
