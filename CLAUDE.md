@@ -370,6 +370,20 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   `fns/calendar.ts` only dispatches into `mail-mcp.ts`'s `cal_delete`, which already routes
   through `staged()`/`STAGE_KINDS` (added earlier for mail/contact/cal/task) — only the doc
   string in `calendar.ts` was stale, not the actual gate.
+- **`../suxlib` can drift mid-session even when it clones fine** — real CI re-clones
+  `SuxOS/suxlib`'s `main` fresh on every run (`.github/workflows/ci.yml`'s "Clone suxlib"
+  step), same as a sandbox's initial checkout, but a long-running sandbox session's clone
+  stays pinned to whenever it was made while suxlib's real `main` keeps moving — so a
+  type-check/test failure that originates INSIDE `../suxlib/src/...` (not `sux/src`), on
+  files you never touched, can be a suxlib regression that landed AFTER your sandbox's
+  clone, not a bug in your diff. Confirmed 2026-07-19: local `npm run type-check`/`npm test`
+  failed on `sink.fanout`'s `SinkFanoutTarget` shape inside `../suxlib/src/runtime/inline.ts`
+  and `sux/src/op-engine/registry.ts`/`durable.ts` (unchanged files), while `gh run list
+  --branch main --workflow=ci.yml` showed CI green on the exact same `HEAD` two hours
+  earlier — the sandbox's suxlib clone (`git -C ../suxlib log -1`) was simply newer than
+  that CI run's clone. Before treating a suxlib-internal error as a real regression to fix,
+  `git stash` your changes and re-run the gate to confirm the error pre-exists on a clean
+  checkout, and check whether real CI already passed on the same `origin/main` `HEAD`.
 
 ## House style
 
