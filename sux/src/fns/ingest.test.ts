@@ -341,7 +341,7 @@ describe("ingest (capture → vault)", () => {
 		expect(gh.puts[out.note]).toContain("no shared link minted");
 	});
 
-	it("does not feed the infer signal log when INFER_ARM_FILES is unset (dormant by default)", async () => {
+	it("does not feed the infer signal log when INFER_ARM_VAULT is unset (dormant by default)", async () => {
 		const gh = ghMock();
 		routes.handler = gh.handler;
 		const store = new Map<string, string>();
@@ -350,23 +350,23 @@ describe("ingest (capture → vault)", () => {
 		const env = { ...ENV, OAUTH_KV, AI: { run: aiRun } };
 		await ingest.run(env, { text: "Some captured note body." });
 		expect(aiRun).not.toHaveBeenCalled();
-		expect(await readInferSignals(env, "files")).toEqual([]);
+		expect(await readInferSignals(env, "vault")).toEqual([]);
 	});
 
-	it("feeds a redacted, embedded signal into the infer log when INFER_ARM_FILES is armed", async () => {
+	it("feeds a redacted, embedded signal into the infer log when INFER_ARM_VAULT is armed", async () => {
 		const gh = ghMock();
 		routes.handler = gh.handler;
 		const store = new Map<string, string>();
 		const OAUTH_KV = { get: async (k: string) => store.get(k) ?? null, put: async (k: string, v: string) => void store.set(k, v) };
 		const aiRun = vi.fn(async () => ({ data: [[0.1, 0.2, 0.3]] }));
-		const env = { ...ENV, OAUTH_KV, AI: { run: aiRun }, INFER_ARM_FILES: "1" };
+		const env = { ...ENV, OAUTH_KV, AI: { run: aiRun }, INFER_ARM_VAULT: "1" };
 		const r = await ingest.run(env, { text: "Reach me at colin@example.com about this.", title: "Contact note" });
 		const out = JSON.parse(r.content[0].text);
 		expect(aiRun).toHaveBeenCalledTimes(1);
-		const signals = await readInferSignals(env, "files");
+		const signals = await readInferSignals(env, "vault");
 		expect(signals).toHaveLength(1);
 		expect(signals[0].vec).toEqual([0.1, 0.2, 0.3]);
-		expect(signals[0].source_tag).toBe(`files:${out.note}`);
+		expect(signals[0].source_tag).toBe(`vault:${out.note}`);
 		expect(signals[0].redacted_snippet).not.toContain("colin@example.com");
 		expect(signals[0].redacted_snippet).toMatch(/\[REDACTED:email\]/);
 	});

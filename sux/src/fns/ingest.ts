@@ -47,23 +47,26 @@ function buildNote(title: string, source: string, body: string, tags: string[]):
 
 const SIGNAL_SNIPPET_MAX = 1000;
 
-/** Best-effort feed into the infer signal log (#864's substrate) — a no-op unless INFER_ARM_FILES
+/** Best-effort feed into the infer signal log (#864's substrate) — a no-op unless INFER_ARM_VAULT
  *  is set, checked first so a dormant domain costs zero embed calls. Never throws into the
  *  caller: a failed embed/append must not affect a capture that already landed in the vault.
  *  Hooked here (capture's own write) rather than obsidian.ts's shared noteWritten so the signal
  *  log tracks actual new-content items, not sux's own internal bookkeeping writes (digests,
- *  ledgers) that also flow through that choke point. */
-async function logFilesSignal(env: any, notePath: string, title: string, body: string): Promise<void> {
-	if (!hasInferArm(env, "files")) return;
+ *  ledgers) that also flow through that choke point. Tagged domain "vault" (not "files"): the
+ *  note this feeds from is always a markdown page landing in the git-backed vault via
+ *  vaultPut/vaultPutNoClobber — "files" elsewhere in this codebase means the Dropbox namespace,
+ *  which this function never touches (#1004). */
+async function logVaultSignal(env: any, notePath: string, title: string, body: string): Promise<void> {
+	if (!hasInferArm(env, "vault")) return;
 	try {
 		// Redact BEFORE truncating — slicing first could cut a PII pattern (card/SSN) in half,
 		// leaving the surviving fragment past the cut unmatched and un-redacted.
 		const { redacted } = redactPII(`${title}\n${body}`);
 		const snippet = redacted.slice(0, SIGNAL_SNIPPET_MAX);
 		const vec = await embedOne(env, snippet);
-		await appendInferSignal(env, "files", { ts: Date.now(), vec, redacted_snippet: snippet, source_tag: `files:${notePath}` });
+		await appendInferSignal(env, "vault", { ts: Date.now(), vec, redacted_snippet: snippet, source_tag: `vault:${notePath}` });
 	} catch (e) {
-		console.warn(`infer: files signal log failed for ${notePath} — ${(e as Error)?.message ?? e}`);
+		console.warn(`infer: vault signal log failed for ${notePath} — ${(e as Error)?.message ?? e}`);
 	}
 }
 
@@ -243,7 +246,7 @@ export const ingest: Fn = {
 				w = nc;
 			}
 			if (!w.ok) return fail(w.error);
-			await logFilesSignal(env, notePath, title, body);
+			await logVaultSignal(env, notePath, title, body);
 			return ok(oj({ ok: true, note: notePath, created: w.created, commit: w.commit, source, ...(pass ? { pass } : {}), ...(blob ? { blob } : {}) }));
 		} catch (e) {
 			return fail(`ingest failed: ${String((e as Error).message ?? e)}`);
