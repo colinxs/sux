@@ -113,7 +113,15 @@ export async function interpretDurable(node: Op, input: any, step: WorkflowStep,
 		case "reconcile":
 			return step.do(`${path}:reconcile`, () => runReconcile(node.opts, input, caps.store));
 		case "sink": {
-			await Promise.all(node.targets.map((t) => step.do(`${path}:sink:${t}`, () => caps.sinks[t].write(input, caps))));
+			// A fanout target is either a bare name or a `{ name, opts }` pair (suxlib's
+			// SinkFanoutTarget) -- extract the name for both the sink lookup and the step
+			// name, same as suxlib's own inline interpreter does.
+			await Promise.all(
+				node.targets.map((t) => {
+					const name = typeof t === "string" ? t : t.name;
+					return step.do(`${path}:sink:${name}`, () => caps.sinks[name].write(input, caps));
+				}),
+			);
 			return input;
 		}
 		case "catch": {

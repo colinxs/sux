@@ -19,7 +19,7 @@ export { OpWorkflow } from "../../src/op-engine/durable";
 
 // --- Cluster-E Tier-2 (durable tracer bullet) test-only wiring ---------------------
 // A stubbed sibling of the real `assimilate-pdfs` op: identical SHAPE (unzip → map ×
-// fan-out → reconcile → ask('review master?') → summarize → sink.fanout('r2','vault')),
+// fan-out → reconcile → ask('review master?') → summarize → sink.fanout(['r2','vault'])),
 // but `extract`/`summarize` are pure (no Workers-AI), so the e2e harness needs no `AI`
 // binding or remote creds. Registered into the SHARED registry singleton at worker
 // init, so OpWorkflow's dynamic `import("./registry.js")` sees it. The `ask` prompt
@@ -44,7 +44,7 @@ registry["assimilate-pdfs-e2e"] = () =>
 		reconcile({ mode: "faithful-union" }),
 		ask("review master?", { timeout: "24 hour", onTimeout: "proceed" }),
 		stubSummarize,
-		sink.fanout("r2", "vault"),
+		sink.fanout(["r2", "vault"]),
 	);
 
 function json(body: unknown, status = 200): Response {
