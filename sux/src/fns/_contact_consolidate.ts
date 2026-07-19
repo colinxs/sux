@@ -22,10 +22,16 @@ const flagOn = (v: string | undefined): boolean => {
 export const hasContactConsolidate = (env: RtEnv): boolean => flagOn(env.CONTACT_CONSOLIDATE_ENABLED);
 
 /** Trimmed to what dedup detection needs — matches contact_search's shapeContact() reference shape. */
-export type ContactRef = { id: string; name?: string; emails?: string[]; phones?: string[] };
+export type ContactRef = { id: string; name?: string; emails?: string[]; phones?: string[]; company?: string };
 export type DuplicateContactCluster = { ids: string[] };
 
 const normEmail = (e: string): string => e.trim().toLowerCase();
+
+/** caps.ts's contactsMergeSink tags an already-merged archive by appending this pointer to its
+ *  raw name field rather than deleting it — but normName() below strips ALL parenthetical
+ *  content before fuzzy-matching, making that tag invisible to the detector and letting the
+ *  same archive re-propose forever (#989). Check the RAW name, before normName() strips it. */
+const isMergedArchive = (name?: string): boolean => /\(merged into [^)]*\)/.test(name ?? "");
 
 /** Digits only, US country-code (leading "1" on 11 digits) stripped so "+1 (555) 123-4567" and
  *  "555-123-4567" collapse to the same key. Shorter than 7 digits is too weak a signal (a
@@ -57,12 +63,59 @@ function namesMatch(a: string, b: string): boolean {
 	return (fa.length === 1 || fb.length === 1) && fa[0] === fb[0];
 }
 
-/** Union-find over one page of contacts (contact_search's own 100-per-call cap bounds the
- *  input size, so the O(n²) name-fuzzing pass below stays cheap): two contacts land in the
- *  same cluster when they share a normalized email, a normalized phone, or a fuzzy-matching
- *  name. Singleton groups (nothing else in the page matched) are dropped — only real
- *  candidate clusters of 2+ come back. */
-export function findDuplicateContacts(contacts: ContactRef[]): DuplicateContactCluster[] {
+// Cross-call accumulation (#993) — contact_search/contact_consolidate_plan's own 100-per-call
+// cap means findDuplicateContacts only ever sees ONE page at a time; a duplicate pair split
+// across two pages (A in page 1, its match B in page 2) is never proposed no matter how many
+// times the whole book gets paged through, since no single call's `contacts` array holds both.
+// Persist a lightweight cross-call "seen" index (mirrors _files_semantic.ts's KV_KEY/readBlob/
+// writeBlob shape) so each call clusters against every contact scanned so far this sweep, not
+// just its own page.
+const SEEN_KV_KEY = "sux:contacts:consolidate:seen";
+// Bounds the accumulated set against an unbounded address book — the O(n²) name-fuzzing pass
+// in findDuplicateContacts would otherwise grow without limit across a many-thousand-contact
+// book. Mirrors _files_semantic.ts's INDEX_MAX cap.
+const MAX_SEEN = 2000;
+
+async function readSeenContacts(env: RtEnv): Promise<ContactRef[]> {
+	const raw = await (env as { OAUTH_KV?: KVNamespace }).OAUTH_KV?.get(SEEN_KV_KEY).catch(() => null);
+	if (!raw) return [];
+	try {
+		const parsed = JSON.parse(raw);
+		return Array.isArray(parsed?.contacts) ? parsed.contacts.filter((c: unknown): c is ContactRef => typeof (c as { id?: unknown })?.id === "string") : [];
+	} catch {
+		return [];
+	}
+}
+
+async function writeSeenContacts(env: RtEnv, contacts: ContactRef[]): Promise<void> {
+	try {
+		await (env as { OAUTH_KV?: KVNamespace }).OAUTH_KV?.put(SEEN_KV_KEY, JSON.stringify({ contacts }));
+	} catch {
+		/* best-effort cache write — a failed persist just narrows the next call back to within-page detection */
+	}
+}
+
+/** Folds one page's contacts into the persisted cross-call seen-index and returns the full
+ *  accumulated set to cluster against. `position === 0` starts a FRESH sweep (so a repeat full
+ *  scan doesn't keep accumulating a stale prior sweep's contacts forever); later positions merge
+ *  onto whatever's already persisted. Capped at MAX_SEEN, keeping the most-recently-seen entries. */
+export async function accumulateSeenContacts(env: RtEnv, position: number, page: ContactRef[]): Promise<ContactRef[]> {
+	const prior = position === 0 ? [] : await readSeenContacts(env);
+	const byId = new Map(prior.map((c) => [c.id, c]));
+	for (const c of page) byId.set(c.id, c);
+	let merged = [...byId.values()];
+	if (merged.length > MAX_SEEN) merged = merged.slice(merged.length - MAX_SEEN);
+	await writeSeenContacts(env, merged);
+	return merged;
+}
+
+/** Union-find over a set of contacts — either a single page, or (via accumulateSeenContacts,
+ *  #993) the cross-call accumulated seen-index, MAX_SEEN-capped so the O(n²) name-fuzzing pass
+ *  below stays cheap: two contacts land in the same cluster when they share a normalized email,
+ *  a normalized phone, or a fuzzy-matching name. Singleton groups (nothing else matched) are
+ *  dropped — only real candidate clusters of 2+ come back. */
+export function findDuplicateContacts(rawContacts: ContactRef[]): DuplicateContactCluster[] {
+	const contacts = rawContacts.filter((c) => !isMergedArchive(c.name));
 	const n = contacts.length;
 	const parent = Array.from({ length: n }, (_, i) => i);
 	const find = (i: number): number => {

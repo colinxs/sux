@@ -423,6 +423,19 @@ async function latestPulledResources(env: RtEnv, org: string, patient: string, l
 	return resources;
 }
 
+/** True once ANY resource page has ever been pulled for this org/patient — a connected-but-
+ * never-pulled org (grant exists the instant OAuth completes, independent of `pull` ever
+ * running) must NOT count toward summarizeMyChart's "2+ orgs contributing" prefixing decision
+ * (#994), or a second org merely finishing OAuth retroactively re-prefixes every id from an
+ * org that already pulled and had its bare ids proposed once — the exact re-migration flood
+ * this function's own docstring says the bare/prefixed split avoids. limit:1 keeps this a
+ * cheap existence check, not a full listing. */
+async function hasEverPulled(env: RtEnv, org: string, patient: string): Promise<boolean> {
+	if (!env.R2) return false;
+	const listing = await env.R2.list({ prefix: `${PHI_PREFIX}mychart/${org}/${patient}/`, limit: 1 });
+	return listing.objects.length > 0;
+}
+
 // USCDI ObservationInterpretation codes (http://terminology.hl7.org/CodeSystem/v3-
 // ObservationInterpretation) this cares about — everything else (incl. "N" normal) is
 // left unflagged. High/Low/Abnormal only; critical variants collapse into the same
@@ -525,6 +538,7 @@ export async function summarizeMyChart(env: RtEnv, opts?: { org?: string; refill
 		orgs.map(async (org) => {
 			const grant = await readGrant(env, org);
 			if (!grant?.patient) return null;
+			if (!(await hasEverPulled(env, org, grant.patient))) return null;
 			return { org, snapshot: await summarizeOrgSnapshot(env, org, grant.patient, refillWindowDays, now) };
 		}),
 	);

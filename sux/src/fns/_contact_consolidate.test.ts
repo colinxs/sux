@@ -93,4 +93,13 @@ describe("findDuplicateContacts", () => {
 	it("returns an empty array for an empty page", () => {
 		expect(findDuplicateContacts([])).toEqual([]);
 	});
+
+	it("excludes an already-merged archive from re-clustering (#989)", () => {
+		const contacts: ContactRef[] = [
+			{ id: "1", name: "Ada Lovelace", emails: ["ada@example.com"] },
+			{ id: "2", name: "Ada Lovelace (merged into 1)", emails: ["ada@example.com"] },
+			{ id: "3", name: "Bob Smith", emails: ["bob@example.com"] },
+		];
+		expect(findDuplicateContacts(contacts)).toEqual([]);
+	});
 });

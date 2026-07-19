@@ -485,6 +485,17 @@ describe("summarizeMyChart — redacted last-pull summary for the agenda detecto
 		expect(summary?.newConditions.sort((a, b) => a.id.localeCompare(b.id))).toEqual([{ id: `${ORG2}:cond1` }, { id: `${ORG}:cond1` }]);
 	});
 
+	it("a second org's grant with zero pulled resources doesn't re-prefix the first org's already-seen bare ids (#994)", async () => {
+		const env = baseEnv();
+		await seedGrant(env, ORG, "P1");
+		await seedBundle(env, ORG, "P1", "Condition", "2026-07-18T00-00-00-000Z", [{ resourceType: "Condition", id: "cond1" }]);
+		// ORG2's OAuth completed (grant exists) but `pull` has never run — no R2 object exists
+		// under its phi/mychart/ prefix at all.
+		await seedGrant(env, ORG2, "P1");
+		const summary = await summarizeMyChart(env);
+		expect(summary?.newConditions).toEqual([{ id: "cond1" }]); // still bare, not "uwmedicine:cond1"
+	});
+
 	it("opts.org scopes to a single org even when others are connected", async () => {
 		const env = baseEnv();
 		await seedGrant(env, ORG, "P1");

@@ -1,7 +1,7 @@
 import { type Fn, failWith, ok } from "../registry";
 import { runVerb } from "./run";
 import { contact } from "./contact";
-import { hasContactConsolidate, findDuplicateContacts, type ContactRef } from "./_contact_consolidate";
+import { hasContactConsolidate, findDuplicateContacts, accumulateSeenContacts, type ContactRef } from "./_contact_consolidate";
 import { errMsg, oj } from "./_util";
 
 // contact_consolidate_plan — the entrypoint for the DURABLE, human-approved address-book
@@ -59,8 +59,11 @@ export const contact_consolidate_plan: Fn = {
 				}));
 			const total = Number.isFinite(Number(parsed.total)) ? Number(parsed.total) : position + contacts.length;
 			const nextPosition = position + contacts.length < total ? position + contacts.length : undefined;
-			const byId = new Map(contacts.map((c) => [c.id, c]));
-			const clusters = findDuplicateContacts(contacts).slice(0, maxClusters);
+			// Cluster against every contact seen so far THIS sweep (position 0 starts fresh), not just
+			// this page — otherwise a duplicate split across two paged batches is never caught (#993).
+			const seen = await accumulateSeenContacts(env, position, contacts);
+			const byId = new Map(seen.map((c) => [c.id, c]));
+			const clusters = findDuplicateContacts(seen).slice(0, maxClusters);
 			if (!clusters.length) return ok(oj({ scanned: contacts.length, position, total, next_position: nextPosition, candidates: 0, note: "no duplicate candidates found — nothing to merge" }));
 			const input = clusters.map((cl) => ({
 				ids: cl.ids,
