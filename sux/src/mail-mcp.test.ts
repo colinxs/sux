@@ -298,7 +298,7 @@ describe("mail_* ergonomic tools", () => {
 	it("mail_send composes + submits with the identity/mailbox resolved", async () => {
 		const f = installFetch();
 		const out = parse(await tool("mail_send").run(env(), { to: ["x@y.com"], subject: "Hi", text: "yo", force: true }));
-		expect(out).toMatchObject({ sent: true, submissionId: "sub-1" });
+		expect(out).toMatchObject({ sent: true, submissionId: "sub-1", id: "new-1" });
 		// The send batch carried allow_send (an EmailSubmission/set create).
 		const sendBody = f.mock.calls.map((c: any) => (c[1]?.body ? JSON.parse(c[1].body) : {})).find((b: any) => (b.methodCalls ?? []).some((mc: any) => mc[0] === "EmailSubmission/set"));
 		expect(sendBody).toBeTruthy();

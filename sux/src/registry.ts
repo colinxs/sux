@@ -122,15 +122,18 @@ export type RtEnv = Env &
 		// OFF, set via `wrangler secret` (NOT declared in wrangler.jsonc — like SELF_IMPROVE_*).
 		// Unset ⇒ that domain's signal-log append is a no-op.
 		//   INFER_KILL         — a truthy toggle (flagOn) halts every domain, before any arm check.
-		//   INFER_ARM_MAIL / _PURCHASES / _CALENDAR / _FILES / _HEALTH — per-domain arm (toggle);
-		//                         each domain opts in independently (design doc §3 guardrail 2).
-		//                         Health arms independently and last — no health logic ships yet.
+		//   INFER_ARM_MAIL / _PURCHASES / _CALENDAR / _FILES / _HEALTH / _VAULT — per-domain arm
+		//                         (toggle); each domain opts in independently (design doc §3
+		//                         guardrail 2). Health arms independently and last — no health
+		//                         logic ships yet. _VAULT added (#865) for the vault+mail
+		//                         emerging-topic centroid-drift detector (design doc §4).
 		INFER_KILL?: string;
 		INFER_ARM_MAIL?: string;
 		INFER_ARM_PURCHASES?: string;
 		INFER_ARM_CALENDAR?: string;
 		INFER_ARM_FILES?: string;
 		INFER_ARM_HEALTH?: string;
+		INFER_ARM_VAULT?: string;
 
 		// IANA tz for the vault owner's "today" (daily-note tools). Default Pacific.
 		VAULT_TZ?: string;

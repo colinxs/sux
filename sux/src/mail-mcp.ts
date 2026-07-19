@@ -1527,7 +1527,8 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 			const resp = await jmapCall(env, { allow_send: true, calls: [["Email/set", { create: { draft: sendDraft } }, "c"], ["EmailSubmission/set", { create: { sub: subCreate }, onSuccessUpdateEmail: { "#sub": onSuccess } }, "s"]] });
 			const submitted = resultFor(resp, "EmailSubmission/set")?.created?.sub;
 			if (!submitted) throw new Error(`send failed: ${JSON.stringify(resultFor(resp, "EmailSubmission/set")?.notCreated ?? {})}`);
-			const base = { submissionId: submitted.id, to, ...(atts.length ? { attachments: atts.length } : {}) };
+			const createdEmail = resultFor(resp, "Email/set")?.created?.draft;
+			const base = { submissionId: submitted.id, ...(createdEmail?.id ? { id: createdEmail.id } : {}), to, ...(atts.length ? { attachments: atts.length } : {}) };
 			return holdFor > 0 ? { scheduled: true, send_at: String(a.send_at), ...base, note: "held via FUTURERELEASE — cancel with mail_unschedule." } : { sent: true, ...base };
 		};
 		const attDesc = attachDescriptors(atts);

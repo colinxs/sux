@@ -29,7 +29,9 @@ const flagOn = (v: string | undefined): boolean => {
 // The five domains named in the design doc §3 guardrail 2. `health` is last deliberately —
 // no health-specific logic lives here, but the type includes it so a later issue's health
 // detector reuses this same gate + signal-log shape rather than inventing a parallel one.
-export type InferDomain = "mail" | "purchases" | "calendar" | "files" | "health";
+// "vault" added (#865) for the design doc §4 "first slice" — emerging-topic drift is scoped
+// to vault+mail specifically, so the detector needs a vault arm alongside the original five.
+export type InferDomain = "mail" | "purchases" | "calendar" | "files" | "health" | "vault";
 
 const ARM_ENV_KEY: Record<InferDomain, keyof RtEnv> = {
 	mail: "INFER_ARM_MAIL",
@@ -37,6 +39,7 @@ const ARM_ENV_KEY: Record<InferDomain, keyof RtEnv> = {
 	calendar: "INFER_ARM_CALENDAR",
 	files: "INFER_ARM_FILES",
 	health: "INFER_ARM_HEALTH",
+	vault: "INFER_ARM_VAULT",
 };
 
 /** Hard stop: a truthy INFER_KILL toggle halts every domain, regardless of its own arm flag. */
@@ -47,10 +50,11 @@ export const hasInferArm = (env: RtEnv, domain: InferDomain): boolean =>
 	flagOn(env[ARM_ENV_KEY[domain]] as string | undefined) && !isInferKilled(env);
 
 // ── Signal log (append-only, per domain) ──────────────────────────────────────
-// `{ts, vec, redacted_snippet, source_tag}` per §1. `vec` is the embedding of the redacted
-// snippet, never the raw source text — the detector (a later issue) runs arithmetic over
-// `vec`/scalar rollups, so raw personal data need not round-trip through this log at all.
+// `{id, ts, vec, redacted_snippet, source_tag}` per §1 (+ `id`, added in #866 so an individual
+// signal — and any inference citing it as evidence — is addressable for the cascading-delete
+// path the design doc's safety preconditions require before any nudge ships).
 export type InferSignal = {
+	id: string;
 	ts: number;
 	vec: number[];
 	redacted_snippet: string;
@@ -67,22 +71,113 @@ const signalLogKey = (domain: InferDomain): string => `kv:infer:${domain}:signal
 
 const signalLog = (env: RtEnv, domain: InferDomain) => cappedKvLog<InferSignal>(env, signalLogKey(domain), SIGNAL_CAP);
 
-export type AppendSignalResult = { appended: boolean; reason: string };
+export type AppendSignalResult = { appended: boolean; reason: string; id?: string };
 
 /**
  * Append one signal to a domain's log. Fail-closed: a dormant domain (unarmed, or killed)
  * writes nothing and returns `{appended: false}` — the caller doesn't need its own gate check,
- * since this is the ONLY write path onto the log.
+ * since this is the ONLY write path onto the log. Assigns `id` here (the ONLY place a signal
+ * is minted) so callers never invent their own ids that could collide.
  */
-export async function appendInferSignal(env: RtEnv, domain: InferDomain, signal: InferSignal): Promise<AppendSignalResult> {
+export async function appendInferSignal(env: RtEnv, domain: InferDomain, signal: Omit<InferSignal, "id">): Promise<AppendSignalResult> {
 	if (isInferKilled(env)) return { appended: false, reason: "killed" };
 	if (!hasInferArm(env, domain)) return { appended: false, reason: "dormant" };
-	await signalLog(env, domain).push(signal);
-	return { appended: true, reason: "ok" };
+	const id = crypto.randomUUID();
+	await signalLog(env, domain).push({ ...signal, id });
+	return { appended: true, reason: "ok", id };
 }
 
 /** Read back a domain's signal log (newest-first, per cappedKvLog's push ordering). Dormant or
  * not, reads are harmless (no outward action) — used by tests and a future detector alike. */
 export async function readInferSignals(env: RtEnv, domain: InferDomain): Promise<InferSignal[]> {
 	return signalLog(env, domain).load();
+}
+
+// ── Inference log (append-only, per domain) ───────────────────────────────────
+// A later detector's surviving candidate, kept only long enough to be cited as `evidenceIds`
+// so a signal deletion can find and cascade into it (§3 guardrail 3) — no nudge-write logic
+// lives here, that's a separate later issue. `evidenceIds` are `InferSignal.id`s.
+export type InferInference = {
+	id: string;
+	domain: InferDomain;
+	kind: string;
+	evidenceIds: string[];
+	createdAt: number;
+	payload: unknown;
+};
+
+const INFERENCE_CAP = 500;
+
+const inferenceLogKey = (domain: InferDomain): string => `kv:infer:${domain}:inferences`;
+
+const inferenceLog = (env: RtEnv, domain: InferDomain) => cappedKvLog<InferInference>(env, inferenceLogKey(domain), INFERENCE_CAP);
+
+/** Append one inference, same fail-closed gate as appendInferSignal (armed domain only). */
+export async function appendInferInference(env: RtEnv, domain: InferDomain, inference: Omit<InferInference, "id">): Promise<AppendSignalResult> {
+	if (isInferKilled(env)) return { appended: false, reason: "killed" };
+	if (!hasInferArm(env, domain)) return { appended: false, reason: "dormant" };
+	const id = crypto.randomUUID();
+	await inferenceLog(env, domain).push({ ...inference, id });
+	return { appended: true, reason: "ok", id };
+}
+
+/** Read back a domain's inference log (newest-first). */
+export async function readInferInferences(env: RtEnv, domain: InferDomain): Promise<InferInference[]> {
+	return inferenceLog(env, domain).load();
+}
+
+// ── Deletion / cascade (§3 guardrail 3 — "explainable + forgettable") ─────────
+// Deletion is NEVER gated by arm/kill: a disarmed or killed domain must still be erasable,
+// same as an armed one — the arm flag governs new writes, not the user's right to forget what
+// was already written. GDPR erasure framing (design doc refs) means these run unconditionally.
+
+export type DeleteSignalResult = { deletedSignal: boolean; cascadedInferenceIds: string[] };
+
+/**
+ * Delete one signal by id, then cascade: strip that id out of every inference's `evidenceIds`,
+ * and delete any inference that had ALL of its evidence removed — no inference may outlive the
+ * evidence it was derived from. An inference that still cites other, undeleted signals survives
+ * with its `evidenceIds` trimmed.
+ */
+export async function deleteInferSignal(env: RtEnv, domain: InferDomain, signalId: string): Promise<DeleteSignalResult> {
+	const signals = await signalLog(env, domain).load();
+	const kept = signals.filter((s) => s.id !== signalId);
+	const deletedSignal = kept.length !== signals.length;
+	if (deletedSignal) await signalLog(env, domain).save(kept);
+
+	const inferences = await inferenceLog(env, domain).load();
+	const cascadedInferenceIds: string[] = [];
+	const keptInferences: InferInference[] = [];
+	let trimmed = false;
+	for (const inf of inferences) {
+		if (!inf.evidenceIds.includes(signalId)) {
+			keptInferences.push(inf);
+			continue;
+		}
+		const remaining = inf.evidenceIds.filter((id) => id !== signalId);
+		if (remaining.length === 0) {
+			cascadedInferenceIds.push(inf.id);
+		} else {
+			trimmed = true;
+			keptInferences.push({ ...inf, evidenceIds: remaining });
+		}
+	}
+	if (trimmed || cascadedInferenceIds.length > 0) await inferenceLog(env, domain).save(keptInferences);
+
+	return { deletedSignal, cascadedInferenceIds };
+}
+
+/** Delete one inference directly (the user forgetting a suggestion, not its underlying signals). */
+export async function deleteInferInference(env: RtEnv, domain: InferDomain, inferenceId: string): Promise<boolean> {
+	const inferences = await inferenceLog(env, domain).load();
+	const kept = inferences.filter((inf) => inf.id !== inferenceId);
+	if (kept.length === inferences.length) return false;
+	await inferenceLog(env, domain).save(kept);
+	return true;
+}
+
+/** Purge a whole domain: wipe its signal log and inference log entirely. */
+export async function purgeInferDomain(env: RtEnv, domain: InferDomain): Promise<void> {
+	await signalLog(env, domain).save([]);
+	await inferenceLog(env, domain).save([]);
 }
