@@ -319,6 +319,14 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   the PR is earned by the new issue existing, not by a commit). Don't mistake "no diff for
   this issue" for "unbuildable" — check whether the issue's own text is asking for an
   out-of-band action before dropping it.
+- **Fastmail's ContactCard (`contact_search`/`contact_get`, see `mail-mcp.ts`'s
+  `shapeContact`) exposes no starred/important/favorite field** — only id/name/company/
+  emails/phones. An issue that assumes "fan `contact.search` for important/starred
+  people" (e.g. #930's original sketch) can't be built as literally described; the
+  nearest buildable proxy is "the people you actually talk to" via an existing signal
+  stream (iMessage threads, mail senders), not a contact-importance flag. Confirmed
+  while building #930's relationship-decay detector, which fell back to reusing
+  `_agenda.ts`'s existing `TextThreadRef` (iMessage) population instead.
 
 ## House style
 
