@@ -1036,21 +1036,33 @@ const TOOLS: MailTool[] = [
 	},
 	{
 		name: "contact_search",
-		description: "Search your Fastmail contacts by free text (name/email). Returns references {id, name, emails, phones} — never the full card. Needs a FASTMAIL_TOKEN scoped for contacts.",
-		inputSchema: { type: "object", additionalProperties: false, properties: { query: { type: "string", description: "Free-text query over name/email." }, text: { type: "string", description: "Alias for `query` (kept for back-compat)." }, limit: { type: "integer", minimum: 1, maximum: 100 } } },
+		description: "Search your Fastmail contacts by free text (name/email). Returns references {id, name, emails, phones} — never the full card. Page past the first `limit` with `position` (0-based offset into the result set); returns total (full match count) so a caller can page through an address book bigger than one call's cap. Needs a FASTMAIL_TOKEN scoped for contacts.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				query: { type: "string", description: "Free-text query over name/email." },
+				text: { type: "string", description: "Alias for `query` (kept for back-compat)." },
+				limit: { type: "integer", minimum: 1, maximum: 100 },
+				position: { type: "integer", minimum: 0, default: 0, description: "0-based offset into the result set — page past the first `limit` (e.g. position:100 for contact 101+)." },
+			},
+		},
 		run: async (env, a) => {
 			const gate = await scopeGate(env, "contacts");
 			if (gate) return failWith("not_configured", gate);
 			try {
 				const limit = clamp(a?.limit, 1, 100, 25);
+				const position = Math.max(0, Math.floor(Number(a?.position) || 0));
 				// `contact`'s own dispatcher doc (and every real caller) uses `query`; the
 				// schema only ever defined `text`, so `query` was silently dropped —
 				// no filter, no error, just an unfiltered listing. Accept both.
 				const q = a?.query ?? a?.text;
 				const filter = q ? { text: String(q) } : {};
-				const resp = await jmapCall(env, { calls: [["ContactCard/query", { filter, limit }, "q"], ["ContactCard/get", { "#ids": { resultOf: "q", name: "ContactCard/query", path: "/ids" } }, "g"]] });
+				const resp = await jmapCall(env, { calls: [["ContactCard/query", { filter, limit, position, calculateTotal: true }, "q"], ["ContactCard/get", { "#ids": { resultOf: "q", name: "ContactCard/query", path: "/ids" } }, "g"]] });
+				const query = resultFor(resp, "ContactCard/query");
 				const list = resultFor(resp, "ContactCard/get")?.list ?? [];
-				return ok({ count: list.length, contacts: list.map(shapeContact) });
+				const total = Number.isFinite(Number(query?.total)) ? Number(query.total) : list.length;
+				return ok({ count: list.length, total, position, contacts: list.map(shapeContact) });
 			} catch (e) {
 				return fail(errMsg(e));
 			}

@@ -25,6 +25,12 @@ function pickPort(): number {
 	return 20000 + Math.floor(Math.random() * 20000);
 }
 
+// A random port out of 20000 candidates still occasionally collides with something
+// already bound on the runner (#974 saw this in CI even after the per-instance random
+// port above) — workerd's own EADDRINUSE message, distinct from an early-exit caused by
+// a real compile/config error, which should fail fast rather than retry.
+const ADDR_IN_USE = /EADDRINUSE|Address already in use/i;
+
 export type Harness = {
 	host: string;
 	port: number;
@@ -46,16 +52,11 @@ async function waitForReady(host: string, deadline: number): Promise<void> {
 	throw new Error(`e2e Worker did not become healthy within ${READY_TIMEOUT_MS}ms — is ${host} already in use?`);
 }
 
-/**
- * Start the e2e Worker (`wrangler dev` against wrangler.e2e.jsonc) and wait until it
- * answers GET /health. `env` entries are injected via `wrangler dev --var` (e.g.
- * OBSIDIAN_VAULT_REPO/GITHUB_TOKEN for the opt-in real-vault cases) — an empty/absent
- * var reproduces the "vault not configured" path exactly as production sees it when
- * those secrets aren't set.
- */
-export async function startHarness(env: Record<string, string> = {}): Promise<Harness> {
-	const varArgs = Object.entries(env).flatMap(([k, v]) => ["--var", `${k}:${v}`]);
-	const port = pickPort();
+/** One boot attempt on a fixed port: spawn `wrangler dev`, wait for /health, or throw
+ *  (killing the process group first) if it exits early or never comes up in time. Split
+ *  out of startHarness so a port collision (#974) can retry on a fresh port without
+ *  duplicating the spawn/wait machinery. */
+async function bootWrangler(port: number, varArgs: string[]): Promise<{ child: ReturnType<typeof spawn>; host: string; killGroup: (sig: NodeJS.Signals) => void }> {
 	const host = `http://127.0.0.1:${port}`;
 	// Spawn from the repo ROOT, not sux/ — sux/node_modules is a (pre-existing, unrelated)
 	// broken symlink, and running npx with it as cwd makes npm's local-bin resolution fail
@@ -94,6 +95,33 @@ export async function startHarness(env: Record<string, string> = {}): Promise<Ha
 		killGroup("SIGKILL");
 		throw e;
 	}
+
+	return { child, host, killGroup };
+}
+
+/**
+ * Start the e2e Worker (`wrangler dev` against wrangler.e2e.jsonc) and wait until it
+ * answers GET /health. `env` entries are injected via `wrangler dev --var` (e.g.
+ * OBSIDIAN_VAULT_REPO/GITHUB_TOKEN for the opt-in real-vault cases) — an empty/absent
+ * var reproduces the "vault not configured" path exactly as production sees it when
+ * those secrets aren't set.
+ */
+export async function startHarness(env: Record<string, string> = {}): Promise<Harness> {
+	const varArgs = Object.entries(env).flatMap(([k, v]) => ["--var", `${k}:${v}`]);
+	let port = pickPort();
+	let booted: Awaited<ReturnType<typeof bootWrangler>>;
+	try {
+		booted = await bootWrangler(port, varArgs);
+	} catch (e) {
+		const message = e instanceof Error ? e.message : String(e);
+		if (!ADDR_IN_USE.test(message)) throw e;
+		// The random port collided with something already bound — retry once on a
+		// freshly-drawn port rather than fail the whole suite on this rare race (#974).
+		// A second collision in a row is treated as a real failure, not retried again.
+		port = pickPort();
+		booted = await bootWrangler(port, varArgs);
+	}
+	const { child, host, killGroup } = booted;
 
 	const rpc = async (method: string, params?: unknown) => {
 		const res = await fetch(`${host}/mcp`, {

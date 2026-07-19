@@ -62,7 +62,29 @@ describe("contact_consolidate_plan", () => {
 
 		expect(runVerb).not.toHaveBeenCalled();
 		const body = JSON.parse(res.content[0].text);
-		expect(body).toEqual({ scanned: 2, candidates: 0, note: "no duplicate candidates found — nothing to merge" });
+		expect(body).toEqual({ scanned: 2, position: 0, total: 2, candidates: 0, note: "no duplicate candidates found — nothing to merge" });
+	});
+
+	it("pages a larger address book: passes `position` through to contact_search and surfaces next_position from its total", async () => {
+		const contacts = [{ id: "1", name: "Ada Lovelace", emails: ["ada@example.com"], phones: [] }];
+		const searchArgs: unknown[] = [];
+		vi.doMock("./contact", () => ({
+			contact: {
+				run: async (_env: any, a: any) => {
+					searchArgs.push(a);
+					return { content: [{ type: "text", text: JSON.stringify({ count: contacts.length, total: 150, contacts }) }] };
+				},
+			},
+		}));
+		vi.resetModules();
+		const { contact_consolidate_plan: freshFn } = await import("./contact_consolidate_plan");
+
+		const res = await freshFn.run({ CONTACT_CONSOLIDATE_ENABLED: "1" } as any, { position: 100, max: 1 });
+
+		expect(searchArgs[0]).toMatchObject({ action: "search", limit: 1, position: 100 });
+		expect(runVerb).not.toHaveBeenCalled();
+		const body = JSON.parse(res.content[0].text);
+		expect(body).toEqual({ scanned: 1, position: 100, total: 150, next_position: 101, candidates: 0, note: "no duplicate candidates found — nothing to merge" });
 	});
 
 	it("surfaces a contact search failure as an upstream_error", async () => {

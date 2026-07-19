@@ -3,6 +3,7 @@ import { ledger } from "../ledger";
 import { cosine } from "./_embed";
 import { errMsg } from "./_util";
 import { isoWeek } from "./_weekly_recall";
+import { sweepWindow } from "./_consolidate";
 import type { SemanticChunk } from "./_vault_semantic";
 import type { MailSemanticChunk } from "./_mail_semantic";
 import type { FilesSemanticChunk } from "./_files_semantic";
@@ -125,6 +126,12 @@ export function crossDomainLinks(vaultChunks: SemanticChunk[], targets: CrossDom
  *  consumer (the agenda loop) can pick them up without re-ranking the indices. */
 const LAST_REPORT_KEY = "last-report";
 
+/** The ledger key holding the rotating vaultChunks scan cursor — mirrors _consolidate.ts's
+ *  CURSOR_KEY. crossDomainLinks' own MAX_PAIRS cap otherwise always scans the SAME leading
+ *  vaultChunks slice on every sweep (#968): a vault big enough to trip the cap would
+ *  permanently skip the same tail of notes instead of getting covered over successive runs. */
+const CURSOR_KEY = "sweep-offset";
+
 /** Caps how many link candidates the cached last-report carries — enough for a digest
  *  line, not the full batch (mirrors _consolidate's MAX_CACHED_FINDINGS). */
 const MAX_CACHED_LINKS = 20;
@@ -163,6 +170,9 @@ export type CrossSemanticSweepReport = {
 	error?: string;
 	links?: CrossLink[];
 	count?: number;
+	truncated?: boolean;
+	window_offset?: number;
+	next_offset?: number;
 	note?: string;
 };
 
@@ -192,12 +202,24 @@ export async function runCrossSemanticSweep(env: RtEnv, opts: { week?: string; f
 
 	const [mailChunks, filesChunks] = await Promise.all([deps.mailChunks(env).catch(() => []), deps.filesChunks(env).catch(() => [])]);
 	const targets: CrossDomainItem[] = [...mailToCrossItems(mailChunks), ...filesToCrossItems(filesChunks)];
-	const links = targets.length ? crossDomainLinks(vaultChunks, targets) : [];
+
+	// Rotate which vaultChunks slice gets scanned each sweep, same shape as
+	// _consolidate.ts's sweepWindow cursor — otherwise crossDomainLinks' own MAX_PAIRS cap
+	// would scan the same leading slice forever (#968). The window is sized to exactly the
+	// cap crossDomainLinks would apply anyway, so pre-slicing here makes its internal cap a
+	// no-op rather than double-truncating.
+	const chunkCap = targets.length ? Math.max(1, Math.floor(MAX_PAIRS / targets.length)) : vaultChunks.length;
+	const truncated = vaultChunks.length > chunkCap;
+	const storedOffset = Number(await led.get(CURSOR_KEY));
+	const windowOffset = Number.isFinite(storedOffset) && storedOffset >= 0 ? storedOffset : 0;
+	const { window: scanChunks, nextOffset } = sweepWindow(vaultChunks, windowOffset, chunkCap);
+	const links = targets.length ? crossDomainLinks(scanChunks, targets) : [];
 
 	await led.mark(key);
+	await led.mark(CURSOR_KEY, String(nextOffset));
 	await led.mark(LAST_REPORT_KEY, JSON.stringify({ week, links: links.slice(0, MAX_CACHED_LINKS), count: links.length }));
 
-	return { week, links, count: links.length };
+	return { week, links, count: links.length, truncated, window_offset: windowOffset, next_offset: nextOffset };
 }
 
 /** The real deps: the vault/mail/files semantic indices (each already incrementally

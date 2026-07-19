@@ -22,13 +22,14 @@ export const contact_consolidate_plan: Fn = {
 	surface: "leaf",
 	annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
 	description:
-		"Durable contact-consolidation-with-approval: searches a page of Fastmail contacts for likely duplicates (shared email, shared phone, or a fuzzy name match — \"Colin Powell\" / \"C. Powell\" / \"Colin Powell (work)\"), then starts a durable run (op:'contacts-consolidate-plan') that proposes a REVERSIBLE union merge per duplicate cluster — the canonical (lexicographically-first id) card is updated with the union of every member's emails/phones, the other members are only TAGGED with a pointer back to it in their name field, never contact_deleted — then PAUSES for one human 'apply these contact merges?' approval before applying anything. Nothing is ever auto-applied. Returns {instanceId}: poll with `run {action:'status', instanceId}`; approve with `run {action:'answer', instanceId, prompt:\"apply these contact merges?\", payload:{approved:true}}`, or veto with {approved:false}. An unanswered gate applies nothing after 24h (fails closed). Needs CONTACT_CONSOLIDATE_ENABLED and a FASTMAIL_TOKEN scoped for contacts. One scan covers at most `max` contacts (default/cap 100 — contact_search's own per-call limit); a larger address book needs repeat calls.",
+		"Durable contact-consolidation-with-approval: searches a page of Fastmail contacts for likely duplicates (shared email, shared phone, or a fuzzy name match — \"Colin Powell\" / \"C. Powell\" / \"Colin Powell (work)\"), then starts a durable run (op:'contacts-consolidate-plan') that proposes a REVERSIBLE union merge per duplicate cluster — the canonical (lexicographically-first id) card is updated with the union of every member's emails/phones, the other members are only TAGGED with a pointer back to it in their name field, never contact_deleted — then PAUSES for one human 'apply these contact merges?' approval before applying anything. Nothing is ever auto-applied. Returns {instanceId}: poll with `run {action:'status', instanceId}`; approve with `run {action:'answer', instanceId, prompt:\"apply these contact merges?\", payload:{approved:true}}`, or veto with {approved:false}. An unanswered gate applies nothing after 24h (fails closed). Needs CONTACT_CONSOLIDATE_ENABLED and a FASTMAIL_TOKEN scoped for contacts. One scan covers at most `max` contacts (default/cap 100 — contact_search's own per-call limit) starting at `position`; the response's `total`/`next_position` tell you whether to page a larger address book with a repeat call.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
 		properties: {
 			max: { type: "integer", minimum: 1, maximum: 100, description: "Max contacts to scan this batch (default 100, contact_search's own per-call cap)." },
 			maxClusters: { type: "integer", minimum: 1, maximum: 50, description: "Max duplicate clusters to propose merges for this batch (default 20)." },
+			position: { type: "integer", minimum: 0, description: "0-based offset into the address book to start this batch's scan (default 0) — pass the previous call's `next_position` to page a book bigger than `max`." },
 		},
 	},
 	run: async (env, a) => {
@@ -38,9 +39,10 @@ export const contact_consolidate_plan: Fn = {
 		try {
 			const max = numClamp(a?.max, 1, 100, 100);
 			const maxClusters = numClamp(a?.maxClusters, 1, 50, 20);
-			const r = await contact.run(env, { action: "search", limit: max });
+			const position = numClamp(a?.position, 0, Number.MAX_SAFE_INTEGER, 0);
+			const r = await contact.run(env, { action: "search", limit: max, position });
 			if (r.isError) return failWith("upstream_error", `contact search failed: ${r.content?.[0]?.text ?? "unknown error"}`);
-			let parsed: { contacts?: Array<{ id?: unknown; name?: unknown; emails?: unknown; phones?: unknown; company?: unknown }> } = {};
+			let parsed: { contacts?: Array<{ id?: unknown; name?: unknown; emails?: unknown; phones?: unknown; company?: unknown }>; total?: unknown } = {};
 			try {
 				parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
 			} catch {
@@ -55,9 +57,11 @@ export const contact_consolidate_plan: Fn = {
 					phones: Array.isArray(c.phones) ? c.phones.map(String) : [],
 					company: typeof c.company === "string" ? c.company : undefined,
 				}));
+			const total = Number.isFinite(Number(parsed.total)) ? Number(parsed.total) : position + contacts.length;
+			const nextPosition = position + contacts.length < total ? position + contacts.length : undefined;
 			const byId = new Map(contacts.map((c) => [c.id, c]));
 			const clusters = findDuplicateContacts(contacts).slice(0, maxClusters);
-			if (!clusters.length) return ok(oj({ scanned: contacts.length, candidates: 0, note: "no duplicate candidates found — nothing to merge" }));
+			if (!clusters.length) return ok(oj({ scanned: contacts.length, position, total, next_position: nextPosition, candidates: 0, note: "no duplicate candidates found — nothing to merge" }));
 			const input = clusters.map((cl) => ({
 				ids: cl.ids,
 				names: cl.ids.map((id) => byId.get(id)?.name),
@@ -69,6 +73,9 @@ export const contact_consolidate_plan: Fn = {
 			return ok(
 				oj({
 					scanned: contacts.length,
+					position,
+					total,
+					next_position: nextPosition,
 					candidates: clusters.length,
 					...res,
 					note: 'durable run started — proposes a union merge per cluster, then pauses for a human \'apply these contact merges?\' approval. Poll with `run {action:\'status\', instanceId}`; approve/reject with `run {action:\'answer\', instanceId, prompt:"apply these contact merges?"}` ({approved:true|false}).',
