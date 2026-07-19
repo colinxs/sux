@@ -450,10 +450,12 @@ export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps):
 	// in it is already `led.seen` and gets skipped, never advancing into older backlog mail. A
 	// sweep instead pages through `position` (mail_search's own per-call cap, see mail-mcp.ts)
 	// until the mailbox is exhausted (a short page), `max` total messages are scanned, or the
-	// wall-clock budget runs out. A normal (non-sweep) cycle is unaffected: MAX_PAGES caps it to
-	// the same single page as before.
+	// wall-clock budget runs out.
+	// mail_search's own server-side schema clamps `limit` to 50 regardless of what we ask for
+	// (mail-mcp.ts) — a non-sweep cycle with `max` > 50 must also page across multiple calls, or
+	// the extra requested messages are silently dropped by the search layer with no error (#751).
 	const PAGE_SIZE = 50;
-	const MAX_PAGES = sweepBacklog ? 40 : 1;
+	const MAX_PAGES = sweepBacklog ? 40 : Math.max(1, Math.ceil(max / PAGE_SIZE));
 	// A sweep's position must survive across calls (sweep_backlog is invoked manually, per call —
 	// no auto-loop) or every call restarts at 0, re-fetches the same newest page, finds it all
 	// already-seen, and never reaches older backlog mail. Persisted per-mailbox so different
@@ -469,7 +471,7 @@ export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps):
 			truncated = true;
 			break;
 		}
-		const pageLimit = sweepBacklog ? PAGE_SIZE : max;
+		const pageLimit = sweepBacklog ? PAGE_SIZE : Math.min(PAGE_SIZE, max);
 		const msgs = await deps.search(env, { mailbox, unread, limit: pageLimit, position });
 		pages++;
 		if (!msgs.length) {
