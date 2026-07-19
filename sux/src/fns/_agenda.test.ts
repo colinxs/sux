@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { composeDigest, type AgendaDeps, type Drop, detectCrossSemanticDrops, detectDrops, detectKnowledgeDrops, detectMonarchDrops, detectMyChartDrops, detectMychartConflictDrops, detectPortfolioDrops, detectRelationshipDrops, detectSavingsRateDrop, detectTextDrops, detectWatchDrops, computeSavingsRate, type EventRef, type MailRef, type RelationshipBaseline, type TextThreadRef, rankDropsLearned, runAgenda } from "./_agenda";
+import { composeDigest, type AgendaDeps, type Drop, detectCrossSemanticDrops, detectDrops, detectKnowledgeDrops, detectMonarchDrops, detectMyChartDrops, detectMychartAllergyGapDrops, detectMychartConflictDrops, detectPortfolioDrops, detectRelationshipDrops, detectSavingsRateDrop, detectTextDrops, detectWatchDrops, computeSavingsRate, type EventRef, type MailRef, type RelationshipBaseline, type TextThreadRef, rankDropsLearned, runAgenda } from "./_agenda";
 import { listProposals } from "../proposals";
 import { recordOutcome } from "./_learning";
 
@@ -37,6 +37,7 @@ const deps = (over: Partial<AgendaDeps> = {}): AgendaDeps => ({
 	textThreads: vi.fn(async () => []),
 	mychartSummary: vi.fn(async () => null),
 	mychartConflicts: vi.fn(async () => []),
+	mychartAllergyGaps: vi.fn(async () => []),
 	...over,
 });
 
@@ -327,6 +328,27 @@ describe("agenda — MyChart cross-org reconciliation detector (#1005)", () => {
 
 	it("no drops when there are no conflicts", () => {
 		expect(detectMychartConflictDrops([])).toHaveLength(0);
+	});
+});
+
+describe("agenda — MyChart one-sided allergy-gap detector (#1009)", () => {
+	it("flags an allergy on file at one org missing at another, with a non-diagnostic, org-labeled title", () => {
+		const drops = detectMychartAllergyGapDrops([{ org: "uwmedicine", allergyId: "al1", allergySubstance: "Penicillin", missingOrg: "swedish" }]);
+		expect(drops).toHaveLength(1);
+		expect(drops[0].kind).toBe("mychart_allergy_gap");
+		expect(drops[0].title).toContain("Penicillin");
+		expect(drops[0].action.fn).toBe("todoist");
+	});
+
+	it("dedupe is the org+allergy+missingOrg key — a still-flagged gap only ever proposes once", () => {
+		const gap = { org: "uwmedicine", allergyId: "al1", allergySubstance: "Penicillin", missingOrg: "swedish" };
+		const first = detectMychartAllergyGapDrops([gap]);
+		const second = detectMychartAllergyGapDrops([gap]);
+		expect(first[0].dedupe).toBe(second[0].dedupe);
+	});
+
+	it("no drops when there are no gaps", () => {
+		expect(detectMychartAllergyGapDrops([])).toHaveLength(0);
 	});
 });
 
@@ -633,6 +655,22 @@ describe("agenda — loop", () => {
 		const r = await runAgenda(e, {}, d);
 		expect(r.sources.mychart_reconcile).toBe("not_configured");
 		expect(d.mychartConflicts).not.toHaveBeenCalled();
+	});
+
+	it("wires cross-org MyChart allergy gaps (#1009) in only when MYCHART_RECONCILE_ENABLED is set", async () => {
+		const e = env({ EPIC_CLIENT_ID: "cid", EPIC_CLIENT_SECRET: "csec", MYCHART_RECONCILE_ENABLED: "1" });
+		const d = deps({ mychartAllergyGaps: vi.fn(async () => [{ org: "uwmedicine", allergyId: "al1", allergySubstance: "Penicillin", missingOrg: "swedish" }]) });
+		const r = await runAgenda(e, {}, d);
+		expect(r.proposals?.map((p) => p.kind)).toContain("mychart_allergy_gap");
+		expect(r.sources.mychart_reconcile).toMatch(/1 allergy gap/);
+		expect(d.mychartAllergyGaps).toHaveBeenCalled();
+	});
+
+	it("skips cross-org allergy-gap detection when MYCHART_RECONCILE_ENABLED is unset", async () => {
+		const e = env({ EPIC_CLIENT_ID: "cid", EPIC_CLIENT_SECRET: "csec" });
+		const d = deps();
+		const r = await runAgenda(e, {}, d);
+		expect(d.mychartAllergyGaps).not.toHaveBeenCalled();
 	});
 
 	it("dry_run never persists the Monarch snapshot", async () => {

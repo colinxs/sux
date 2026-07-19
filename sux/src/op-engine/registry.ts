@@ -2,6 +2,7 @@ import { op, pipe, map, reconcile, ask, sink, aimd, fixed, unzip, extract, summa
 import { classifyForLabelPlan, compactLabelPlan, type LabelPlanItem } from "./_mail_triage_plan.js";
 import { proposeMerge, compactMergePlan, type DuplicateClusterInput, type MergePlanItem } from "./_vault_consolidate_plan.js";
 import { proposeContactMerge, compactContactMergePlan, type ContactClusterInput, type ContactMergePlanItem } from "./_contact_consolidate_plan.js";
+import { proposeMychartOutreach, compactMychartOutreachPlan, type MychartConflictInput, type MychartOutreachPlanItem } from "./_mychart_reconcile_plan.js";
 import type { TriageMsg } from "../fns/_mail_triage.js";
 
 // THE op registry — named op trees that the `run` front-verb and the OpWorkflow
@@ -63,6 +64,19 @@ import type { TriageMsg } from "../fns/_mail_triage.js";
 // unstructured note bodies), the human approves the WHOLE batch once, and only on approval does
 // the `contacts-merge` sink (caps.ts) apply them via `contact_update` — never a `contact_delete`,
 // so a wrong merge judgment stays reversible. onTimeout:'fail' — an unanswered gate applies nothing.
+//
+// `mychart-reconcile-plan` (#1008) is the LLM-drafted half of #1005's cross-org reconciliation
+// that issue's own sketch deferred: input is a batch of already-detected MyChartConflicts
+// (mychart.ts's crossOrgMedicationAllergyConflicts) fetched by `mychart_reconcile_plan` — same
+// fetch-in-the-calling-fn shape as the other plan ops (a leaf only sees `caps`, not env). Each
+// conflict is drafted into a plain-English discrepancy summary + a templated outreach message
+// (`proposeMychartOutreach`, using caps.llm.summarize to condense — never invent — the plain
+// facts), the human approves the WHOLE batch once, and only on approval does the
+// `mychart-outreach` sink (caps.ts) write the approved drafts as vault notes for the human to
+// read and send by hand — this NEVER reaches mail's send path (no mail_send/mail_draft call
+// anywhere in this op or its sink), since an LLM-drafted clinical message needs a human's own
+// eyes and hands on the actual send, not just an approval click. onTimeout:'fail' — an
+// unanswered gate drafts nothing.
 export const registry: Record<string, () => Op> = {
 	echo: () => op("echo", async (x: unknown) => x, { kind: "pure" }),
 	"assimilate-pdfs": () =>
@@ -99,5 +113,12 @@ export const registry: Record<string, () => Op> = {
 			op("compact", async (items: Array<ContactMergePlanItem | null>) => compactContactMergePlan(items), { kind: "pure" }),
 			ask("apply these contact merges?", { timeout: "24 hour", onTimeout: "fail" }),
 			sink("contacts-merge"),
+		),
+	"mychart-reconcile-plan": () =>
+		pipe(
+			map(op("propose", async (c: MychartConflictInput, caps: Caps) => proposeMychartOutreach(c, caps), { kind: "effect" }), { concurrency: fixed(4) }),
+			op("compact", async (items: Array<MychartOutreachPlanItem | null>) => compactMychartOutreachPlan(items), { kind: "pure" }),
+			ask("draft this outreach message?", { timeout: "24 hour", onTimeout: "fail" }),
+			sink("mychart-outreach"),
 		),
 };

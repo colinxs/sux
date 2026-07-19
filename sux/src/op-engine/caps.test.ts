@@ -292,3 +292,33 @@ test("contacts-merge sink skips (doesn't throw) an item whose canonical update f
 	expect(out).toEqual({ merged: 0, groups: 1, failed: 1 });
 	expect(contactRun).toHaveBeenCalledTimes(1); // the archive tag never runs once the canonical update failed
 });
+
+test("mychart-outreach sink writes one vault note per approved draft — never a mail send/draft call", async () => {
+	obsidianRun.mockReset();
+	obsidianRun.mockResolvedValue({ content: [{ type: "text", text: "{}" }] });
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	const item = { medOrg: "uwmedicine", medId: "med1", medName: "Penicillin V", allergyOrg: "swedish", allergyId: "al1", allergySubstance: "Penicillin", summary: "may overlap", draftMessage: "Hi — I wanted to flag a possible discrepancy…" };
+	const out = await sinks["mychart-outreach"].write([item], {} as Caps);
+	expect(out).toEqual({ drafted: 1, groups: 1 });
+	expect(obsidianRun).toHaveBeenCalledTimes(1);
+	const [, args] = obsidianRun.mock.calls[0] as [unknown, { action: string; path: string; backend: string; content: string }];
+	expect(args).toMatchObject({ action: "write", path: "MyChart Outreach/uwmedicine-med1--swedish-al1.md", backend: "git" });
+	expect(args.content).toContain(item.draftMessage);
+	expect(args.content).toContain(item.summary);
+});
+
+test("mychart-outreach sink is a no-op on an empty batch (never an error)", async () => {
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	const out = await sinks["mychart-outreach"].write([], {} as Caps);
+	expect(out).toEqual({ drafted: 0 });
+});
+
+test("mychart-outreach sink skips a malformed item and counts a write failure, never throws", async () => {
+	obsidianRun.mockReset();
+	obsidianRun.mockResolvedValueOnce({ isError: true, content: [{ type: "text", text: "git write failed" }] });
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	const good = { medOrg: "uwmedicine", medId: "med1", allergyOrg: "swedish", allergyId: "al1", draftMessage: "draft" };
+	const malformed = { medOrg: "uwmedicine", medId: "med1", allergyOrg: "", allergyId: "al1", draftMessage: "draft" };
+	const out = await sinks["mychart-outreach"].write([good, malformed], {} as Caps);
+	expect(out).toEqual({ drafted: 0, groups: 2, failed: 1 });
+});

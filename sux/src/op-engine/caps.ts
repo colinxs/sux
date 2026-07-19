@@ -91,7 +91,15 @@ function makeSinks(env: RtEnv): Record<string, SinkTarget> {
 			return input;
 		},
 	});
-	return { r2: publisher("r2", "published/"), vault: publisher("vault", "vault/"), "mail-labels": mailLabelsSink(env), "vault-notes": vaultNotesSink(env), "related-links": relatedLinksSink(env), "contacts-merge": contactsMergeSink(env) };
+	return {
+		r2: publisher("r2", "published/"),
+		vault: publisher("vault", "vault/"),
+		"mail-labels": mailLabelsSink(env),
+		"vault-notes": vaultNotesSink(env),
+		"related-links": relatedLinksSink(env),
+		"contacts-merge": contactsMergeSink(env),
+		"mychart-outreach": mychartOutreachSink(env),
+	};
 }
 
 // The `mail-triage-plan` op's terminal (registry.ts): applies a batch of {id, label, add}
@@ -319,6 +327,49 @@ function contactsMergeSink(env: RtEnv): SinkTarget {
 				merged++;
 			}
 			return { merged, groups: items.length, ...(failed ? { failed } : {}) };
+		},
+	};
+}
+
+// The `mychart-reconcile-plan` op's terminal (registry.ts): applies a batch of already-approved
+// {medOrg, medId, medName, allergyOrg, allergyId, allergySubstance, summary, draftMessage}
+// outreach drafts via the EXISTING obsidian fn's git-backed write action — DELIBERATELY never
+// mail_send/mail_draft. An LLM-drafted clinical message needs a human's own eyes and hands on
+// the actual send (copy it into MyChart's own patient-portal messaging, or a real email, by
+// hand); this sink's job ends at making the approved draft legible and durable, not at sending it
+// anywhere. Dynamically imported for the same reason mailLabelsSink/vaultNotesSink are —
+// op-engine's non-vault ops never pull obsidian's GitHub-API dependency graph into their module
+// load. One note per conflict, keyed by the same medOrg/medId/allergyOrg/allergyId tuple
+// detectMychartConflictDrops (_agenda.ts) dedupes on, so a re-approved batch overwrites its own
+// prior draft rather than accumulating duplicates. A malformed item (missing any field) is
+// skipped, not a hard failure; an empty batch is a no-op.
+function mychartOutreachSink(env: RtEnv): SinkTarget {
+	return {
+		name: "mychart-outreach",
+		async write(input: any): Promise<any> {
+			const items: Array<{ medOrg?: unknown; medId?: unknown; medName?: unknown; allergyOrg?: unknown; allergyId?: unknown; allergySubstance?: unknown; summary?: unknown; draftMessage?: unknown }> = Array.isArray(input) ? input : [];
+			if (!items.length) return { drafted: 0 };
+			const { obsidian } = await import("../fns/obsidian.js");
+			let drafted = 0;
+			let failed = 0;
+			for (const it of items) {
+				const medOrg = typeof it?.medOrg === "string" ? it.medOrg : "";
+				const medId = typeof it?.medId === "string" ? it.medId : "";
+				const allergyOrg = typeof it?.allergyOrg === "string" ? it.allergyOrg : "";
+				const allergyId = typeof it?.allergyId === "string" ? it.allergyId : "";
+				const draftMessage = typeof it?.draftMessage === "string" ? it.draftMessage : "";
+				if (!medOrg || !medId || !allergyOrg || !allergyId || !draftMessage) continue;
+				const summary = typeof it?.summary === "string" ? it.summary : "";
+				const path = `MyChart Outreach/${medOrg}-${medId}--${allergyOrg}-${allergyId}.md`;
+				const content = `# MyChart outreach draft\n\n${summary ? `**Summary:** ${summary}\n\n` : ""}**Draft message (review before sending — nothing here has been sent):**\n\n> ${draftMessage}\n`;
+				const w = await obsidian.run(env, { action: "write", path, content, backend: "git" });
+				if (w.isError) {
+					failed++;
+					continue;
+				}
+				drafted++;
+			}
+			return { drafted, groups: items.length, ...(failed ? { failed } : {}) };
 		},
 	};
 }

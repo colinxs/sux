@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MYCHART_ORGS, connectedOrgs, crossOrgMedicationAllergyConflicts, handleAppleHealth, handleMychartRoutes, isUnderFhirBase, mintAccessToken, mychartFetch, readGrant, resolveFhirPath, resolveOrg, substancesOverlap, summarizeMyChart } from "./mychart";
+import { MYCHART_ORGS, connectedOrgs, crossOrgAllergyGaps, crossOrgMedicationAllergyConflicts, handleAppleHealth, handleMychartRoutes, isUnderFhirBase, mintAccessToken, mychartFetch, readGrant, resolveFhirPath, resolveOrg, substancesOverlap, summarizeMyChart } from "./mychart";
 import { handleObservability } from "./observability";
 
 const ORG = "uwmedicine";
@@ -568,5 +568,49 @@ describe("crossOrgMedicationAllergyConflicts — cross-org continuity check (#10
 		await seedBundle(env, ORG, "P1", "MedicationRequest", "2026-07-18T00-00-00-000Z", [{ resourceType: "MedicationRequest", id: "med1", status: "stopped", medicationCodeableConcept: { text: "Penicillin V" } }]);
 		await seedGrant(env, ORG2, "P1"); // grant exists, but pull() has never run
 		expect(await crossOrgMedicationAllergyConflicts(env)).toEqual([]);
+	});
+});
+
+describe("crossOrgAllergyGaps — one-sided allergy continuity gap (#1009)", () => {
+	async function seedGrant(env: ReturnType<typeof baseEnv>, org: string, patient: string) {
+		await env.OAUTH_KV.put(`sux:mychart:grant:${org}`, JSON.stringify({ refresh_token: "rt", patient, issued_at: Date.now() }));
+	}
+	async function seedBundle(env: ReturnType<typeof baseEnv>, org: string, patient: string, label: string, stamp: string, resources: any[]) {
+		const bundle = { resourceType: "Bundle", entry: resources.map((resource) => ({ resource })) };
+		await env.R2.put(`phi/mychart/${org}/${patient}/${label}/${stamp}-p1.json`, JSON.stringify(bundle), { httpMetadata: { contentType: "application/fhir+json" } });
+	}
+
+	it("returns [] when unconfigured, or fewer than 2 connected/pulled orgs", async () => {
+		expect(await crossOrgAllergyGaps({} as any)).toEqual([]);
+		const oneOrg = baseEnv();
+		await seedGrant(oneOrg, ORG, "P1");
+		await seedBundle(oneOrg, ORG, "P1", "AllergyIntolerance", "2026-07-18T00-00-00-000Z", [{ resourceType: "AllergyIntolerance", id: "al1", code: { text: "Penicillin" } }]);
+		expect(await crossOrgAllergyGaps(oneOrg)).toEqual([]);
+	});
+
+	it("flags an allergy on file at one org with NO matching record at another connected org", async () => {
+		const env = baseEnv();
+		await seedGrant(env, ORG, "P1");
+		await seedGrant(env, ORG2, "P1");
+		await seedBundle(env, ORG, "P1", "AllergyIntolerance", "2026-07-18T00-00-00-000Z", [{ resourceType: "AllergyIntolerance", id: "al1", code: { text: "Penicillin" } }]);
+		await seedBundle(env, ORG2, "P1", "Condition", "2026-07-18T00-00-00-000Z", [{ resourceType: "Condition", id: "cond1" }]); // ORG2 pulled, but no allergies at all
+		expect(await crossOrgAllergyGaps(env)).toEqual([{ org: ORG, allergyId: "al1", allergySubstance: "Penicillin", missingOrg: ORG2 }]);
+	});
+
+	it("does not flag an allergy that both orgs already have on file", async () => {
+		const env = baseEnv();
+		await seedGrant(env, ORG, "P1");
+		await seedGrant(env, ORG2, "P1");
+		await seedBundle(env, ORG, "P1", "AllergyIntolerance", "2026-07-18T00-00-00-000Z", [{ resourceType: "AllergyIntolerance", id: "al1", code: { text: "Penicillin" } }]);
+		await seedBundle(env, ORG2, "P1", "AllergyIntolerance", "2026-07-18T00-00-00-000Z", [{ resourceType: "AllergyIntolerance", id: "al2", code: { text: "Penicillin V Potassium" } }]);
+		expect(await crossOrgAllergyGaps(env)).toEqual([]);
+	});
+
+	it("skips an org that's connected but never pulled", async () => {
+		const env = baseEnv();
+		await seedGrant(env, ORG, "P1");
+		await seedBundle(env, ORG, "P1", "AllergyIntolerance", "2026-07-18T00-00-00-000Z", [{ resourceType: "AllergyIntolerance", id: "al1", code: { text: "Penicillin" } }]);
+		await seedGrant(env, ORG2, "P1"); // grant exists, but pull() has never run
+		expect(await crossOrgAllergyGaps(env)).toEqual([]);
 	});
 });

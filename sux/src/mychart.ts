@@ -589,19 +589,14 @@ export function substancesOverlap(medName: string, allergySubstance: string): bo
 	return allergy.split(" ").some((w) => w.length >= 4 && !SUBSTANCE_STOPWORDS.has(w) && medWords.has(w));
 }
 
-/** Cross-org drug/allergy continuity check (#1005): summarizeMyChart already fans out
- * across every connected org, but stops at concatenation — org A's data is never compared
- * against org B's. This closes the real continuity-of-care gap: org B's specialist has no
- * idea org A's PCP started a medication, and neither org's chart necessarily carries the
- * other's allergy list. Compares every connected org's ACTIVE medications against every
- * OTHER connected org's allergy list for a name/substance-string overlap only — never
- * anything diagnostic (dosage, interaction severity, route). Same-org pairs are skipped: a
- * same-org prescription against a known allergy is exactly what that org's own ordering
- * system's interaction check already guards against; the gap here is specifically the
- * blind spot ACROSS orgs. Only orgs that have ever pulled contribute (mirrors
- * summarizeMyChart's hasEverPulled gate). [] when unconfigured or fewer than 2 orgs
- * contribute — reconciliation is meaningless with a single chart. */
-export async function crossOrgMedicationAllergyConflicts(env: RtEnv): Promise<MyChartConflict[]> {
+type OrgMedAllergySet = { org: string; meds: Array<{ id: string; name: string }>; allergies: Array<{ id: string; substance: string }> };
+
+/** Every connected, ever-pulled org's ACTIVE medications + allergies, shared by
+ * crossOrgMedicationAllergyConflicts and crossOrgAllergyGaps so the two cross-org checks
+ * (med↔allergy overlap, and allergy↔allergy set-difference) don't each re-derive the same
+ * per-org R2 reads independently. [] when unconfigured or fewer than 2 orgs have ever pulled —
+ * both checks are meaningless with a single chart. */
+async function gatherContributingMedsAndAllergies(env: RtEnv): Promise<OrgMedAllergySet[]> {
 	if (!mychartConfigured(env)) return [];
 	const orgs = await connectedOrgs(env);
 	if (orgs.length < 2) return [];
@@ -626,7 +621,23 @@ export async function crossOrgMedicationAllergyConflicts(env: RtEnv): Promise<My
 			return { org, meds: activeMeds, allergies: activeAllergies };
 		}),
 	);
-	const contributing = perOrg.filter((v): v is { org: string; meds: Array<{ id: string; name: string }>; allergies: Array<{ id: string; substance: string }> } => v !== null);
+	return perOrg.filter((v): v is OrgMedAllergySet => v !== null);
+}
+
+/** Cross-org drug/allergy continuity check (#1005): summarizeMyChart already fans out
+ * across every connected org, but stops at concatenation — org A's data is never compared
+ * against org B's. This closes the real continuity-of-care gap: org B's specialist has no
+ * idea org A's PCP started a medication, and neither org's chart necessarily carries the
+ * other's allergy list. Compares every connected org's ACTIVE medications against every
+ * OTHER connected org's allergy list for a name/substance-string overlap only — never
+ * anything diagnostic (dosage, interaction severity, route). Same-org pairs are skipped: a
+ * same-org prescription against a known allergy is exactly what that org's own ordering
+ * system's interaction check already guards against; the gap here is specifically the
+ * blind spot ACROSS orgs. Only orgs that have ever pulled contribute (mirrors
+ * summarizeMyChart's hasEverPulled gate). [] when unconfigured or fewer than 2 orgs
+ * contribute — reconciliation is meaningless with a single chart. */
+export async function crossOrgMedicationAllergyConflicts(env: RtEnv): Promise<MyChartConflict[]> {
+	const contributing = await gatherContributingMedsAndAllergies(env);
 	if (contributing.length < 2) return [];
 
 	const conflicts: MyChartConflict[] = [];
@@ -643,6 +654,34 @@ export async function crossOrgMedicationAllergyConflicts(env: RtEnv): Promise<My
 		}
 	}
 	return conflicts;
+}
+
+export type MyChartAllergyGap = { org: string; allergyId: string; allergySubstance: string; missingOrg: string };
+
+/** Cross-org allergy-continuity gap (#1009): a distinct, likely higher-value sibling of
+ * crossOrgMedicationAllergyConflicts's med↔allergy overlap check — this instead asks "does org
+ * B's OWN allergy list have anything matching org A's allergy at all?" A hit means org B's chart
+ * carries NO record whatsoever of an allergy org A has on file, e.g. a provider at org B could
+ * prescribe without ever seeing it — the "neither knows the other's allergy list" gap #1005's
+ * own issue text named but deliberately left out of that first cut. Same conservative
+ * substancesOverlap text match (never anything diagnostic), same contributing-orgs gate (2+
+ * pulled orgs) as crossOrgMedicationAllergyConflicts. [] when unconfigured or fewer than 2 orgs
+ * contribute. */
+export async function crossOrgAllergyGaps(env: RtEnv): Promise<MyChartAllergyGap[]> {
+	const contributing = await gatherContributingMedsAndAllergies(env);
+	if (contributing.length < 2) return [];
+
+	const gaps: MyChartAllergyGap[] = [];
+	for (const source of contributing) {
+		for (const allergy of source.allergies) {
+			for (const other of contributing) {
+				if (other.org === source.org) continue;
+				const knownAtOther = other.allergies.some((a) => substancesOverlap(a.substance, allergy.substance));
+				if (!knownAtOther) gaps.push({ org: source.org, allergyId: allergy.id, allergySubstance: allergy.substance, missingOrg: other.org });
+			}
+		}
+	}
+	return gaps;
 }
 
 /** Resolve a DocumentReference's Binary attachments (content[].attachment.url →
