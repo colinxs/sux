@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { MemoryStore, fixed, op, pipe, map, mapField, reconcile, sink, ask, stamp, type Caps } from "@suxos/lib";
+import { MemoryStore, fixed, op, pipe, map, mapField, reconcile, sink, ask, catchOp, stamp, type Caps } from "@suxos/lib";
 import { AskRejectedError, interpretDurable } from "./durable.js";
 
 // A FAKE WorkflowStep: `do` runs the callback inline (so the interpreter's step
@@ -156,6 +156,37 @@ test("interpretDurable's mapField throws before fanning out when the array field
 	await expect(interpretDurable(tree, { entries }, fakeStep({ events: [] }), caps, "op11")).rejects.toThrow(
 		/mapField fan-out of 20001 exceeds the MVP ceiling/,
 	);
+});
+
+test("interpretDurable's catch runs only try when try succeeds", async () => {
+	const caps = { store: new MemoryStore(), llm: {}, clock: { now: () => 0 }, sinks: {} } as unknown as Caps;
+	let catchRan = false;
+	const tryOp = op("try", async (n: number) => n + 1, { kind: "pure" });
+	const catchBranch = op(
+		"catch",
+		async (n: number) => {
+			catchRan = true;
+			return n;
+		},
+		{ kind: "pure" },
+	);
+	const out = await interpretDurable(catchOp(tryOp, catchBranch), 1, fakeStep({ events: [] }), caps, "op12");
+	expect(out).toBe(2);
+	expect(catchRan).toBe(false);
+});
+
+test("interpretDurable's catch runs the catch branch with the original input when try throws", async () => {
+	const caps = { store: new MemoryStore(), llm: {}, clock: { now: () => 0 }, sinks: {} } as unknown as Caps;
+	const tryOp = op(
+		"try",
+		async (_n: number) => {
+			throw new Error("try blew up");
+		},
+		{ kind: "pure" },
+	);
+	const catchBranch = op("catch", async (n: number) => n * 10, { kind: "pure" });
+	const out = await interpretDurable(catchOp(tryOp, catchBranch), 3, fakeStep({ events: [] }), caps, "op13");
+	expect(out).toBe(30);
 });
 
 test("interpretDurable dispatches reconcile modes — last-write-wins selects the newest stamped handle", async () => {

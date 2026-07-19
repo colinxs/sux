@@ -130,6 +130,7 @@ import { uw } from "./uw";
 import { onboard } from "./onboard";
 import { run } from "./run";
 import { vault_consolidate_plan } from "./vault_consolidate_plan";
+import { vault_cross_link_plan } from "./vault_cross_link_plan";
 import { webpush } from "./webpush";
 
 export const FUNCTIONS: Fn[] = [
@@ -259,5 +260,6 @@ export const FUNCTIONS: Fn[] = [
 	onboard,
 	run,
 	vault_consolidate_plan,
+	vault_cross_link_plan,
 	webpush,
 ];

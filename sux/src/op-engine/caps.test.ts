@@ -180,3 +180,54 @@ test("vault-notes sink skips (doesn't throw) an item whose write fails, and coun
 	expect(out).toEqual({ merged: 0, groups: 1, failed: 1 });
 	expect(obsidianRun).toHaveBeenCalledTimes(1); // the append never runs once the write itself failed
 });
+
+test("related-links sink groups matches by vaultPath into ONE append-only 'Related' block, never a write/delete", async () => {
+	obsidianRun.mockClear();
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	const out = await sinks["related-links"].write(
+		[
+			{ vaultPath: "Projects/alpha.md", domain: "mail", key: "m1", label: "Re: alpha kickoff", score: 0.9 },
+			{ vaultPath: "Projects/alpha.md", domain: "files", key: "alpha/spec.md", label: "alpha/spec.md", score: 0.8 },
+		],
+		{} as Caps,
+	);
+	const appendCalls = obsidianRun.mock.calls.filter((c: any[]) => c[1].action === "append");
+	expect(appendCalls).toHaveLength(1);
+	expect(appendCalls[0][1]).toMatchObject({ path: "Projects/alpha.md", content: expect.stringContaining("Re: alpha kickoff") });
+	expect(appendCalls[0][1]).toMatchObject({ content: expect.stringContaining("alpha/spec.md") });
+	expect(obsidianRun).not.toHaveBeenCalledWith({}, expect.objectContaining({ action: "write" }));
+	expect(obsidianRun).not.toHaveBeenCalledWith({}, expect.objectContaining({ action: "delete" }));
+	expect(out).toEqual({ linked: 1, notes: 1 });
+});
+
+test("related-links sink is a no-op on an empty batch (never an error)", async () => {
+	obsidianRun.mockClear();
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	const out = await sinks["related-links"].write([], {} as Caps);
+	expect(obsidianRun).not.toHaveBeenCalled();
+	expect(out).toEqual({ linked: 0 });
+});
+
+test("related-links sink skips the append on a retry — the note already carries this op's marker", async () => {
+	obsidianRun.mockClear();
+	obsidianRun.mockImplementation(async (_env: unknown, args: any) => {
+		if (args.action === "read") return { content: [{ type: "text", text: "existing body\n\n<!-- cross-semantic-plan:related -->\n> [!note] Related\n> - 📧 old match" }] };
+		return { content: [{ type: "text", text: "{}" }] };
+	});
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	const out = await sinks["related-links"].write([{ vaultPath: "A.md", domain: "mail", key: "m1", label: "x", score: 0.9 }], {} as Caps);
+	expect(out).toEqual({ linked: 0, notes: 1 });
+	expect(obsidianRun).not.toHaveBeenCalledWith({}, expect.objectContaining({ action: "append" }));
+});
+
+test("related-links sink skips (doesn't throw) a note whose append fails, and counts it as failed", async () => {
+	obsidianRun.mockClear();
+	obsidianRun.mockImplementation(async (_env: unknown, args: any) => {
+		if (args.action === "read") return { content: [{ type: "text", text: "" }] };
+		if (args.action === "append") return { isError: true, content: [{ type: "text", text: "conflict" }] };
+		throw new Error(`unexpected action ${args.action}`);
+	});
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	const out = await sinks["related-links"].write([{ vaultPath: "A.md", domain: "mail", key: "m1", label: "x", score: 0.9 }], {} as Caps);
+	expect(out).toEqual({ linked: 0, notes: 1, failed: 1 });
+});

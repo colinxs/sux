@@ -116,6 +116,13 @@ export async function interpretDurable(node: Op, input: any, step: WorkflowStep,
 			await Promise.all(node.targets.map((t) => step.do(`${path}:sink:${t}`, () => caps.sinks[t].write(input, caps))));
 			return input;
 		}
+		case "catch": {
+			try {
+				return await interpretDurable(node.try, input, step, caps, `${path}.try`);
+			} catch (_e) {
+				return await interpretDurable(node.catch, input, step, caps, `${path}.catch`);
+			}
+		}
 		case "ask": {
 			// A human pause: block on an external event whose `type` an approver sends
 			// back (instance.sendEvent). `Op.timeout` is a looser `string` than the

@@ -172,6 +172,15 @@ export type RtEnv = Env &
 		WATCH_SWEEP_ENABLED?: string;
 		WATCH_SWEEP_MAX?: string;
 
+		// Cross-domain semantic backlinks (fns/_cross_semantic.ts + fns/vault_cross_link_plan.ts,
+		// #785): cosine-ranks the vault's semantic index against the pooled mail+files semantic
+		// indices to find standing cross-domain relationships, then starts a durable, human-
+		// approved run (op-engine's `cross-semantic-plan`) that appends a "Related" block to each
+		// matched vault note — never a mail/file mutation, never a vault delete. User-invoked (no
+		// cron sweep yet), but still fail-closed like the sweep flags above: unset ⇒ refuses to run.
+		//   CROSS_SEMANTIC_ENABLED — master enable (toggle); unset/"0"/"false"/"off" ⇒ inert.
+		CROSS_SEMANTIC_ENABLED?: string;
+
 		EXA_API_KEY?: string;
 
 		KROGER_CLIENT_ID?: string;
