@@ -66,6 +66,11 @@ export type InferNudgeWarmupEntry = {
 	whyTrail: string[];
 	/** The exact Daily-note block this cycle would have appended, had it not been in warm-up. */
 	wouldWriteDigest: string;
+	/** Monotonic 0-indexed count of would-fire cycles for this cluster, independent of the
+	 *  capped log's retained length — the log rolls entries off past WARMUP_LOG_CAP, so once
+	 *  INFER_NUDGE_WARMUP_CYCLES exceeds the cap, `.length` alone would plateau and warm-up
+	 *  could never promote. Read the newest entry's `cycle` instead of the array length. */
+	cycle: number;
 };
 
 const WARMUP_LOG_CAP = 50;
@@ -203,12 +208,16 @@ export async function runInferNudge(env: RtEnv, opts: { domains?: InferDomain[] 
 	const digestContent = buildDigestBlock(candidate, phrasing, whyTrail, inferenceId);
 
 	const warmupRequired = warmupCyclesRequired(env);
-	const warmupCount = (await readInferNudgeWarmupLog(env, candidate.cluster)).length;
+	const warmupEntries = await readInferNudgeWarmupLog(env, candidate.cluster);
+	// The newest entry's `cycle` (0-indexed), not the array length — the log itself is capped
+	// at WARMUP_LOG_CAP and would otherwise plateau there forever once warmupRequired exceeds it.
+	const warmupCount = (warmupEntries[0]?.cycle ?? -1) + 1;
 	const inWarmup = warmupCount < warmupRequired;
 
 	if (inWarmup) {
-		// The log is the sole source of truth for the cluster's warm-up count (its length
-		// after push) — no separate counter write to desync from it on a partial failure.
+		// The newest entry's `cycle` field is the source of truth for the cluster's warm-up
+		// count — no separate counter write to desync from it on a partial failure, and it
+		// survives the log rolling old entries off past WARMUP_LOG_CAP.
 		try {
 			await warmupLog(env, candidate.cluster).push({
 				ts: Date.now(),
@@ -218,6 +227,7 @@ export async function runInferNudge(env: RtEnv, opts: { domains?: InferDomain[] 
 				phrasing,
 				whyTrail,
 				wouldWriteDigest: digestContent,
+				cycle: warmupCount,
 			});
 		} catch (e) {
 			await deleteInferInference(env, domains[0], inferenceId);

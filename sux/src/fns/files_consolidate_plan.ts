@@ -53,7 +53,16 @@ export const files_consolidate_plan: Fn = {
 			const textClusters = findDuplicateFiles(index.chunks);
 			const { files: binaryCandidates, truncated: binaryTruncated } = await collectBinaryCandidates(env);
 			const binaryClusters = findBinaryDuplicateFiles(binaryCandidates);
-			const clusters = [...textClusters, ...binaryClusters].slice(0, maxClusters);
+			// Cap each source independently (an even half each, with any source's unused share
+			// handed to the other) before merging — a fixed [...text, ...binary].slice(0,
+			// maxClusters) let text clusters (always first) starve binary clusters (always
+			// last) whenever text alone reached maxClusters (#1028), silently dropping every
+			// byte-identical-file detection.
+			const half = Math.ceil(maxClusters / 2);
+			const textShare = Math.min(textClusters.length, half);
+			const binaryShare = Math.min(binaryClusters.length, maxClusters - textShare);
+			const textShareFinal = Math.min(textClusters.length, maxClusters - binaryShare);
+			const clusters = [...textClusters.slice(0, textShareFinal), ...binaryClusters.slice(0, binaryShare)];
 			if (!clusters.length) return ok(oj({ scanned: index.total, scannedBinary: binaryCandidates.length, candidates: 0, note: "no duplicate candidates found — nothing to archive" }));
 			const input = clusters.map((cl) => ({ paths: cl.paths }));
 			const res = await runVerb({ op: "files-consolidate-plan", input, mode: "durable" }, env);
