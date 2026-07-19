@@ -91,7 +91,7 @@ function makeSinks(env: RtEnv): Record<string, SinkTarget> {
 			return input;
 		},
 	});
-	return { r2: publisher("r2", "published/"), vault: publisher("vault", "vault/"), "mail-labels": mailLabelsSink(env), "vault-notes": vaultNotesSink(env) };
+	return { r2: publisher("r2", "published/"), vault: publisher("vault", "vault/"), "mail-labels": mailLabelsSink(env), "vault-notes": vaultNotesSink(env), "related-links": relatedLinksSink(env) };
 }
 
 // The `mail-triage-plan` op's terminal (registry.ts): applies a batch of {id, label, add}
@@ -195,6 +195,58 @@ function vaultNotesSink(env: RtEnv): SinkTarget {
 				merged++;
 			}
 			return { merged, groups: items.length, ...(failed ? { failed } : {}) };
+		},
+	};
+}
+
+// The `cross-semantic-plan` op's terminal (registry.ts): applies a batch of already-approved
+// {vaultPath, domain, key, label, score} cross-domain matches (fns/_cross_semantic.ts's
+// crossDomainLinks) as an APPEND-ONLY "Related" block per vault note, via the EXISTING obsidian
+// fn's git-backed append action — never a `write`/`delete`, so this can never clobber a note's
+// own content the way vault-notes' merge `write` deliberately can (#785 is a lighter, append-
+// only variant of that shape). Dynamically imported for the same reason mailLabelsSink/
+// vaultNotesSink are — op-engine's other ops never pull obsidian's GitHub-API dependency graph
+// into their module load. Grouped by vaultPath so N matches for the same note become one append
+// instead of N. A malformed item (no vaultPath/domain/label) is skipped; an empty batch is a
+// no-op.
+function relatedLinksSink(env: RtEnv): SinkTarget {
+	return {
+		name: "related-links",
+		async write(input: any): Promise<any> {
+			const items: Array<{ vaultPath?: unknown; domain?: unknown; key?: unknown; label?: unknown; score?: unknown }> = Array.isArray(input) ? input : [];
+			const byNote = new Map<string, Array<{ domain: string; key: string; label: string }>>();
+			for (const it of items) {
+				const vaultPath = typeof it?.vaultPath === "string" ? it.vaultPath : "";
+				const domain = typeof it?.domain === "string" ? it.domain : "";
+				const label = typeof it?.label === "string" ? it.label : "";
+				if (!vaultPath || !domain || !label) continue;
+				const list = byNote.get(vaultPath) ?? [];
+				list.push({ domain, key: typeof it?.key === "string" ? it.key : "", label });
+				byNote.set(vaultPath, list);
+			}
+			if (!byNote.size) return { linked: 0 };
+			const { obsidian } = await import("../fns/obsidian.js");
+			const marker = "<!-- cross-semantic-plan:related -->";
+			let linked = 0;
+			let failed = 0;
+			for (const [vaultPath, links] of byNote) {
+				// The append below is NOT idempotent by itself — a step.do retry after a mid-batch
+				// eviction (durable.ts's `sink` step wraps this whole loop as ONE memoized step)
+				// would otherwise double the "Related" block. Skip a note that already carries this
+				// op's marker from a prior attempt, same guard vaultNotesSink applies per-archive (#740).
+				const r = await obsidian.run(env, { action: "read", path: vaultPath, backend: "git" });
+				const already = !r.isError && typeof r.content?.[0]?.text === "string" && r.content[0].text.includes(marker);
+				if (already) continue;
+				const lines = links.map((l) => `> - ${l.domain === "mail" ? "📧" : "📁"} ${l.label}`);
+				const block = `\n\n${marker}\n> [!note] Related\n${lines.join("\n")}\n`;
+				const a = await obsidian.run(env, { action: "append", path: vaultPath, content: block, backend: "git" });
+				if (a.isError) {
+					failed++;
+					continue;
+				}
+				linked++;
+			}
+			return { linked, notes: byNote.size, ...(failed ? { failed } : {}) };
 		},
 	};
 }

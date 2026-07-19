@@ -41,6 +41,16 @@ import type { TriageMsg } from "../fns/_mail_triage.js";
 // the WHOLE batch once, and only on approval does the `vault-notes` sink (caps.ts) apply them
 // — a `write` of the merged content to the canonical note plus an `append` pointer on the
 // duplicate, never a delete. onTimeout:'fail' — an unanswered gate applies nothing.
+//
+// `cross-semantic-plan` (#785) is a lighter, append-only sibling of vault-consolidate-plan:
+// input is a batch of already-computed {vaultPath, domain, key, label, score} cross-domain
+// matches (fns/_cross_semantic.ts's crossDomainLinks, ranked from the vault/mail/files semantic
+// indices by `vault_cross_link_plan`) — no `caps` needed to compute those (pure cosine ranking
+// over already-embedded chunks), so unlike propose/classify above there's no leaf here, just the
+// gate and the sink. The human approves the WHOLE batch once, and only on approval does the
+// `related-links` sink (caps.ts) apply them — an `append`-only "Related" block per matched vault
+// note, never a `write`/`delete` (so, unlike vault-consolidate-plan, this can never touch a
+// note's own content). onTimeout:'fail' — an unanswered gate applies nothing.
 export const registry: Record<string, () => Op> = {
 	echo: () => op("echo", async (x: unknown) => x, { kind: "pure" }),
 	"assimilate-pdfs": () =>
@@ -65,5 +75,10 @@ export const registry: Record<string, () => Op> = {
 			op("compact", async (items: Array<MergePlanItem | null>) => compactMergePlan(items), { kind: "pure" }),
 			ask("apply these note merges?", { timeout: "24 hour", onTimeout: "fail" }),
 			sink("vault-notes"),
+		),
+	"cross-semantic-plan": () =>
+		pipe(
+			ask("add these related links?", { timeout: "24 hour", onTimeout: "fail" }),
+			sink("related-links"),
 		),
 };

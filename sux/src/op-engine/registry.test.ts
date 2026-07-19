@@ -88,3 +88,39 @@ test("vault-consolidate-plan: a veto ({approved:false}) rejects the gate and nev
 	await expect(interpretDurable(registry["vault-consolidate-plan"](), clusters, fakeStep(rec, { approved: false }), caps, "root")).rejects.toThrow(AskRejectedError);
 	expect(written).toHaveLength(0);
 });
+
+test("cross-semantic-plan: asks for approval, then sinks the already-decided batch of cross-domain matches as-is (no leaf — detection already happened in the calling fn)", async () => {
+	const rec = { events: [] as string[] };
+	const written: unknown[] = [];
+	const caps = {
+		store: new MemoryStore(),
+		llm: {},
+		clock: { now: () => 0 },
+		sinks: { "related-links": { name: "related-links", write: async (input: any) => (written.push(input), { linked: input.length, notes: input.length }) } },
+	} as unknown as Caps;
+
+	const matches = [{ vaultPath: "Projects/alpha.md", domain: "mail", key: "m1", label: "Re: alpha kickoff", score: 0.9 }];
+
+	const out = await interpretDurable(registry["cross-semantic-plan"](), matches, fakeStep(rec), caps, "root");
+
+	expect(rec.events).toEqual(["ask:add these related links?"]);
+	expect(written).toHaveLength(1);
+	expect(written[0]).toEqual(matches);
+	expect(out).toEqual(matches);
+});
+
+test("cross-semantic-plan: a veto ({approved:false}) rejects the gate and never reaches the sink", async () => {
+	const rec = { events: [] as string[] };
+	const written: unknown[] = [];
+	const caps = {
+		store: new MemoryStore(),
+		llm: {},
+		clock: { now: () => 0 },
+		sinks: { "related-links": { name: "related-links", write: async (input: any) => (written.push(input), input) } },
+	} as unknown as Caps;
+
+	const matches = [{ vaultPath: "A.md", domain: "mail", key: "m1", label: "x", score: 0.9 }];
+
+	await expect(interpretDurable(registry["cross-semantic-plan"](), matches, fakeStep(rec, { approved: false }), caps, "root")).rejects.toThrow(AskRejectedError);
+	expect(written).toHaveLength(0);
+});
