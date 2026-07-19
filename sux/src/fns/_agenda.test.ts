@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { composeDigest, type AgendaDeps, type Drop, detectCrossSemanticDrops, detectDrops, detectKnowledgeDrops, detectMonarchDrops, detectMyChartDrops, detectMychartAllergyGapDrops, detectMychartConflictDrops, detectPortfolioDrops, detectRelationshipDrops, detectSavingsRateDrop, detectTextDrops, detectWatchDrops, computeSavingsRate, type EventRef, type MailRef, type RelationshipBaseline, type TextThreadRef, rankDropsLearned, runAgenda } from "./_agenda";
+import { composeDigest, type AgendaDeps, type Drop, detectCrossSemanticDrops, detectDrops, detectKnowledgeDrops, detectMonarchDrops, detectMyChartDrops, detectMychartAllergyGapDrops, detectMychartConflictDrops, detectPortfolioDrops, detectRelationshipDrops, detectSavingsRateDrop, detectTextDrops, detectWatchDrops, computeSavingsRate, type EventRef, mailRelationshipThreads, type MailRef, type RelationshipBaseline, type TextThreadRef, rankDropsLearned, runAgenda } from "./_agenda";
 import { listProposals } from "../proposals";
 import { recordOutcome } from "./_learning";
 
@@ -395,6 +395,37 @@ describe("agenda — relationship-decay detector (Relationship Radar, #930)", ()
 		const threads: TextThreadRef[] = [{ id: "t1", contact: "+1555", lastAt: "2026-01-01T00:00:00Z" }];
 		const r = detectRelationshipDrops(Date.parse("2026-07-19T00:00:00Z"), threads, prior); // ~200d, but sampleCount is 0
 		expect(r.drops).toHaveLength(0);
+	});
+});
+
+describe("agenda — mailRelationshipThreads (#981, widening Relationship Radar beyond iMessage)", () => {
+	it("turns a personal-classified sender into a mail:-prefixed TextThreadRef", () => {
+		const mail: MailRef[] = [{ id: "m1", from: "Jeanne <jeanne@gmail.com>", subject: "Hey!", preview: "how are you", date: "2026-06-01T00:00:00Z" }];
+		const out = mailRelationshipThreads(mail);
+		expect(out).toEqual([{ id: "mail:jeanne@gmail.com", contact: "jeanne@gmail.com", name: "Jeanne", lastAt: "2026-06-01T00:00:00Z" }]);
+	});
+
+	it("skips non-personal senders (a notification/bank domain) — precision over recall, same as isPersonal elsewhere", () => {
+		const mail: MailRef[] = [{ id: "m1", from: "alerts@chase.com", subject: "Your statement is ready", date: "2026-06-01T00:00:00Z" }];
+		expect(mailRelationshipThreads(mail)).toHaveLength(0);
+	});
+
+	it("collapses multiple messages from the same sender to one entry — the latest date wins", () => {
+		const mail: MailRef[] = [
+			{ id: "m1", from: "jeanne@gmail.com", subject: "Hey!", preview: "call me?", date: "2026-06-01T00:00:00Z" },
+			{ id: "m2", from: "jeanne@gmail.com", subject: "Re: Hey!", preview: "call me?", date: "2026-06-10T00:00:00Z" },
+		];
+		const out = mailRelationshipThreads(mail);
+		expect(out).toHaveLength(1);
+		expect(out[0].lastAt).toBe("2026-06-10T00:00:00Z");
+	});
+
+	it("feeds straight into detectRelationshipDrops's per-contact cadence, same as an iMessage thread", () => {
+		const prior: Record<string, RelationshipBaseline> = { "mail:jeanne@gmail.com": { lastAt: "2026-06-01T00:00:00Z", baselineDays: 3, sampleCount: 5 } };
+		const threads = mailRelationshipThreads([{ id: "m1", from: "Jeanne <jeanne@gmail.com>", subject: "Hey!", preview: "call me?", date: "2026-06-01T00:00:00Z" }]);
+		const r = detectRelationshipDrops(Date.parse("2026-06-18T00:00:00Z"), threads, prior); // 17d quiet, baseline ~3d
+		expect(r.drops.map((d) => d.kind)).toEqual(["relationship_drop"]);
+		expect(r.drops[0].title).toMatch(/Jeanne/);
 	});
 });
 
