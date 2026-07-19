@@ -1,10 +1,25 @@
-import { describe, expect, it } from "vitest";
-import { crossDomainLinks, filesToCrossItems, hasCrossSemantic, mailToCrossItems, type CrossDomainItem } from "./_cross_semantic";
+import { describe, expect, it, vi } from "vitest";
+import { crossDomainLinks, filesToCrossItems, hasCrossSemantic, lastCrossSemanticFindings, mailToCrossItems, runCrossSemanticSweep, type CrossDomainItem, type CrossSemanticSweepDeps } from "./_cross_semantic";
 import type { SemanticChunk } from "./_vault_semantic";
 import type { MailSemanticChunk } from "./_mail_semantic";
 import type { FilesSemanticChunk } from "./_files_semantic";
 
 const vaultChunk = (path: string, embedding: number[], title = path): SemanticChunk => ({ path, title, text: `text of ${path}`, embedding });
+
+// A single OAUTH_KV stub for the ledger — mirrors _consolidate.test.ts's fakeKV. The whole
+// sweep is exercised through injected deps: no real semantic indices.
+const fakeKV = (init: Record<string, string> = {}) => {
+	const store = new Map(Object.entries(init));
+	return { store, get: async (k: string) => store.get(k) ?? null, put: async (k: string, v: string) => void store.set(k, v), delete: async (k: string) => void store.delete(k) };
+};
+const envWith = (flags: Record<string, string | undefined> = {}) => ({ OAUTH_KV: fakeKV(), ...flags }) as any;
+
+const mkDeps = (over: Partial<CrossSemanticSweepDeps> = {}): CrossSemanticSweepDeps => ({
+	vaultChunks: vi.fn(async () => [vaultChunk("Projects/alpha.md", [1, 0, 0])]),
+	mailChunks: vi.fn(async () => [{ id: "m1", subject: "Re: alpha kickoff", from: "a@b.com", receivedAt: "2024-01-01", text: "x", embedding: [1, 0, 0] } as MailSemanticChunk]),
+	filesChunks: vi.fn(async () => []),
+	...over,
+});
 
 describe("hasCrossSemantic", () => {
 	it("is disabled unless CROSS_SEMANTIC_ENABLED is truthy", () => {
@@ -102,5 +117,76 @@ describe("crossDomainLinks", () => {
 		// Without the cap, "late.md" would be the only chunk to clear minScore (it exactly
 		// matches the "exact" target); the fillers all score 0 against every target.
 		expect(links.some((l) => l.key === "exact")).toBe(false);
+	});
+});
+
+describe("runCrossSemanticSweep (#948)", () => {
+	it("is a dormant no-op unless enabled — no index fetch", async () => {
+		const deps = mkDeps();
+		const report = await runCrossSemanticSweep(envWith(), { week: "2026-W01" }, deps);
+		expect(report.dormant).toBe(true);
+		expect(deps.vaultChunks).not.toHaveBeenCalled();
+	});
+
+	it("ranks the vault against pooled mail+files targets and caches the findings", async () => {
+		const env = envWith({ CROSS_SEMANTIC_ENABLED: "1" });
+		const report = await runCrossSemanticSweep(env, { week: "2026-W10" }, mkDeps());
+		expect(report.dormant).toBeUndefined();
+		expect(report.count).toBe(1);
+		expect(report.links).toEqual([{ vaultPath: "Projects/alpha.md", domain: "mail", key: "m1", label: "Re: alpha kickoff", score: 1 }]);
+
+		const cached = await lastCrossSemanticFindings(env);
+		expect(cached).toEqual({ week: "2026-W10", count: 1, links: report.links });
+	});
+
+	it("skips ranking when the vault semantic index isn't configured", async () => {
+		const env = envWith({ CROSS_SEMANTIC_ENABLED: "1" });
+		const deps = mkDeps({ vaultChunks: vi.fn(async () => null) });
+		const report = await runCrossSemanticSweep(env, { week: "2026-W11" }, deps);
+		expect(report.skipped).toBe(true);
+		expect(deps.mailChunks).not.toHaveBeenCalled();
+	});
+
+	it("is idempotent per ISO week — a second same-week tick skips without re-ranking", async () => {
+		const env = envWith({ CROSS_SEMANTIC_ENABLED: "1" });
+		const d1 = mkDeps();
+		await runCrossSemanticSweep(env, { week: "2026-W20" }, d1);
+		const d2 = mkDeps();
+		const report2 = await runCrossSemanticSweep(env, { week: "2026-W20" }, d2);
+		expect(report2.skipped).toBe(true);
+		expect(d2.vaultChunks).not.toHaveBeenCalled();
+	});
+
+	it("force re-runs even a marked week", async () => {
+		const env = envWith({ CROSS_SEMANTIC_ENABLED: "1" });
+		await runCrossSemanticSweep(env, { week: "2026-W30" }, mkDeps());
+		const d2 = mkDeps();
+		const report = await runCrossSemanticSweep(env, { week: "2026-W30", force: true }, d2);
+		expect(report.skipped).toBeUndefined();
+		expect(d2.vaultChunks).toHaveBeenCalledTimes(1);
+	});
+
+	it("a failed vault-index fetch leaves the week UNMARKED so the next tick retries", async () => {
+		const env = envWith({ CROSS_SEMANTIC_ENABLED: "1" });
+		const failing = mkDeps({ vaultChunks: vi.fn(async () => { throw new Error("boom"); }) });
+		const report1 = await runCrossSemanticSweep(env, { week: "2026-W40" }, failing);
+		expect(report1.error).toContain("boom");
+		const report2 = await runCrossSemanticSweep(env, { week: "2026-W40" }, mkDeps());
+		expect(report2.skipped).toBeUndefined();
+		expect(report2.count).toBe(1);
+	});
+
+	it("a missing mail/files leg is not fatal — just fewer targets to rank against", async () => {
+		const env = envWith({ CROSS_SEMANTIC_ENABLED: "1" });
+		const deps = mkDeps({ mailChunks: vi.fn(async () => { throw new Error("jmap down"); }) });
+		const report = await runCrossSemanticSweep(env, { week: "2026-W41" }, deps);
+		expect(report.error).toBeUndefined();
+		expect(report.count).toBe(0);
+	});
+});
+
+describe("lastCrossSemanticFindings", () => {
+	it("returns null when the sweep has never completed a cycle", async () => {
+		expect(await lastCrossSemanticFindings(envWith())).toBeNull();
 	});
 });

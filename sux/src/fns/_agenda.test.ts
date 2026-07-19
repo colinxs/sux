@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { composeDigest, type AgendaDeps, type Drop, detectDrops, detectKnowledgeDrops, detectMonarchDrops, detectPortfolioDrops, detectSavingsRateDrop, detectTextDrops, detectWatchDrops, computeSavingsRate, type EventRef, type MailRef, type TextThreadRef, rankDropsLearned, runAgenda } from "./_agenda";
+import { composeDigest, type AgendaDeps, type Drop, detectCrossSemanticDrops, detectDrops, detectKnowledgeDrops, detectMonarchDrops, detectPortfolioDrops, detectSavingsRateDrop, detectTextDrops, detectWatchDrops, computeSavingsRate, type EventRef, type MailRef, type TextThreadRef, rankDropsLearned, runAgenda } from "./_agenda";
 import { listProposals } from "../proposals";
 import { recordOutcome } from "./_learning";
 
@@ -28,6 +28,7 @@ const deps = (over: Partial<AgendaDeps> = {}): AgendaDeps => ({
 	consolidateFindings: vi.fn(async () => null),
 	weeklyRecallFindings: vi.fn(async () => null),
 	watchFindings: vi.fn(async () => null),
+	crossSemanticFindings: vi.fn(async () => null),
 	monarchAccounts: vi.fn(async () => []),
 	monarchTransactions: vi.fn(async () => []),
 	monarchBudgets: vi.fn(async () => []),
@@ -100,6 +101,25 @@ describe("agenda — detectors", () => {
 	it("no watch drops when there's nothing to report", () => {
 		expect(detectWatchDrops(null)).toHaveLength(0);
 		expect(detectWatchDrops({ checked_at: "2026-07-18T00:00:00.000Z", changed_count: 0, changed: [] })).toHaveLength(0);
+	});
+
+	it("wires the cross-semantic sweep's findings in as an fyi drop (#785/#948), never auto-applying", () => {
+		const drops = detectCrossSemanticDrops({
+			week: "2026-W28",
+			count: 2,
+			links: [{ vaultPath: "Projects/alpha.md", domain: "mail", key: "m1", label: "Re: alpha kickoff", score: 0.9 }],
+		});
+		expect(drops).toHaveLength(1);
+		expect(drops[0]).toMatchObject({ kind: "cross_semantic_ready", urgency: "fyi" });
+		expect(drops[0].dedupe).toContain("2026-W28");
+		expect(drops[0].title).toContain("2 cross-domain link candidate");
+		expect(drops[0].action.fn).toBe("todoist");
+		expect(drops[0].action.args.content).toContain("vault_cross_link_plan");
+	});
+
+	it("no cross-semantic drops when there's nothing to report", () => {
+		expect(detectCrossSemanticDrops(null)).toHaveLength(0);
+		expect(detectCrossSemanticDrops({ week: "2026-W28", count: 0, links: [] })).toHaveLength(0);
 	});
 
 	it("detects Monarch financial signals (W7): low balance, unusual charge, bill due soon", () => {
