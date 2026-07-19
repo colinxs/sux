@@ -820,6 +820,19 @@ async function agendaReplyTick(env: RtEnv): Promise<unknown> {
 	return mod.runAgendaReply(env, {}, deps);
 }
 
+// The agenda loop's SECOND inbound channel (#897) — text 'approve/snooze/reject <id>'
+// back to sux from a trusted phone number, the iMessage sibling of agendaReplyTick.
+// Rides the same frequent (~5min) cron for the same reason: a paused proposal fails
+// closed at 24h. FAIL-CLOSED: no-op unless IMESSAGE_REPLY_ENABLED (and AGENDA_ENABLED,
+// and at least one IMESSAGE_TRUSTED_HANDLES entry). Dynamically imported so the cron
+// path pulls in the iMessage spoke only when armed.
+async function imessageReplyTick(env: RtEnv): Promise<unknown> {
+	const mod = await import("./fns/_imessage_reply");
+	if (!mod.hasImessageReply(env)) return { dormant: true };
+	const deps = await mod.defaultDeps();
+	return mod.runImessageReply(env, {}, deps);
+}
+
 // Outbound Web Push (#219) for the agenda loop's highest-signal drops — mirrors
 // notifyMailTriageSummary's shape. The roadmap's Layer 3 ("Proposal inbox") wants
 // today-urgency proposals to reach the phone in near-real-time instead of only sitting
@@ -972,6 +985,7 @@ export default {
 			ctx.waitUntil(runSubJob(env, "mail_triage_plan", () => mailTriagePlanTick(env)));
 			ctx.waitUntil(runSubJob(env, "ask_gate_reminder", () => askGateReminderTick(env)));
 			ctx.waitUntil(runSubJob(env, "agenda_reply", () => agendaReplyTick(env)));
+			ctx.waitUntil(runSubJob(env, "imessage_reply", () => imessageReplyTick(env)));
 			return;
 		}
 		ctx.waitUntil(maintenanceTick(env, ctx));
