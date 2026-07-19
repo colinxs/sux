@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findDuplicateContacts, hasContactConsolidate, type ContactRef } from "./_contact_consolidate";
+import { findDuplicateContacts, hasContactConsolidate, normPhone, type ContactRef } from "./_contact_consolidate";
 
 describe("hasContactConsolidate", () => {
 	it("is off by default and on common falsy strings", () => {
@@ -88,6 +88,36 @@ describe("findDuplicateContacts", () => {
 			{ id: "2", name: "B", phones: ["123"] },
 		];
 		expect(findDuplicateContacts(contacts)).toEqual([]);
+	});
+
+	it("strips a trailing extension so it clusters with the bare number (#1013)", () => {
+		expect(normPhone("555-123-4567 ext 22")).toBe("5551234567");
+		expect(normPhone("555-123-4567 x22")).toBe("5551234567");
+		const contacts: ContactRef[] = [
+			{ id: "1", name: "Carol", phones: ["555-123-4567 ext 22"] },
+			{ id: "2", name: "Carol J", phones: ["555-123-4567"] },
+		];
+		const clusters = findDuplicateContacts(contacts);
+		expect(clusters).toHaveLength(1);
+		expect(new Set(clusters[0].ids)).toEqual(new Set(["1", "2"]));
+	});
+
+	it("does not cluster two different people sharing only a bare 7-digit number across area codes (#1013)", () => {
+		const contacts: ContactRef[] = [
+			{ id: "1", name: "Erin Adams", phones: ["555-1234"] },
+			{ id: "2", name: "Frank Baker", phones: ["555-1234"] },
+		];
+		expect(findDuplicateContacts(contacts)).toEqual([]);
+	});
+
+	it("still clusters a bare 7-digit number when the names also corroborate the match (#1013)", () => {
+		const contacts: ContactRef[] = [
+			{ id: "1", name: "Erin Adams", phones: ["555-1234"] },
+			{ id: "2", name: "E. Adams", phones: ["555-1234"] },
+		];
+		const clusters = findDuplicateContacts(contacts);
+		expect(clusters).toHaveLength(1);
+		expect(new Set(clusters[0].ids)).toEqual(new Set(["1", "2"]));
 	});
 
 	it("returns an empty array for an empty page", () => {

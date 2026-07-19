@@ -33,12 +33,17 @@ const normEmail = (e: string): string => e.trim().toLowerCase();
  *  same archive re-propose forever (#989). Check the RAW name, before normName() strips it. */
 const isMergedArchive = (name?: string): boolean => /\(merged into [^)]*\)/.test(name ?? "");
 
+/** Strips a trailing extension suffix (" ext 22", " ext. 22", "x22", "#22") before digit
+ *  normalization — otherwise "555-123-4567 ext 22" and "555-123-4567" digit-collapse to
+ *  different-length keys and never cluster as the same underlying number (#1013). */
+const stripExtension = (p: string): string => p.replace(/\s*(?:ext\.?|x|#)\s*\d+\s*$/i, "");
+
 /** Digits only, US country-code (leading "1" on 11 digits) stripped so "+1 (555) 123-4567" and
  *  "555-123-4567" collapse to the same key. Shorter than 7 digits is too weak a signal (a
  *  stray extension-only number) to treat as a match — left out of the phone index entirely.
  *  Exported so _contact_consolidate_plan.ts's merge step can dedup by the same key it clustered
  *  on (#995), not just an exact-string match that misses format variants. */
-export const normPhone = (p: string): string => p.replace(/\D/g, "").replace(/^1(\d{10})$/, "$1");
+export const normPhone = (p: string): string => stripExtension(p).replace(/\D/g, "").replace(/^1(\d{10})$/, "$1");
 
 /** Strips a parenthetical tag ("(work)", "(home)", an already-applied "(merged into ...)"
  *  pointer) from a raw display name while preserving case/spacing — for when a raw name is
@@ -158,7 +163,17 @@ export function findDuplicateContacts(rawContacts: ContactRef[]): DuplicateConta
 		}
 	});
 	for (const idxs of byEmail.values()) for (let i = 1; i < idxs.length; i++) union(idxs[0], idxs[i]);
-	for (const idxs of byPhone.values()) for (let i = 1; i < idxs.length; i++) union(idxs[0], idxs[i]);
+	// A key shorter than 10 digits has no area code — two different people can each have a
+	// bare local number on file in different area codes and land on the identical key. Only
+	// auto-cluster a short key when the names also corroborate the match (#1013); a
+	// full 10+-digit key is unambiguous enough to cluster on its own.
+	for (const [key, idxs] of byPhone) {
+		for (let i = 1; i < idxs.length; i++) {
+			if (key.length >= 10 || (names[idxs[0]] && names[idxs[i]] && namesMatch(names[idxs[0]], names[idxs[i]]))) {
+				union(idxs[0], idxs[i]);
+			}
+		}
+	}
 	for (let i = 0; i < n; i++) {
 		if (!names[i]) continue;
 		for (let j = i + 1; j < n; j++) {

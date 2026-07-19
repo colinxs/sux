@@ -518,6 +518,11 @@ describe("substancesOverlap — conservative, non-diagnostic text match (#1005)"
 		expect(substancesOverlap("Aspirin 81mg oral tablet", "Penicillin oral suspension")).toBe(false);
 	});
 
+	it("ignores generic ingredient/salt/class words too (#1012)", () => {
+		expect(substancesOverlap("Vitamin D3", "Vitamin B12 injection")).toBe(false);
+		expect(substancesOverlap("Diclofenac Sodium", "Sodium Bicarbonate")).toBe(false);
+	});
+
 	it("is false-safe on empty/missing input", () => {
 		expect(substancesOverlap("", "Penicillin")).toBe(false);
 		expect(substancesOverlap("Penicillin", "")).toBe(false);
@@ -611,6 +616,17 @@ describe("crossOrgAllergyGaps — one-sided allergy continuity gap (#1009)", () 
 		await seedGrant(env, ORG, "P1");
 		await seedBundle(env, ORG, "P1", "AllergyIntolerance", "2026-07-18T00-00-00-000Z", [{ resourceType: "AllergyIntolerance", id: "al1", code: { text: "Penicillin" } }]);
 		await seedGrant(env, ORG2, "P1"); // grant exists, but pull() has never run
+		expect(await crossOrgAllergyGaps(env)).toEqual([]);
+	});
+
+	it("does not flag a resolved/refuted allergy as a gap (#1011)", async () => {
+		const env = baseEnv();
+		await seedGrant(env, ORG, "P1");
+		await seedGrant(env, ORG2, "P1");
+		await seedBundle(env, ORG, "P1", "AllergyIntolerance", "2026-07-18T00-00-00-000Z", [
+			{ resourceType: "AllergyIntolerance", id: "al1", code: { text: "Penicillin" }, clinicalStatus: { coding: [{ code: "resolved" }] } },
+		]);
+		await seedBundle(env, ORG2, "P1", "Condition", "2026-07-18T00-00-00-000Z", [{ resourceType: "Condition", id: "cond1" }]);
 		expect(await crossOrgAllergyGaps(env)).toEqual([]);
 	});
 });
