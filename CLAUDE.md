@@ -267,6 +267,14 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   actually received from a trusted contact) — it will never fire for commands sent from
   a same-Apple-ID self-chat. Any future feature reading `from_me` to mean "the other
   person" should confirm which topology applies before trusting it.
+- **An audit issue that says "X (fixed for #N in this PR)" describes code that landed
+  in #N's OWN build session, not necessarily this branch's `HEAD`** — if #N is still
+  open/`building` (unmerged), the referenced fix doesn't exist here yet, and the audit
+  issue isn't buildable as an EXPAND pick until #N actually merges. Confirmed on #968
+  (references `_cross_semantic.ts`'s pair cap "fixed for #959") and #969 (references
+  `_infer.ts`'s `purgeInferDomain` cascade "fixed for #953") while both #959/#953 were
+  still open/`building` with no landed fix on `origin/main` — skip issues like this
+  rather than reimplement the prerequisite fix yourself just to unblock them.
 
 ## House style
 
