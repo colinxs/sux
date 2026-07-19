@@ -28,7 +28,7 @@ const CATEGORIES = [
 	["Notes / knowledge / vault", ["obsidian", "ingest", "citation", "consolidate", "vault_consolidate_plan", "vault_cross_link_plan"]],
 	["Knowledge / learning", ["recall", "oracle", "study", "advise", "learn", "preferences", "life_wiki", "agenda", "onboard"]],
 	["Mail (JMAP)", ["jmap", "mail_triage", "mail_triage_plan", "mail_sieve", "mail_sieve_hc", "mail_sieve_backfill", "mail_domain_backfill", "briefing"]],
-	["Personal namespaces (one /mcp)", ["vault", "mail", "files", "calendar", "contact", "imessage"]],
+	["Personal namespaces (one /mcp)", ["vault", "mail", "files", "calendar", "contact", "contact_consolidate_plan", "imessage"]],
 	["Agent / autonomy", ["proposals", "webpush"]],
 	["Personal finance", ["monarch"]],
 	["Personal health", ["mychart"]],
