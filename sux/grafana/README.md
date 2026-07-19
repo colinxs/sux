@@ -46,7 +46,7 @@ LogQL parses that with `| json`, so `ms` is available to `unwrap` and `error` /
 | --- | --- |
 | `dashboard.json` | Importable Grafana dashboard, **Loki** datasource. Panels: call rate by tool, latency p50/p95/p99 (`quantile_over_time` on unwrapped `ms`), error ratio, cache-hit ratio, throughput-vs-errors, errors by tool. |
 | `alerts.json` | Grafana-managed alert rule (Loki): **error ratio sustained above 5% for 10m**. |
-| `prometheus-dashboard.json` | Importable Grafana dashboard, **Prometheus** datasource, over the cron-pushed `sux_*` snapshot. Panels: call/error rate, recent-window latency p50/p95, success / cache-hit / residential rates, SLO breaches (+ cron freshness), calls by tool. |
+| `prometheus-dashboard.json` | Importable Grafana dashboard, **Prometheus** datasource, over the cron-pushed `sux_*` snapshot. Panels: call/error rate, recent-window latency p50/p95, success / cache-hit / residential rates, SLO breaches (+ cron freshness), calls by tool, GitHub Actions minutes used/included + % used. |
 | `prometheus-alerts.json` | Grafana-managed alert rules (Prometheus): **metrics snapshot stale for 15m** (cron stalled) and **any SLO target breached for 10m**. |
 
 ### The metric series (Prometheus half)
@@ -58,6 +58,13 @@ Counters (`*_total`) are lifetime cumulative — query them with `rate()`/`incre
 the rest (`sux_error_rate`, `sux_cache_hit_rate`, `sux_residential_ratio`,
 `sux_success_rate`, `sux_latency_ms`, `sux_slo_breaches`) are point-in-time gauges.
 Null rates (no sample) are omitted rather than emitted as `NaN`.
+
+`shipGithubBillingSnapshot` pushes two more series once per daily maintenance tick:
+`gh_actions_minutes_used_total` and `gh_actions_minutes_included`. Despite the
+`_total` name these are **point-in-time gauges for the current GitHub billing
+cycle** (GitHub resets them monthly), not lifetime counters — query them directly,
+not through `rate()`/`increase()`. Dormant (no push) until `GITHUB_TOKEN` and both
+`GRAFANA_PROM_*` secrets are set.
 
 > **Metric naming note:** some Grafana Cloud Influx receivers name the resulting
 > Prometheus series `<measurement>_value` (i.e. `sux_calls_total_value`). If the

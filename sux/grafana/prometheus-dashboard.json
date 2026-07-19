@@ -91,6 +91,29 @@
       "id": 7,
       "targets": [{ "refId": "A", "expr": "topk(10, rate(sux_tool_calls_total[15m]) * 60)", "legendFormat": "{{tool}}" }],
       "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "title": "GitHub Actions minutes (this billing cycle)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 22 },
+      "id": 8,
+      "description": "Pushed once per daily maintenance tick by shipGithubBillingSnapshot (sux/src/grafana.ts). Both are point-in-time gauges for the current cycle (reset by GitHub monthly), despite the _total name — don't wrap in rate()/increase(). 'No data' means GITHUB_TOKEN + GRAFANA_PROM_* aren't all set yet, or the gh_actions_billing sub-job hasn't ticked.",
+      "targets": [
+        { "refId": "A", "expr": "gh_actions_minutes_used_total", "legendFormat": "used" },
+        { "refId": "B", "expr": "gh_actions_minutes_included", "legendFormat": "included" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "title": "GitHub Actions minutes used (%)",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 22 },
+      "id": 9,
+      "description": "gh_actions_minutes_used_total / gh_actions_minutes_included — the budget-remaining indicator called for in docs/design/spend-observability-plan.md's 'Next step'.",
+      "targets": [{ "refId": "A", "expr": "gh_actions_minutes_used_total / gh_actions_minutes_included" }],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.7 }, { "color": "red", "value": 0.9 }] } }, "overrides": [] }
     }
   ],
   "refresh": "5m",

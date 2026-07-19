@@ -1,6 +1,6 @@
 ---
 title: Spend observability plan (GitHub Actions minutes + Claude/API credit usage)
-status: draft (plumbing step 1 shipped — see #1061)
+status: draft (plumbing step 1 shipped — see #1061; dashboard panel shipped — see #1064)
 ---
 
 # Spend observability plan
@@ -58,15 +58,17 @@ found nothing beyond the tool-call metrics above.
    secrets + shared `GRAFANA_LOKI_TOKEN` bearer — no new credential to mint). Rides the
    daily maintenance cron as the `gh_actions_billing` sub-job (heartbeat-tracked like the
    rest of `CRON_JOBS`); dormant until GITHUB_TOKEN + both Prometheus secrets are set.
-   The dashboard panel itself is still unbuilt — see "Next step" below.
+   The dashboard panel is SHIPPED (#1064): `sux/grafana/prometheus-dashboard.json` panels
+   8/9 chart both gauges plus the derived "% of included minutes used" stat from item (3)
+   below.
 2. **Claude/API credit usage**: Anthropic doesn't currently expose a usage/cost
    API for this to poll (console-only as of this writing) — confirm before
    building; if none exists, this half stays manual/console-only until Anthropic
    ships one, and the dashboard should say so rather than fake a panel.
-3. **Budget-remaining indicator**: once (1) lands, a "days until Actions minutes
-   reset" or "% of included minutes used this cycle" gauge is a simple derived
-   panel (`included - used`, reset date known from the billing cycle anchor) —
-   no additional data needed beyond (1).
+3. **Budget-remaining indicator**: SHIPPED (#1064) as the "% of included minutes
+   used" stat panel (`gh_actions_minutes_used_total / gh_actions_minutes_included`).
+   A "days until Actions minutes reset" variant would need the billing cycle anchor
+   date, which the billing API doesn't return — not built.
 
 ## Why this note instead of a dashboard right now
 
@@ -80,9 +82,8 @@ found nothing beyond the tool-call metrics above.
 
 ## Next step
 
-Once (1) is built (a Worker cron route or scheduled GH Action pushing
-`gh_actions_minutes_used` to Grafana Cloud Prometheus), come back to this note,
-build the actual dashboard (reusing `sux/grafana/prometheus-dashboard.json` as
-the template — same `__inputs`/import pattern), and update `sux/grafana/README.md`
-with the new panel set. Claude/credit usage panel gets added if/when Anthropic
-exposes a programmatic usage endpoint.
+(1) and the dashboard panel from (3) are both shipped (#1061, #1064) — the
+GitHub Actions minutes half of this plan is done. What's left is Claude/API
+credit usage: still stays manual/console-only until Anthropic ships a
+programmatic usage endpoint (see item 2 above); revisit this note if/when
+that changes.
