@@ -626,7 +626,11 @@ const SUBSTANCE_STOPWORDS = new Set([
 ]);
 
 function normalizeSubstance(s: string): string {
-	return s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+	return s
+		.toLowerCase()
+		.replace(/(\d)([a-z])/g, "$1 $2")
+		.replace(/[^a-z0-9]+/g, " ")
+		.trim();
 }
 
 /** Conservative, non-diagnostic substance-string overlap: true when a significant

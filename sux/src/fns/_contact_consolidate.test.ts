@@ -114,6 +114,17 @@ describe("findDuplicateContacts", () => {
 		expect(new Set(clusters[0].ids)).toEqual(new Set(["1", "2"]));
 	});
 
+	it("strips a parenthesized trailing extension so it clusters with the bare number (#1039)", () => {
+		expect(normPhone("555-123-4567 (ext 22)")).toBe("5551234567");
+		const contacts: ContactRef[] = [
+			{ id: "1", name: "Eve", phones: ["555-123-4567 (ext 22)"] },
+			{ id: "2", name: "Eve R", phones: ["555-123-4567"] },
+		];
+		const clusters = findDuplicateContacts(contacts);
+		expect(clusters).toHaveLength(1);
+		expect(new Set(clusters[0].ids)).toEqual(new Set(["1", "2"]));
+	});
+
 	it("does not cluster two different people sharing only a bare 7-digit number across area codes (#1013)", () => {
 		const contacts: ContactRef[] = [
 			{ id: "1", name: "Erin Adams", phones: ["555-1234"] },

@@ -1,6 +1,6 @@
 import type { RtEnv } from "../registry";
 import { listFullChanges } from "./_dropbox-full";
-import { FILES_SEMANTIC_TEXT_EXT } from "./_files_semantic";
+import { FILE_SIZE_CAP, FILES_SEMANTIC_TEXT_EXT } from "./_files_semantic";
 import type { DuplicateFileCluster } from "./_files_consolidate";
 
 // Byte-identical duplicate detection for #1015/#1022: _files_consolidate.ts's cosine
@@ -20,10 +20,19 @@ const MAX_FILES_FOR_BINARY_DEDUP = 3000;
 const MAX_LIST_PAGES = 5;
 
 /** A live list_folder(/continue) entry worth hashing: a non-empty file with a content_hash,
- *  OUTSIDE the textual extensions files_semantic already covers — keeps this detector
- *  strictly complementary to findDuplicateFiles rather than double-proposing the same file. */
+ *  OUTSIDE what files_semantic actually covers (textual extension AND under its size cap) —
+ *  keeps this detector strictly complementary to findDuplicateFiles rather than double-proposing
+ *  the same file, while still catching oversized textual files files_semantic never embeds. */
 function isCandidate(e: any): e is { kind: "file"; path: string; size: number; content_hash: string } {
-	return e?.kind === "file" && typeof e?.path === "string" && typeof e?.content_hash === "string" && e.content_hash.length > 0 && typeof e?.size === "number" && e.size > 0 && !FILES_SEMANTIC_TEXT_EXT.test(e.path);
+	return (
+		e?.kind === "file" &&
+		typeof e?.path === "string" &&
+		typeof e?.content_hash === "string" &&
+		e.content_hash.length > 0 &&
+		typeof e?.size === "number" &&
+		e.size > 0 &&
+		!(FILES_SEMANTIC_TEXT_EXT.test(e.path) && e.size <= FILE_SIZE_CAP)
+	);
 }
 
 /** Page list_folder(/continue) from a fresh whole-account listing, collecting up to
