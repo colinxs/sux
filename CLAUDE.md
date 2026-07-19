@@ -256,6 +256,17 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   scratch, check whether the latest orphaned attempt still applies cleanly — it usually
   does, since the DIRTY state is a timing artifact of `main` moving during the queue
   wait, not a real conflict with the change itself.
+- **`imessage_server.py`'s `is_from_me` (surfaced as `imessage.ts`'s `from_me`) is an
+  Apple-ID-account property, not a "which physical device" property** — if the Mac
+  running `imessage-service` and Colin's phone are signed into the SAME Apple ID (the
+  common case, since it's Colin's own devices), a message Colin sends from his phone
+  syncs to the Mac's chat.db as `from_me: true`, identical to one the Mac itself sent.
+  A self-chat (texting your own number) is therefore ALL `from_me: true` on both ends.
+  `_imessage_reply.ts`'s inbound-command gate (#897) assumes a DEDICATED automation
+  handle/number for the control channel and requires `from_me: false` (a message
+  actually received from a trusted contact) — it will never fire for commands sent from
+  a same-Apple-ID self-chat. Any future feature reading `from_me` to mean "the other
+  person" should confirm which topology applies before trusting it.
 
 ## House style
 
