@@ -7,6 +7,9 @@ import { hasBriefing, hasBriefingStageDrafts } from "./_briefing";
 import { hasWeeklyRecall } from "./_weekly_recall";
 import { hasConsolidate } from "./_consolidate";
 import { hasAgenda, hasAgendaEmail } from "./_agenda";
+import { hasAskGateReminder, hasAskGateReminderEmail } from "./_ask_gate_reminder";
+import { hasLifeWiki } from "./_life_wiki";
+import { hasLearningFolder } from "./_learning_folder";
 
 // "What can act on my behalf right now" — a single read-only mirror of the Worker-side
 // autonomy gates. Several consequential surfaces (mail-triage, Mode-B Dropbox writes,
@@ -22,6 +25,13 @@ import { hasAgenda, hasAgendaEmail } from "./_agenda";
 // A surface = one autonomous capability, its consequence, and whether it's armed. `armed`
 // is the operative live-or-dormant bit; `mode` names the sub-gate state without any value.
 type Surface = { surface: string; armed: boolean; mode: string; reversible: boolean; consequence: string };
+
+// mail_triage_plan has no exported has* helper (its gate is inlined in index.ts's
+// mailTriagePlanTick) — mirror that same toggle-truthy read here rather than widen that file.
+const flagOn = (v: string | undefined): boolean => {
+	const s = String(v ?? "").trim().toLowerCase();
+	return s !== "" && s !== "0" && s !== "false" && s !== "no" && s !== "off";
+};
 
 export const autonomy_status: Fn = {
 	name: "autonomy_status",
@@ -46,6 +56,11 @@ export const autonomy_status: Fn = {
 		const consolidateOn = hasConsolidate(env);
 		const agendaOn = hasAgenda(env);
 		const agendaEmail = hasAgendaEmail(env);
+		const mailTriagePlanOn = flagOn(env.MAIL_TRIAGE_PLAN_ENABLED);
+		const askGateReminderOn = hasAskGateReminder(env);
+		const askGateReminderEmail = hasAskGateReminderEmail(env);
+		const lifeWikiOn = hasLifeWiki(env);
+		const learningFolderOn = hasLearningFolder(env);
 
 		const surfaces: Surface[] = [
 			{
@@ -103,6 +118,34 @@ export const autonomy_status: Fn = {
 				mode: !agendaOn ? "dormant" : agendaEmail ? "armed (records reversible task proposals + emails you the digest)" : "armed (records reversible task proposals; digest to vault note only)",
 				reversible: true,
 				consequence: "scans mail+calendar for life 'drops' and RECORDS a reversible Todoist-task proposal for each — nothing acts until you approve via the `proposals` verb. Appends a digest to the Daily note; when AGENDA_EMAIL is set, ALSO mails the digest to your OWN address (the only send — never a third party). Never moves/deletes/auto-approves.",
+			},
+			{
+				surface: "mail_triage_plan",
+				armed: mailTriagePlanOn,
+				mode: mailTriagePlanOn ? "armed (durable classify→propose, pauses for human approval)" : "dormant",
+				reversible: true,
+				consequence: "durable sibling of mail_triage: classifies a page of inbox mail into proposed REVERSIBLE label:add changes and PAUSES for one human approval before applying anything — never auto-applies, never archives/deletes/drafts. An unanswered gate fails closed after 24h.",
+			},
+			{
+				surface: "ask_gate_reminder",
+				armed: askGateReminderOn,
+				mode: !askGateReminderOn ? "dormant" : askGateReminderEmail ? "armed (vault append + emails you the reminder)" : "armed (vault append only)",
+				reversible: true,
+				consequence: "proactively surfaces durable `run` instances paused on a human `ask` gate so they don't silently time out — vault-append only; when ASK_GATE_REMINDER_EMAIL is set, ALSO mails the reminder to your OWN address. Never answers a gate itself.",
+			},
+			{
+				surface: "life_wiki",
+				armed: lifeWikiOn,
+				mode: lifeWikiOn ? "armed (cron-driven, writes to a regenerable sandbox area)" : "dormant",
+				reversible: true,
+				consequence: "synthesizes a living self-model (People/Health/Projects/Timeline/Interests) from vault+files+mail+learned into its own sandbox vault area — never touches your real notes, git-reversible like any vault write.",
+			},
+			{
+				surface: "learning_folder",
+				armed: learningFolderOn,
+				mode: learningFolderOn ? "armed (cron-driven Dropbox folder sync)" : "dormant",
+				reversible: true,
+				consequence: "syncs a Dropbox learning folder into study material — read from Dropbox, vault-append only. Requires the Dropbox app-folder credential in addition to its own enable flag.",
 			},
 		];
 
