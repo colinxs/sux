@@ -112,6 +112,10 @@ export type InferNudgeReport = {
 	inferenceId?: string;
 	note?: string;
 	error?: string;
+	/** The nudge itself already wrote (digest append or warm-up log); only the trailing rate/
+	 *  dedupe ledger marks failed. Can't roll back the write, so this cycle risks a duplicate
+	 *  nudge next tick rather than losing the one that already landed. */
+	markFailed?: string;
 };
 
 /** A stable-ish key for "this evidence set" so a re-detected near-identical candidate (drift
@@ -239,12 +243,24 @@ export async function runInferNudge(env: RtEnv, opts: { domains?: InferDomain[] 
 		}
 	}
 
-	await rate.mark(candidate.cluster);
-	await dedupe.mark(dedupeKey);
+	let markFailed: string | undefined;
+	try {
+		await rate.mark(candidate.cluster);
+		await dedupe.mark(dedupeKey);
+	} catch (e) {
+		markFailed = errMsg(e);
+	}
 
 	return inWarmup
-		? { warmup: true, cluster: candidate.cluster, driftScore: candidate.driftScore, inferenceId, cyclesRemaining: warmupRequired - (warmupCount + 1) }
-		: { fired: true, cluster: candidate.cluster, driftScore: candidate.driftScore, inferenceId };
+		? {
+				warmup: true,
+				cluster: candidate.cluster,
+				driftScore: candidate.driftScore,
+				inferenceId,
+				cyclesRemaining: warmupRequired - (warmupCount + 1),
+				...(markFailed ? { markFailed } : {}),
+			}
+		: { fired: true, cluster: candidate.cluster, driftScore: candidate.driftScore, inferenceId, ...(markFailed ? { markFailed } : {}) };
 }
 
 // A static, non-diagnostic fallback phrasing (no LLM call) — used when Workers-AI isn't

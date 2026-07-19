@@ -62,7 +62,7 @@ export const normFull = (p: unknown): string => {
 const fullFetch = (env: RtEnv, url: string, build: (t: string) => RequestInit): Promise<Response> => dropboxFetch(env, fullScope(env), url, build);
 const fullRpc = (env: RtEnv, path: string, body: unknown): Promise<{ status: number; json: any }> => dropboxRpc(env, fullScope(env), path, body);
 
-const fileEntry = (m: any) => ({ kind: m?.[".tag"], name: m?.name, path: m?.path_display ?? m?.path_lower, size: m?.size, rev: m?.rev, modified: m?.server_modified });
+const fileEntry = (m: any) => ({ kind: m?.[".tag"], name: m?.name, path: m?.path_display ?? m?.path_lower, size: m?.size, rev: m?.rev, modified: m?.server_modified, content_hash: m?.content_hash });
 
 /** Whole-Dropbox search (files/search_v2). Read-only, handles only (never bytes). */
 export async function searchFull(env: RtEnv, opts: { query: string; path_prefix?: string; ext?: string[]; max_results?: number; cursor?: string }): Promise<{ matches: any[]; has_more: boolean; cursor?: string }> {

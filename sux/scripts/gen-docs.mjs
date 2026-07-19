@@ -31,7 +31,7 @@ const CATEGORIES = [
 	["Personal namespaces (one /mcp)", ["vault", "mail", "files", "calendar", "contact", "contact_consolidate_plan", "files_consolidate_plan", "imessage"]],
 	["Agent / autonomy", ["proposals", "webpush"]],
 	["Personal finance", ["monarch"]],
-	["Personal health", ["mychart"]],
+	["Personal health", ["mychart", "mychart_reconcile_plan"]],
 	["Feedback / meta", ["issue", "suggest"]],
 	["Infra / meta", ["selftest", "autonomy_status", "controld", "tailscale", "sux", "fn", "todoist"]],
 ];
