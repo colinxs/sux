@@ -29,7 +29,7 @@
     "check:pricing": "node sux/scripts/check-pricing.mjs",
     "lint:dispatcher-docs": "node sux/scripts/lint-dispatcher-param-docs.mjs",
     "branches": "bash scripts/branch-sweep.sh",
-    "ci": "npm run type-check && npm test && npm run check:node && npm run check:wrangler-compat && npm run gen:index && git diff --exit-code sux/src/fns/index.ts && wrangler deploy --dry-run --config sux/wrangler.jsonc"
+    "ci": "npm run type-check && npm test && npm run check:node && npm run check:wrangler-compat && npm run gen:index && git diff --exit-code sux/src/fns/index.ts && npm run lint:dispatcher-docs && wrangler deploy --dry-run --config sux/wrangler.jsonc"
   },
   "dependencies": {
     "@cloudflare/puppeteer": "^1.1.0",
