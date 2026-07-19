@@ -303,13 +303,22 @@ describe("render", () => {
 
 	it("block_resources is ignored for screenshots when residential is off", async () => {
 		await render.run(CAS_ENV, { url: "https://example.com", as: "screenshot", block_resources: true, residential: false });
-		expect(stubs.setRequestInterception).not.toHaveBeenCalled();
+		// Interception is always installed now (#927, the SSRF guard must see every
+		// request regardless of flags) but dropped again before the capture call so
+		// it can't race Page.captureScreenshot.
+		expect(stubs.setRequestInterception).toHaveBeenNthCalledWith(1, true);
+		expect(stubs.setRequestInterception).toHaveBeenNthCalledWith(2, false);
 		expect(stubs.screenshot).toHaveBeenCalled();
 	});
 
-	it("does not install request interception when residential is off and block_resources is off", async () => {
+	it("still installs request interception (SSRF guard, #927) when residential is off and block_resources is off, but doesn't proxy", async () => {
 		await render.run(BROWSER_ENV, { url: "https://example.com", residential: false });
-		expect(stubs.setRequestInterception).not.toHaveBeenCalled();
+		expect(stubs.setRequestInterception).toHaveBeenCalledWith(true);
+		const handler = capturedRequestHandler();
+		const docReq = fakeReq({ resourceType: "document", url: "https://example.com/page" });
+		await handler(docReq);
+		expect(docReq.continue).toHaveBeenCalled();
+		expect(smartFetchMock).not.toHaveBeenCalled();
 	});
 
 	// --- residential routing (default true) ---
@@ -370,8 +379,8 @@ describe("render", () => {
 
 	it("residential:false does NOT route through smartFetch (browser fetches directly)", async () => {
 		await render.run(BROWSER_ENV, { url: "https://example.com", residential: false });
-		// No interception installed at all when neither residential nor block_resources is on.
-		expect(stubs.setRequestInterception).not.toHaveBeenCalled();
+		// Interception is still installed for the SSRF guard (#927); nothing is proxied.
+		expect(stubs.setRequestInterception).toHaveBeenCalledWith(true);
 		expect(smartFetchMock).not.toHaveBeenCalled();
 	});
 

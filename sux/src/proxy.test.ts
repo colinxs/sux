@@ -127,6 +127,18 @@ describe("SSRF guard", () => {
 		expect(isBlockedTarget("http://[::8.8.8.8]/")).toBe(false);
 	});
 
+	it("blocks NAT64 Well-Known Prefix (RFC 6052, 64:ff9b::/96) embedded private/loopback/metadata literals", () => {
+		// `new URL` compresses a dotted-tail NAT64 literal the same way it does for
+		// ::ffff: — 64:ff9b::169.254.169.254 -> 64:ff9b::a9fe:a9fe.
+		expect(new URL("http://[64:ff9b::169.254.169.254]/").hostname).toBe("[64:ff9b::a9fe:a9fe]");
+		expect(isPrivateIp("64:ff9b::a9fe:a9fe")).toBe(true); // cloud metadata
+		expect(isPrivateIp("64:ff9b::7f00:1")).toBe(true); // 127.0.0.1, loopback
+		expect(isPrivateIp("64:ff9b::c0a8:1")).toBe(true); // 192.168.0.1, private LAN
+		expect(isPrivateIp("64:ff9b::808:808")).toBe(false); // 8.8.8.8 — public, not over-blocked
+		expect(isBlockedTarget("http://[64:ff9b::a9fe:a9fe]/")).toBe(true);
+		expect(isBlockedTarget("http://[64:ff9b::808:808]/")).toBe(false);
+	});
+
 	it("smartFetch refuses a private target and never calls fetch", async () => {
 		const fetchMock = vi.fn(async () => new Response("ok"));
 		vi.stubGlobal("fetch", fetchMock);

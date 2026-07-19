@@ -20,7 +20,7 @@
 // raw `bytes` (the caller delivers them).
 
 import puppeteer from "@cloudflare/puppeteer";
-import { smartFetch } from "./proxy";
+import { isBlockedTarget, smartFetch } from "./proxy";
 import type { RtEnv } from "./registry";
 
 const BLOCKED_RESOURCE_TYPES = new Set(["image", "media", "font", "stylesheet"]);
@@ -187,7 +187,19 @@ async function handleRequest(
 	req: RequestForInterception,
 	opts: { residential: boolean; blockResources: boolean },
 ): Promise<void> {
-
+	// SSRF guard: every request Chromium makes after the initial page.goto — a
+	// redirect hop, a client-side window.location navigation, a subresource
+	// fetch — must be re-validated here too, not just the original URL (which
+	// render.ts checks once before navigation even starts). Runs regardless of
+	// residential/blockResources so neither flag combination leaves a gap (#927).
+	if (isBlockedTarget(req.url())) {
+		try {
+			await req.abort();
+		} catch {
+			// Even abort can race a closing page; swallow so nothing is left un-handled.
+		}
+		return;
+	}
 	if (opts.blockResources && BLOCKED_RESOURCE_TYPES.has(req.resourceType())) {
 		try {
 			await req.abort();
@@ -300,12 +312,14 @@ export async function cfRender(env: RtEnv, spec: CfRenderSpec): Promise<CfRender
 
 		if (stealth) await applyStealth(page as unknown as PageForStealth, stealthUa(env.STEALTH_CHROME_MAJOR || DEFAULT_STEALTH_CHROME_MAJOR));
 
-		if (residential || blockResources) {
-			await page.setRequestInterception(true);
-			page.on("request", (req: RequestForInterception) => {
-				void handleRequest(env, req, { residential, blockResources });
-			});
-		}
+		// Installed unconditionally (not just when residential/blockResources ask for
+		// proxying/asset-blocking) so the SSRF check inside handleRequest runs on every
+		// request regardless of flags — a redirect or JS navigation away from the
+		// initial (already-checked) URL must still be validated (#927).
+		await page.setRequestInterception(true);
+		page.on("request", (req: RequestForInterception) => {
+			void handleRequest(env, req, { residential, blockResources });
+		});
 		// waitUntil/format are validated strings; cast to puppeteer's literal unions.
 		await page.goto(spec.url, { waitUntil, timeout } as Parameters<typeof page.goto>[1]);
 		if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
@@ -330,7 +344,7 @@ export async function cfRender(env: RtEnv, spec: CfRenderSpec): Promise<CfRender
 			}
 		}
 
-		if ((residential || blockResources) && (as === "screenshot" || as === "pdf")) {
+		if (as === "screenshot" || as === "pdf") {
 			// Navigation is already done; drop CDP Fetch-domain interception before
 			// the capture call so it can't race Page.printToPDF/Page.captureScreenshot.
 			await page.setRequestInterception(false);

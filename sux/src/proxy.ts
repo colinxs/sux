@@ -148,6 +148,14 @@ export function isPrivateIp(host: string): boolean {
 			const dotted = mappedV4ToDotted(host.slice(2));
 			return dotted != null && isPrivateIp(dotted);
 		}
+		// NAT64 Well-Known Prefix (RFC 6052, 64:ff9b::/96): a DNS64/NAT64 gateway
+		// embeds the destination IPv4 address in the trailing 32 bits the same way
+		// the v4-mapped/v4-compatible forms above do — decode it back to IPv4 and
+		// re-run it through this same function.
+		if (host.startsWith("64:ff9b::")) {
+			const dotted = mappedV4ToDotted(host.slice(9));
+			return dotted != null && isPrivateIp(dotted);
+		}
 		return false;
 	}
 	const parts = host.split(".");

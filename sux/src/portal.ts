@@ -82,7 +82,6 @@ h1{font-size:20px;margin-bottom:4px}
 .note-body{white-space:pre-wrap;font-family:inherit;font-size:15px;line-height:1.6;margin:0}
 ul{list-style:none;padding:0;margin:0}
 li{padding:10px 0;border-bottom:1px solid #1f242b}
-.excerpt{color:#aaa;font-size:13px;margin-top:2px}
 .stub{color:#888;font-style:italic;border:1px dashed #333;padding:16px;border-radius:8px}
 .back{display:inline-block;margin-top:24px;font-size:13px}
 </style>`;
@@ -97,10 +96,16 @@ function page(title: string, body: string): Response {
 const noteTitle = (r: Pick<VaultRecord, "path" | "fm">) => String(r.fm.title ?? noteBasename(r.path));
 
 function renderIndex(records: VaultRecord[]): Response {
+	// Title-only: unlike the single-note route (which re-reads the note fresh and
+	// re-derives visibility from that content, see below), this index trusts the
+	// cached scanVault snapshot's visibility — bounded-stale by up to
+	// HEAD_STALE_MAX_MS (fns/obsidian.ts). A body excerpt here would leak real
+	// content for a note un-published in that window; the title alone is a much
+	// smaller, already-accepted staleness exposure (#929).
 	const items = records
 		.slice()
 		.sort((a, b) => noteTitle(a).localeCompare(noteTitle(b)))
-		.map((r) => `<li><a href="${noteHref(r.path)}">${esc(noteTitle(r))}</a><div class="excerpt">${esc(r.excerpt)}</div></li>`)
+		.map((r) => `<li><a href="${noteHref(r.path)}">${esc(noteTitle(r))}</a></li>`)
 		.join("");
 	return page("portal", `<h1>portal</h1><div class="sub">${records.length} public note${records.length === 1 ? "" : "s"}</div><ul>${items || "<li>Nothing published yet.</li>"}</ul>`);
 }

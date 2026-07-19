@@ -71,6 +71,17 @@ describe("portal", () => {
 		expect(body).not.toContain("Private Note<"); // not listed as its own entry
 	});
 
+	it("index lists titles only, never a body excerpt (avoids leaking content from a note whose visibility went stale, #929)", async () => {
+		serveNotes(NOTES);
+		const res = await get(ENV, "/portal");
+		const body = await res!.text();
+		// The index trusts the cached scanVault snapshot for visibility (bounded-stale
+		// up to HEAD_STALE_MAX_MS) — unlike the single-note route, it never re-verifies
+		// against fresh content, so it must not render real body text either.
+		expect(body).not.toContain("Welcome! See");
+		expect(body).not.toContain("Visible via frontmatter");
+	});
+
 	it("renders a #portal-tagged note's body, linkifying [[wikilinks]] to /portal/<basename>", async () => {
 		serveNotes(NOTES);
 		const res = await get(ENV, "/portal/hello");

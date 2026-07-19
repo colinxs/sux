@@ -41,7 +41,13 @@ vi.mock("@cloudflare/puppeteer", () => {
 });
 
 const smartFetchMock = vi.hoisted(() => vi.fn());
-vi.mock("./proxy", () => ({ smartFetch: smartFetchMock }));
+// Keeps the real isBlockedTarget (the SSRF guard handleRequest now runs on every
+// intercepted request, #927) so its private/loopback/metadata detection is
+// exercised for real instead of trivially mocked; only smartFetch is stubbed.
+vi.mock("./proxy", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./proxy")>();
+	return { ...actual, smartFetch: smartFetchMock };
+});
 
 import { cfRender } from "./cf-render";
 
@@ -172,6 +178,28 @@ describe("cfRender", () => {
 		const doc = fakeReq({ resourceType: "document" });
 		await handler(doc);
 		expect(doc.continue).toHaveBeenCalled();
+		expect(smartFetchMock).not.toHaveBeenCalled();
+	});
+
+	// #927: residential:false + block_resources:false used to skip
+	// setRequestInterception entirely, so a redirect/JS-navigation to an internal
+	// address after the initial (already-checked) goto was never re-validated.
+	it("residential:false + block_resources:false still installs interception and blocks a private-address navigation", async () => {
+		await cfRender(BROWSER_ENV, { url: "https://example.com", residential: false, block_resources: false });
+		expect(stubs.setRequestInterception).toHaveBeenCalledWith(true);
+		const handler = capturedRequestHandler();
+		const redirected = fakeReq({ resourceType: "document", url: "http://169.254.169.254/latest/meta-data/" });
+		await handler(redirected);
+		expect(redirected.abort).toHaveBeenCalled();
+		expect(redirected.continue).not.toHaveBeenCalled();
+	});
+
+	it("blocks a private-address navigation even with residential:true (before smartFetch would otherwise run)", async () => {
+		await cfRender(BROWSER_ENV, { url: "https://example.com" });
+		const handler = capturedRequestHandler();
+		const redirected = fakeReq({ resourceType: "document", url: "http://127.0.0.1/admin" });
+		await handler(redirected);
+		expect(redirected.abort).toHaveBeenCalled();
 		expect(smartFetchMock).not.toHaveBeenCalled();
 	});
 });
