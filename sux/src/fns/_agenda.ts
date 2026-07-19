@@ -32,6 +32,7 @@ import type { CrossSemanticFindings } from "./_cross_semantic";
 import { classifyMessage } from "./_mail_triage";
 import { hasImessage, imessage } from "./imessage";
 import { hasMonarch, monarch } from "./monarch";
+import { mychartConfigured, summarizeMyChart } from "../mychart";
 import { errMsg, vaultToday } from "./_util";
 import type { WatchFindings } from "./_watch_sweep";
 import type { WeeklyRecallFindings } from "./_weekly_recall";
@@ -535,6 +536,71 @@ async function saveMonarchSnapshot(env: RtEnv, snapshot: MonarchSnapshot): Promi
 	await ledger(env, "agenda_monarch").mark(MONARCH_SNAPSHOT_KEY, JSON.stringify(snapshot));
 }
 
+/** MyChart's last-pull summary (W6), trimmed to what the detector below needs — see
+ *  mychart.ts's summarizeMyChart for the full (already-redacted) shape. */
+export type MyChartLabFlagRef = { id: string; category: string; direction: string };
+export type MyChartRefillDueRef = { id: string; name?: string; dueDate?: string };
+export type MyChartEntryRef = { id: string; docType?: string };
+
+/** Turn MyChart's redacted last-pull summary (mychart.ts's summarizeMyChart — never raw lab
+ *  values or diagnosis names, see its docstring) into drops — same read-only-sense/reversible-
+ *  propose contract as every other detector here. Every drop just says "go check MyChart"; sux
+ *  never surfaces the clinical specifics itself, only enough to prompt action (a direction, a
+ *  medication name + due date, a generic document type). Dedupe is purely by FHIR resource id (no
+ *  date), so — like detectMonarchDrops's unusual_charge — each flagged result/condition/document/
+ *  refill proposes ONCE ever. That's what makes this "new since last check" without a separate
+ *  cursor: a resource id only ever shows up as a fresh drop the first cycle it's seen. */
+export function detectMyChartDrops(labFlags: MyChartLabFlagRef[], refillsDue: MyChartRefillDueRef[], newConditions: MyChartEntryRef[], newDocuments: MyChartEntryRef[]): Drop[] {
+	const drops: Drop[] = [];
+	for (const f of labFlags) {
+		const label = f.category === "vital-signs" ? "Vital sign" : "Lab result";
+		drops.push({
+			kind: "mychart_lab_flag",
+			urgency: "soon",
+			dedupe: `mychart::lab_flag::${f.id}`,
+			title: `${label} flagged ${f.direction} — check MyChart`,
+			emoji: "🩺",
+			action: task(`Review flagged ${label.toLowerCase()} in MyChart`),
+			evidence: { id: f.id, category: f.category, direction: f.direction },
+		});
+	}
+	for (const r of refillsDue) {
+		const name = r.name || "medication";
+		drops.push({
+			kind: "mychart_refill_due",
+			urgency: "soon",
+			dedupe: `mychart::refill_due::${r.id}`,
+			title: `Medication refill due soon: ${name}${r.dueDate ? ` (by ${r.dueDate})` : ""}`,
+			emoji: "💊",
+			action: task(`Request refill: ${name}`, r.dueDate),
+			evidence: { id: r.id, dueDate: r.dueDate },
+		});
+	}
+	for (const c of newConditions) {
+		drops.push({
+			kind: "mychart_new_condition",
+			urgency: "soon",
+			dedupe: `mychart::new_condition::${c.id}`,
+			title: "New condition added to your chart — check MyChart",
+			emoji: "🏥",
+			action: task("Review new condition in MyChart"),
+			evidence: { id: c.id },
+		});
+	}
+	for (const d of newDocuments) {
+		drops.push({
+			kind: "mychart_new_document",
+			urgency: "fyi",
+			dedupe: `mychart::new_document::${d.id}`,
+			title: `New document in your chart${d.docType ? `: ${d.docType}` : ""} — check MyChart`,
+			emoji: "📄",
+			action: task(`Review new document in MyChart${d.docType ? `: ${d.docType}` : ""}`),
+			evidence: { id: d.id, docType: d.docType },
+		});
+	}
+	return sortByUrgency(drops);
+}
+
 // ── Digest (the email interface) ─────────────────────────────────────────────────
 export type ProposedDrop = { proposalId: string; drop: Drop };
 
@@ -609,6 +675,10 @@ export type AgendaDeps = {
 	/** Recent iMessage threads' last message, one per thread (#849) — only called when
 	 *  hasImessage(env). */
 	textThreads: (env: RtEnv, opts: { since: string }) => Promise<TextThreadRef[]>;
+	/** MyChart's last-pulled FHIR snapshot (W6), already redacted by mychart.ts's
+	 *  summarizeMyChart — only called when mychartConfigured(env). Null when never connected
+	 *  (no grant) or never pulled. */
+	mychartSummary: (env: RtEnv, opts: { now: string; refillWindowDays: number }) => Promise<{ labFlags: MyChartLabFlagRef[]; refillsDue: MyChartRefillDueRef[]; newConditions: MyChartEntryRef[]; newDocuments: MyChartEntryRef[] } | null>;
 };
 
 export type AgendaOpts = { date?: string; max_mail?: number; horizon_days?: number; dry_run?: boolean; cycle_id?: string };
@@ -680,6 +750,10 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 	let monarchHoldings: MonarchHoldingRef[] = [];
 	let monarchOk = false;
 	let textThreads: TextThreadRef[] = [];
+	let mychartLabFlags: MyChartLabFlagRef[] = [];
+	let mychartRefillsDue: MyChartRefillDueRef[] = [];
+	let mychartNewConditions: MyChartEntryRef[] = [];
+	let mychartNewDocuments: MyChartEntryRef[] = [];
 	await Promise.all([
 		(async () => {
 			mail = await deps.mailSearch(env, { limit: maxMail });
@@ -750,6 +824,25 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		})().catch((e) => {
 			status.imessage = `unavailable (${errMsg(e).slice(0, 90)})`;
 		}),
+		(async () => {
+			if (!mychartConfigured(env)) {
+				status.mychart = "not_configured";
+				return;
+			}
+			const refillWindowDays = numClamp(env.MYCHART_REFILL_WINDOW_DAYS, 0, 90, 14);
+			const summary = await deps.mychartSummary(env, { now: date, refillWindowDays });
+			if (!summary) {
+				status.mychart = "not_connected";
+				return;
+			}
+			mychartLabFlags = summary.labFlags;
+			mychartRefillsDue = summary.refillsDue;
+			mychartNewConditions = summary.newConditions;
+			mychartNewDocuments = summary.newDocuments;
+			status.mychart = `${summary.labFlags.length} lab flag(s), ${summary.refillsDue.length} refill(s) due, ${summary.newConditions.length + summary.newDocuments.length} new entr${summary.newConditions.length + summary.newDocuments.length === 1 ? "y" : "ies"}`;
+		})().catch((e) => {
+			status.mychart = `unavailable (${errMsg(e).slice(0, 90)})`;
+		}),
 	]);
 
 	const lowBalanceThreshold = numClamp(env.MONARCH_LOW_BALANCE_THRESHOLD, 0, 1_000_000, 100);
@@ -768,6 +861,7 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		...detectMonarchDrops(date, monarchAccounts, monarchTransactions, monarchBudgets, { lowBalanceThreshold, unusualChargeThreshold }),
 		...detectPortfolioDrops(date, monarchHoldings, priorMonarchSnapshot?.allocation ?? null, { concentrationThreshold: portfolioConcentrationThreshold, driftThreshold: portfolioDriftThreshold }),
 		...detectSavingsRateDrop(date, currentSavingsRate, priorMonarchSnapshot?.savingsRate ?? null, { dropThreshold: savingsRateDropThreshold }),
+		...detectMyChartDrops(mychartLabFlags, mychartRefillsDue, mychartNewConditions, mychartNewDocuments),
 	]);
 
 	// Advance the "since last check" baseline every successful Monarch fetch, regardless of
@@ -987,5 +1081,6 @@ export async function defaultDeps(): Promise<AgendaDeps> {
 			}
 			return out;
 		},
+		mychartSummary: async (env, o) => summarizeMyChart(env, { now: o.now, refillWindowDays: o.refillWindowDays }),
 	};
 }
