@@ -1141,7 +1141,8 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 	if (!dryRun && toDeliver.length) {
 		const dled = ledger(env, "agenda_digest");
 		const digKey = `digest::${cycle}`;
-		if (!(await dled.seen(digKey))) {
+		const alreadyDelivered = await dled.seen(digKey);
+		if (!alreadyDelivered) {
 			try {
 				await deps.digestAppend(env, `Daily/${vaultToday(env.VAULT_TZ)}.md`, buildDigestBlock(date, cycle, hasAgendaEmail(env), digest));
 				digestWritten = true;
@@ -1163,9 +1164,10 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 			// Mark AFTER a successful write so a failed append retries next tick (mirrors _weekly_recall.ts).
 			if (digestWritten) await dled.mark(digKey);
 		}
-		// Clear once the vault write actually lands; otherwise re-queue everything still
-		// undelivered — including this cycle's own new proposals — for the next attempt.
-		await pending.mark(PENDING_KEY, digestWritten ? "[]" : JSON.stringify(toDeliver));
+		// Clear once the vault write actually lands (this call, or an earlier call this same
+		// cycle already delivered it); otherwise re-queue everything still undelivered —
+		// including this cycle's own new proposals — for the next attempt (#1041).
+		await pending.mark(PENDING_KEY, digestWritten || alreadyDelivered ? "[]" : JSON.stringify(toDeliver));
 	}
 
 	return {

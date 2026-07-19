@@ -751,4 +751,26 @@ describe("agenda — pending-delivery queue survives a failed digest write (#996
 		expect(d3.digestAppend).not.toHaveBeenCalled(); // nothing left pending — never re-sent
 		expect(r3.proposals ?? []).toHaveLength(0);
 	});
+
+	it("a same-day drop proposed AFTER an earlier same-cycle digest already sent is not requeued for a full extra cycle (#1041)", async () => {
+		const e = env();
+		const d1 = deps({ mailSearch: vi.fn(async () => [RX_MAIL]), calEvents: vi.fn(async () => []) });
+		const r1 = await runAgenda(e, { date: "2026-07-10" }, d1);
+		expect(r1.digest_written).toBe(true); // morning run: digest sent + agenda_digest marked for this cycle
+
+		// Afternoon: same cycle/date, but a genuinely new drop is detected. digestAppend must NOT
+		// be attempted again (already delivered this cycle) — the new drop should still not sit in
+		// the pending queue for tomorrow, since it's still visible via listProposals.
+		const d2 = deps({ mailSearch: vi.fn(async () => [BILL_MAIL]), calEvents: vi.fn(async () => []) });
+		const r2 = await runAgenda(e, { date: "2026-07-10" }, d2);
+		expect(r2.proposed).toBe(1); // the new bill was freshly proposed this call
+		expect(d2.digestAppend).not.toHaveBeenCalled(); // already delivered earlier this cycle
+		expect(r2.proposals?.map((p) => p.kind)).toContain("bill_due");
+
+		// Tomorrow: nothing carried over from the afternoon call — it was treated as covered.
+		const d3 = deps({ mailSearch: vi.fn(async () => []), calEvents: vi.fn(async () => []) });
+		const r3 = await runAgenda(e, { date: "2026-07-11" }, d3);
+		expect(d3.digestAppend).not.toHaveBeenCalled();
+		expect(r3.proposals ?? []).toHaveLength(0);
+	});
 });
