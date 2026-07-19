@@ -44,8 +44,10 @@ export const MAX_NOTES_PER_SWEEP = 500;
 
 /** Bounded-concurrency size for the read loop below (mirrors _examples.ts's GET_CONCURRENCY) —
  *  high enough to keep a cold-cache sweep of MAX_NOTES_PER_SWEEP notes well under
- *  FN_DEADLINE_MS, low enough not to slam the GitHub Contents API with 500 simultaneous calls. */
-const READ_CONCURRENCY = 20;
+ *  FN_DEADLINE_MS, low enough not to slam the GitHub Contents API with 500 simultaneous calls.
+ *  Exported so other on-demand vault-note read loops (e.g. vault_consolidate_plan.ts) share the
+ *  same bound instead of picking their own. */
+export const READ_CONCURRENCY = 20;
 
 /** The ledger key holding the rotating sweep cursor (an index into `listNotes`' order) — kept
  *  under the same "consolidate" namespace as the per-week gate, but not itself week-scoped, so

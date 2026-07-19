@@ -1,6 +1,6 @@
 import { type Fn, failWith, ok } from "../registry";
 import { runVerb } from "./run";
-import { classifyNotes, cutoffIso, defaultDeps, hasConsolidate, staleDays } from "./_consolidate";
+import { READ_CONCURRENCY, classifyNotes, cutoffIso, defaultDeps, hasConsolidate, staleDays } from "./_consolidate";
 import { errMsg, oj } from "./_util";
 
 // vault_consolidate_plan — the entrypoint for the DURABLE, human-approved action-half of
@@ -44,16 +44,22 @@ export const vault_consolidate_plan: Fn = {
 				return failWith("upstream_error", `vault list failed: ${errMsg(e)}`);
 			}
 			const paths = allPaths.slice(0, max);
+			// Read in READ_CONCURRENCY-sized parallel batches rather than one unbounded Promise.all
+			// over up to `max` (schema max 500) notes — mirrors _consolidate.ts's runConsolidate sweep
+			// (#964), which bounds the same GitHub Contents API read pattern for the same reason.
 			const contents = new Map<string, string>();
-			await Promise.all(
-				paths.map(async (path) => {
-					try {
-						contents.set(path, await deps.readNote(env, path));
-					} catch {
-						/* one unreadable note must not sink the whole scan */
-					}
-				}),
-			);
+			for (let i = 0; i < paths.length; i += READ_CONCURRENCY) {
+				const batch = paths.slice(i, i + READ_CONCURRENCY);
+				await Promise.all(
+					batch.map(async (path) => {
+						try {
+							contents.set(path, await deps.readNote(env, path));
+						} catch {
+							/* one unreadable note must not sink the whole scan */
+						}
+					}),
+				);
+			}
 			const { duplicate_candidates } = classifyNotes(paths, contents, cutoffIso(staleDays(env), new Date()), staleDays(env));
 			// classifyNotes emits pairwise candidates (for the digest's "a ↔ b" display), but a
 			// duplicate GROUP of 3+ notes must become exactly ONE cluster — every pair sharing a

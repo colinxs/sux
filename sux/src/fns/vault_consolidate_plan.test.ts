@@ -101,6 +101,28 @@ describe("vault_consolidate_plan", () => {
 		expect(body).toEqual({ scanned: 2, candidates: 0, note: "no duplicate candidates found — nothing to merge" });
 	});
 
+	it("reads in bounded batches without dropping notes past the first batch", async () => {
+		const notes: Record<string, string> = {};
+		for (let i = 0; i < 25; i++) notes[`Note${i}.md`] = fm(`title: note ${i}`); // > READ_CONCURRENCY (20)
+		vi.doMock("./obsidian", () => ({
+			obsidian: {
+				run: async (_env: any, a: any) => {
+					if (a.action === "list") return { content: [{ type: "text", text: JSON.stringify({ notes: Object.keys(notes) }) }] };
+					if (a.action === "read") return { content: [{ type: "text", text: notes[a.path] }] };
+					throw new Error(`unexpected action ${a.action}`);
+				},
+			},
+		}));
+		vi.resetModules();
+		const { vault_consolidate_plan: freshFn } = await import("./vault_consolidate_plan");
+
+		const res = await freshFn.run({ CONSOLIDATE_ENABLED: "1" } as any, {});
+
+		expect(runVerb).not.toHaveBeenCalled();
+		const body = JSON.parse(res.content[0].text);
+		expect(body).toMatchObject({ scanned: 25, candidates: 0 });
+	});
+
 	it("surfaces a vault list failure as an upstream_error", async () => {
 		vi.doMock("./obsidian", () => ({
 			obsidian: {
