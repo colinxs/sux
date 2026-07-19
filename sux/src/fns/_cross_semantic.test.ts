@@ -183,6 +183,25 @@ describe("runCrossSemanticSweep (#948)", () => {
 		expect(report.error).toBeUndefined();
 		expect(report.count).toBe(0);
 	});
+
+	it("rotates the vaultChunks scan window across sweeps instead of always capping the same leading slice (#968)", async () => {
+		const env = envWith({ CROSS_SEMANTIC_ENABLED: "1" });
+		// A large enough target pool drives crossDomainLinks' own MAX_PAIRS cap down to a
+		// small chunkCap (2_000_000 / 100_000 = 20), well under the 30 vault chunks below —
+		// forcing the same truncation crossDomainLinks would apply on a real oversized vault.
+		const manyFiles: FilesSemanticChunk[] = Array.from({ length: 100_000 }, (_, i) => ({ path: `f${i}.txt`, text: "x", embedding: [0, 1, 0] }));
+		const chunks = Array.from({ length: 30 }, (_, i) => vaultChunk(`Note${String(i).padStart(2, "0")}.md`, [1, 0, 0]));
+		const deps = () => mkDeps({ vaultChunks: vi.fn(async () => chunks), mailChunks: vi.fn(async () => []), filesChunks: vi.fn(async () => manyFiles) });
+
+		const week1 = await runCrossSemanticSweep(env, { week: "2026-W50" }, deps());
+		expect(week1.truncated).toBe(true);
+		expect(week1.window_offset).toBe(0);
+		expect(week1.next_offset).toBe(20);
+
+		const week2 = await runCrossSemanticSweep(env, { week: "2026-W51" }, deps());
+		expect(week2.window_offset).toBe(20);
+		expect(week2.next_offset).toBe(10); // wraps: (20 + 20) % 30
+	});
 });
 
 describe("lastCrossSemanticFindings", () => {
