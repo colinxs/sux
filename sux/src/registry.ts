@@ -217,15 +217,17 @@ export type RtEnv = Env &
 		KROGER_CLIENT_SECRET?: string;
 
 		// Epic SMART-on-FHIR clinical records (mychart fn + /mychart/connect|callback
-		// routes, src/mychart.ts). Confidential client: EPIC_CLIENT_ID + EPIC_CLIENT_SECRET
-		// provisioned per health system at fhir.epic.com, EPIC_FHIR_BASE = the org's FHIR
-		// R4 base URL (the OAuth `aud`). The durable REFRESH token is NOT here — it's
-		// minted at /mychart/callback and held in OAUTH_KV (sux:mychart:grant) because
-		// Epic rotates it at runtime and the org sets its lifetime. All absent → the fn
-		// and routes are inert (not_configured), like monarch/dropbox.
+		// routes, src/mychart.ts). One confidential client — EPIC_CLIENT_ID +
+		// EPIC_CLIENT_SECRET — authenticates against every org in mychart.ts's
+		// MYCHART_ORGS registry via Epic's Automatic Client-ID Distribution, so the
+		// per-org FHIR R4 base (the OAuth `aud`) is a code constant there, not env
+		// (EPIC_FHIR_BASE is retired — org bases are public directory data, never
+		// secrets). The durable REFRESH token is NOT here — it's minted at
+		// /mychart/callback and held in OAUTH_KV per org (sux:mychart:grant:${org})
+		// because Epic rotates it at runtime and the org sets its lifetime. Both absent
+		// → the fn and routes are inert (not_configured), like monarch/dropbox.
 		EPIC_CLIENT_ID?: string;
 		EPIC_CLIENT_SECRET?: string;
-		EPIC_FHIR_BASE?: string;
 
 		// Apple Health ingest (/apple-health) — the bearer secret Health Auto Export
 		// presents in `Authorization: Bearer`. Constant-time checked; unset ⇒ the route

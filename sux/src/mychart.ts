@@ -20,9 +20,22 @@ import { safeParseJson } from "./fns/_util";
 
 export const PHI_PREFIX = "phi/";
 
-const GRANT_KEY = "sux:mychart:grant";
-const ACCESS_TOKEN_KEY = "sux:mychart:token";
-const SMART_CFG_KEY = "sux:mychart:smartcfg";
+// The multi-org registry (design §1/§2.1) — a code constant, not runtime config: the
+// org set changes rarely and a constant stays unit-testable/reviewable. One client
+// credential (EPIC_CLIENT_ID/SECRET) authenticates against all three via Epic's
+// Automatic Client-ID Distribution, so adding an org is a one-line PR, never a new
+// Epic app registration. Base URLs are public directory data, never secrets.
+export const MYCHART_ORGS: Record<string, { name: string; fhirBase: string }> = {
+	uwmedicine: { name: "UW Medicine (WA)", fhirBase: "https://fhir.epic.medical.washington.edu/FHIR-Proxy/UWM/api/FHIR/R4" },
+	swedish: { name: "Providence Swedish (WA)", fhirBase: "https://haikuwa.providence.org/fhirproxy/api/FHIR/R4" },
+	bozeman: { name: "Bozeman Health (MT)", fhirBase: "https://revproxy.bh.bozemanhealth.org/Interconnect-Oauth2-PRD/api/FHIR/R4" },
+};
+
+const grantKey = (org: string): string => `sux:mychart:grant:${org}`;
+const accessTokenKey = (org: string): string => `sux:mychart:token:${org}`;
+const smartCfgKey = (org: string): string => `sux:mychart:smartcfg:${org}`;
+// PKCE state is already unique per login attempt, so it keeps one shared key
+// namespace; the org rides inside the stored blob (§2.2) instead of a suffix.
 const pkceKey = (state: string): string => `sux:mychart:pkce:${state}`;
 
 // USCDI-only patient read scopes preserve Epic's Automatic Client ID Distribution
@@ -43,15 +56,47 @@ interface SmartConfig {
 	token_endpoint: string;
 }
 
-/** All three of EPIC_CLIENT_ID / EPIC_CLIENT_SECRET / EPIC_FHIR_BASE set. Absent →
- * the fn and routes stay inert (not_configured), exactly like monarch/dropbox. */
+/** Both EPIC_CLIENT_ID / EPIC_CLIENT_SECRET set. Absent → the fn and routes stay
+ * inert (not_configured), exactly like monarch/dropbox. EPIC_FHIR_BASE is retired
+ * (§2.1) — the org's base now comes from MYCHART_ORGS, a code constant, not a secret. */
 export function mychartConfigured(env: RtEnv): boolean {
-	return Boolean(env.EPIC_CLIENT_ID && env.EPIC_CLIENT_SECRET && env.EPIC_FHIR_BASE);
+	return Boolean(env.EPIC_CLIENT_ID && env.EPIC_CLIENT_SECRET);
 }
 
-/** The org's FHIR R4 base URL (no trailing slash), the `aud` for the OAuth dance. */
-export function fhirBase(env: RtEnv): string {
-	return String(env.EPIC_FHIR_BASE ?? "").replace(/\/+$/, "");
+/** True when `org` is a registered id in MYCHART_ORGS. */
+export function isKnownOrg(org: string): boolean {
+	return Boolean(MYCHART_ORGS[org]);
+}
+
+/** `org`'s FHIR R4 base URL (no trailing slash), the `aud` for the OAuth dance.
+ * "" for an unregistered org — callers that need a hard failure use isKnownOrg first. */
+export function fhirBase(org: string): string {
+	return (MYCHART_ORGS[org]?.fhirBase ?? "").replace(/\/+$/, "");
+}
+
+/** Every registry org id with a stored refresh grant — the "connected" set that
+ * `status`, `refreshMychartToken`, and the org-omitted single-org default all read. */
+export async function connectedOrgs(env: RtEnv): Promise<string[]> {
+	const ids = Object.keys(MYCHART_ORGS);
+	const grants = await Promise.all(ids.map((org) => readGrant(env, org)));
+	return ids.filter((_, i) => Boolean(grants[i]));
+}
+
+/** Resolve a caller-supplied (possibly omitted) org against the registry: an explicit
+ * `requested` must name a known org; an omitted one defaults to the sole CONNECTED org
+ * (§2.4's ergonomic single-org case) and is ambiguous otherwise. Shared by connect/
+ * pull/get so the default rule can't drift between them. */
+export async function resolveOrg(env: RtEnv, requested: unknown): Promise<{ org: string } | { error: string }> {
+	const ids = Object.keys(MYCHART_ORGS);
+	if (typeof requested === "string" && requested.trim()) {
+		const org = requested.trim();
+		if (!isKnownOrg(org)) return { error: `mychart: unknown org '${org}'. Valid orgs: ${ids.join(", ")}.` };
+		return { org };
+	}
+	const connected = await connectedOrgs(env);
+	if (connected.length === 1) return { org: connected[0] };
+	const hint = connected.length ? ` Connected: ${connected.join(", ")}.` : "";
+	return { error: `mychart: an 'org' arg is required (valid orgs: ${ids.join(", ")}).${hint}` };
 }
 
 /** Public base for the callback redirect URI — must match the fhir.epic.com
@@ -80,14 +125,14 @@ export async function challengeFor(verifier: string): Promise<string> {
 	return b64url(new Uint8Array(digest));
 }
 
-/** Discover the authorize/token endpoints from the org's SMART configuration,
- * caching them in KV (config changes propagate in ~12h). Epic's oauth endpoints do
+/** Discover `org`'s authorize/token endpoints from its SMART configuration, caching
+ * them in KV per org (config changes propagate in ~12h). Epic's oauth endpoints do
  * not share a simple suffix with the FHIR base, so discovery is the robust path. */
-export async function smartConfig(env: RtEnv): Promise<SmartConfig> {
-	const cached = await env.OAUTH_KV?.get(SMART_CFG_KEY);
+export async function smartConfig(env: RtEnv, org: string): Promise<SmartConfig> {
+	const cached = await env.OAUTH_KV?.get(smartCfgKey(org));
 	const c = safeParseJson<Partial<SmartConfig> | null>(cached, null);
 	if (c?.authorization_endpoint && c?.token_endpoint) return c as SmartConfig;
-	const resp = await fetch(`${fhirBase(env)}/.well-known/smart-configuration`, {
+	const resp = await fetch(`${fhirBase(org)}/.well-known/smart-configuration`, {
 		headers: { Accept: "application/json" },
 		signal: AbortSignal.timeout(20_000),
 	});
@@ -96,16 +141,17 @@ export async function smartConfig(env: RtEnv): Promise<SmartConfig> {
 		throw new Error(`SMART configuration discovery failed: HTTP ${resp.status}`);
 	}
 	const cfg: SmartConfig = { authorization_endpoint: String(j.authorization_endpoint), token_endpoint: String(j.token_endpoint) };
-	await env.OAUTH_KV?.put(SMART_CFG_KEY, JSON.stringify(cfg), { expirationTtl: SMART_CFG_TTL_S });
+	await env.OAUTH_KV?.put(smartCfgKey(org), JSON.stringify(cfg), { expirationTtl: SMART_CFG_TTL_S });
 	return cfg;
 }
 
-export async function readGrant(env: RtEnv): Promise<MychartGrant | null> {
-	const raw = await env.OAUTH_KV?.get(GRANT_KEY);
+export async function readGrant(env: RtEnv, org: string): Promise<MychartGrant | null> {
+	const raw = await env.OAUTH_KV?.get(grantKey(org));
 	return safeParseJson<MychartGrant | null>(raw, null);
 }
 
 // Confidential client → the token endpoint is authed with HTTP Basic client_id:secret.
+// Shared across every org (§1 — one client_id/secret via Automatic Client-ID Distribution).
 function tokenAuthHeaders(env: RtEnv): Record<string, string> {
 	return {
 		"Content-Type": "application/x-www-form-urlencoded",
@@ -125,20 +171,22 @@ async function tokenPost(env: RtEnv, cfg: SmartConfig, body: Record<string, stri
 	return { status: resp.status, json: await resp.json().catch(() => null) };
 }
 
-/** Cache a freshly-minted access token in KV (TTL = expires_in - 60, KV's 60s floor). */
-async function cacheAccessToken(env: RtEnv, accessToken: string, expiresIn: unknown): Promise<void> {
+/** Cache a freshly-minted access token in KV, scoped to `org` (TTL = expires_in - 60,
+ * KV's 60s floor). */
+async function cacheAccessToken(env: RtEnv, org: string, accessToken: string, expiresIn: unknown): Promise<void> {
 	const ttl = Math.max(60, (Number(expiresIn) || 3600) - 60);
-	await env.OAUTH_KV?.put(ACCESS_TOKEN_KEY, accessToken, { expirationTtl: ttl });
+	await env.OAUTH_KV?.put(accessTokenKey(org), accessToken, { expirationTtl: ttl });
 }
 
-/** Mint an access token from the stored refresh grant, PERSISTING any rotated
- * refresh_token back to the grant before returning. Throws not-configured / no-grant
- * with a caller-friendly message. */
-export async function mintAccessToken(env: RtEnv): Promise<string> {
-	if (!mychartConfigured(env)) throw new Error("MyChart not configured (EPIC_CLIENT_ID / EPIC_CLIENT_SECRET / EPIC_FHIR_BASE).");
-	const grant = await readGrant(env);
-	if (!grant?.refresh_token) throw new Error("MyChart not connected — no grant in KV. Open /mychart/connect once to link the account.");
-	const cfg = await smartConfig(env);
+/** Mint an access token from `org`'s stored refresh grant, PERSISTING any rotated
+ * refresh_token back to that org's grant before returning. Throws not-configured /
+ * unknown-org / no-grant with a caller-friendly message. */
+export async function mintAccessToken(env: RtEnv, org: string): Promise<string> {
+	if (!mychartConfigured(env)) throw new Error("MyChart not configured (EPIC_CLIENT_ID / EPIC_CLIENT_SECRET).");
+	if (!isKnownOrg(org)) throw new Error(`Unknown MyChart org '${org}'.`);
+	const grant = await readGrant(env, org);
+	if (!grant?.refresh_token) throw new Error(`MyChart not connected for org '${org}' — no grant in KV. Open /mychart/connect?org=${org} once to link the account.`);
+	const cfg = await smartConfig(env, org);
 	const { status, json } = await tokenPost(env, cfg, {
 		grant_type: "refresh_token",
 		refresh_token: grant.refresh_token,
@@ -156,35 +204,36 @@ export async function mintAccessToken(env: RtEnv): Promise<string> {
 	// replays a spent token and the grant dies.
 	if (typeof json.refresh_token === "string" && json.refresh_token && json.refresh_token !== grant.refresh_token) {
 		const updated: MychartGrant = { ...grant, refresh_token: json.refresh_token, issued_at: Date.now(), patient: json.patient ?? grant.patient, scope: json.scope ?? grant.scope };
-		await env.OAUTH_KV?.put(GRANT_KEY, JSON.stringify(updated));
+		await env.OAUTH_KV?.put(grantKey(org), JSON.stringify(updated));
 	}
-	await cacheAccessToken(env, String(json.access_token), json.expires_in);
+	await cacheAccessToken(env, org, String(json.access_token), json.expires_in);
 	return String(json.access_token);
 }
 
-/** Resolve a bearer: KV-cached access token, else a fresh mint from the refresh grant. */
-export async function mychartAccessToken(env: RtEnv): Promise<string> {
-	const cached = await env.OAUTH_KV?.get(ACCESS_TOKEN_KEY);
+/** Resolve a bearer for `org`: KV-cached access token, else a fresh mint from the
+ * refresh grant. */
+export async function mychartAccessToken(env: RtEnv, org: string): Promise<string> {
+	const cached = await env.OAUTH_KV?.get(accessTokenKey(org));
 	if (cached) return cached;
-	return mintAccessToken(env);
+	return mintAccessToken(env, org);
 }
 
-/** FHIR fetch with the dropbox-core 401 self-heal: on a 401, drop the cached access
- * token and re-mint ONCE from the refresh grant (a server-side revocation recovers
- * without waiting out the KV TTL). Always requests FHIR+JSON. */
-export async function mychartFetch(env: RtEnv, url: string): Promise<Response> {
+/** FHIR fetch against `org` with the dropbox-core 401 self-heal: on a 401, drop the
+ * cached access token and re-mint ONCE from the refresh grant (a server-side
+ * revocation recovers without waiting out the KV TTL). Always requests FHIR+JSON. */
+export async function mychartFetch(env: RtEnv, org: string, url: string): Promise<Response> {
 	const build = (token: string): RequestInit => ({ headers: { Authorization: `Bearer ${token}`, Accept: "application/fhir+json" }, signal: AbortSignal.timeout(30_000) });
-	const first = await fetch(url, build(await mychartAccessToken(env)));
+	const first = await fetch(url, build(await mychartAccessToken(env, org)));
 	if (first.status !== 401) return first;
-	await env.OAUTH_KV?.delete(ACCESS_TOKEN_KEY).catch(() => {});
-	return fetch(url, build(await mintAccessToken(env)));
+	await env.OAUTH_KV?.delete(accessTokenKey(org)).catch(() => {});
+	return fetch(url, build(await mintAccessToken(env, org)));
 }
 
-/** True when `u` is an absolute URL under the configured FHIR base — the guard for
- * `get` passthrough and for following a Bundle's `next` link (an org-supplied URL
- * must never let us fetch off-base). */
-export function isUnderFhirBase(env: RtEnv, u: string): boolean {
-	const base = fhirBase(env);
+/** True when `u` is an absolute URL under `org`'s FHIR base — the guard for `get`
+ * passthrough and for following a Bundle's `next` link (an org-supplied URL must
+ * never let us fetch off-base, and never let one org's link resolve under another's). */
+export function isUnderFhirBase(org: string, u: string): boolean {
+	const base = fhirBase(org);
 	if (!base) return false;
 	try {
 		const target = new URL(u);
@@ -200,15 +249,15 @@ export function isUnderFhirBase(env: RtEnv, u: string): boolean {
 }
 
 /** Resolve a caller-supplied FHIR `path` (relative like `Observation?...`, or an
- * absolute URL) to a validated absolute URL under the FHIR base, or null if it
+ * absolute URL) to a validated absolute URL under `org`'s FHIR base, or null if it
  * escapes the base. */
-export function resolveFhirPath(env: RtEnv, path: string): string | null {
-	const base = fhirBase(env);
+export function resolveFhirPath(org: string, path: string): string | null {
+	const base = fhirBase(org);
 	if (!base) return null;
 	const trimmed = String(path ?? "").trim();
 	if (!trimmed) return null;
 	const abs = /^https?:\/\//i.test(trimmed) ? trimmed : `${base}/${trimmed.replace(/^\/+/, "")}`;
-	return isUnderFhirBase(env, abs) ? abs : null;
+	return isUnderFhirBase(org, abs) ? abs : null;
 }
 
 // ---------------- PHI R2 writes ----------------
@@ -263,6 +312,7 @@ export function nextLink(bundle: any): string | null {
 }
 
 export interface PullResult {
+	org: string;
 	patient: string;
 	counts: Record<string, number>;
 	pages: number;
@@ -275,14 +325,15 @@ export interface PullResult {
 // Worker's wall-clock budget on a single resource type.
 const MAX_PAGES_PER_TYPE = 50;
 
-/** Execute a pull: iterate the resource plan, page through each searchset, resolve
- * DocumentReference → Binary attachments, and write every raw page + Binary under
- * `phi/`. Returns a per-label count summary — never resource values. */
-export async function pull(env: RtEnv, opts?: { types?: string[]; since?: string }): Promise<PullResult> {
-	const grant = await readGrant(env);
+/** Execute a pull for `org`: iterate the resource plan, page through each searchset,
+ * resolve DocumentReference → Binary attachments, and write every raw page + Binary
+ * under `phi/mychart/${org}/...` (org-scoped so two orgs' opaque patient ids can never
+ * collide on the same key). Returns a per-label count summary — never resource values. */
+export async function pull(env: RtEnv, org: string, opts?: { types?: string[]; since?: string }): Promise<PullResult> {
+	const grant = await readGrant(env, org);
 	const patient = grant?.patient;
-	if (!patient) throw new Error("MyChart pull needs a patient id — reconnect via /mychart/connect (the grant carries it).");
-	const base = fhirBase(env);
+	if (!patient) throw new Error(`MyChart pull needs a patient id for org '${org}' — reconnect via /mychart/connect?org=${org} (the grant carries it).`);
+	const base = fhirBase(org);
 	const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 	const plan = resourcePlan(patient, opts?.types, opts?.since);
 	const counts: Record<string, number> = {};
@@ -300,7 +351,7 @@ export async function pull(env: RtEnv, opts?: { types?: string[]; since?: string
 				truncated = true;
 				break;
 			}
-			const resp = await mychartFetch(env, url);
+			const resp = await mychartFetch(env, org, url);
 			const bundle: any = await resp.json().catch(() => null);
 			if (resp.status >= 400 || !bundle) {
 				// A single failing resource type must not sink the whole pull (some orgs
@@ -313,34 +364,34 @@ export async function pull(env: RtEnv, opts?: { types?: string[]; since?: string
 			const resources = entries.map((e) => e?.resource).filter(Boolean);
 			counts[item.label] += resources.length;
 			keys += 1;
-			await putPhi(env, `mychart/${patient}/${item.label}/${stamp}-p${page}.json`, JSON.stringify(bundle), "application/fhir+json");
+			await putPhi(env, `mychart/${org}/${patient}/${item.label}/${stamp}-p${page}.json`, JSON.stringify(bundle), "application/fhir+json");
 			if (item.type === "DocumentReference") {
 				for (const doc of resources) {
-					for (const bin of await resolveBinaries(env, base, doc)) {
-						await putPhi(env, `mychart/${patient}/Binary/${bin.id}.json`, bin.body, "application/fhir+json");
+					for (const bin of await resolveBinaries(env, org, base, doc)) {
+						await putPhi(env, `mychart/${org}/${patient}/Binary/${bin.id}.json`, bin.body, "application/fhir+json");
 						binaries++;
 						keys++;
 					}
 				}
 			}
 			const next = nextLink(bundle);
-			url = next && isUnderFhirBase(env, next) ? next : null;
+			url = next && isUnderFhirBase(org, next) ? next : null;
 		}
 	}
-	return { patient, counts, pages, binaries, keys, ...(truncated ? { truncated } : {}) };
+	return { org, patient, counts, pages, binaries, keys, ...(truncated ? { truncated } : {}) };
 }
 
 // ---------------- summarize: last-pull → redacted agenda signal (W6) ----------------
 
-/** All pages sharing the newest stamp under `phi/mychart/{patient}/{label}/` — the most
- * recently pulled snapshot for one resource label (e.g. "Observation.laboratory",
- * "MedicationRequest"), merged into a flat resource list. [] when never pulled, R2 is
- * unbound, or nothing parses. Server-side only: callers must keep raw resource content
- * out of anything that leaves the Worker (vault/mail/logs) — see the PHI invariants at
- * the top of this file. */
-async function latestPulledResources(env: RtEnv, patient: string, label: string): Promise<any[]> {
+/** All pages sharing the newest stamp under `phi/mychart/{org}/{patient}/{label}/` —
+ * the most recently pulled snapshot for one resource label (e.g. "Observation.laboratory",
+ * "MedicationRequest") within one org, merged into a flat resource list. [] when never
+ * pulled, R2 is unbound, or nothing parses. Server-side only: callers must keep raw
+ * resource content out of anything that leaves the Worker (vault/mail/logs) — see the
+ * PHI invariants at the top of this file. */
+async function latestPulledResources(env: RtEnv, org: string, patient: string, label: string): Promise<any[]> {
 	if (!env.R2) return [];
-	const prefix = `${PHI_PREFIX}mychart/${patient}/${label}/`;
+	const prefix = `${PHI_PREFIX}mychart/${org}/${patient}/${label}/`;
 	// R2 lists a prefix in ASCENDING key order, and our ISO stamps sort ascending too — the
 	// newest stamp is always on the LAST page. A single unpaginated list() call would silently
 	// pin this to the OLDEST pull once a label accumulates more than one page (1000 objects,
@@ -399,7 +450,7 @@ function codeableConceptText(cc: any): string | undefined {
 export type MyChartLabFlag = { id: string; category: "laboratory" | "vital-signs"; direction: "high" | "low" | "abnormal" };
 export type MyChartRefillDue = { id: string; name?: string; dueDate?: string };
 export type MyChartEntry = { id: string; docType?: string };
-export type MyChartSummary = { patient: string; labFlags: MyChartLabFlag[]; refillsDue: MyChartRefillDue[]; newConditions: MyChartEntry[]; newDocuments: MyChartEntry[] };
+export type MyChartSummary = { patient?: string; labFlags: MyChartLabFlag[]; refillsDue: MyChartRefillDue[]; newConditions: MyChartEntry[]; newDocuments: MyChartEntry[] };
 
 const REFILL_WINDOW_DAYS_DEFAULT = 14;
 // A validityPeriod.end this far in the past is treated as stale data (a since-renewed
@@ -408,31 +459,15 @@ const REFILL_WINDOW_DAYS_DEFAULT = 14;
 // status field lags reality.
 const REFILL_STALE_DAYS = 30;
 
-/** Summarize the LAST pulled FHIR snapshot into a REDACTED, agenda-ready form (W6) —
- * never raw lab values or diagnosis names, only enough to prompt "go check MyChart":
- * out-of-range lab/vital flags (direction only, no value/test name), medication
- * refill-due windows (name + due date — the same sensitivity level the mail-based
- * rx_ready cue in fns/_agenda.ts already surfaces from pharmacy email subjects), and
- * bare ids for new Condition/DocumentReference entries (DocumentReference keeps only
- * its generic type, e.g. "After Visit Summary" — never a Condition's diagnosis name).
- * "New" here just means "present in this pass" — detectMyChartDrops's caller dedupes
- * by resource id via the agenda proposal ledger, which is what turns this into a
- * one-time-ever notification without this function needing its own pull-to-pull
- * cursor. Returns null when unconfigured or never connected (no grant → never pulled). */
-export async function summarizeMyChart(env: RtEnv, opts?: { refillWindowDays?: number; now?: string }): Promise<MyChartSummary | null> {
-	if (!mychartConfigured(env)) return null;
-	const grant = await readGrant(env);
-	if (!grant?.patient) return null;
-	const patient = grant.patient;
-	const refillWindowDays = opts?.refillWindowDays ?? REFILL_WINDOW_DAYS_DEFAULT;
-	const now = opts?.now ? new Date(`${opts.now}T00:00:00Z`) : new Date();
-
+/** One org's slice of summarizeMyChart, ids left bare (not org-prefixed) — the caller
+ * decides whether prefixing is needed (only once 2+ orgs are in play, §below). */
+async function summarizeOrgSnapshot(env: RtEnv, org: string, patient: string, refillWindowDays: number, now: Date): Promise<MyChartSummary> {
 	const [labs, vitals, meds, conditions, documents] = await Promise.all([
-		latestPulledResources(env, patient, "Observation.laboratory"),
-		latestPulledResources(env, patient, "Observation.vital-signs"),
-		latestPulledResources(env, patient, "MedicationRequest"),
-		latestPulledResources(env, patient, "Condition"),
-		latestPulledResources(env, patient, "DocumentReference"),
+		latestPulledResources(env, org, patient, "Observation.laboratory"),
+		latestPulledResources(env, org, patient, "Observation.vital-signs"),
+		latestPulledResources(env, org, patient, "MedicationRequest"),
+		latestPulledResources(env, org, patient, "Condition"),
+		latestPulledResources(env, org, patient, "DocumentReference"),
 	]);
 
 	const labFlags: MyChartLabFlag[] = [];
@@ -463,10 +498,53 @@ export async function summarizeMyChart(env: RtEnv, opts?: { refillWindowDays?: n
 	return { patient, labFlags, refillsDue, newConditions, newDocuments };
 }
 
+/** Summarize the LAST pulled FHIR snapshot(s) into a REDACTED, agenda-ready form (W6) —
+ * never raw lab values or diagnosis names, only enough to prompt "go check MyChart":
+ * out-of-range lab/vital flags (direction only, no value/test name), medication
+ * refill-due windows (name + due date — the same sensitivity level the mail-based
+ * rx_ready cue in fns/_agenda.ts already surfaces from pharmacy email subjects), and
+ * bare ids for new Condition/DocumentReference entries (DocumentReference keeps only
+ * its generic type, e.g. "After Visit Summary" — never a Condition's diagnosis name).
+ * "New" here just means "present in this pass" — detectMyChartDrops's caller dedupes
+ * by resource id via the agenda proposal ledger, which is what turns this into a
+ * one-time-ever notification without this function needing its own pull-to-pull
+ * cursor. `opts.org` scopes to one org; omitted fans across every CONNECTED org and
+ * merges. With exactly one org contributing, ids stay bare (preserves every existing
+ * single-org ledger dedupe key — no migration flood the moment a second org connects
+ * elsewhere in the registry). With 2+ orgs contributing, each id is prefixed
+ * `${org}:` so two orgs' independently-assigned FHIR ids can never collide in the
+ * dedupe ledger. Returns null when unconfigured or no org in scope has ever pulled. */
+export async function summarizeMyChart(env: RtEnv, opts?: { org?: string; refillWindowDays?: number; now?: string }): Promise<MyChartSummary | null> {
+	if (!mychartConfigured(env)) return null;
+	const orgs = opts?.org ? (isKnownOrg(opts.org) ? [opts.org] : []) : await connectedOrgs(env);
+	if (!orgs.length) return null;
+	const refillWindowDays = opts?.refillWindowDays ?? REFILL_WINDOW_DAYS_DEFAULT;
+	const now = opts?.now ? new Date(`${opts.now}T00:00:00Z`) : new Date();
+
+	const perOrg = await Promise.all(
+		orgs.map(async (org) => {
+			const grant = await readGrant(env, org);
+			if (!grant?.patient) return null;
+			return { org, snapshot: await summarizeOrgSnapshot(env, org, grant.patient, refillWindowDays, now) };
+		}),
+	);
+	const contributing = perOrg.filter((v): v is { org: string; snapshot: MyChartSummary } => v !== null);
+	if (!contributing.length) return null;
+	if (contributing.length === 1) return contributing[0].snapshot;
+
+	const prefixId = <T extends { id: string }>(org: string, items: T[]): T[] => items.map((it) => ({ ...it, id: `${org}:${it.id}` }));
+	return {
+		labFlags: contributing.flatMap(({ org, snapshot }) => prefixId(org, snapshot.labFlags)),
+		refillsDue: contributing.flatMap(({ org, snapshot }) => prefixId(org, snapshot.refillsDue)),
+		newConditions: contributing.flatMap(({ org, snapshot }) => prefixId(org, snapshot.newConditions)),
+		newDocuments: contributing.flatMap(({ org, snapshot }) => prefixId(org, snapshot.newDocuments)),
+	};
+}
+
 /** Resolve a DocumentReference's Binary attachments (content[].attachment.url →
  * Binary/{id}). Returns the raw fetched bodies keyed by Binary id. Skips non-Binary
  * or off-base attachment URLs. */
-async function resolveBinaries(env: RtEnv, base: string, doc: any): Promise<Array<{ id: string; body: string }>> {
+async function resolveBinaries(env: RtEnv, org: string, base: string, doc: any): Promise<Array<{ id: string; body: string }>> {
 	const out: Array<{ id: string; body: string }> = [];
 	const contents: any[] = Array.isArray(doc?.content) ? doc.content : [];
 	for (const c of contents) {
@@ -475,8 +553,8 @@ async function resolveBinaries(env: RtEnv, base: string, doc: any): Promise<Arra
 		const m = /Binary\/([A-Za-z0-9\-.]+)$/.exec(attUrl);
 		if (!m) continue;
 		const abs = /^https?:\/\//i.test(attUrl) ? attUrl : `${base}/Binary/${m[1]}`;
-		if (!isUnderFhirBase(env, abs)) continue;
-		const resp = await mychartFetch(env, abs);
+		if (!isUnderFhirBase(org, abs)) continue;
+		const resp = await mychartFetch(env, org, abs);
 		if (resp.status >= 400) continue;
 		out.push({ id: m[1], body: await resp.text() });
 	}
@@ -500,8 +578,10 @@ export function escapeHtml(s: unknown): string {
 
 /** GET /mychart/connect + GET /mychart/callback. Served BEFORE the OAuthProvider
  * claims every path (same pre-gate trick as /health, /metrics). Returns null when
- * the path isn't ours. `/connect` is gated by the operator SUX_CRON_TOKEN in the
- * query so a stranger can't bind THEIR MyChart to the Worker (§2a). */
+ * the path isn't ours. `/connect` is Bearer-gated by the operator SUX_CRON_TOKEN
+ * (matching /admin/tick and /apple-health, §2.5 — a reused admin secret no longer
+ * rides in the query string / Cloudflare access logs) so a stranger can't bind THEIR
+ * MyChart to the Worker, and takes `?org=<id>` naming which registry org to connect. */
 export async function handleMychartRoutes(url: URL, request: Request, env: RtEnv): Promise<Response | null> {
 	if (request.method !== "GET") return null;
 
@@ -509,21 +589,24 @@ export async function handleMychartRoutes(url: URL, request: Request, env: RtEnv
 		if (!mychartConfigured(env)) return new Response("MyChart not configured.", { status: 404 });
 		const gate = env.SUX_CRON_TOKEN;
 		if (!gate) return new Response("not found", { status: 404 });
-		const presented = url.searchParams.get("token") ?? "";
+		const authHeader = request.headers.get("authorization") ?? "";
+		const presented = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
 		if (!presented || !timingSafeEqual(gate, presented)) return new Response("unauthorized", { status: 401 });
+		const org = url.searchParams.get("org") ?? "";
+		if (!org || !isKnownOrg(org)) return new Response("unknown org", { status: 404 });
 		try {
-			const cfg = await smartConfig(env);
+			const cfg = await smartConfig(env, org);
 			const verifier = makeVerifier();
 			const challenge = await challengeFor(verifier);
 			const state = b64url(crypto.getRandomValues(new Uint8Array(24)));
-			await env.OAUTH_KV?.put(pkceKey(state), JSON.stringify({ verifier, created: Date.now() }), { expirationTtl: PKCE_TTL_S });
+			await env.OAUTH_KV?.put(pkceKey(state), JSON.stringify({ verifier, org, created: Date.now() }), { expirationTtl: PKCE_TTL_S });
 			const auth = new URL(cfg.authorization_endpoint);
 			auth.searchParams.set("response_type", "code");
 			auth.searchParams.set("client_id", String(env.EPIC_CLIENT_ID));
 			auth.searchParams.set("redirect_uri", redirectUri(env));
 			auth.searchParams.set("scope", DEFAULT_SCOPES);
 			auth.searchParams.set("state", state);
-			auth.searchParams.set("aud", fhirBase(env));
+			auth.searchParams.set("aud", fhirBase(org));
 			auth.searchParams.set("code_challenge", challenge);
 			auth.searchParams.set("code_challenge_method", "S256");
 			return new Response(null, { status: 302, headers: { location: auth.toString(), "cache-control": "no-store", "referrer-policy": "no-referrer" } });
@@ -547,12 +630,15 @@ export async function handleMychartRoutes(url: URL, request: Request, env: RtEnv
 		if (!stored) return new Response("Invalid or expired state (CSRF check failed).", { status: 400, headers: PAGE_HEADERS });
 		await env.OAUTH_KV?.delete(pkceKey(state)).catch(() => {}); // one-time.
 		let verifier = "";
+		let org = "";
 		try {
-			verifier = JSON.parse(stored)?.verifier ?? "";
+			const parsed = JSON.parse(stored);
+			verifier = parsed?.verifier ?? "";
+			org = parsed?.org ?? "";
 		} catch {}
-		if (!verifier) return new Response("Corrupt PKCE state.", { status: 400, headers: PAGE_HEADERS });
+		if (!verifier || !org || !isKnownOrg(org)) return new Response("Corrupt PKCE state.", { status: 400, headers: PAGE_HEADERS });
 		try {
-			const cfg = await smartConfig(env);
+			const cfg = await smartConfig(env, org);
 			const { status, json } = await tokenPost(env, cfg, {
 				grant_type: "authorization_code",
 				code,
@@ -565,12 +651,13 @@ export async function handleMychartRoutes(url: URL, request: Request, env: RtEnv
 			}
 			if (typeof json.refresh_token === "string" && json.refresh_token) {
 				const grant: MychartGrant = { refresh_token: json.refresh_token, patient: json.patient, scope: json.scope, issued_at: Date.now() };
-				await env.OAUTH_KV?.put(GRANT_KEY, JSON.stringify(grant));
+				await env.OAUTH_KV?.put(grantKey(org), JSON.stringify(grant));
 			}
-			await cacheAccessToken(env, String(json.access_token), json.expires_in);
+			await cacheAccessToken(env, org, String(json.access_token), json.expires_in);
 			const hasRefresh = Boolean(json.refresh_token);
+			const orgName = MYCHART_ORGS[org]?.name ?? org;
 			return new Response(
-				`<!doctype html><meta charset=utf-8><title>MyChart connected</title><body style="font-family:system-ui;padding:2rem"><h1>MyChart connected</h1><p>Patient <code>${escapeHtml(String(json.patient ?? "(unknown)"))}</code> linked.${hasRefresh ? "" : " <strong>No refresh token was issued</strong> — pulls will need re-login (the org may not have provisioned offline_access)."}</p><p>You can close this tab. Run <code>mychart op:\"pull\"</code> to sync.</p></body>`,
+				`<!doctype html><meta charset=utf-8><title>MyChart connected</title><body style="font-family:system-ui;padding:2rem"><h1>MyChart connected</h1><p>${escapeHtml(orgName)} — patient <code>${escapeHtml(String(json.patient ?? "(unknown)"))}</code> linked.${hasRefresh ? "" : " <strong>No refresh token was issued</strong> — pulls will need re-login (the org may not have provisioned offline_access)."}</p><p>You can close this tab. Run <code>mychart op:\"pull\" org:\"${escapeHtml(org)}\"</code> to sync.</p></body>`,
 				{ status: 200, headers: PAGE_HEADERS },
 			);
 		} catch (e) {
@@ -664,15 +751,28 @@ export async function handleAppleHealth(url: URL, request: Request, env: RtEnv):
 	}
 }
 
-/** Cron helper (rides maintenanceTick beside refreshKrogerToken): keep the refresh
- * grant alive by minting a fresh access token. No-op when unconfigured or unconnected
- * (throws are swallowed by the runSubJob wrapper). */
+/** Cron helper (rides maintenanceTick beside refreshKrogerToken): keep every
+ * CONNECTED org's refresh grant alive by minting a fresh access token, independently
+ * per org — one org's failure must not starve another org's keep-alive on this tick.
+ * No-op when unconfigured or no org is connected. Attempts every connected org before
+ * surfacing anything; if any failed, throws an aggregate error so runSubJob's
+ * heartbeat still records the tick as unhealthy (§5 "refreshMychartToken across
+ * orgs" — each org gets its own attempt regardless of a sibling's outcome). */
 export async function refreshMychartToken(env: RtEnv): Promise<void> {
 	if (!mychartConfigured(env)) return;
-	if (!(await readGrant(env))) return; // never connected — nothing to keep warm.
-	// Short-circuit when a cached access token is still valid: minting on every tick
-	// would force a needless refresh_token grant and risk a double-spend race with a
-	// concurrent pull rotating the refresh token. Only mint when the cache is empty/expired.
-	if (await env.OAUTH_KV?.get(ACCESS_TOKEN_KEY)) return;
-	await mintAccessToken(env);
+	const orgs = await connectedOrgs(env);
+	if (!orgs.length) return; // never connected — nothing to keep warm.
+	const errors: string[] = [];
+	for (const org of orgs) {
+		// Short-circuit when a cached access token is still valid: minting on every tick
+		// would force a needless refresh_token grant and risk a double-spend race with a
+		// concurrent pull rotating the refresh token. Only mint when the cache is empty/expired.
+		if (await env.OAUTH_KV?.get(accessTokenKey(org))) continue;
+		try {
+			await mintAccessToken(env, org);
+		} catch (e) {
+			errors.push(`${org}: ${(e as Error)?.message ?? e}`);
+		}
+	}
+	if (errors.length) throw new Error(`mychart token refresh failed for ${errors.length} org(s): ${errors.join("; ")}`);
 }
