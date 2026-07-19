@@ -335,6 +335,12 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   since (`gh run list --workflow=deploy.yml`) succeeded. Before treating one of these as
   something to fix, check whether later deploy runs already went green — if so it was a
   momentary outage, not a bug in the merged commit.
+- **After #1004's fix, `INFER_ARM_FILES`/domain `"files"` in `_infer.ts` has ZERO production
+  call sites** — `ingest.ts`'s vault-note write now correctly tags its signal domain `"vault"`
+  (that write always lands as a markdown note in the git-backed vault, never Dropbox). Arming
+  `INFER_ARM_FILES` today is a genuine no-op, not a latent bug to chase; a real Dropbox-files
+  signal feed needs a NEW call site (e.g. in `files.ts`/`dropbox.ts`) before that arm does
+  anything.
 
 ## House style
 
