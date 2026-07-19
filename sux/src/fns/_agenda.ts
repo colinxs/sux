@@ -28,6 +28,7 @@ import type { RtEnv } from "../registry";
 import { ledger } from "../ledger";
 import { propose } from "../proposals";
 import type { ConsolidateFindings } from "./_consolidate";
+import type { CrossSemanticFindings } from "./_cross_semantic";
 import { classifyMessage } from "./_mail_triage";
 import { hasImessage, imessage } from "./imessage";
 import { hasMonarch, monarch } from "./monarch";
@@ -248,6 +249,29 @@ export function detectKnowledgeDrops(consolidate: ConsolidateFindings | null, we
 		});
 	}
 	return drops;
+}
+
+/** Turn the cross-domain-link sweep's cached findings (#785/#948) into a drop — same
+ *  read-only-sense/reversible-propose contract as detectKnowledgeDrops, just fed from
+ *  _cross_semantic.ts's weekly rank instead of a live cross-domain fan-out. The action is a
+ *  nudge, not an apply: the sweep only ranks and caches, so acting on a candidate still
+ *  needs a manual `vault_cross_link_plan` call (the durable, human-approved write). The
+ *  dedupe key mixes in a content fingerprint (mirrors detectKnowledgeDrops' #782 fix), not
+ *  just the week, so a forced re-rank with a different batch isn't silently swallowed. */
+export function detectCrossSemanticDrops(findings: CrossSemanticFindings | null): Drop[] {
+	if (!findings || findings.count <= 0) return [];
+	const count = findings.count;
+	return [
+		{
+			kind: "cross_semantic_ready",
+			urgency: "fyi",
+			dedupe: `cross_semantic::${findings.week}::${fingerprint([...findings.links.map((l) => `${l.vaultPath}|${l.domain}|${l.key}`), String(count)])}`,
+			title: `${count} cross-domain link candidate${count === 1 ? "" : "s"} found`,
+			emoji: "🔗",
+			action: task(`Review ${count} cross-domain link candidate${count === 1 ? "" : "s"} — run vault_cross_link_plan to approve`),
+			evidence: { week: findings.week, links: findings.links },
+		},
+	];
 }
 
 /** Turn the watch sweep's last cycle findings (#899) into drops — same read-only-sense/
@@ -568,6 +592,9 @@ export type AgendaDeps = {
 	/** The watch sweep's most recent findings (#899) — a ledger-cache read, never a fresh
 	 *  page re-check. */
 	watchFindings: (env: RtEnv) => Promise<WatchFindings | null>;
+	/** The cross-domain-link sweep's most recent findings (#785/#948) — a ledger-cache
+	 *  read, never a fresh cross-domain rank. */
+	crossSemanticFindings: (env: RtEnv) => Promise<CrossSemanticFindings | null>;
 	/** Monarch account balances (W7) — only called when hasMonarch(env). */
 	monarchAccounts: (env: RtEnv) => Promise<MonarchAccountRef[]>;
 	/** Monarch transactions in a window (W7) — only called when hasMonarch(env). */
@@ -645,6 +672,7 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 	let consolidateFindings: ConsolidateFindings | null = null;
 	let weeklyRecallFindings: WeeklyRecallFindings | null = null;
 	let watchFindings: WatchFindings | null = null;
+	let crossSemanticFindings: CrossSemanticFindings | null = null;
 	let monarchAccounts: MonarchAccountRef[] = [];
 	let monarchTransactions: MonarchTxnRef[] = [];
 	let monarchBudgets: MonarchBudgetRef[] = [];
@@ -682,6 +710,12 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 			status.watch = watchFindings ? `${watchFindings.changed_count} changed as of ${watchFindings.checked_at}` : "no findings yet";
 		})().catch((e) => {
 			status.watch = `unavailable (${errMsg(e).slice(0, 90)})`;
+		}),
+		(async () => {
+			crossSemanticFindings = await deps.crossSemanticFindings(env);
+			status.cross_semantic = crossSemanticFindings ? `week ${crossSemanticFindings.week}` : "no findings yet";
+		})().catch((e) => {
+			status.cross_semantic = `unavailable (${errMsg(e).slice(0, 90)})`;
 		}),
 		(async () => {
 			if (!hasMonarch(env)) {
@@ -730,6 +764,7 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		...detectTextDrops(textThreads),
 		...detectKnowledgeDrops(consolidateFindings, weeklyRecallFindings),
 		...detectWatchDrops(watchFindings),
+		...detectCrossSemanticDrops(crossSemanticFindings),
 		...detectMonarchDrops(date, monarchAccounts, monarchTransactions, monarchBudgets, { lowBalanceThreshold, unusualChargeThreshold }),
 		...detectPortfolioDrops(date, monarchHoldings, priorMonarchSnapshot?.allocation ?? null, { concentrationThreshold: portfolioConcentrationThreshold, driftThreshold: portfolioDriftThreshold }),
 		...detectSavingsRateDrop(date, currentSavingsRate, priorMonarchSnapshot?.savingsRate ?? null, { dropThreshold: savingsRateDropThreshold }),
@@ -819,6 +854,7 @@ export async function defaultDeps(): Promise<AgendaDeps> {
 	const { lastConsolidateFindings } = await import("./_consolidate");
 	const { lastWeeklyRecallFindings } = await import("./_weekly_recall");
 	const { lastWatchFindings } = await import("./_watch_sweep");
+	const { lastCrossSemanticFindings } = await import("./_cross_semantic");
 	const tool = (name: string) => mail.MAIL_TOOLS.find((t) => t.name === name);
 
 	return {
@@ -893,6 +929,7 @@ export async function defaultDeps(): Promise<AgendaDeps> {
 		consolidateFindings: lastConsolidateFindings,
 		weeklyRecallFindings: lastWeeklyRecallFindings,
 		watchFindings: lastWatchFindings,
+		crossSemanticFindings: lastCrossSemanticFindings,
 		monarchAccounts: async (env) => {
 			const r = await monarch.run(env, { op: "accounts" });
 			if (r.isError) throw new Error(r.content?.[0]?.text ?? "monarch accounts failed");

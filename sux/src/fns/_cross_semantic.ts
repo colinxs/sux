@@ -1,5 +1,8 @@
 import type { RtEnv } from "../registry";
+import { ledger } from "../ledger";
 import { cosine } from "./_embed";
+import { errMsg } from "./_util";
+import { isoWeek } from "./_weekly_recall";
 import type { SemanticChunk } from "./_vault_semantic";
 import type { MailSemanticChunk } from "./_mail_semantic";
 import type { FilesSemanticChunk } from "./_files_semantic";
@@ -94,4 +97,119 @@ export function crossDomainLinks(vaultChunks: SemanticChunk[], targets: CrossDom
 		);
 	}
 	return out.sort((a, b) => b.score - a.score).slice(0, maxTotal);
+}
+
+// ── Cron sweep (#948) — the standing half of vault_cross_link_plan's detection, so a ready
+// batch of candidates surfaces in _agenda.ts's daily digest instead of requiring a manual
+// call. Mirrors _consolidate.ts's weekly-cadence shape: the daily cron re-fires this every
+// day, but the real rank runs at most once an ISO week, caching the result for the agenda
+// loop to read. DETECTION ONLY — applying a match still needs a manual vault_cross_link_plan
+// call (the durable, human-approved "Related" block append); this sweep never starts that run
+// itself, so a daily tick can't pile up unanswered approval gates.
+
+/** The ledger key holding the most recent sweep's findings (bounded), so a read-only
+ *  consumer (the agenda loop) can pick them up without re-ranking the indices. */
+const LAST_REPORT_KEY = "last-report";
+
+/** Caps how many link candidates the cached last-report carries — enough for a digest
+ *  line, not the full batch (mirrors _consolidate's MAX_CACHED_FINDINGS). */
+const MAX_CACHED_LINKS = 20;
+
+/** `count` holds the REAL (untruncated) total from the sweep that produced this cache
+ *  entry — `links` itself is capped to MAX_CACHED_LINKS, so a consumer needing an accurate
+ *  count (the agenda digest) must read `count`, not `links.length`. */
+export type CrossSemanticFindings = { week: string; links: CrossLink[]; count: number };
+
+/** The most recent sweep's findings (bounded to MAX_CACHED_LINKS), read from the ledger
+ *  cache — never re-ranks the indices. Returns null if the sweep has never completed a
+ *  cycle (dormant, KV unavailable, or a corrupt/missing cache entry). */
+export async function lastCrossSemanticFindings(env: RtEnv): Promise<CrossSemanticFindings | null> {
+	const raw = await ledger(env, "cross_semantic").get(LAST_REPORT_KEY);
+	if (!raw) return null;
+	try {
+		const parsed = JSON.parse(raw);
+		if (!parsed || typeof parsed.week !== "string") return null;
+		const links = Array.isArray(parsed.links) ? parsed.links : [];
+		return { week: parsed.week, links, count: typeof parsed.count === "number" ? parsed.count : links.length };
+	} catch {
+		return null;
+	}
+}
+
+export type CrossSemanticSweepDeps = {
+	vaultChunks: (env: RtEnv) => Promise<SemanticChunk[] | null>;
+	mailChunks: (env: RtEnv) => Promise<MailSemanticChunk[]>;
+	filesChunks: (env: RtEnv) => Promise<FilesSemanticChunk[]>;
+};
+
+export type CrossSemanticSweepReport = {
+	week?: string;
+	dormant?: boolean;
+	skipped?: boolean;
+	error?: string;
+	links?: CrossLink[];
+	count?: number;
+	note?: string;
+};
+
+/** Run one cross-domain-link detection cycle. Fail-closed: a dormant no-op unless
+ *  CROSS_SEMANTIC_ENABLED. Idempotent per ISO week (mirrors _consolidate.ts's
+ *  runConsolidate) — `opts.force` bypasses the gate for an on-demand call. The ledger is
+ *  marked only after a successful rank, so a failed vault-index fetch leaves the week
+ *  unmarked and the next tick retries. A missing mail/files index just means fewer targets
+ *  to rank against (mirrors vault_cross_link_plan.ts: each leg is optional, not fatal). */
+export async function runCrossSemanticSweep(env: RtEnv, opts: { week?: string; force?: boolean }, deps: CrossSemanticSweepDeps): Promise<CrossSemanticSweepReport> {
+	if (!hasCrossSemantic(env)) {
+		return { dormant: true, note: "cross_semantic sweep is disabled — set CROSS_SEMANTIC_ENABLED to have the daily cron rank the vault's semantic index against mail+files and surface cross-domain link candidates through the agenda digest. Fail-closed: nothing runs until the flag is set." };
+	}
+	const week = String(opts.week ?? isoWeek(env.VAULT_TZ));
+	const led = ledger(env, "cross_semantic");
+	const key = `week::${week}`;
+	if (!opts.force && (await led.seen(key))) return { week, skipped: true, note: "already ran this ISO week" };
+
+	let vaultChunks: SemanticChunk[] | null;
+	try {
+		vaultChunks = await deps.vaultChunks(env);
+	} catch (e) {
+		const msg = `vault semantic index failed: ${errMsg(e)}`;
+		return { week, error: msg, note: msg };
+	}
+	if (!vaultChunks) return { week, skipped: true, note: "vault semantic index not configured (needs Workers-AI + a configured vault) — nothing to rank" };
+
+	const [mailChunks, filesChunks] = await Promise.all([deps.mailChunks(env).catch(() => []), deps.filesChunks(env).catch(() => [])]);
+	const targets: CrossDomainItem[] = [...mailToCrossItems(mailChunks), ...filesToCrossItems(filesChunks)];
+	const links = targets.length ? crossDomainLinks(vaultChunks, targets) : [];
+
+	await led.mark(key);
+	await led.mark(LAST_REPORT_KEY, JSON.stringify({ week, links: links.slice(0, MAX_CACHED_LINKS), count: links.length }));
+
+	return { week, links, count: links.length };
+}
+
+/** The real deps: the vault/mail/files semantic indices (each already incrementally
+ *  cached — see _vault_semantic.ts/_mail_semantic.ts/_files_semantic.ts), pooled into plain
+ *  chunk arrays. Dynamically imported by the caller to keep the cron path from pulling in
+ *  the semantic-index surface when the feature is dormant, mirroring _consolidate.ts's
+ *  defaultDeps. Tests inject fakes instead. */
+export async function defaultDeps(): Promise<CrossSemanticSweepDeps> {
+	const { vaultCfg } = await import("./obsidian");
+	const { vaultSemanticIndex } = await import("./_vault_semantic");
+	const { mailSemanticIndex } = await import("./_mail_semantic");
+	const { filesSemanticIndex } = await import("./_files_semantic");
+	return {
+		vaultChunks: async (env) => {
+			const cfg = vaultCfg(env);
+			if ("error" in cfg) return null;
+			const idx = await vaultSemanticIndex(env, cfg);
+			return idx ? idx.chunks : null;
+		},
+		mailChunks: async (env) => {
+			const idx = await mailSemanticIndex(env);
+			return idx ? idx.chunks : [];
+		},
+		filesChunks: async (env) => {
+			const idx = await filesSemanticIndex(env);
+			return idx ? idx.chunks : [];
+		},
+	};
 }

@@ -188,8 +188,11 @@ export type RtEnv = Env &
 		// #785): cosine-ranks the vault's semantic index against the pooled mail+files semantic
 		// indices to find standing cross-domain relationships, then starts a durable, human-
 		// approved run (op-engine's `cross-semantic-plan`) that appends a "Related" block to each
-		// matched vault note — never a mail/file mutation, never a vault delete. User-invoked (no
-		// cron sweep yet), but still fail-closed like the sweep flags above: unset ⇒ refuses to run.
+		// matched vault note — never a mail/file mutation, never a vault delete. The daily cron
+		// (#948) also runs the same detection at most once an ISO week and caches the candidates
+		// for _agenda.ts's digest — DETECTION ONLY, applying a match still needs a manual
+		// vault_cross_link_plan call. Fail-closed like the sweep flags above: unset ⇒ refuses to
+		// run / stays dormant.
 		//   CROSS_SEMANTIC_ENABLED — master enable (toggle); unset/"0"/"false"/"off" ⇒ inert.
 		CROSS_SEMANTIC_ENABLED?: string;
 

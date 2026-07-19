@@ -758,6 +758,20 @@ async function watchSweepTick(env: RtEnv): Promise<unknown> {
 	return mod.runWatchSweep(env, {}, deps);
 }
 
+// One weekly cross-domain-link sweep, riding the SAME daily cron (#785/#948). FAIL-CLOSED:
+// no-ops entirely unless CROSS_SEMANTIC_ENABLED is set, and a once-per-ISO-week ledger gate
+// (mirrors consolidateTick) means it does the real rank at most once every seven days.
+// DETECTION ONLY — ranks the vault's semantic index against pooled mail+files and caches the
+// candidates for _agenda.ts's detectCrossSemanticDrops; applying a match still needs a
+// manual vault_cross_link_plan call (the durable, human-approved "Related" block append).
+// Dynamically imported so the cron path pulls in the semantic-index surface only when armed.
+async function crossSemanticTick(env: RtEnv): Promise<unknown> {
+	const mod = await import("./fns/_cross_semantic");
+	if (!mod.hasCrossSemantic(env)) return { dormant: true };
+	const deps = await mod.defaultDeps();
+	return mod.runCrossSemanticSweep(env, {}, deps);
+}
+
 // One daily morning-briefing cycle, driven by the same Cron Trigger. FAIL-CLOSED: early-returns
 // doing nothing unless BRIEFING_ENABLED is set — and even then it only STAGES reply drafts (to
 // Drafts, never sent) when BRIEFING_STAGE_DRAFTS is also set; otherwise it composes a
@@ -870,6 +884,7 @@ async function maintenanceTick(env: RtEnv, ctx: ExecutionContext): Promise<void>
 	await runSubJob(env, "weekly_recall", () => weeklyRecallTick(env));
 	await runSubJob(env, "consolidate", () => consolidateTick(env));
 	await runSubJob(env, "watch_sweep", () => watchSweepTick(env));
+	await runSubJob(env, "cross_semantic", () => crossSemanticTick(env));
 	await runSubJob(env, "briefing", () => briefingTick(env));
 	await runSubJob(env, "agenda", () => agendaTick(env));
 	// Rebuild the cosmetic-adblock engine blob in R2 — staleness-gated, so the
