@@ -160,3 +160,39 @@ test("contacts-consolidate-plan: a veto ({approved:false}) rejects the gate and 
 	await expect(interpretDurable(registry["contacts-consolidate-plan"](), clusters, fakeStep(rec, { approved: false }), caps, "root")).rejects.toThrow(AskRejectedError);
 	expect(written).toHaveLength(0);
 });
+
+test("files-consolidate-plan: proposes a relocation per cluster, asks for approval, and sinks only the approved batch", async () => {
+	const rec = { events: [] as string[] };
+	const written: unknown[] = [];
+	const caps = {
+		store: new MemoryStore(),
+		llm: {},
+		clock: { now: () => 0 },
+		sinks: { "files-duplicates": { name: "files-duplicates", write: async (input: any) => (written.push(input), { moved: input.length, groups: input.length }) } },
+	} as unknown as Caps;
+
+	const clusters = [{ paths: ["/b.txt", "/a.txt"] }];
+
+	const out = await interpretDurable(registry["files-consolidate-plan"](), clusters, fakeStep(rec), caps, "root");
+
+	expect(rec.events).toEqual(["ask:archive these duplicate files?"]);
+	expect(written).toHaveLength(1);
+	expect(written[0]).toEqual([{ keep: "/a.txt", archives: ["/b.txt"], moves: [{ from: "/b.txt", to: "/Archive/Duplicates/b.txt" }] }]);
+	expect(out).toEqual(written[0]);
+});
+
+test("files-consolidate-plan: a veto ({approved:false}) rejects the gate and never reaches the sink", async () => {
+	const rec = { events: [] as string[] };
+	const written: unknown[] = [];
+	const caps = {
+		store: new MemoryStore(),
+		llm: {},
+		clock: { now: () => 0 },
+		sinks: { "files-duplicates": { name: "files-duplicates", write: async (input: any) => (written.push(input), input) } },
+	} as unknown as Caps;
+
+	const clusters = [{ paths: ["/a.txt", "/b.txt"] }];
+
+	await expect(interpretDurable(registry["files-consolidate-plan"](), clusters, fakeStep(rec, { approved: false }), caps, "root")).rejects.toThrow(AskRejectedError);
+	expect(written).toHaveLength(0);
+});

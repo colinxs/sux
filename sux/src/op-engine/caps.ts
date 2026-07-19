@@ -99,6 +99,7 @@ function makeSinks(env: RtEnv): Record<string, SinkTarget> {
 		"related-links": relatedLinksSink(env),
 		"contacts-merge": contactsMergeSink(env),
 		"mychart-outreach": mychartOutreachSink(env),
+		"files-duplicates": filesDuplicatesSink(env),
 	};
 }
 
@@ -370,6 +371,58 @@ function mychartOutreachSink(env: RtEnv): SinkTarget {
 				drafted++;
 			}
 			return { drafted, groups: items.length, ...(failed ? { failed } : {}) };
+		},
+	};
+}
+
+// The `files-consolidate-plan` op's terminal (registry.ts): applies a batch of already-
+// approved {keep, archives, moves} duplicate-file clusters by relocating each `archives`
+// member into a parallel `/Archive/Duplicates/<original path>` tree via the EXISTING Mode-B
+// moveFull primitive (_dropbox-full.ts) — never deleteFull, so a wrong duplicate judgment is
+// always undoable by moving the file back to its original path. Requires
+// hasDropboxFullWrite(env) (the Mode B write arm, SEPARATE from files_semantic's own read-only
+// credential) — fails LOUD, same as every other sink's missing-binding guard, rather than a
+// silent no-op; files_consolidate_plan.ts's entrypoint already checks this too, but the sink
+// checks it again since a durable run can outlive the flag being flipped off mid-flight.
+// `keep` is never touched. Dynamically imported for the same reason mailLabelsSink/
+// vaultNotesSink are — op-engine's non-files ops never pull Dropbox's dependency graph into
+// their module load. A retry after a mid-batch eviction (durable.ts's `sink` step wraps this
+// whole loop as ONE memoized step) re-attempts a `from` that's already been relocated —
+// Dropbox's move_v2 on a since-vacated path errors with a from_lookup/not_found-shaped
+// message; read as "already applied", not a failure (idempotent mirror of vaultNotesSink's
+// already-appended check, #740). A malformed item (missing keep/archives, or a moves array
+// that doesn't line up with archives) is skipped, not a hard failure; an empty batch is a
+// no-op.
+function filesDuplicatesSink(env: RtEnv): SinkTarget {
+	return {
+		name: "files-duplicates",
+		async write(input: any): Promise<any> {
+			const items: Array<{ keep?: unknown; archives?: unknown; moves?: unknown }> = Array.isArray(input) ? input : [];
+			if (!items.length) return { moved: 0 };
+			const { hasDropboxFullWrite, moveFull } = await import("../fns/_dropbox-full.js");
+			if (!hasDropboxFullWrite(env)) throw new Error("run: the files-duplicates sink needs DROPBOX_FULL_WRITE_ENABLED (Mode B write) armed.");
+			let moved = 0;
+			let failed = 0;
+			for (const it of items) {
+				const keep = typeof it?.keep === "string" ? it.keep : "";
+				const archives = Array.isArray(it?.archives) ? it.archives.filter((a: unknown): a is string => typeof a === "string" && a.length > 0) : [];
+				const moves = Array.isArray(it?.moves) ? (it.moves as unknown[]).filter((m): m is { from: string; to: string } => typeof (m as { from?: unknown })?.from === "string" && typeof (m as { to?: unknown })?.to === "string") : [];
+				if (!keep || !archives.length || moves.length !== archives.length) continue;
+				let groupFailed = false;
+				for (const { from, to } of moves) {
+					try {
+						await moveFull(env, { from, to, dryRun: false });
+					} catch (e) {
+						if (!/not_found/i.test(e instanceof Error ? e.message : String(e))) groupFailed = true;
+					}
+				}
+				if (groupFailed) {
+					failed++;
+					continue;
+				}
+				moved++;
+			}
+			return { moved, groups: items.length, ...(failed ? { failed } : {}) };
 		},
 	};
 }

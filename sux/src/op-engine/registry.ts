@@ -3,6 +3,7 @@ import { classifyForLabelPlan, compactLabelPlan, type LabelPlanItem } from "./_m
 import { proposeMerge, compactMergePlan, type DuplicateClusterInput, type MergePlanItem } from "./_vault_consolidate_plan.js";
 import { proposeContactMerge, compactContactMergePlan, type ContactClusterInput, type ContactMergePlanItem } from "./_contact_consolidate_plan.js";
 import { proposeMychartOutreach, compactMychartOutreachPlan, type MychartConflictInput, type MychartOutreachPlanItem } from "./_mychart_reconcile_plan.js";
+import { proposeFileDuplicate, compactFileDuplicatePlan, type FileClusterInput, type FileDuplicatePlanItem } from "./_files_consolidate_plan.js";
 import type { TriageMsg } from "../fns/_mail_triage.js";
 
 // THE op registry — named op trees that the `run` front-verb and the OpWorkflow
@@ -77,6 +78,18 @@ import type { TriageMsg } from "../fns/_mail_triage.js";
 // anywhere in this op or its sink), since an LLM-drafted clinical message needs a human's own
 // eyes and hands on the actual send, not just an approval click. onTimeout:'fail' — an
 // unanswered gate drafts nothing.
+//
+// `files-consolidate-plan` (#1015) is vault-consolidate-plan's sibling for Dropbox: input is a
+// batch of duplicate-candidate file clusters (paths only) already clustered by
+// `files_consolidate_plan` from files_semantic's EXISTING embeddings (_files_consolidate.ts's
+// cosine union-find) — same fetch-in-the-calling-fn shape as the other plan ops (a leaf only
+// sees `caps`, not env), except there isn't even a fetch here since the index is already
+// built. Each cluster is proposed as one relocation (`proposeFileDuplicate` — a plain path
+// transform, no `caps` needed, unlike vault-consolidate-plan's content-merging propose), the
+// human approves the WHOLE batch once, and only on approval does the `files-duplicates` sink
+// (caps.ts) apply them via the existing Mode-B `moveFull` primitive — never a files_delete, so
+// a wrong duplicate judgment is always undoable by moving the file back. onTimeout:'fail' — an
+// unanswered gate archives nothing.
 export const registry: Record<string, () => Op> = {
 	echo: () => op("echo", async (x: unknown) => x, { kind: "pure" }),
 	"assimilate-pdfs": () =>
@@ -120,5 +133,12 @@ export const registry: Record<string, () => Op> = {
 			op("compact", async (items: Array<MychartOutreachPlanItem | null>) => compactMychartOutreachPlan(items), { kind: "pure" }),
 			ask("draft this outreach message?", { timeout: "24 hour", onTimeout: "fail" }),
 			sink("mychart-outreach"),
+		),
+	"files-consolidate-plan": () =>
+		pipe(
+			map(op("propose", async (c: FileClusterInput) => proposeFileDuplicate(c), { kind: "pure" }), { concurrency: fixed(8) }),
+			op("compact", async (items: Array<FileDuplicatePlanItem | null>) => compactFileDuplicatePlan(items), { kind: "pure" }),
+			ask("archive these duplicate files?", { timeout: "24 hour", onTimeout: "fail" }),
+			sink("files-duplicates"),
 		),
 };

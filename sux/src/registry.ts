@@ -211,6 +211,17 @@ export type RtEnv = Env &
 		//   CONTACT_CONSOLIDATE_ENABLED — master enable (toggle); unset/"0"/"false"/"off" ⇒ inert.
 		CONTACT_CONSOLIDATE_ENABLED?: string;
 
+		// Dropbox duplicate-file cleanup (fns/_files_consolidate.ts + fns/files_consolidate_plan.ts,
+		// #1015): reuses files_semantic's ALREADY-COMPUTED embeddings to cosine-cluster near-
+		// identical Mode B files (no separate read/embed pass), then starts a durable, human-
+		// approved run (op-engine's `files-consolidate-plan`) that relocates each cluster's non-
+		// canonical members into a parallel `/Archive/Duplicates/` tree via the existing Mode-B
+		// moveFull primitive — never files_delete, so a wrong duplicate judgment stays reversible.
+		// Fail-closed like the plan flags above, AND still needs DROPBOX_FULL_WRITE_ENABLED (the
+		// Mode B write arm) for an approval to actually apply.
+		//   FILES_CONSOLIDATE_ENABLED — master enable (toggle); unset/"0"/"false"/"off" ⇒ inert.
+		FILES_CONSOLIDATE_ENABLED?: string;
+
 		EXA_API_KEY?: string;
 
 		KROGER_CLIENT_ID?: string;

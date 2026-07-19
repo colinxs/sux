@@ -13,6 +13,13 @@ vi.mock("../fns/obsidian.js", () => ({ obsidian: { run: (...args: [unknown, unkn
 const contactRun = vi.fn(async (_env: unknown, _args: unknown): Promise<FakeToolResult> => ({ content: [{ type: "text", text: "{}" }] }));
 vi.mock("../fns/contact.js", () => ({ contact: { run: (...args: [unknown, unknown]) => contactRun(...args) } }));
 
+const hasDropboxFullWrite = vi.fn((_env?: unknown) => true);
+const moveFull = vi.fn(async (_env: unknown, opts: { from: string; to: string; dryRun: boolean }) => ({ ok: true, action: "move", scope: "full-dropbox", from: opts.from, to: opts.to }));
+vi.mock("../fns/_dropbox-full.js", () => ({
+	hasDropboxFullWrite: (...args: [unknown]) => hasDropboxFullWrite(...args),
+	moveFull: (...args: [unknown, { from: string; to: string; dryRun: boolean }]) => moveFull(...args),
+}));
+
 // Fake R2: just enough of the head/get/put surface makeSinks touches.
 test("sinks re-address a Handle (r2 -> published/) and a {summaryHandle} (vault -> vault/)", async () => {
 	const objs = new Map<string, Uint8Array>();
@@ -321,4 +328,60 @@ test("mychart-outreach sink skips a malformed item and counts a write failure, n
 	const malformed = { medOrg: "uwmedicine", medId: "med1", allergyOrg: "", allergyId: "al1", draftMessage: "draft" };
 	const out = await sinks["mychart-outreach"].write([good, malformed], {} as Caps);
 	expect(out).toEqual({ drafted: 0, groups: 2, failed: 1 });
+});
+
+test("files-duplicates sink moveFulls each archive into /Archive/Duplicates — never a delete — and leaves `keep` untouched", async () => {
+	hasDropboxFullWrite.mockClear();
+	moveFull.mockClear();
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	const item = { keep: "/a.txt", archives: ["/Notes/b.txt"], moves: [{ from: "/Notes/b.txt", to: "/Archive/Duplicates/Notes/b.txt" }] };
+	const out = await sinks["files-duplicates"].write([item], {} as Caps);
+	expect(hasDropboxFullWrite).toHaveBeenCalledWith({});
+	expect(moveFull).toHaveBeenCalledWith({}, { from: "/Notes/b.txt", to: "/Archive/Duplicates/Notes/b.txt", dryRun: false });
+	expect(moveFull).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ from: "/a.txt" }));
+	expect(out).toEqual({ moved: 1, groups: 1 });
+});
+
+test("files-duplicates sink is a no-op on an empty batch (never an error)", async () => {
+	hasDropboxFullWrite.mockClear();
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	const out = await sinks["files-duplicates"].write([], {} as Caps);
+	expect(hasDropboxFullWrite).not.toHaveBeenCalled();
+	expect(out).toEqual({ moved: 0 });
+});
+
+test("files-duplicates sink fails loud when DROPBOX_FULL_WRITE_ENABLED isn't armed", async () => {
+	hasDropboxFullWrite.mockReturnValueOnce(false);
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	const item = { keep: "/a.txt", archives: ["/b.txt"], moves: [{ from: "/b.txt", to: "/Archive/Duplicates/b.txt" }] };
+	await expect(sinks["files-duplicates"].write([item], {} as Caps)).rejects.toThrow("DROPBOX_FULL_WRITE_ENABLED");
+});
+
+test("files-duplicates sink treats a not_found move error as already-applied (idempotent retry), not a failure", async () => {
+	hasDropboxFullWrite.mockClear();
+	moveFull.mockClear();
+	moveFull.mockRejectedValueOnce(new Error("Dropbox move error: from_lookup/not_found/... (/b.txt → /Archive/Duplicates/b.txt)"));
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	const item = { keep: "/a.txt", archives: ["/b.txt"], moves: [{ from: "/b.txt", to: "/Archive/Duplicates/b.txt" }] };
+	const out = await sinks["files-duplicates"].write([item], {} as Caps);
+	expect(out).toEqual({ moved: 1, groups: 1 });
+});
+
+test("files-duplicates sink skips (doesn't throw) an item whose move fails for a real reason, and counts it as failed", async () => {
+	hasDropboxFullWrite.mockClear();
+	moveFull.mockClear();
+	moveFull.mockRejectedValueOnce(new Error("Dropbox move error: HTTP 500"));
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	const item = { keep: "/a.txt", archives: ["/b.txt"], moves: [{ from: "/b.txt", to: "/Archive/Duplicates/b.txt" }] };
+	const out = await sinks["files-duplicates"].write([item], {} as Caps);
+	expect(out).toEqual({ moved: 0, groups: 1, failed: 1 });
+});
+
+test("files-duplicates sink skips a malformed item (moves not lining up with archives)", async () => {
+	hasDropboxFullWrite.mockClear();
+	moveFull.mockClear();
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	const out = await sinks["files-duplicates"].write([{ keep: "/a.txt", archives: ["/b.txt"], moves: [] }], {} as Caps);
+	expect(moveFull).not.toHaveBeenCalled();
+	expect(out).toEqual({ moved: 0, groups: 1 });
 });

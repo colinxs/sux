@@ -122,6 +122,7 @@ import { voice } from "./voice";
 import { fontcase } from "./fontcase";
 import { recall } from "./recall";
 import { contact_consolidate_plan } from "./contact_consolidate_plan";
+import { files_consolidate_plan } from "./files_consolidate_plan";
 import { get } from "./get";
 import { imessage } from "./imessage";
 import { mail_domain_backfill } from "./mail_domain_backfill";
@@ -254,6 +255,7 @@ export const FUNCTIONS: Fn[] = [
 	fontcase,
 	recall,
 	contact_consolidate_plan,
+	files_consolidate_plan,
 	get,
 	imessage,
 	mail_domain_backfill,
