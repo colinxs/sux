@@ -42,6 +42,11 @@ const ARM_ENV_KEY: Record<InferDomain, keyof RtEnv> = {
 	vault: "INFER_ARM_VAULT",
 };
 
+// Every domain, for cascade paths that can't assume a single domain owns an inference (a
+// merged-evidence inference — e.g. centroid drift over vault+mail — is logged under only one
+// of its evidence domains; see deleteInferSignal's cross-domain scan, #950).
+const ALL_DOMAINS: InferDomain[] = Object.keys(ARM_ENV_KEY) as InferDomain[];
+
 /** Hard stop: a truthy INFER_KILL toggle halts every domain, regardless of its own arm flag. */
 export const isInferKilled = (env: RtEnv): boolean => flagOn(env.INFER_KILL);
 
@@ -138,6 +143,12 @@ export type DeleteSignalResult = { deletedSignal: boolean; cascadedInferenceIds:
  * and delete any inference that had ALL of its evidence removed — no inference may outlive the
  * evidence it was derived from. An inference that still cites other, undeleted signals survives
  * with its `evidenceIds` trimmed.
+ *
+ * The signal itself only ever lives in its own domain's log, but a merged-evidence inference
+ * (evidenceIds spanning multiple armed domains — e.g. centroid drift over vault+mail) is logged
+ * under only ONE of those domains, not necessarily `domain`. So the cascade scans every domain's
+ * inference log, not just this signal's own — otherwise a signal deleted from a non-primary
+ * domain can never find/trim/delete the inference it fed (#950).
  */
 export async function deleteInferSignal(env: RtEnv, domain: InferDomain, signalId: string): Promise<DeleteSignalResult> {
 	const signals = await signalLog(env, domain).load();
@@ -145,24 +156,26 @@ export async function deleteInferSignal(env: RtEnv, domain: InferDomain, signalI
 	const deletedSignal = kept.length !== signals.length;
 	if (deletedSignal) await signalLog(env, domain).save(kept);
 
-	const inferences = await inferenceLog(env, domain).load();
 	const cascadedInferenceIds: string[] = [];
-	const keptInferences: InferInference[] = [];
-	let trimmed = false;
-	for (const inf of inferences) {
-		if (!inf.evidenceIds.includes(signalId)) {
-			keptInferences.push(inf);
-			continue;
+	for (const d of ALL_DOMAINS) {
+		const inferences = await inferenceLog(env, d).load();
+		const keptInferences: InferInference[] = [];
+		let trimmed = false;
+		for (const inf of inferences) {
+			if (!inf.evidenceIds.includes(signalId)) {
+				keptInferences.push(inf);
+				continue;
+			}
+			const remaining = inf.evidenceIds.filter((id) => id !== signalId);
+			if (remaining.length === 0) {
+				cascadedInferenceIds.push(inf.id);
+			} else {
+				trimmed = true;
+				keptInferences.push({ ...inf, evidenceIds: remaining });
+			}
 		}
-		const remaining = inf.evidenceIds.filter((id) => id !== signalId);
-		if (remaining.length === 0) {
-			cascadedInferenceIds.push(inf.id);
-		} else {
-			trimmed = true;
-			keptInferences.push({ ...inf, evidenceIds: remaining });
-		}
+		if (trimmed || keptInferences.length !== inferences.length) await inferenceLog(env, d).save(keptInferences);
 	}
-	if (trimmed || cascadedInferenceIds.length > 0) await inferenceLog(env, domain).save(keptInferences);
 
 	return { deletedSignal, cascadedInferenceIds };
 }

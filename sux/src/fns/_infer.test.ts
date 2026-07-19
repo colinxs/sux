@@ -174,6 +174,47 @@ describe("deleteInferSignal — cascading erasure (§3 guardrail 3)", () => {
 		const result = await deleteInferSignal(env, "mail", "nonexistent");
 		expect(result).toEqual({ deletedSignal: false, cascadedInferenceIds: [] });
 	});
+
+	it("cascades into a merged-evidence inference logged under a DIFFERENT domain than the deleted signal (#950)", async () => {
+		const { env } = baseEnv({ INFER_ARM_MAIL: "1", INFER_ARM_VAULT: "1" });
+		const { id: mailSignalId } = await appendInferSignal(env, "mail", SIGNAL);
+		// Centroid drift over vault+mail logs its merged-evidence inference under "vault"
+		// (domains[0]) even though evidenceIds includes a mail-domain signal id.
+		const { id: inferenceId } = await appendInferInference(env, "vault", {
+			domain: "vault",
+			kind: "centroid_drift",
+			evidenceIds: [mailSignalId as string],
+			createdAt: 1,
+			payload: {},
+		});
+
+		const result = await deleteInferSignal(env, "mail", mailSignalId as string);
+
+		expect(result.deletedSignal).toBe(true);
+		expect(result.cascadedInferenceIds).toEqual([inferenceId]);
+		expect(await readInferInferences(env, "vault")).toEqual([]);
+	});
+
+	it("trims (not deletes) a cross-domain inference that still cites other surviving evidence", async () => {
+		const { env } = baseEnv({ INFER_ARM_MAIL: "1", INFER_ARM_VAULT: "1" });
+		const { id: mailSignalId } = await appendInferSignal(env, "mail", SIGNAL);
+		const { id: vaultSignalId } = await appendInferSignal(env, "vault", SIGNAL);
+		const { id: inferenceId } = await appendInferInference(env, "vault", {
+			domain: "vault",
+			kind: "centroid_drift",
+			evidenceIds: [mailSignalId as string, vaultSignalId as string],
+			createdAt: 1,
+			payload: {},
+		});
+
+		const result = await deleteInferSignal(env, "mail", mailSignalId as string);
+
+		expect(result.cascadedInferenceIds).toEqual([]);
+		const remaining = await readInferInferences(env, "vault");
+		expect(remaining).toEqual([
+			{ domain: "vault", kind: "centroid_drift", evidenceIds: [vaultSignalId], createdAt: 1, payload: {}, id: inferenceId },
+		]);
+	});
 });
 
 describe("deleteInferInference — direct deletion", () => {
