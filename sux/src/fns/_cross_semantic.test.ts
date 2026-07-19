@@ -83,4 +83,24 @@ describe("crossDomainLinks", () => {
 		expect(crossDomainLinks(vaultChunks, [{ domain: "mail", key: "m1", label: "x", embedding: [1, 0] }])).toEqual([]);
 		expect(crossDomainLinks([vaultChunk("A.md", [1, 0])], [])).toEqual([]);
 	});
+
+	it("caps the vault chunks scanned so a huge vault × target set can't blow the pair budget (#959)", () => {
+		// A target set large enough to force a chunk cap well below the vault's real chunk count.
+		const targets: CrossDomainItem[] = Array.from({ length: 200_000 }, (_, i) => ({
+			domain: "mail" as const,
+			key: `m${i}`,
+			label: `msg ${i}`,
+			embedding: [0, 1],
+		}));
+		// Put the only matching chunk PAST where a 2,000,000-pair budget / 200,000 targets = 10
+		// chunk cap would stop scanning — if the cap weren't applied, this would still match.
+		const vaultChunks = [...Array.from({ length: 20 }, (_, i) => vaultChunk(`filler${i}.md`, [0, 1])), vaultChunk("late.md", [1, 0])];
+		targets.push({ domain: "mail", key: "exact", label: "exact match", embedding: [1, 0] });
+
+		const links = crossDomainLinks(vaultChunks, targets, { minScore: 0.5 });
+
+		// Without the cap, "late.md" would be the only chunk to clear minScore (it exactly
+		// matches the "exact" target); the fillers all score 0 against every target.
+		expect(links.some((l) => l.key === "exact")).toBe(false);
+	});
 });

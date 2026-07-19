@@ -21,7 +21,7 @@
 import type { RtEnv } from "../registry";
 import { fingerprint, ledger } from "../ledger";
 import { hasAI, llm } from "../ai";
-import { appendInferInference, hasInferArm, isInferKilled, readInferSignals, type InferDomain, type InferSignal } from "./_infer";
+import { appendInferInference, deleteInferInference, hasInferArm, isInferKilled, readInferSignals, type InferDomain, type InferSignal } from "./_infer";
 import { detectCentroidDrift, type DriftCandidate, type DriftOptions } from "./_infer_drift";
 import { cappedKvLog } from "./_capped_kv_log";
 import { errMsg, vaultToday } from "./_util";
@@ -229,6 +229,7 @@ export async function runInferNudge(env: RtEnv, opts: { domains?: InferDomain[] 
 		try {
 			await deps.digestAppend(env, `Daily/${vaultToday(env.VAULT_TZ)}.md`, digestContent);
 		} catch (e) {
+			await deleteInferInference(env, domains[0], inferenceId);
 			return { error: `vault append failed: ${errMsg(e)}`, cluster: candidate.cluster, driftScore: candidate.driftScore, inferenceId };
 		}
 	}

@@ -189,8 +189,35 @@ export async function deleteInferInference(env: RtEnv, domain: InferDomain, infe
 	return true;
 }
 
-/** Purge a whole domain: wipe its signal log and inference log entirely. */
+/**
+ * Purge a whole domain: wipe its signal log and inference log entirely, then cascade into every
+ * OTHER domain's inference log — same "no inference may outlive its evidence" guardrail
+ * deleteInferSignal enforces (#950), just for a whole-domain wipe instead of one signal. A
+ * merged-evidence inference (e.g. centroid drift over vault+mail) can be logged under only ONE
+ * of its evidence domains, so purging a different domain's signals must still find and
+ * trim/cascade-delete any inference elsewhere that cited them.
+ */
 export async function purgeInferDomain(env: RtEnv, domain: InferDomain): Promise<void> {
+	const purgedIds = new Set((await signalLog(env, domain).load()).map((s) => s.id));
+
 	await signalLog(env, domain).save([]);
 	await inferenceLog(env, domain).save([]);
+
+	if (!purgedIds.size) return;
+	for (const d of ALL_DOMAINS) {
+		if (d === domain) continue;
+		const inferences = await inferenceLog(env, d).load();
+		const kept: InferInference[] = [];
+		let changed = false;
+		for (const inf of inferences) {
+			const remaining = inf.evidenceIds.filter((id) => !purgedIds.has(id));
+			if (remaining.length === inf.evidenceIds.length) {
+				kept.push(inf);
+			} else {
+				changed = true;
+				if (remaining.length > 0) kept.push({ ...inf, evidenceIds: remaining });
+			}
+		}
+		if (changed) await inferenceLog(env, d).save(kept);
+	}
 }

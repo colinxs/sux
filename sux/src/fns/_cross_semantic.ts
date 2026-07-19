@@ -41,6 +41,18 @@ const MIN_SCORE = 0.75;
 const MAX_PER_NOTE = 3;
 const MAX_TOTAL = 50;
 
+// Cost is O(vaultChunks × targets) cosine calls with no cap of its own — each domain's OWN
+// index already self-caps (vault 5000/mail 1000/files 3000), so a full-size vault can still
+// drive ~5000×4000=20M cosine calls in one invocation, worst case. That was tolerable when this
+// only ran on an explicit human-triggered vault_cross_link_plan call; #948's unattended weekly
+// cron sweep has no human watching, and a mid-computation CPU-time kill isn't a catchable JS
+// exception, so the sweep's ledger key never gets marked and it silently retries the same
+// failure forever. Bound the pair count before the double loop runs, by capping how many vault
+// chunks get scanned against a given target-set size (~2M pairs ≈ 1.5s of cosine calls on 768-dim
+// vectors — well under a Worker's CPU budget) rather than capping targets, since targets is
+// already the smaller, self-capped pooled set.
+const MAX_PAIRS = 2_000_000;
+
 export type CrossDomainItem = { domain: "mail" | "files"; key: string; label: string; embedding: number[] };
 export type CrossLink = { vaultPath: string; domain: "mail" | "files"; key: string; label: string; score: number };
 
@@ -69,8 +81,10 @@ export function crossDomainLinks(vaultChunks: SemanticChunk[], targets: CrossDom
 	const maxPerNote = opts?.maxPerNote ?? MAX_PER_NOTE;
 	const maxTotal = opts?.maxTotal ?? MAX_TOTAL;
 	if (!targets.length) return [];
+	const chunkCap = Math.max(1, Math.floor(MAX_PAIRS / targets.length));
+	const scanChunks = vaultChunks.length > chunkCap ? vaultChunks.slice(0, chunkCap) : vaultChunks;
 	const bestByNote = new Map<string, Map<string, CrossLink>>();
-	for (const vc of vaultChunks) {
+	for (const vc of scanChunks) {
 		if (!Array.isArray(vc.embedding) || !vc.embedding.length) continue;
 		let best = bestByNote.get(vc.path);
 		for (const t of targets) {

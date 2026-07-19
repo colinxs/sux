@@ -262,4 +262,59 @@ describe("purgeInferDomain — whole-domain erasure", () => {
 		expect(await readInferSignals(env, "mail")).toEqual([]);
 		expect((await readInferSignals(env, "purchases")).length).toBe(1);
 	});
+
+	it("cascades into a merged-evidence inference logged under a DIFFERENT domain than the purged signals (#953)", async () => {
+		const { env } = baseEnv({ INFER_ARM_MAIL: "1", INFER_ARM_VAULT: "1" });
+		const { id: mailSignalId } = await appendInferSignal(env, "mail", SIGNAL);
+		// Centroid drift over vault+mail logs its merged-evidence inference under "vault"
+		// (domains[0]) even though evidenceIds includes a mail-domain signal id.
+		await appendInferInference(env, "vault", {
+			domain: "vault",
+			kind: "centroid_drift",
+			evidenceIds: [mailSignalId as string],
+			createdAt: 1,
+			payload: {},
+		});
+
+		await purgeInferDomain(env, "mail");
+
+		expect(await readInferSignals(env, "mail")).toEqual([]);
+		expect(await readInferInferences(env, "vault")).toEqual([]);
+	});
+
+	it("trims (not deletes) a cross-domain inference that still cites other surviving evidence after a purge", async () => {
+		const { env } = baseEnv({ INFER_ARM_MAIL: "1", INFER_ARM_VAULT: "1" });
+		const { id: mailSignalId } = await appendInferSignal(env, "mail", SIGNAL);
+		const { id: vaultSignalId } = await appendInferSignal(env, "vault", SIGNAL);
+		const { id: inferenceId } = await appendInferInference(env, "vault", {
+			domain: "vault",
+			kind: "centroid_drift",
+			evidenceIds: [mailSignalId as string, vaultSignalId as string],
+			createdAt: 1,
+			payload: {},
+		});
+
+		await purgeInferDomain(env, "mail");
+
+		const remaining = await readInferInferences(env, "vault");
+		expect(remaining).toEqual([
+			{ domain: "vault", kind: "centroid_drift", evidenceIds: [vaultSignalId], createdAt: 1, payload: {}, id: inferenceId },
+		]);
+	});
+
+	it("purging a domain with no signals is a harmless no-op for other domains' inferences", async () => {
+		const { env } = baseEnv({ INFER_ARM_MAIL: "1", INFER_ARM_VAULT: "1" });
+		const { id: vaultSignalId } = await appendInferSignal(env, "vault", SIGNAL);
+		const { id: inferenceId } = await appendInferInference(env, "vault", {
+			domain: "vault",
+			kind: "drift",
+			evidenceIds: [vaultSignalId as string],
+			createdAt: 1,
+			payload: {},
+		});
+
+		await purgeInferDomain(env, "mail");
+
+		expect(await readInferInferences(env, "vault")).toEqual([{ domain: "vault", kind: "drift", evidenceIds: [vaultSignalId], createdAt: 1, payload: {}, id: inferenceId }]);
+	});
 });
