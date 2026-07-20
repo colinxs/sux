@@ -53,25 +53,32 @@ type Gathered = { material: string; refs: string[] };
 async function fromVault(env: RtEnv, question: string): Promise<Gathered> {
 	const remote = Boolean((env as { OBSIDIAN_REMOTE_URL?: string; OBSIDIAN_REMOTE_KEY?: string }).OBSIDIAN_REMOTE_URL && (env as { OBSIDIAN_REMOTE_KEY?: string }).OBSIDIAN_REMOTE_KEY);
 	if (!remote) return fromVaultSemantic(env, question);
-	const r = await obsidian.run(env, { action: "search", query: question, backend: "remote" });
-	if (r.isError) throw new Error(r.content?.[0]?.text ?? "vault search failed");
-	const hits = (pj(r.content?.[0]?.text ?? "")?.hits ?? []) as Array<{ path?: string }>;
-	const parts: string[] = [];
-	const refs: string[] = [];
-	for (const h of hits.slice(0, 3)) {
-		const path = h?.path;
-		if (!path) continue;
-		try {
-			const rd = await obsidian.run(env, { action: "read", path, backend: "remote" });
-			if (!rd.isError) {
-				parts.push(`[vault:${path}]\n${(rd.content?.[0]?.text ?? "").slice(0, 1500)}`);
-				refs.push(`vault:${path}`);
+	try {
+		const r = await obsidian.run(env, { action: "search", query: question, backend: "remote" });
+		if (r.isError) throw new Error(r.content?.[0]?.text ?? "vault search failed");
+		const hits = (pj(r.content?.[0]?.text ?? "")?.hits ?? []) as Array<{ path?: string }>;
+		const parts: string[] = [];
+		const refs: string[] = [];
+		for (const h of hits.slice(0, 3)) {
+			const path = h?.path;
+			if (!path) continue;
+			try {
+				const rd = await obsidian.run(env, { action: "read", path, backend: "remote" });
+				if (!rd.isError) {
+					parts.push(`[vault:${path}]\n${(rd.content?.[0]?.text ?? "").slice(0, 1500)}`);
+					refs.push(`vault:${path}`);
+				}
+			} catch {
+				/* skip an unreadable note */
 			}
-		} catch {
-			/* skip an unreadable note */
 		}
+		return { material: parts.join("\n\n"), refs };
+	} catch {
+		// Remote Obsidian backend is configured but unreachable right now (e.g. a sleeping/
+		// offline home Tailscale Funnel) — fall back to the local semantic index rather than
+		// losing the vault source entirely, same as the "not configured" branch above.
+		return fromVaultSemantic(env, question);
 	}
-	return { material: parts.join("\n\n"), refs };
 }
 
 /** Git-backend vault leg: rank the vault's HEAD-keyed embedded chunk index (built by

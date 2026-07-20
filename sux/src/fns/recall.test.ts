@@ -279,6 +279,18 @@ describe("recall", () => {
 		expect(out.sources.vault).toBe("1 hit(s)");
 	});
 
+	it("falls back to the local semantic index when the REMOTE backend is configured but errors at runtime (#1121)", async () => {
+		obs.mockImplementation(async (_e: any, a: any) => {
+			if (a.backend === "remote") throw new Error("HTTP 502"); // sleeping/offline Tailscale Funnel
+			if (a.action === "list") return okR(JSON.stringify({ notes: ["Areas/Health.md"] }));
+			return okR("Dr. Chen is my oncologist.");
+		});
+		const remoteEnv = { ...env(), OBSIDIAN_REMOTE_URL: "https://vault.ts.net", OBSIDIAN_REMOTE_KEY: "k" } as any;
+		const out = parse(await recall.run(remoteEnv, { question: "oncologist?", sources: ["vault"] }));
+		expect(out.sources.vault).toBe("1 hit(s)"); // recovered via fromVaultSemantic, not "unavailable"
+		expect(out.citations).toContain("vault:Areas/Health.md");
+	});
+
 	it("uses vault_semantic's cosine kNN (not lexical search) for the git-backend vault leg — GitHub code-search can't see a private repo", async () => {
 		obs.mockImplementation(async (_e: any, a: any) => {
 			if (a.action === "search") throw new Error("git backend must not lexically search — code-search returns nothing on a private repo");
