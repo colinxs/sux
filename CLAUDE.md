@@ -416,6 +416,19 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   exact input names (`title`/`body`/`github-token`/`mode`/`update-mode`/`labels`) instead of
   guessing blind.
 
+- **`automerge.yml`'s real eligibility rule (since its 2026-07-15 rewrite) is just "not draft &&
+  not labelled `hold`"** — the older safe-type-title/eligible-label taxonomy some in-repo
+  comments still describe is gone from the actual reusable workflow (verify against the local
+  hub checkout, `/home/runner/work/_actions/SuxOS/.github/main/.github/workflows/automerge.yml`,
+  not stale comments). Any code that opens a PR in this repo and assumes WITHHOLDING an
+  "eligible" label (e.g. `automerge`) is enough to keep it from merging is wrong — only the
+  `hold` label actually blocks native auto-merge; everything else auto-merges the instant
+  required checks go green. This bit `_self_improve.ts`'s stub PRs hard: their initial commit
+  is tree-identical to `main`, so CI passes trivially and instantly, and 8/8 checked
+  self-improve merges on `main` turned out to be empty no-ops — the described fix never
+  actually landed (#1116). Any future PR-opening automation must explicitly apply `hold`
+  itself if the PR isn't meant to auto-merge yet.
+
 ## House style
 
 - No trailing/inline comments explaining the obvious; comment *why*, not *what*.
