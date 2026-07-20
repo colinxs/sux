@@ -391,6 +391,15 @@ export type RtEnv = Env &
 		// orgs' PHI at once rather than one org's redacted snapshot in isolation. Unset/"0"/
 		// "false"/"off" ⇒ inert, same fail-closed two-stage convention as MAIL_TRIAGE_ENABLED.
 		MYCHART_RECONCILE_ENABLED?: string;
+		// Spaced-repetition review detector (fns/_study_review.ts, #1092) — surfaces an fyi
+		// drop when a whitelisted `study` topic's last touch is at least STUDY_REVIEW_INTERVAL_
+		// DAYS ago, so studied material gets reinforced instead of sitting distilled and never
+		// revisited. Same two-stage fail-closed gate as MYCHART_RECONCILE_ENABLED: ALSO requires
+		// AGENDA_ENABLED. Detection only — arithmetic over study.ts's own provenance timestamps,
+		// no model call, no KB mutation. STUDY_REVIEW_INTERVAL_DAYS optional; unset ⇒ 14 days,
+		// clamped [1,180].
+		STUDY_REVIEW_ENABLED?: string;
+		STUDY_REVIEW_INTERVAL_DAYS?: string;
 		// Relationship-decay detector thresholds (fns/_agenda.ts's detectRelationshipDrops,
 		// #930) — a contact's own EWMA cadence baseline must be exceeded by BOTH a multiple
 		// (default 2x) and an absolute floor (default 5 days) before it's proposed. Both
@@ -541,11 +550,13 @@ export type RtEnv = Env &
 
 		// GitHub Actions billing gauge (spend-observability-plan.md #1) — reuses the
 		// Prometheus push above (same URL/USER + shared GRAFANA_LOKI_TOKEN bearer) plus the
-		// existing GITHUB_TOKEN (self-improve's) to poll /actions/billing/usage once a day.
-		// Repo defaults to the sux repo itself; override only if this ever needs to watch a
-		// different one. Absent GITHUB_TOKEN or Prometheus secrets ⇒ dormant. See
-		// shipGithubBillingSnapshot in sux/src/grafana.ts.
-		GH_BILLING_REPO?: string;
+		// existing GITHUB_TOKEN (self-improve's) to poll /orgs/{org}/settings/billing/actions
+		// once a day. Actions minutes bill against the owning account, not an individual repo
+		// (#1098), so this is an org/user login, not an owner/repo pair — defaults to the SuxOS
+		// org; override only if this ever needs to watch a different account. Absent
+		// GITHUB_TOKEN or Prometheus secrets ⇒ dormant. See shipGithubBillingSnapshot in
+		// sux/src/grafana.ts.
+		GH_BILLING_OWNER?: string;
 
 		MCP_RATE_LIMITER?: { limit: (opts: { key: string }) => Promise<{ success: boolean }> };
 		// Coarse per-IP limiter for the anonymous observability/content routes

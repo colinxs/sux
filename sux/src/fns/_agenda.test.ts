@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { composeDigest, type AgendaDeps, type Drop, detectCrossSemanticDrops, detectDrops, detectKnowledgeDrops, detectMonarchDrops, detectMyChartDrops, detectMychartAllergyGapDrops, detectMychartConflictDrops, detectPortfolioDrops, detectRelationshipDrops, detectSavingsRateDrop, detectTextDrops, detectWatchDrops, computeSavingsRate, type EventRef, mailRelationshipThreads, type MailRef, type RelationshipBaseline, type TextThreadRef, rankDropsLearned, runAgenda } from "./_agenda";
+import { composeDigest, type AgendaDeps, type Drop, detectCrossSemanticDrops, detectDrops, detectKnowledgeDrops, detectMonarchDrops, detectMyChartDrops, detectMychartAllergyGapDrops, detectMychartConflictDrops, detectPortfolioDrops, detectRelationshipDrops, detectSavingsRateDrop, detectStudyReviewDrops, detectTextDrops, detectWatchDrops, computeSavingsRate, type EventRef, mailRelationshipThreads, type MailRef, type RelationshipBaseline, type TextThreadRef, rankDropsLearned, runAgenda } from "./_agenda";
 import { listProposals } from "../proposals";
 import { recordOutcome } from "./_learning";
 import { readInferSignals } from "./_infer";
@@ -29,6 +29,7 @@ const deps = (over: Partial<AgendaDeps> = {}): AgendaDeps => ({
 	consolidateFindings: vi.fn(async () => null),
 	weeklyRecallFindings: vi.fn(async () => null),
 	watchFindings: vi.fn(async () => null),
+	studyTopics: vi.fn(async () => []),
 	crossSemanticFindings: vi.fn(async () => null),
 	monarchAccounts: vi.fn(async () => []),
 	monarchTransactions: vi.fn(async () => []),
@@ -105,6 +106,20 @@ describe("agenda — detectors", () => {
 	it("no watch drops when there's nothing to report", () => {
 		expect(detectWatchDrops(null)).toHaveLength(0);
 		expect(detectWatchDrops({ checked_at: "2026-07-18T00:00:00.000Z", changed_count: 0, changed: [] })).toHaveLength(0);
+	});
+
+	it("wires studied topics due for review in as fyi drops (#1092), keyed on the review cycle", () => {
+		const drops = detectStudyReviewDrops([{ topic: "thermodynamics", title: "Intro Thermo", learned_at: 1_700_000_000_000, cycle: 1 }]);
+		expect(drops).toHaveLength(1);
+		expect(drops[0]).toMatchObject({ kind: "study_review_due", urgency: "fyi" });
+		expect(drops[0].dedupe).toBe("study_review::thermodynamics::1");
+		expect(drops[0].title).toContain("thermodynamics");
+		expect(drops[0].title).toContain("Intro Thermo");
+		expect(drops[0].action.fn).toBe("todoist");
+	});
+
+	it("no study review drops when nothing is due", () => {
+		expect(detectStudyReviewDrops([])).toHaveLength(0);
 	});
 
 	it("wires the cross-semantic sweep's findings in as an fyi drop (#785/#948), never auto-applying", () => {
@@ -877,6 +892,57 @@ describe("agenda — Monarch infer signal wiring (#1085)", () => {
 		expect(r.digest_written).toBe(true);
 		expect(warn).toHaveBeenCalledWith(expect.stringMatching(/infer: purchases signal log failed/));
 		warn.mockRestore();
+	});
+});
+
+describe("agenda — defaultDeps.monarchTransactions pagination (#1097)", () => {
+	const page = (ids: number[], offset: number, totalCount: number) => ({
+		content: [{ text: JSON.stringify({ totalCount, count: ids.length, offset, limit: 200, transactions: ids.map((i) => ({ id: `txn${i}`, amount: -1, date: "2026-07-17" })) }) }],
+	});
+
+	it("paginates past a single 200-row page using totalCount, rather than silently truncating", async () => {
+		const { defaultDeps } = await import("./_agenda");
+		const { monarch } = await import("./monarch");
+		const run = vi
+			.spyOn(monarch, "run")
+			.mockImplementationOnce(async () => page(Array.from({ length: 200 }, (_, i) => i), 0, 350) as any)
+			.mockImplementationOnce(async () => page(Array.from({ length: 150 }, (_, i) => 200 + i), 200, 350) as any);
+
+		const deps = await defaultDeps();
+		const txns = await deps.monarchTransactions({} as any, { start: "2026-04-19", end: "2026-07-17" });
+
+		expect(run).toHaveBeenCalledTimes(2);
+		expect(run).toHaveBeenNthCalledWith(1, {}, { op: "transactions", start: "2026-04-19", end: "2026-07-17", limit: 200, offset: 0 });
+		expect(run).toHaveBeenNthCalledWith(2, {}, { op: "transactions", start: "2026-04-19", end: "2026-07-17", limit: 200, offset: 200 });
+		expect(txns).toHaveLength(350);
+		expect(txns[349]?.id).toBe("txn349");
+		run.mockRestore();
+	});
+
+	it("stops at a single page when totalCount fits (no wasted extra call)", async () => {
+		const { defaultDeps } = await import("./_agenda");
+		const { monarch } = await import("./monarch");
+		const run = vi.spyOn(monarch, "run").mockImplementationOnce(async () => page([0, 1, 2], 0, 3) as any);
+
+		const deps = await defaultDeps();
+		const txns = await deps.monarchTransactions({} as any, { start: "2026-07-14", end: "2026-07-17" });
+
+		expect(run).toHaveBeenCalledTimes(1);
+		expect(txns).toHaveLength(3);
+		run.mockRestore();
+	});
+
+	it("stops at MONARCH_TRANSACTIONS_MAX rather than looping forever on a pathological totalCount", async () => {
+		const { defaultDeps } = await import("./_agenda");
+		const { monarch } = await import("./monarch");
+		const run = vi.spyOn(monarch, "run").mockImplementation(async (_env: any, a: any) => page(Array.from({ length: 200 }, (_, i) => a.offset + i), a.offset, 1_000_000) as any);
+
+		const deps = await defaultDeps();
+		const txns = await deps.monarchTransactions({} as any, { start: "2026-04-19", end: "2026-07-17" });
+
+		expect(txns.length).toBeLessThanOrEqual(1000);
+		expect(run.mock.calls.length).toBeLessThanOrEqual(6);
+		run.mockRestore();
 	});
 });
 

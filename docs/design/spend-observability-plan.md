@@ -34,8 +34,10 @@ found nothing beyond the tool-call metrics above.
 
 ## What's missing, concretely
 
-1. **GitHub Actions minutes usage** — GitHub exposes this via
-   `GET /repos/{owner}/{repo}/actions/billing` (or the org-level equivalent),
+1. **GitHub Actions minutes usage** — GitHub bills Actions minutes against the
+   owning account, not an individual repo, so there is no repo-scoped billing
+   endpoint. GitHub exposes this via `GET /orgs/{org}/settings/billing/actions`
+   (or the `/users/{user}/...`/`/enterprises/{enterprise}/...` equivalents),
    returning `total_minutes_used`, `included_minutes`, and a per-runner-OS
    breakdown for the current billing cycle. Nothing today calls this endpoint or
    stores its result anywhere Grafana can query.
@@ -50,9 +52,10 @@ found nothing beyond the tool-call metrics above.
 
 ## Proposed plumbing (before any dashboard is built)
 
-1. **GitHub Actions minutes** — SHIPPED (#1061): `sux/src/grafana.ts`'s
-   `shipGithubBillingSnapshot` polls `GET /repos/{repo}/actions/billing/usage` (repo
-   from `GH_BILLING_REPO`, default `SuxOS/sux`) using the existing `GITHUB_TOKEN`, and
+1. **GitHub Actions minutes** — SHIPPED (#1061), fixed to the real org-scoped
+   endpoint in #1098: `sux/src/grafana.ts`'s `shipGithubBillingSnapshot` polls
+   `GET /orgs/{org}/settings/billing/actions` (org from `GH_BILLING_OWNER`, default
+   `SuxOS`) using the existing `GITHUB_TOKEN`, and
    pushes `gh_actions_minutes_used_total` / `gh_actions_minutes_included` via the same
    Influx-line-protocol transport `shipMetricsSnapshot` uses (same `GRAFANA_PROM_*`
    secrets + shared `GRAFANA_LOKI_TOKEN` bearer — no new credential to mint). Rides the
