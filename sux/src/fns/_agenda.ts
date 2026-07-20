@@ -589,7 +589,7 @@ export function detectMonarchDrops(date: string, accounts: MonarchAccountRef[], 
 		drops.push({
 			kind: "subscription_creep",
 			urgency: "fyi",
-			dedupe: `monarch::subscription_creep::${merchant}::${latest.id}`,
+			dedupe: `monarch::subscription_creep::${merchant}::${Math.round(latestAmount * 100)}`,
 			title: `Subscription creep: ${merchant} rose from $${first.toFixed(2)} to $${latestAmount.toFixed(2)}`,
 			emoji: "📈",
 			action: task(`Review recurring charge growth: ${merchant} ($${first.toFixed(2)} → $${latestAmount.toFixed(2)})`),

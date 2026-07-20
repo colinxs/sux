@@ -203,6 +203,35 @@ describe("agenda — detectors", () => {
 		expect(creep?.evidence).toMatchObject({ merchant: "Streamflix", firstAmount: 9.99, latestAmount: 14.99, occurrences: 3 });
 	});
 
+	it("Monarch: subscription creep dedupes on the amount, not the latest transaction id, so a same-amount repeat next cycle doesn't re-propose (#1067)", () => {
+		const drops1 = detectMonarchDrops(
+			"2026-07-28",
+			[],
+			[
+				{ id: "t1", amount: -9.99, merchant: "Streamflix", date: "2026-05-28" },
+				{ id: "t2", amount: -9.99, merchant: "Streamflix", date: "2026-06-28" },
+				{ id: "t3", amount: -14.99, merchant: "Streamflix", date: "2026-07-28" },
+			],
+			[],
+		);
+		// Next billing cycle: same already-flagged amount posts under a brand-new transaction id.
+		const drops2 = detectMonarchDrops(
+			"2026-08-28",
+			[],
+			[
+				{ id: "t1", amount: -9.99, merchant: "Streamflix", date: "2026-05-28" },
+				{ id: "t2", amount: -9.99, merchant: "Streamflix", date: "2026-06-28" },
+				{ id: "t3", amount: -14.99, merchant: "Streamflix", date: "2026-07-28" },
+				{ id: "t4-new-id", amount: -14.99, merchant: "Streamflix", date: "2026-08-28" },
+			],
+			[],
+		);
+		const dedupe1 = drops1.find((d) => d.kind === "subscription_creep")?.dedupe;
+		const dedupe2 = drops2.find((d) => d.kind === "subscription_creep")?.dedupe;
+		expect(dedupe1).toBeDefined();
+		expect(dedupe2).toBe(dedupe1); // same amount ⇒ same dedupe key, regardless of transaction id
+	});
+
 	it("Monarch: subscription creep does not flag a flat recurring charge or too few occurrences", () => {
 		const flat = detectMonarchDrops(
 			"2026-07-28",
