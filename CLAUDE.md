@@ -405,6 +405,17 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   fresh array whenever a write should actually happen — only hand back the original reference
   for the genuine "no change" case (see `_infer.ts`'s delete/purge paths for the pattern).
 
+- **`gh api repos/SuxOS/.github` 404s from inside a bot-build sandbox even when the repo/action
+  is fine** — that token just lacks visibility into the private hub repo. Before assuming a
+  reusable workflow/action (`SuxOS/.github/.github/{workflows,actions}/*`) doesn't exist or
+  guessing its input names, check `/home/runner/work/_actions/SuxOS/.github/main/` — the
+  runner's local Actions cache from checking out this very job's own reusable-workflow refs
+  already has a full local checkout of the hub repo, `action.yml`s included. Confirmed while
+  building #1105 (converting `deploy.yml`/`health.yml`'s hand-rolled tracking-issue upserts onto
+  the hub's `upsert-tracking-issue` composite action) — reading its `action.yml` there gave the
+  exact input names (`title`/`body`/`github-token`/`mode`/`update-mode`/`labels`) instead of
+  guessing blind.
+
 ## House style
 
 - No trailing/inline comments explaining the obvious; comment *why*, not *what*.

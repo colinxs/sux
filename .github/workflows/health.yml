@@ -49,48 +49,17 @@ jobs:
         run: node scripts/billing-check.mjs
 
       # A meter over threshold is otherwise invisible on a day no one is watching
-      # Actions — same upsert pattern as deploy.yml's failure issue.
+      # Actions — same shared upsert used by the hub's own health.yml/audit.yml/
+      # pr-watch.yml/budget-governor.yml (and now deploy.yml's failure issue).
       - name: Open or update billing-alert issue on breach
         if: failure()
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        uses: SuxOS/.github/.github/actions/upsert-tracking-issue@main
         with:
-          script: |
-            const title = "sux billing/usage over threshold";
-            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const body = [
-              `A billing/usage meter breached its threshold on ${new Date().toISOString()}.`,
-              "",
-              `- Workflow run: ${runUrl}`,
-              "",
-              "Run `node scripts/billing-check.mjs` locally (or with `--json`) for the full report.",
-            ].join("\n");
-            try {
-              const existing = await github.rest.issues.listForRepo({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                state: "open",
-                per_page: 100,
-              });
-              const hit = existing.data.find(
-                (i) => !i.pull_request && i.title === title,
-              );
-              if (hit) {
-                await github.rest.issues.createComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: hit.number,
-                  body,
-                });
-                core.info(`Updated existing issue #${hit.number}.`);
-              } else {
-                const created = await github.rest.issues.create({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  title,
-                  body,
-                });
-                core.info(`Opened issue #${created.data.number}.`);
-              }
-            } catch (e) {
-              core.warning(`Could not open/update billing issue: ${e.message}`);
-            }
+          github-token: ${{ github.token }}
+          title: "sux billing/usage over threshold"
+          body: |
+            A billing/usage meter breached its threshold.
+
+            - Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            Run `node scripts/billing-check.mjs` locally (or with `--json`) for the full report.

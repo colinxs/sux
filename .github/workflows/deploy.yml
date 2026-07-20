@@ -95,52 +95,19 @@ jobs:
 
       # A failed prod deploy is otherwise invisible: a merged fix silently never
       # ships. On any failure above (build gate or wrangler deploy), open a fresh
-      # tracking issue or update the existing open one — same upsert pattern as
-      # health.yml. Wrapped in try/catch so a GitHub API hiccup never masks the
-      # underlying deploy failure (the job still ends red).
+      # tracking issue or update the existing open one — same shared upsert used
+      # by the hub's own health.yml/audit.yml/pr-watch.yml/budget-governor.yml.
       - name: Open or update deploy-failure issue on failure
         if: failure()
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        uses: SuxOS/.github/.github/actions/upsert-tracking-issue@main
         with:
-          script: |
-            const title = "sux production deploy failed";
-            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const body = [
-              `The production deploy failed on ${new Date().toISOString()}.`,
-              "",
-              `- Workflow run: ${runUrl}`,
-              `- Commit: ${context.sha}`,
-              "",
-              "A merged change did NOT reach production. This is either a red build",
-              "gate (type-check/tests) or a wrangler deploy error. See the run logs above.",
-            ].join("\n");
-            try {
-              const existing = await github.rest.issues.listForRepo({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                state: "open",
-                per_page: 100,
-              });
-              const hit = existing.data.find(
-                (i) => !i.pull_request && i.title === title,
-              );
-              if (hit) {
-                await github.rest.issues.createComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: hit.number,
-                  body,
-                });
-                core.info(`Updated existing issue #${hit.number}.`);
-              } else {
-                const created = await github.rest.issues.create({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  title,
-                  body,
-                });
-                core.info(`Opened issue #${created.data.number}.`);
-              }
-            } catch (e) {
-              core.warning(`Could not open/update deploy issue: ${e.message}`);
-            }
+          github-token: ${{ github.token }}
+          title: "sux production deploy failed"
+          body: |
+            The production deploy failed.
+
+            - Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            - Commit: ${{ github.sha }}
+
+            A merged change did NOT reach production. This is either a red build
+            gate (type-check/tests) or a wrangler deploy error. See the run logs above.
