@@ -415,6 +415,19 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   the hub's `upsert-tracking-issue` composite action) — reading its `action.yml` there gave the
   exact input names (`title`/`body`/`github-token`/`mode`/`update-mode`/`labels`) instead of
   guessing blind.
+- **An audit issue asking to "re-file the real bugs behind N historic empty self-improve
+  merges" needs each one re-verified against CURRENT `main`, not trusted from the original
+  report** — of the 8 bugs audited for #1119, 6 turned out already resolved by unrelated
+  later work (mail_sieve_backfill's 50-cap by #684/#931, ingest{url}'s 0-byte binary fetch by
+  #505's `smartFetch` fallback, vault_delete's confirm gate by #1054's stage() rebuild, amazon's
+  mac-render 502 by #742 dropping the mac tier entirely, and — notably — BOTH #1114's and
+  #1020's "binary uploads need a way to mint a ref without inlining base64" ask, already
+  solved by #910's `POST /s/up` raw-bytes upload door, which merged 2026-07-18, *before*
+  either of those two stub PRs merged empty on 2026-07-19/20) and one (#477's vault
+  write-path-arg) never reproduced against the code even at filing time. Only the remaining 2
+  (#1120, #1121) were genuinely still live. Don't blindly re-open all N as fresh issues —
+  check each claim's current file:line first, since a lot of drive-by self-improve reports
+  get overtaken by unrelated feature work before anyone re-audits them.
 
 ## House style
 
