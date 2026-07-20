@@ -492,6 +492,13 @@ const SUBSCRIPTION_GROWTH_THRESHOLD = 0.2;
 // Recurring charges above this read as a bill (rent, insurance) already covered by bill_due,
 // not a subscription.
 const SUBSCRIPTION_MAX_CHARGE = 200;
+// defaultDeps.monarchTransactions pagination (#1097): monarch.ts's transactions op caps a single
+// page at 200 and reports totalCount, so the wider SUBSCRIPTION_LOOKBACK_DAYS window (anyone above
+// ~1.1 txns/day) needs an offset loop rather than one unpaginated call, or rows past the first page
+// silently vanish. MAX bounds the loop itself — a sane ceiling, not a truncation anyone should hit
+// at a 90-day window, so a pathological account/API bug can't turn one cycle into unbounded fetches.
+const MONARCH_TRANSACTIONS_PAGE_SIZE = 200;
+const MONARCH_TRANSACTIONS_MAX = 1000;
 
 const daysLeftInMonth = (date: string): number => {
 	const d = new Date(`${date}T00:00:00Z`);
@@ -1410,10 +1417,19 @@ export async function defaultDeps(): Promise<AgendaDeps> {
 			return (parsed.accounts ?? []).map((a: any) => ({ id: String(a?.id ?? ""), name: a?.name, balance: typeof a?.balance === "number" ? a.balance : undefined, type: a?.type, subtype: a?.subtype }));
 		},
 		monarchTransactions: async (env, o) => {
-			const r = await monarch.run(env, { op: "transactions", start: o.start, end: o.end, limit: 100 });
-			if (r.isError) throw new Error(r.content?.[0]?.text ?? "monarch transactions failed");
-			const parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
-			return (parsed.transactions ?? []).map((t: any) => ({ id: String(t?.id ?? ""), amount: typeof t?.amount === "number" ? t.amount : undefined, date: t?.date, merchant: t?.merchant }));
+			let all: MonarchTxnRef[] = [];
+			let offset = 0;
+			for (;;) {
+				const r = await monarch.run(env, { op: "transactions", start: o.start, end: o.end, limit: MONARCH_TRANSACTIONS_PAGE_SIZE, offset });
+				if (r.isError) throw new Error(r.content?.[0]?.text ?? "monarch transactions failed");
+				const parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
+				const page = (parsed.transactions ?? []).map((t: any) => ({ id: String(t?.id ?? ""), amount: typeof t?.amount === "number" ? t.amount : undefined, date: t?.date, merchant: t?.merchant }));
+				all = all.concat(page);
+				const totalCount = typeof parsed.totalCount === "number" ? parsed.totalCount : all.length;
+				offset += MONARCH_TRANSACTIONS_PAGE_SIZE;
+				if (page.length < MONARCH_TRANSACTIONS_PAGE_SIZE || all.length >= totalCount || all.length >= MONARCH_TRANSACTIONS_MAX) break;
+			}
+			return all.slice(0, MONARCH_TRANSACTIONS_MAX);
 		},
 		monarchBudgets: async (env, o) => {
 			const r = await monarch.run(env, { op: "budgets", month: o.month });

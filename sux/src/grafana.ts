@@ -200,11 +200,11 @@ export async function shipMetricsSnapshot(env: RtEnv, ctx: { waitUntil(p: Promis
 	);
 }
 
-const DEFAULT_BILLING_REPO = "SuxOS/sux";
+const DEFAULT_BILLING_OWNER = "SuxOS";
 
-// The subset of GitHub's `GET /repos/{owner}/{repo}/actions/billing/usage` response this
-// cares about — the endpoint also returns a per-runner-OS `minutes_used_breakdown`, which
-// isn't shipped (it would multiply cardinality for a number nobody's asked to watch yet).
+// The subset of GitHub's `GET /orgs/{org}/settings/billing/actions` response this cares
+// about — the endpoint also returns a per-runner-OS `minutes_used_breakdown`, which isn't
+// shipped (it would multiply cardinality for a number nobody's asked to watch yet).
 type GithubBillingUsage = { total_minutes_used?: number; included_minutes?: number };
 
 /** Build the GH Actions billing gauges as Influx line protocol — pure over its input (easy
@@ -234,9 +234,12 @@ export async function shipGithubBillingSnapshot(
 	const ghToken = env.GITHUB_TOKEN;
 	if (!url || !user || !token || !ghToken) return { dormant: true };
 
-	const repo = String(env.GH_BILLING_REPO ?? "").trim() || DEFAULT_BILLING_REPO;
+	const owner = String(env.GH_BILLING_OWNER ?? "").trim() || DEFAULT_BILLING_OWNER;
 	try {
-		const res = await fetch(`https://api.github.com/repos/${repo}/actions/billing/usage`, {
+		// GitHub has no repo-scoped Actions-billing endpoint — minutes are billed against the
+		// owning account, not an individual repo (#1098). This is the org (or user) login, not
+		// an owner/repo pair; the equivalent for a personal-account owner is /users/{owner}/....
+		const res = await fetch(`https://api.github.com/orgs/${owner}/settings/billing/actions`, {
 			headers: { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github.v3+json" },
 		});
 		if (!res.ok) return { error: `GitHub billing API HTTP ${res.status}: ${clipErr(await res.text())}` };

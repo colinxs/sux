@@ -895,6 +895,57 @@ describe("agenda — Monarch infer signal wiring (#1085)", () => {
 	});
 });
 
+describe("agenda — defaultDeps.monarchTransactions pagination (#1097)", () => {
+	const page = (ids: number[], offset: number, totalCount: number) => ({
+		content: [{ text: JSON.stringify({ totalCount, count: ids.length, offset, limit: 200, transactions: ids.map((i) => ({ id: `txn${i}`, amount: -1, date: "2026-07-17" })) }) }],
+	});
+
+	it("paginates past a single 200-row page using totalCount, rather than silently truncating", async () => {
+		const { defaultDeps } = await import("./_agenda");
+		const { monarch } = await import("./monarch");
+		const run = vi
+			.spyOn(monarch, "run")
+			.mockImplementationOnce(async () => page(Array.from({ length: 200 }, (_, i) => i), 0, 350) as any)
+			.mockImplementationOnce(async () => page(Array.from({ length: 150 }, (_, i) => 200 + i), 200, 350) as any);
+
+		const deps = await defaultDeps();
+		const txns = await deps.monarchTransactions({} as any, { start: "2026-04-19", end: "2026-07-17" });
+
+		expect(run).toHaveBeenCalledTimes(2);
+		expect(run).toHaveBeenNthCalledWith(1, {}, { op: "transactions", start: "2026-04-19", end: "2026-07-17", limit: 200, offset: 0 });
+		expect(run).toHaveBeenNthCalledWith(2, {}, { op: "transactions", start: "2026-04-19", end: "2026-07-17", limit: 200, offset: 200 });
+		expect(txns).toHaveLength(350);
+		expect(txns[349]?.id).toBe("txn349");
+		run.mockRestore();
+	});
+
+	it("stops at a single page when totalCount fits (no wasted extra call)", async () => {
+		const { defaultDeps } = await import("./_agenda");
+		const { monarch } = await import("./monarch");
+		const run = vi.spyOn(monarch, "run").mockImplementationOnce(async () => page([0, 1, 2], 0, 3) as any);
+
+		const deps = await defaultDeps();
+		const txns = await deps.monarchTransactions({} as any, { start: "2026-07-14", end: "2026-07-17" });
+
+		expect(run).toHaveBeenCalledTimes(1);
+		expect(txns).toHaveLength(3);
+		run.mockRestore();
+	});
+
+	it("stops at MONARCH_TRANSACTIONS_MAX rather than looping forever on a pathological totalCount", async () => {
+		const { defaultDeps } = await import("./_agenda");
+		const { monarch } = await import("./monarch");
+		const run = vi.spyOn(monarch, "run").mockImplementation(async (_env: any, a: any) => page(Array.from({ length: 200 }, (_, i) => a.offset + i), a.offset, 1_000_000) as any);
+
+		const deps = await defaultDeps();
+		const txns = await deps.monarchTransactions({} as any, { start: "2026-04-19", end: "2026-07-17" });
+
+		expect(txns.length).toBeLessThanOrEqual(1000);
+		expect(run.mock.calls.length).toBeLessThanOrEqual(6);
+		run.mockRestore();
+	});
+});
+
 describe("agenda — pending-delivery queue survives a failed digest write (#996)", () => {
 	const RX_MAIL: MailRef = { id: "rx1", from: "pharmacy@uwmc.org", subject: "Your prescription is ready for pickup" };
 	const BILL_MAIL: MailRef = { id: "bill9", from: "billing@chase.com", subject: "Your statement is ready" };

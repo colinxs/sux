@@ -285,9 +285,9 @@ describe("shipGithubBillingSnapshot", () => {
 		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 
-	it("fetches billing usage from the default repo and pushes the gauges via the shared transport", async () => {
+	it("fetches billing usage from the default org and pushes the gauges via the shared transport", async () => {
 		const fetchSpy = vi.fn(async (url: string) => {
-			if (String(url) === "https://api.github.com/repos/SuxOS/sux/actions/billing/usage") {
+			if (String(url) === "https://api.github.com/orgs/SuxOS/settings/billing/actions") {
 				return new Response(JSON.stringify({ total_minutes_used: 100, included_minutes: 2000 }), { status: 200 });
 			}
 			return new Response(null, { status: 204 });
@@ -299,7 +299,7 @@ describe("shipGithubBillingSnapshot", () => {
 		await settle();
 
 		expect(report).toEqual({ ok: true, total_minutes_used: 100, included_minutes: 2000 });
-		const billingCall = fetchSpy.mock.calls.find(([u]) => String(u).includes("actions/billing/usage")) as unknown as [string, RequestInit] | undefined;
+		const billingCall = fetchSpy.mock.calls.find(([u]) => String(u).includes("settings/billing/actions")) as unknown as [string, RequestInit] | undefined;
 		expect(billingCall?.[1]?.headers).toMatchObject({ Authorization: "Bearer gh-tok" });
 		const pushCall = fetchSpy.mock.calls.find(([u]) => u === GH_CONFIGURED.GRAFANA_PROM_URL);
 		expect(pushCall).toBeTruthy();
