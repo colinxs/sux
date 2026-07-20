@@ -405,6 +405,17 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   fresh array whenever a write should actually happen — only hand back the original reference
   for the genuine "no change" case (see `_infer.ts`'s delete/purge paths for the pattern).
 
+- **A bot-build sandbox only ever checks out `sux` + `../suxlib` — never sibling repos like
+  `suxrouter` or the org-wide "hub" contracts repo.** The weekly org-consistency sweep
+  (`SuxOS/.github`) files issues that span those repo boundaries (e.g. #1103: reconciling
+  `sux/node/openwrt/fetch.sh` against `suxrouter`'s recovery manifest + a `contracts/
+  residential-egress.schema.json` that lives in neither checked-out repo) — these aren't
+  buildable from inside a single-repo sandbox no matter how the issue is scoped down, since
+  half the diff has nowhere to land. `find / -iname <referenced-dir>` (or just `ls ..`)
+  confirms the other repo is absent before spending a turn tracing its paths; apply
+  `needs-human` immediately rather than dropping it repeatedly, same as the `../suxlib`
+  push-access and new-Cloudflare-resource gotchas above.
+
 ## House style
 
 - No trailing/inline comments explaining the obvious; comment *why*, not *what*.
