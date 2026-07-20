@@ -1,3 +1,4 @@
+import { idempotencyKey } from "@suxos/lib";
 import { packForCache } from "./cache-codec";
 
 export type JsonRpc = {
@@ -62,22 +63,11 @@ export const CACHE_STALE_GRACE_SECONDS = 86_400;
 // Legacy entries written before SWR carry no metadata and read back as fresh.
 export type CacheMeta = { softExpiresAt: number };
 
-function stableStringify(v: unknown): string {
-	if (v === null || typeof v !== "object") return JSON.stringify(v);
-	if (Array.isArray(v)) return `[${v.map(stableStringify).join(",")}]`;
-	const obj = v as Record<string, unknown>;
-	return `{${Object.keys(obj)
-		.sort()
-		.map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`)
-		.join(",")}}`;
-}
-
+// Canonical-JSON + hashing delegated to @suxos/lib's idempotencyKey (#1104) — it's a strict
+// superset of the hand-rolled stableStringify this used to carry (Date special-cased instead
+// of collapsed to {}, cycle detection instead of a stack overflow).
 export async function cacheKey(toolName: string, args: unknown): Promise<string> {
-	const data = new TextEncoder().encode(`${toolName}:${stableStringify(args ?? {})}`);
-	const buf = await crypto.subtle.digest("SHA-256", data);
-	return `cache:${Array.from(new Uint8Array(buf))
-		.map((b) => b.toString(16).padStart(2, "0"))
-		.join("")}`;
+	return `cache:${await idempotencyKey(toolName, args ?? {})}`;
 }
 
 // Write side of the KV cache used by index.ts tools/call. Three invariants:

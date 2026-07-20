@@ -167,6 +167,15 @@ describe("todoist (REST v2 adapter)", () => {
 		expect(parse(await todoist.run(envKv, { action: "delete", id: "9", force: true }))).toMatchObject({ ok: true, deleted: "9" });
 	});
 
+	it("delete with a bad/expired commit_token fails as a client-input problem, not upstream_error", async () => {
+		const s = new Map<string, string>();
+		const envKv = { ...ENV, OAUTH_KV: { get: async (k: string) => s.get(k) ?? null, put: async (k: string, v: string) => void s.set(k, v), delete: async (k: string) => void s.delete(k) } };
+		const r = await todoist.run(envKv, { action: "delete", id: "9", commit_token: "not-a-real-token" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/commit_token/);
+		expect(r.content[0].text).not.toContain("[upstream_error]");
+	});
+
 	it("maps upstream statuses to the failure taxonomy", async () => {
 		vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "Not found" }), { status: 404 })));
 		expect((await todoist.run(ENV, { action: "list" })).content[0].text).toContain("[not_found]");

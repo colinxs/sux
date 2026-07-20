@@ -410,14 +410,16 @@ export function detectWatchDrops(findings: WatchFindings | null): Drop[] {
 	const drops: Drop[] = [];
 	for (const c of findings.changed) {
 		const label = c.label ? ` (${c.label})` : "";
+		const hasDelta = c.numeric_value !== undefined && c.previous_numeric_value !== undefined;
+		const delta = hasDelta ? ` (${c.previous_numeric_value} → ${c.numeric_value})` : "";
 		drops.push({
 			kind: "watch_changed",
 			urgency: "fyi",
 			dedupe: `watch::${c.url}::${c.label ?? ""}::${c.hash}`,
-			title: `Watched page changed${label}: ${c.url}`,
+			title: `Watched page changed${label}${delta}: ${c.url}`,
 			emoji: "👀",
-			action: task(`Check watched page — changed${label}: ${c.url}`),
-			evidence: { url: c.url, label: c.label, hash: c.hash, previous_hash: c.previous_hash },
+			action: task(`Check watched page — changed${label}${delta}: ${c.url}`),
+			evidence: { url: c.url, label: c.label, hash: c.hash, previous_hash: c.previous_hash, numeric_value: c.numeric_value, previous_numeric_value: c.previous_numeric_value },
 		});
 	}
 	return sortByUrgency(drops);

@@ -1,4 +1,4 @@
-import { type Fn, type FailCode, failWith, ok, type RtEnv } from "../registry";
+import { type Fn, type FailCode, fail, failWith, ok, type RtEnv } from "../registry";
 import { errMsg, oj } from "./_util";
 import { staged } from "../stage";
 
@@ -19,6 +19,10 @@ export const hasTodoist = (env: RtEnv): boolean => Boolean(env.TODOIST_TOKEN);
 
 /** Map an HTTP status to the shared failure taxonomy. */
 const codeFor = (status: number): FailCode => (status === 401 || status === 403 ? "not_configured" : status === 404 ? "not_found" : status === 429 ? "rate_limited" : status === 400 ? "bad_input" : "upstream_error");
+
+/** stage.ts's commit() throws a plain Error for a bad/expired/mismatched commit_token — a
+ *  client-input problem, not a Todoist API failure, so it must not fold into `upstream_error`. */
+const isCommitTokenError = (e: unknown): boolean => e instanceof Error && /commit_token/.test(e.message);
 
 async function tapi(env: RtEnv, method: string, path: string, body?: unknown): Promise<{ status: number; json: any; text: string }> {
 	const resp = await fetch(`${API}${path}`, {
@@ -174,8 +178,13 @@ export const todoist: Fn = {
 					return { requested: ids.length, deleted: deleted.length, deletedIds: deleted, failed: failed.length, ...(failed.length ? { errors: failed } : {}) };
 				};
 				const gateArgs = { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined, force: a?.force === true };
-				const out = await staged(env, "todoist_delete_many", gateArgs, { ids }, { action: `delete ${ids.length} Todoist tasks`, count: ids.length, ids }, mutate);
-				return ok(oj("stageResult" in out ? out.stageResult : out.result));
+				try {
+					const out = await staged(env, "todoist_delete_many", gateArgs, { ids }, { action: `delete ${ids.length} Todoist tasks`, count: ids.length, ids }, mutate);
+					return ok(oj("stageResult" in out ? out.stageResult : out.result));
+				} catch (e) {
+					if (isCommitTokenError(e)) return fail(errMsg(e));
+					throw e;
+				}
 			}
 			if (action === "update") {
 				if (!id) return failWith("bad_input", "todoist update requires an `id`.");
@@ -199,8 +208,13 @@ export const todoist: Fn = {
 					return { ok: true, deleted: id };
 				};
 				const gateArgs = { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined, force: a?.force === true };
-				const out = await staged(env, "todoist_delete", gateArgs, { id }, { action: "delete todoist task", id }, mutate);
-				return ok(oj("stageResult" in out ? out.stageResult : out.result));
+				try {
+					const out = await staged(env, "todoist_delete", gateArgs, { id }, { action: "delete todoist task", id }, mutate);
+					return ok(oj("stageResult" in out ? out.stageResult : out.result));
+				} catch (e) {
+					if (isCommitTokenError(e)) return fail(errMsg(e));
+					throw e;
+				}
 			}
 			return failWith("bad_input", `todoist: unknown action '${action}'.`);
 		} catch (e) {

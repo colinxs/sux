@@ -44,20 +44,27 @@ export const listWatches = readWatchIndex;
 
 /** Upsert this watch into the directory — called only from the first_seen/change-detected
  *  paths (see run() below), never on a no-change recheck. Best-effort: an index write
- *  failure must never break the check itself, which already succeeded by this point. */
+ *  failure must never break the check itself, which already succeeded by this point.
+ *  Merges into an existing entry for this keyId rather than rebuilding from scratch: a
+ *  recheck call that omits threshold/threshold_pct (valid per the schema — they're meant
+ *  to persist onto the watch) must carry forward the previously-stored threshold/thresholdPct
+ *  instead of silently wiping them (#1108). */
 async function upsertWatchIndex(env: RtEnv, keyId: string, url: string, selector: string, label: string, threshold?: number, thresholdPct?: number): Promise<void> {
 	try {
 		const entries = await readWatchIndex(env);
+		const idx = entries.findIndex((e) => e.keyId === keyId);
+		const existing = idx >= 0 ? entries[idx] : undefined;
+		const finalThreshold = threshold !== undefined ? threshold : existing?.threshold;
+		const finalThresholdPct = thresholdPct !== undefined ? thresholdPct : existing?.thresholdPct;
 		const entry: WatchIndexEntry = {
 			keyId,
 			url,
 			...(selector ? { selector } : {}),
 			...(label ? { label } : {}),
-			...(threshold !== undefined ? { threshold } : {}),
-			...(thresholdPct !== undefined ? { thresholdPct } : {}),
+			...(finalThreshold !== undefined ? { threshold: finalThreshold } : {}),
+			...(finalThresholdPct !== undefined ? { thresholdPct: finalThresholdPct } : {}),
 			lastChecked: new Date().toISOString(),
 		};
-		const idx = entries.findIndex((e) => e.keyId === keyId);
 		if (idx >= 0) entries[idx] = entry;
 		else entries.push(entry);
 		await env.OAUTH_KV.put(INDEX_KEY, JSON.stringify(entries));

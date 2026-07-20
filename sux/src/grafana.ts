@@ -218,6 +218,11 @@ export function buildGithubBillingSnapshot(usage: GithubBillingUsage, atMs: numb
 	return lines.join("\n");
 }
 
+// scripts/billing-check.mjs's githubActionsMeter() independently fetches this same
+// /settings/billing/actions endpoint (with a different GH_BILLING_OWNER default,
+// "colinxs" there vs "SuxOS" here) — see that file before assuming this is the only
+// caller, and consider consolidating if you touch either (#1101).
+//
 // Poll GitHub Actions billing usage and push it as a Prometheus gauge, once per daily
 // maintenance tick (spend-observability-plan.md's plumbing step 1). Reuses the SAME
 // Influx-line-protocol transport as shipMetricsSnapshot — same secrets, same shared bearer
