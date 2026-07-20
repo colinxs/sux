@@ -80,7 +80,7 @@ describe("store", () => {
 		expect(a.key).toBe(b.key);
 		expect(a.uuid).not.toBe(b.uuid);
 		expect(env.R2._m.size).toBe(1);
-		expect(env.OAUTH_KV._m.size).toBe(2);
+		expect([...env.OAUTH_KV._m.keys()].filter((k) => k.startsWith("store:"))).toHaveLength(2); // one uuid→key mapping per handle
 	});
 
 	it("stores and returns binary as base64", async () => {
