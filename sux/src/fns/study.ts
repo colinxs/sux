@@ -136,7 +136,7 @@ async function extractDocText(env: RtEnv, source: string): Promise<{ text: strin
 }
 
 /** List every whitelisted oracle topic with its provenance — the audit view of what's been studied. */
-async function listWhitelisted(env: RtEnv): Promise<Array<{ topic: string; whitelist: Whitelist; chunk_count: number; updated_at: number }>> {
+export async function listWhitelisted(env: RtEnv): Promise<Array<{ topic: string; whitelist: Whitelist; chunk_count: number; updated_at: number }>> {
 	const kv = env.OAUTH_KV;
 	if (!kv) return [];
 	const topics: string[] = [];

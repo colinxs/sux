@@ -34,8 +34,12 @@ import { hasImessage, imessage } from "./imessage";
 import { hasMonarch, monarch } from "./monarch";
 import { crossOrgAllergyGaps, crossOrgMedicationAllergyConflicts, mychartConfigured, orgLabel, summarizeMyChart } from "../mychart";
 import { errMsg, vaultToday } from "./_util";
+import { embedOne } from "./_embed";
+import { appendInferSignal, hasInferArm } from "./_infer";
+import { redactPII } from "./redact";
 import type { WatchFindings } from "./_watch_sweep";
 import type { WeeklyRecallFindings } from "./_weekly_recall";
+import { dueForReview, hasStudyReview, reviewIntervalDays, studyReviewCandidates, type DueReview, type StudiedTopicRef } from "./_study_review";
 
 // ── Gates ────────────────────────────────────────────────────────────────────
 const flagOn = (v: string | undefined): boolean => {
@@ -419,6 +423,28 @@ export function detectWatchDrops(findings: WatchFindings | null): Drop[] {
 	return sortByUrgency(drops);
 }
 
+/** Turn the studied topics due for another look (#1092) into drops — same read-only-sense/
+ *  reversible-propose contract as the other detectors here, just fed from study.ts's own
+ *  whitelisted-topic list instead of a live fan-out. The dedupe key mixes in the review
+ *  `cycle`, not just the topic, so a topic due again next interval gets a fresh proposal
+ *  instead of being silently swallowed by the ledger after its first nudge. */
+export function detectStudyReviewDrops(due: DueReview[]): Drop[] {
+	const drops: Drop[] = [];
+	for (const d of due) {
+		const label = d.title ? ` — ${d.title}` : "";
+		drops.push({
+			kind: "study_review_due",
+			urgency: "fyi",
+			dedupe: `study_review::${d.topic}::${d.cycle}`,
+			title: `Review due: ${d.topic}${label}`,
+			emoji: "📚",
+			action: task(`Review studied material — ${d.topic}${label} (quiz yourself with oracle({problem, topic:"${d.topic}"}))`),
+			evidence: { topic: d.topic, title: d.title, learned_at: d.learned_at, cycle: d.cycle },
+		});
+	}
+	return sortByUrgency(drops);
+}
+
 /** Monarch's read-only accounts/transactions/budgets/holdings/cashflow ops (W7/W7.1), trimmed
  *  to what the detectors below need — see fns/monarch.ts for the full shapes. */
 export type MonarchAccountRef = { id: string; name?: string; balance?: number; type?: string; subtype?: string };
@@ -451,12 +477,61 @@ const PORTFOLIO_DRIFT_THRESHOLD = 0.1;
 // A savings rate this many percentage points below the last checked cycle reads as a real drop,
 // not day-to-day noise in a rolling window.
 const SAVINGS_RATE_DROP_THRESHOLD = 0.15;
+// Subscription-creep detector (#1059, W7): needs several months of transaction history to spot
+// a recurring pattern at all — far wider than unusual_charge's 3-day recency window, so the
+// transactions fetch itself is widened to this and unusual_charge re-filters down to its own
+// window (see detectMonarchDrops).
+const SUBSCRIPTION_LOOKBACK_DAYS = 90;
+// A merchant needs at least this many charges within the lookback window before its pattern is
+// trusted as "recurring" rather than coincidence.
+const SUBSCRIPTION_MIN_OCCURRENCES = 3;
+// A recurring charge growing at least this fraction above its first-seen amount reads as creep
+// (a price hike, plan upgrade, or add-on quietly stacked on) — small billing noise (tax/FX
+// rounding) stays under this.
+const SUBSCRIPTION_GROWTH_THRESHOLD = 0.2;
+// Recurring charges above this read as a bill (rent, insurance) already covered by bill_due,
+// not a subscription.
+const SUBSCRIPTION_MAX_CHARGE = 200;
+// defaultDeps.monarchTransactions pagination (#1097): monarch.ts's transactions op caps a single
+// page at 200 and reports totalCount, so the wider SUBSCRIPTION_LOOKBACK_DAYS window (anyone above
+// ~1.1 txns/day) needs an offset loop rather than one unpaginated call, or rows past the first page
+// silently vanish. MAX bounds the loop itself — a sane ceiling, not a truncation anyone should hit
+// at a 90-day window, so a pathological account/API bug can't turn one cycle into unbounded fetches.
+const MONARCH_TRANSACTIONS_PAGE_SIZE = 200;
+const MONARCH_TRANSACTIONS_MAX = 1000;
 
 const daysLeftInMonth = (date: string): number => {
 	const d = new Date(`${date}T00:00:00Z`);
 	const lastDay = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
 	return lastDay - d.getUTCDate();
 };
+
+const PURCHASE_SIGNAL_SNIPPET_MAX = 1000;
+
+/** Best-effort feed into the infer signal log (#864's substrate) — a no-op unless
+ *  INFER_ARM_PURCHASES is set, checked first so a dormant domain costs zero embed/ledger
+ *  calls (#1085: arming INFER_ARM_PURCHASES previously had zero observable effect, since
+ *  nothing ever called appendInferSignal for this domain). Never throws into the caller: a
+ *  failed embed/append must not affect the agenda cycle. Dedupes per transaction id via a
+ *  ledger — monarchTransactions re-fetches a rolling SUBSCRIPTION_LOOKBACK_DAYS-wide window
+ *  every cycle, so without a seen-set the same transaction would re-embed and re-append on
+ *  every single cycle it stays inside that window. */
+async function logPurchaseSignals(env: RtEnv, transactions: MonarchTxnRef[]): Promise<void> {
+	if (!hasInferArm(env, "purchases")) return;
+	const led = ledger(env, "agenda_infer_purchases");
+	for (const t of transactions) {
+		if (!(await led.markIfNew(t.id))) continue;
+		try {
+			const raw = `${t.merchant || "unknown merchant"} ${typeof t.amount === "number" ? t.amount.toFixed(2) : ""} ${t.date ?? ""}`.trim();
+			const { redacted } = redactPII(raw);
+			const snippet = redacted.slice(0, PURCHASE_SIGNAL_SNIPPET_MAX);
+			const vec = await embedOne(env, snippet);
+			await appendInferSignal(env, "purchases", { ts: Date.now(), vec, redacted_snippet: snippet, source_tag: `purchases:${t.id}` });
+		} catch (e) {
+			console.warn(`infer: purchases signal log failed for ${t.id} — ${errMsg(e)}`);
+		}
+	}
+}
 
 /** Turn Monarch's read-only accounts/transactions/budgets into drops (W7) — same
  *  read-only-sense/reversible-propose contract as every other detector here. Bill-due,
@@ -484,8 +559,12 @@ export function detectMonarchDrops(date: string, accounts: MonarchAccountRef[], 
 		});
 	}
 
+	// unusual_charge only cares about the recent window even though `transactions` may span the
+	// wider SUBSCRIPTION_LOOKBACK_DAYS fetched for the subscription-creep scan below (#1059).
+	const unusualChargeSince = addDays(date, -UNUSUAL_CHARGE_WINDOW_DAYS);
 	for (const t of transactions) {
 		if (typeof t.amount !== "number" || t.amount >= 0 || Math.abs(t.amount) < unusualChargeThreshold) continue;
+		if (t.date && t.date < unusualChargeSince) continue;
 		const who = t.merchant || "a transaction";
 		const amt = Math.abs(t.amount).toFixed(2);
 		drops.push({
@@ -514,6 +593,38 @@ export function detectMonarchDrops(date: string, accounts: MonarchAccountRef[], 
 				evidence: { category: b.category, remaining: b.remaining, month },
 			});
 		}
+	}
+
+	// Subscription creep: group negative-amount charges by merchant across the whole window
+	// (unlike unusual_charge above, which only cares about a single outsized transaction),
+	// and flag a merchant whose charge amount has grown since its first-seen occurrence.
+	const byMerchant = new Map<string, MonarchTxnRef[]>();
+	for (const t of transactions) {
+		if (typeof t.amount !== "number" || t.amount >= 0) continue;
+		const amt = Math.abs(t.amount);
+		if (amt > SUBSCRIPTION_MAX_CHARGE) continue;
+		const merchant = t.merchant?.trim();
+		if (!merchant) continue;
+		const list = byMerchant.get(merchant) ?? [];
+		list.push(t);
+		byMerchant.set(merchant, list);
+	}
+	for (const [merchant, txns] of byMerchant) {
+		if (txns.length < SUBSCRIPTION_MIN_OCCURRENCES) continue;
+		const sorted = [...txns].sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+		const first = Math.abs(sorted[0].amount as number);
+		const latest = sorted[sorted.length - 1];
+		const latestAmount = Math.abs(latest.amount as number);
+		if (first <= 0 || latestAmount < first * (1 + SUBSCRIPTION_GROWTH_THRESHOLD)) continue;
+		drops.push({
+			kind: "subscription_creep",
+			urgency: "fyi",
+			dedupe: `monarch::subscription_creep::${merchant}::${Math.round(latestAmount * 100)}`,
+			title: `Subscription creep: ${merchant} rose from $${first.toFixed(2)} to $${latestAmount.toFixed(2)}`,
+			emoji: "📈",
+			action: task(`Review recurring charge growth: ${merchant} ($${first.toFixed(2)} → $${latestAmount.toFixed(2)})`),
+			evidence: { merchant, firstAmount: first, latestAmount, occurrences: sorted.length },
+		});
 	}
 
 	return sortByUrgency(drops);
@@ -851,6 +962,9 @@ export type AgendaDeps = {
 	/** The watch sweep's most recent findings (#899) — a ledger-cache read, never a fresh
 	 *  page re-check. */
 	watchFindings: (env: RtEnv) => Promise<WatchFindings | null>;
+	/** Every whitelisted `study` topic (#1092) — a KV list read, never a fresh distill. Only
+	 *  called when hasStudyReview(env). */
+	studyTopics: (env: RtEnv) => Promise<StudiedTopicRef[]>;
 	/** The cross-domain-link sweep's most recent findings (#785/#948) — a ledger-cache
 	 *  read, never a fresh cross-domain rank. */
 	crossSemanticFindings: (env: RtEnv) => Promise<CrossSemanticFindings | null>;
@@ -941,6 +1055,7 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 	let consolidateFindings: ConsolidateFindings | null = null;
 	let weeklyRecallFindings: WeeklyRecallFindings | null = null;
 	let watchFindings: WatchFindings | null = null;
+	let studyTopics: StudiedTopicRef[] = [];
 	let crossSemanticFindings: CrossSemanticFindings | null = null;
 	let monarchAccounts: MonarchAccountRef[] = [];
 	let monarchTransactions: MonarchTxnRef[] = [];
@@ -987,6 +1102,16 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 			status.watch = `unavailable (${errMsg(e).slice(0, 90)})`;
 		}),
 		(async () => {
+			if (!hasStudyReview(env)) {
+				status.study_review = "disabled";
+				return;
+			}
+			studyTopics = await deps.studyTopics(env);
+			status.study_review = `${studyTopics.length} whitelisted topic(s)`;
+		})().catch((e) => {
+			status.study_review = `unavailable (${errMsg(e).slice(0, 90)})`;
+		}),
+		(async () => {
 			crossSemanticFindings = await deps.crossSemanticFindings(env);
 			status.cross_semantic = crossSemanticFindings ? `week ${crossSemanticFindings.week}` : "no findings yet";
 		})().catch((e) => {
@@ -997,7 +1122,7 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 				status.monarch = "not_configured";
 				return;
 			}
-			const windowStart = addDays(date, -UNUSUAL_CHARGE_WINDOW_DAYS);
+			const windowStart = addDays(date, -SUBSCRIPTION_LOOKBACK_DAYS);
 			const [accts, txns, budgetRows, cashflow, holdings] = await Promise.all([
 				deps.monarchAccounts(env),
 				deps.monarchTransactions(env, { start: windowStart, end: date }),
@@ -1071,12 +1196,14 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		silenceMultiplier: relationshipSilenceMultiplier,
 		minSilenceDays: relationshipMinSilenceDays,
 	});
+	const studyReviewDue = hasStudyReview(env) ? dueForReview(studyTopics, Date.parse(`${date}T00:00:00Z`), reviewIntervalDays(env)) : [];
 	const drops = await rankDropsLearned(env, [
 		...detectDrops(mail, events),
 		...detectTextDrops(textThreads),
 		...relationshipResult.drops,
 		...detectKnowledgeDrops(consolidateFindings, weeklyRecallFindings),
 		...detectWatchDrops(watchFindings),
+		...detectStudyReviewDrops(studyReviewDue),
 		...detectCrossSemanticDrops(crossSemanticFindings),
 		...detectMonarchDrops(date, monarchAccounts, monarchTransactions, monarchBudgets, { lowBalanceThreshold, unusualChargeThreshold }),
 		...detectPortfolioDrops(date, monarchHoldings, priorMonarchSnapshot?.allocation ?? null, { concentrationThreshold: portfolioConcentrationThreshold, driftThreshold: portfolioDriftThreshold }),
@@ -1093,6 +1220,10 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		// this cycle only — fall back to the prior snapshot's rate so one bad cycle doesn't
 		// clobber the known-good baseline detectSavingsRateDrop compares against (#874).
 		await saveMonarchSnapshot(env, { date, allocation: computePortfolioAllocation(monarchHoldings), savingsRate: currentSavingsRate ?? priorMonarchSnapshot?.savingsRate });
+		// Feed the infer signal log (#864 substrate) with this cycle's Monarch transactions —
+		// dormant no-op unless INFER_ARM_PURCHASES is set (#1085). Same dry_run-never-persists
+		// contract as the snapshot save above.
+		await logPurchaseSignals(env, monarchTransactions);
 	}
 	// Same dry_run-never-persists contract as the Monarch snapshot above.
 	if (!dryRun && relationshipThreads.length) await saveRelationshipBaselines(env, relationshipResult.baselines);
@@ -1144,12 +1275,9 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		const digKey = `digest::${cycle}`;
 		const alreadyDelivered = await dled.seen(digKey);
 		if (!alreadyDelivered) {
-			try {
-				await deps.digestAppend(env, `Daily/${vaultToday(env.VAULT_TZ)}.md`, buildDigestBlock(date, cycle, hasAgendaEmail(env), digest));
-				digestWritten = true;
-			} catch {
-				/* a vault-append failure must never fail the cycle */
-			}
+			// Attempt the send BEFORE the vault append so the append's "digest emailed" text
+			// reflects the true outcome, not the config flag (#1089) — a send failure here must
+			// still never fail the cycle (the vault digest lands below regardless).
 			if (hasAgendaEmail(env)) {
 				try {
 					const sent = await deps.sendDigest(env, digest.subject, digest.body);
@@ -1162,13 +1290,22 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 					/* an email failure must never fail the cycle — the proposals are already recorded */
 				}
 			}
-			// Mark AFTER a successful write so a failed append retries next tick (mirrors _weekly_recall.ts).
-			if (digestWritten) await dled.mark(digKey);
+			try {
+				await deps.digestAppend(env, `Daily/${vaultToday(env.VAULT_TZ)}.md`, buildDigestBlock(date, cycle, emailed, digest));
+				digestWritten = true;
+			} catch {
+				/* a vault-append failure must never fail the cycle */
+			}
+			// Mark AFTER a successful write on EITHER channel — vault append or email — so a cycle
+			// where only one channel is down doesn't re-send/re-append an ever-growing digest to the
+			// channel that's working (#1058); a failed channel still retries next tick since only ITS
+			// own flag stayed false, not the shared ledger mark.
+			if (digestWritten || emailed) await dled.mark(digKey);
 		}
-		// Clear once the vault write actually lands (this call, or an earlier call this same
+		// Clear once EITHER channel actually delivers (this call, or an earlier call this same
 		// cycle already delivered it); otherwise re-queue everything still undelivered —
-		// including this cycle's own new proposals — for the next attempt (#1041).
-		await pending.mark(PENDING_KEY, digestWritten || alreadyDelivered ? "[]" : JSON.stringify(toDeliver));
+		// including this cycle's own new proposals — for the next attempt (#1041, #1058).
+		await pending.mark(PENDING_KEY, digestWritten || emailed || alreadyDelivered ? "[]" : JSON.stringify(toDeliver));
 	}
 
 	return {
@@ -1271,6 +1408,7 @@ export async function defaultDeps(): Promise<AgendaDeps> {
 		consolidateFindings: lastConsolidateFindings,
 		weeklyRecallFindings: lastWeeklyRecallFindings,
 		watchFindings: lastWatchFindings,
+		studyTopics: studyReviewCandidates,
 		crossSemanticFindings: lastCrossSemanticFindings,
 		monarchAccounts: async (env) => {
 			const r = await monarch.run(env, { op: "accounts" });
@@ -1279,10 +1417,19 @@ export async function defaultDeps(): Promise<AgendaDeps> {
 			return (parsed.accounts ?? []).map((a: any) => ({ id: String(a?.id ?? ""), name: a?.name, balance: typeof a?.balance === "number" ? a.balance : undefined, type: a?.type, subtype: a?.subtype }));
 		},
 		monarchTransactions: async (env, o) => {
-			const r = await monarch.run(env, { op: "transactions", start: o.start, end: o.end, limit: 100 });
-			if (r.isError) throw new Error(r.content?.[0]?.text ?? "monarch transactions failed");
-			const parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
-			return (parsed.transactions ?? []).map((t: any) => ({ id: String(t?.id ?? ""), amount: typeof t?.amount === "number" ? t.amount : undefined, date: t?.date, merchant: t?.merchant }));
+			let all: MonarchTxnRef[] = [];
+			let offset = 0;
+			for (;;) {
+				const r = await monarch.run(env, { op: "transactions", start: o.start, end: o.end, limit: MONARCH_TRANSACTIONS_PAGE_SIZE, offset });
+				if (r.isError) throw new Error(r.content?.[0]?.text ?? "monarch transactions failed");
+				const parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
+				const page = (parsed.transactions ?? []).map((t: any) => ({ id: String(t?.id ?? ""), amount: typeof t?.amount === "number" ? t.amount : undefined, date: t?.date, merchant: t?.merchant }));
+				all = all.concat(page);
+				const totalCount = typeof parsed.totalCount === "number" ? parsed.totalCount : all.length;
+				offset += MONARCH_TRANSACTIONS_PAGE_SIZE;
+				if (page.length < MONARCH_TRANSACTIONS_PAGE_SIZE || all.length >= totalCount || all.length >= MONARCH_TRANSACTIONS_MAX) break;
+			}
+			return all.slice(0, MONARCH_TRANSACTIONS_MAX);
 		},
 		monarchBudgets: async (env, o) => {
 			const r = await monarch.run(env, { op: "budgets", month: o.month });

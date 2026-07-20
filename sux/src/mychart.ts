@@ -665,7 +665,13 @@ export function substancesOverlap(medName: string, allergySubstance: string): bo
 	return allergy.split(" ").some((w) => isSignificant(w) && medWords.has(w));
 }
 
-type OrgMedAllergySet = { org: string; meds: Array<{ id: string; name: string }>; allergies: Array<{ id: string; substance: string }>; allergiesPulled: boolean };
+type OrgMedAllergySet = {
+	org: string;
+	meds: Array<{ id: string; name: string }>;
+	allergies: Array<{ id: string; substance: string }>;
+	allAllergies: Array<{ id: string; substance: string }>;
+	allergiesPulled: boolean;
+};
 
 /** Every connected, ever-pulled org's ACTIVE medications + allergies, shared by
  * crossOrgMedicationAllergyConflicts and crossOrgAllergyGaps so the two cross-org checks
@@ -691,11 +697,14 @@ async function gatherContributingMedsAndAllergies(env: RtEnv): Promise<OrgMedAll
 				.filter((r) => r?.id && r?.status === "active")
 				.map((r) => ({ id: String(r.id), name: codeableConceptText(r.medicationCodeableConcept) }))
 				.filter((m): m is { id: string; name: string } => Boolean(m.name));
-			const activeAllergies = allergies
-				.filter((r) => r?.id && isAllergyActive(r))
-				.map((r) => ({ id: String(r.id), substance: codeableConceptText(r.code) }))
-				.filter((a): a is { id: string; substance: string } => Boolean(a.substance));
-			return { org, meds: activeMeds, allergies: activeAllergies, allergiesPulled };
+			const toAllergyList = (records: any[]) =>
+				records
+					.filter((r) => r?.id)
+					.map((r) => ({ id: String(r.id), substance: codeableConceptText(r.code) }))
+					.filter((a): a is { id: string; substance: string } => Boolean(a.substance));
+			const activeAllergies = toAllergyList(allergies.filter((r) => isAllergyActive(r)));
+			const allAllergies = toAllergyList(allergies);
+			return { org, meds: activeMeds, allergies: activeAllergies, allAllergies, allergiesPulled };
 		}),
 	);
 	return perOrg.filter((v): v is OrgMedAllergySet => v !== null);
@@ -757,7 +766,10 @@ export async function crossOrgAllergyGaps(env: RtEnv): Promise<MyChartAllergyGap
 				// array indistinguishable from a confirmed-empty list — treat it as unknown, not
 				// as a real gap (see hasPulledLabel's docstring).
 				if (!other.allergiesPulled) continue;
-				const knownAtOther = other.allergies.some((a) => substancesOverlap(a.substance, allergy.substance));
+				// Match against the OTHER org's full allergy list regardless of active status — an
+				// inactive/resolved/entered-in-error record there still means org B has SOME record of
+				// it (#1057), unlike crossOrgMedicationAllergyConflicts's active-only med↔allergy check.
+				const knownAtOther = other.allAllergies.some((a) => substancesOverlap(a.substance, allergy.substance));
 				if (!knownAtOther) gaps.push({ org: source.org, allergyId: allergy.id, allergySubstance: allergy.substance, missingOrg: other.org });
 			}
 		}

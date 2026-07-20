@@ -1,4 +1,6 @@
 import { type Fn, fail, ok } from "../registry";
+import { staged } from "../stage";
+import { oj } from "./_util";
 
 // User-facing KV keys live under a fixed "kv:" namespace so tool deletes can never
 // touch internal cache:/sux:/oauth keys — the "kv:" prefix already confines every
@@ -19,15 +21,16 @@ function resolveKey(raw: unknown): { key: string } | { error: string } {
 export const kv_delete: Fn = {
 	name: "kv_delete",
 	description:
-		"Delete a key from the KV store. Params: key (required), confirm (required — must be true), dry_run (optional). Unlike the vault/Dropbox stores, KV has NO git history or trash, so a delete is genuinely irreversible — it requires confirm:true (a deliberate two-step, mirroring vault_delete). Pass dry_run:true to preview whether the key exists (nothing is deleted) before committing. Keys are namespaced under 'kv:'; internal cache:/sux:/oauth keys are refused.",
+		"Delete a key from the KV store. Params: key (required). Unlike the vault/Dropbox stores, KV has NO git history or trash, so a delete is genuinely irreversible — it STAGES A PREVIEW BY DEFAULT (whether the key exists, nothing deleted) — re-call with the returned commit_token, or pass force:true, to apply in one shot. Keys are namespaced under 'kv:'; internal cache:/sux:/oauth keys are refused.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
 		required: ["key"],
 		properties: {
 			key: { type: "string", description: "The key to delete (without the internal 'kv:' prefix)." },
-			confirm: { type: "boolean", description: "Must be true — KV deletes are irreversible (no history, no trash)." },
-			dry_run: { type: "boolean", description: "Preview whether the key exists without deleting it." },
+			stage: { type: "boolean", description: "Preview only: returns {preview, commit_token}, deletes nothing." },
+			commit_token: { type: "string", description: "Commit a previously staged delete (the payload must match what was staged)." },
+			force: { type: "boolean", description: "Skip staging and delete in one shot (the ! override). By default a delete stages a preview first." },
 		},
 	},
 	cacheable: false,
@@ -36,12 +39,17 @@ export const kv_delete: Fn = {
 		const r = resolveKey(args?.key);
 		if ("error" in r) return fail(r.error);
 		const shown = String(args.key).trim();
-		if (args?.dry_run === true) {
+		try {
 			const exists = (await env.OAUTH_KV.get(r.key)) !== null;
-			return ok(`DRY RUN — nothing deleted. '${shown}' ${exists ? "exists and would be deleted" : "does not exist (delete would be a no-op)"}. Re-call with confirm:true to apply. KV deletes are irreversible.`);
+			const preview = { action: "kv delete", key: shown, exists };
+			const gateArgs = { stage: args?.stage === true, commit_token: args?.commit_token ? String(args.commit_token) : undefined, force: args?.force === true };
+			const out = await staged(env, "kv_delete", gateArgs, { key: shown }, preview, async () => {
+				await env.OAUTH_KV.delete(r.key);
+				return `Deleted '${shown}'.`;
+			});
+			return "stageResult" in out ? ok(oj(out.stageResult)) : ok(out.result);
+		} catch (e) {
+			return fail(`kv_delete failed: ${String((e as Error).message ?? e)}`);
 		}
-		if (args?.confirm !== true) return fail("kv_delete requires confirm:true (KV deletes are irreversible — no history, no trash). Pass dry_run:true first to preview.");
-		await env.OAUTH_KV.delete(r.key);
-		return ok(`Deleted '${shown}'.`);
 	},
 };

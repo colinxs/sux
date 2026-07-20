@@ -61,6 +61,14 @@ export const STAGE_KINDS: Record<string, StageKind> = {
 	// on the same egress channel. Stages by default. Unlike dropbox/obsidian/kv_*/ingest it
 	// has NO internal callers, so auto-staging needs no force:true threaded through call sites.
 	put_batch: { irreversible: true },
+	// kv_delete — KV has no git history or trash, so a delete is genuinely irreversible.
+	kv_delete: { irreversible: true },
+	// dropbox app-folder (Mode A) delete — Dropbox's own recoverable-trash doesn't exempt it,
+	// same as mail_masked_delete above (recoverable-but-still-gated is already the precedent).
+	dropbox_delete: { irreversible: true },
+	// todoist — delete is permanent (not a recoverable trash), unlike complete (reversible via reopen).
+	todoist_delete: { irreversible: true },
+	todoist_delete_many: { irreversible: true },
 };
 
 // In-isolate spent-token claim. A commit's KV get→verify→delete is not atomic —
@@ -125,6 +133,20 @@ export function conscience(_kind: string, payload: unknown): string[] {
 	const notes: string[] = [];
 	const p = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
 	const asArr = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : v ? [String(v)] : []);
+
+	// A path-shaped delete (dropbox_delete, files_delete_full, …) whose target looks like a
+	// directory/broad prefix rather than a single file — thin signal, but worth a flag before
+	// an agent deletes more than it meant to.
+	if (/delete/i.test(_kind) && typeof p.path === "string" && p.path) {
+		const path = p.path;
+		if (path.endsWith("/") || !/\.[a-zA-Z0-9]{1,8}$/.test(path)) notes.push(`'${path}' looks like a directory or extensionless target rather than a single file — confirm the delete is scoped as intended.`);
+	}
+
+	// Bulk Todoist delete — thin signal (just ids), so flag the size of the blast radius.
+	if (_kind === "todoist_delete_many" && Array.isArray(p.ids) && p.ids.length >= 5) {
+		notes.push(`deleting ${p.ids.length} Todoist tasks — confirm this is the intended set.`);
+	}
+
 	const to = asArr(p.to);
 	const cc = asArr(p.cc);
 	const bcc = asArr(p.bcc);

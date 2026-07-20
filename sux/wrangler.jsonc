@@ -14,6 +14,12 @@
 	// KV: OAuth state + tool-result cache (same scheme as the core Worker).
 	"kv_namespaces": [{ "binding": "OAUTH_KV", "id": "d0dadc11fdd64598992f4a84a958bafb" }],
 	// Workers AI — edge inference for summarize/translate/classify/embed/ocr (~300× cheaper).
+	// AI Gateway routing (#1060, improvement-backlog.md item 9) is configured entirely
+	// out-of-band, NOT declared here (like MONARCH_TOKEN / OBSIDIAN_VAULT_REPO): set the
+	// AI_GATEWAY_ID secret (`wrangler secret put`) once a human creates the gateway in
+	// the Cloudflare account. Absent ⇒ every env.AI.run() call behaves exactly as it does
+	// today (ai.ts's aiGatewayOptions() passes no gateway option); no call-site changes
+	// needed to arm it later.
 	"ai": { "binding": "AI" },
 	// Cloudflare Images — format convert/resize/adjust for image_convert.
 	"images": { "binding": "IMAGES" },

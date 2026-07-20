@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 vi.mock("../ai", () => ({
 	hasAI: (env: any) => typeof env?.AI?.run === "function",
 	MODELS: { vision: "@cf/meta/llama-3.2-11b-vision-instruct" },
+	aiGatewayOptions: (env: any) => (env?.AI_GATEWAY_ID ? { gateway: { id: env.AI_GATEWAY_ID } } : undefined),
 }));
 
 vi.mock("../proxy", () => ({
@@ -34,7 +35,7 @@ describe("ocr", () => {
 		const r = await ocr.run(env, { image: b64 });
 		expect(r.isError).toBeFalsy();
 		expect(r.content[0].text).toBe("hello from image");
-		expect(run).toHaveBeenCalledWith("@cf/meta/llama-3.2-11b-vision-instruct", expect.objectContaining({ image: [1, 2, 3] }));
+		expect(run).toHaveBeenCalledWith("@cf/meta/llama-3.2-11b-vision-instruct", expect.objectContaining({ image: [1, 2, 3] }), undefined);
 		expect(smartFetch).not.toHaveBeenCalled();
 	});
 

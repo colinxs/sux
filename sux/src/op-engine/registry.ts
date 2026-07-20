@@ -99,7 +99,7 @@ export const registry: Record<string, () => Op> = {
 			reconcile({ mode: "faithful-union" }),
 			ask("review master?", { timeout: "24 hour", onTimeout: "proceed" }),
 			op("summarize", summarize, { kind: "effect" }),
-			sink.fanout("r2", "vault"),
+			sink.fanout(["r2", "vault"]),
 		),
 	"mail-triage-plan": () =>
 		pipe(

@@ -1,5 +1,6 @@
 import { type Fn, type FailCode, failWith, ok, type RtEnv } from "../registry";
 import { errMsg, oj } from "./_util";
+import { staged } from "../stage";
 
 // Todoist tasks over the unified Todoist API v1 (they retired REST v2 + Sync v9
 // in favor of one merged API, same resource paths, just /api/v1 as the base) —
@@ -57,8 +58,8 @@ export const todoist: Fn = {
 	cost: 1,
 	cacheable: false,
 	description:
-		"Todoist as a BATCH/PIPELINE primitive — bulk array-in operations for use inside pipe/batch, not 50 interactive tools (for interactive task management use the official Todoist MCP). Bulk verbs: add_many ({items:[{content, due_string?, priority?, project_id?, labels?}, …]}) | update_many ({items:[{id, content?, due_string?, priority?, labels?, …}, …]}) | complete_many ({ids:[…]}) | reopen_many ({ids:[…]}) | delete_many ({ids:[…], confirm:true}). Single-item: list ({project_id?, filter?}) | add ({content, …}) | update ({id, …}) | complete ({id}) | reopen ({id}) | delete ({id, confirm:true}) | projects. Natural-language due dates ('every weekday 9am', 'tomorrow 5pm') are parsed by Todoist. " +
-		"Needs TODOIST_TOKEN (Todoist → Settings → Integrations → Developer → API token). NOTE: setting `due_string` via update on a RECURRING task REPLACES its recurrence — reschedule a single occurrence in the Todoist app, not here. Delete is permanent (not a recoverable trash), so it needs confirm:true (delete_many too); complete is reversible via reopen.",
+		"Todoist as a BATCH/PIPELINE primitive — bulk array-in operations for use inside pipe/batch, not 50 interactive tools (for interactive task management use the official Todoist MCP). Bulk verbs: add_many ({items:[{content, due_string?, priority?, project_id?, labels?}, …]}) | update_many ({items:[{id, content?, due_string?, priority?, labels?, …}, …]}) | complete_many ({ids:[…]}) | reopen_many ({ids:[…]}) | delete_many ({ids:[…]}). Single-item: list ({project_id?, filter?}) | add ({content, …}) | update ({id, …}) | complete ({id}) | reopen ({id}) | delete ({id}) | projects. Natural-language due dates ('every weekday 9am', 'tomorrow 5pm') are parsed by Todoist. " +
+		"Needs TODOIST_TOKEN (Todoist → Settings → Integrations → Developer → API token). NOTE: setting `due_string` via update on a RECURRING task REPLACES its recurrence — reschedule a single occurrence in the Todoist app, not here. Delete is permanent (not a recoverable trash) — delete/delete_many STAGE A PREVIEW BY DEFAULT (re-call with the returned commit_token, or pass force:true, to apply in one shot); complete is reversible via reopen.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -75,7 +76,9 @@ export const todoist: Fn = {
 			due_string: { type: "string", description: "Natural-language due, e.g. 'tomorrow 9am'. On a recurring task this REPLACES the recurrence." },
 			priority: { type: "integer", minimum: 1, maximum: 4, description: "1 (normal) … 4 (urgent)." },
 			labels: { type: "array", items: { type: "string" }, description: "add/update: label names." },
-			confirm: { type: "boolean", description: "delete/delete_many: required — must be true (delete is permanent)." },
+			stage: { type: "boolean", description: "delete/delete_many: preview only — returns {preview, commit_token}, deletes nothing." },
+			commit_token: { type: "string", description: "delete/delete_many: commit a previously staged delete (the payload must match what was staged)." },
+			force: { type: "boolean", description: "delete/delete_many: skip staging and delete in one shot (the ! override). By default a delete stages a preview first." },
 		},
 	},
 	run: async (env: RtEnv, a: any) => {
@@ -159,16 +162,20 @@ export const todoist: Fn = {
 				const ids = Array.isArray(a?.ids) ? a.ids.map(String) : [];
 				if (!ids.length) return failWith("bad_input", "todoist delete_many requires a non-empty `ids` array.");
 				if (ids.length > 100) return failWith("bad_input", "todoist delete_many is capped at 100 ids per call — split the batch.");
-				if (a?.confirm !== true) return failWith("bad_input", "todoist delete_many requires confirm:true (Todoist delete is permanent, not a recoverable trash).");
-				const results = await Promise.all(
-					ids.map(async (tid: string) => {
-						const r = await tapi(env, "DELETE", `/tasks/${encodeURIComponent(tid)}`);
-						return r.status >= 400 ? { id: tid, ok: false, error: r.json?.error ?? `HTTP ${r.status}` } : { id: tid, ok: true };
-					}),
-				);
-				const deleted = results.filter((x) => x.ok).map((x) => x.id);
-				const failed = results.filter((x) => !x.ok);
-				return ok(oj({ requested: ids.length, deleted: deleted.length, deletedIds: deleted, failed: failed.length, ...(failed.length ? { errors: failed } : {}) }));
+				const mutate = async () => {
+					const delResults = await Promise.all(
+						ids.map(async (tid: string) => {
+							const r = await tapi(env, "DELETE", `/tasks/${encodeURIComponent(tid)}`);
+							return r.status >= 400 ? { id: tid, ok: false, error: r.json?.error ?? `HTTP ${r.status}` } : { id: tid, ok: true };
+						}),
+					);
+					const deleted = delResults.filter((x) => x.ok).map((x) => x.id);
+					const failed = delResults.filter((x) => !x.ok);
+					return { requested: ids.length, deleted: deleted.length, deletedIds: deleted, failed: failed.length, ...(failed.length ? { errors: failed } : {}) };
+				};
+				const gateArgs = { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined, force: a?.force === true };
+				const out = await staged(env, "todoist_delete_many", gateArgs, { ids }, { action: `delete ${ids.length} Todoist tasks`, count: ids.length, ids }, mutate);
+				return ok(oj("stageResult" in out ? out.stageResult : out.result));
 			}
 			if (action === "update") {
 				if (!id) return failWith("bad_input", "todoist update requires an `id`.");
@@ -186,10 +193,14 @@ export const todoist: Fn = {
 			}
 			if (action === "delete") {
 				if (!id) return failWith("bad_input", "todoist delete requires an `id`.");
-				if (a?.confirm !== true) return failWith("bad_input", "todoist delete requires confirm:true (Todoist delete is permanent, not a recoverable trash).");
-				const r = await tapi(env, "DELETE", `/tasks/${encodeURIComponent(id)}`);
-				if (r.status >= 400) return failWith(codeFor(r.status), `Todoist delete: ${r.json?.error ?? (r.text.slice(0, 200) || `HTTP ${r.status}`)}`);
-				return ok(oj({ ok: true, deleted: id }));
+				const mutate = async () => {
+					const r = await tapi(env, "DELETE", `/tasks/${encodeURIComponent(id)}`);
+					if (r.status >= 400) throw new Error(`Todoist delete: ${r.json?.error ?? (r.text.slice(0, 200) || `HTTP ${r.status}`)}`);
+					return { ok: true, deleted: id };
+				};
+				const gateArgs = { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined, force: a?.force === true };
+				const out = await staged(env, "todoist_delete", gateArgs, { id }, { action: "delete todoist task", id }, mutate);
+				return ok(oj("stageResult" in out ? out.stageResult : out.result));
 			}
 			return failWith("bad_input", `todoist: unknown action '${action}'.`);
 		} catch (e) {

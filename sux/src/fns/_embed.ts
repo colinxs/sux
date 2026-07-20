@@ -1,4 +1,4 @@
-import { hasAI, MODELS } from "../ai";
+import { aiGatewayOptions, hasAI, MODELS } from "../ai";
 import type { RtEnv } from "../registry";
 
 // Workers-AI embeddings, wrapped the same way ai.ts wraps text inference: a hard
@@ -13,7 +13,7 @@ import type { RtEnv } from "../registry";
 const EMBED_BATCH = 100;
 
 async function embedBatch(env: RtEnv, texts: string[]): Promise<number[][]> {
-	const r = await env.AI!.run(MODELS.embed, { text: texts });
+	const r = await env.AI!.run(MODELS.embed, { text: texts }, aiGatewayOptions(env));
 	const data = (r as { data?: unknown })?.data;
 	if (!Array.isArray(data)) throw new Error("embeddings: unexpected model output (no data array).");
 	return (data as unknown[]).map((v) => (Array.isArray(v) ? v.map(Number) : []));

@@ -128,11 +128,12 @@ describe("vault verb dispatches into VAULT_TOOLS byte-identically", () => {
 	});
 });
 
-describe("files verb preserves the delete confirm gate", () => {
-	it("files({action:'delete'}) without confirm → bad_input confirm:true", async () => {
+describe("files verb preserves the delete stage guard", () => {
+	it("files({action:'delete'}) without stage/commit_token/force → stages a preview, deletes nothing", async () => {
 		const r = await files.run({} as RtEnv, { action: "delete", path: "/x.txt" });
-		expect(r.errorCode).toBe("bad_input");
-		expect(r.content[0].text).toContain("confirm:true");
+		const out = JSON.parse(r.content[0].text);
+		expect(out).toMatchObject({ staged: true, kind: "dropbox_delete" });
+		expect(out.commit_token).toBeTruthy();
 	});
 });
 

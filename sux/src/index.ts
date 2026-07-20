@@ -18,7 +18,7 @@ import { LIFE_SKILL_DESCRIPTION, LIFE_SKILL_PROMPT, SUX_SKILL_DESCRIPTION, SUX_S
 import { selfImproveTick } from "./fns/_self_improve";
 import { runSubJob } from "./cron-heartbeat";
 import { recordCall } from "./metrics";
-import { shipMetricsSnapshot, shipToLoki } from "./grafana";
+import { shipGithubBillingSnapshot, shipMetricsSnapshot, shipToLoki } from "./grafana";
 import { handleObservability } from "./observability";
 import { handleDashboardRoutes } from "./dashboard";
 import { handleRecovery } from "./recovery";
@@ -941,6 +941,9 @@ async function maintenanceTick(env: RtEnv, ctx: ExecutionContext): Promise<void>
 	} catch (e) {
 		console.warn(`sux scheduled maintenance: metrics snapshot push skipped: ${String((e as Error)?.message ?? e)}`);
 	}
+	// GitHub Actions billing gauge (spend-observability-plan.md's plumbing step 1) — rides
+	// the same daily tick, dormant unless GRAFANA_PROM_* + GITHUB_TOKEN are all set.
+	await runSubJob(env, "gh_actions_billing", () => shipGithubBillingSnapshot(env, ctx));
 }
 
 // An OAuthError-shaped exception: both the library's own (@cloudflare/workers-

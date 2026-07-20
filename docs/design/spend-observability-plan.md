@@ -1,6 +1,6 @@
 ---
 title: Spend observability plan (GitHub Actions minutes + Claude/API credit usage)
-status: draft
+status: draft (plumbing step 1 shipped — see #1061)
 ---
 
 # Spend observability plan
@@ -34,8 +34,10 @@ found nothing beyond the tool-call metrics above.
 
 ## What's missing, concretely
 
-1. **GitHub Actions minutes usage** — GitHub exposes this via
-   `GET /repos/{owner}/{repo}/actions/billing` (or the org-level equivalent),
+1. **GitHub Actions minutes usage** — GitHub bills Actions minutes against the
+   owning account, not an individual repo, so there is no repo-scoped billing
+   endpoint. GitHub exposes this via `GET /orgs/{org}/settings/billing/actions`
+   (or the `/users/{user}/...`/`/enterprises/{enterprise}/...` equivalents),
    returning `total_minutes_used`, `included_minutes`, and a per-runner-OS
    breakdown for the current billing cycle. Nothing today calls this endpoint or
    stores its result anywhere Grafana can query.
@@ -50,13 +52,16 @@ found nothing beyond the tool-call metrics above.
 
 ## Proposed plumbing (before any dashboard is built)
 
-1. **GitHub Actions minutes**: small scheduled script (cron Worker route, or a
-   `.github/workflows/*.yml` job on a schedule trigger) that calls
-   `gh api /repos/SuxOS/sux/actions/billing/usage` (or org-level
-   `/orgs/SuxOS/settings/billing/actions` if/when the org migration in Track A
-   lands), and pushes `total_minutes_used` / `included_minutes` to Grafana Cloud
-   via the same Influx-line-protocol push `shipMetricsSnapshot` already uses —
-   reuse the transport, add a new small emitter function.
+1. **GitHub Actions minutes** — SHIPPED (#1061), fixed to the real org-scoped
+   endpoint in #1098: `sux/src/grafana.ts`'s `shipGithubBillingSnapshot` polls
+   `GET /orgs/{org}/settings/billing/actions` (org from `GH_BILLING_OWNER`, default
+   `SuxOS`) using the existing `GITHUB_TOKEN`, and
+   pushes `gh_actions_minutes_used_total` / `gh_actions_minutes_included` via the same
+   Influx-line-protocol transport `shipMetricsSnapshot` uses (same `GRAFANA_PROM_*`
+   secrets + shared `GRAFANA_LOKI_TOKEN` bearer — no new credential to mint). Rides the
+   daily maintenance cron as the `gh_actions_billing` sub-job (heartbeat-tracked like the
+   rest of `CRON_JOBS`); dormant until GITHUB_TOKEN + both Prometheus secrets are set.
+   The dashboard panel itself is still unbuilt — see "Next step" below.
 2. **Claude/API credit usage**: Anthropic doesn't currently expose a usage/cost
    API for this to poll (console-only as of this writing) — confirm before
    building; if none exists, this half stays manual/console-only until Anthropic

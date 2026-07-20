@@ -31,6 +31,10 @@ const flagOn = (v: string | undefined): boolean => {
 // detector reuses this same gate + signal-log shape rather than inventing a parallel one.
 // "vault" added (#865) for the design doc §4 "first slice" — emerging-topic drift is scoped
 // to vault+mail specifically, so the detector needs a vault arm alongside the original five.
+// Arming a domain's flag is a no-op until something actually calls appendInferSignal for it
+// (#1085) — "purchases" got its producer in _agenda.ts's logPurchaseSignals (Monarch
+// transactions); "calendar"/"files"/"health" are still placeholders with no writer anywhere,
+// each waiting on its own detector issue before arming does anything observable.
 export type InferDomain = "mail" | "purchases" | "calendar" | "files" | "health" | "vault";
 
 const ARM_ENV_KEY: Record<InferDomain, keyof RtEnv> = {
@@ -152,23 +156,24 @@ async function cascadeTrimInferences(env: RtEnv, removedIds: Set<string>, skipDo
 	const deletedInferenceIds: string[] = [];
 	for (const d of ALL_DOMAINS) {
 		if (d === skipDomain) continue;
-		const inferences = await inferenceLog(env, d).load();
-		const kept: InferInference[] = [];
-		let changed = false;
-		for (const inf of inferences) {
-			const remaining = inf.evidenceIds.filter((id) => !removedIds.has(id));
-			if (remaining.length === inf.evidenceIds.length) {
-				kept.push(inf);
-				continue;
+		await inferenceLog(env, d).update((inferences) => {
+			const kept: InferInference[] = [];
+			let changed = false;
+			for (const inf of inferences) {
+				const remaining = inf.evidenceIds.filter((id) => !removedIds.has(id));
+				if (remaining.length === inf.evidenceIds.length) {
+					kept.push(inf);
+					continue;
+				}
+				changed = true;
+				if (remaining.length > 0) {
+					kept.push({ ...inf, evidenceIds: remaining });
+				} else {
+					deletedInferenceIds.push(inf.id);
+				}
 			}
-			changed = true;
-			if (remaining.length > 0) {
-				kept.push({ ...inf, evidenceIds: remaining });
-			} else {
-				deletedInferenceIds.push(inf.id);
-			}
-		}
-		if (changed) await inferenceLog(env, d).save(kept);
+			return changed ? kept : inferences;
+		});
 	}
 	return deletedInferenceIds;
 }
@@ -186,10 +191,12 @@ async function cascadeTrimInferences(env: RtEnv, removedIds: Set<string>, skipDo
  * domain can never find/trim/delete the inference it fed (#950).
  */
 export async function deleteInferSignal(env: RtEnv, domain: InferDomain, signalId: string): Promise<DeleteSignalResult> {
-	const signals = await signalLog(env, domain).load();
-	const kept = signals.filter((s) => s.id !== signalId);
-	const deletedSignal = kept.length !== signals.length;
-	if (deletedSignal) await signalLog(env, domain).save(kept);
+	let deletedSignal = false;
+	await signalLog(env, domain).update((signals) => {
+		const kept = signals.filter((s) => s.id !== signalId);
+		deletedSignal = kept.length !== signals.length;
+		return deletedSignal ? kept : signals;
+	});
 
 	const cascadedInferenceIds = await cascadeTrimInferences(env, new Set([signalId]));
 
@@ -198,11 +205,13 @@ export async function deleteInferSignal(env: RtEnv, domain: InferDomain, signalI
 
 /** Delete one inference directly (the user forgetting a suggestion, not its underlying signals). */
 export async function deleteInferInference(env: RtEnv, domain: InferDomain, inferenceId: string): Promise<boolean> {
-	const inferences = await inferenceLog(env, domain).load();
-	const kept = inferences.filter((inf) => inf.id !== inferenceId);
-	if (kept.length === inferences.length) return false;
-	await inferenceLog(env, domain).save(kept);
-	return true;
+	let deleted = false;
+	await inferenceLog(env, domain).update((inferences) => {
+		const kept = inferences.filter((inf) => inf.id !== inferenceId);
+		deleted = kept.length !== inferences.length;
+		return deleted ? kept : inferences;
+	});
+	return deleted;
 }
 
 /**
@@ -214,10 +223,12 @@ export async function deleteInferInference(env: RtEnv, domain: InferDomain, infe
  * trim/cascade-delete any inference elsewhere that cited them.
  */
 export async function purgeInferDomain(env: RtEnv, domain: InferDomain): Promise<void> {
-	const purgedIds = new Set((await signalLog(env, domain).load()).map((s) => s.id));
-
-	await signalLog(env, domain).save([]);
-	await inferenceLog(env, domain).save([]);
+	let purgedIds = new Set<string>();
+	await signalLog(env, domain).update((signals) => {
+		purgedIds = new Set(signals.map((s) => s.id));
+		return [];
+	});
+	await inferenceLog(env, domain).update(() => []);
 
 	if (!purgedIds.size) return;
 	await cascadeTrimInferences(env, purgedIds, domain);

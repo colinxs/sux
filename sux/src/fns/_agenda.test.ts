@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { composeDigest, type AgendaDeps, type Drop, detectCrossSemanticDrops, detectDrops, detectKnowledgeDrops, detectMonarchDrops, detectMyChartDrops, detectMychartAllergyGapDrops, detectMychartConflictDrops, detectPortfolioDrops, detectRelationshipDrops, detectSavingsRateDrop, detectTextDrops, detectWatchDrops, computeSavingsRate, type EventRef, mailRelationshipThreads, type MailRef, type RelationshipBaseline, type TextThreadRef, rankDropsLearned, runAgenda } from "./_agenda";
+import { composeDigest, type AgendaDeps, type Drop, detectCrossSemanticDrops, detectDrops, detectKnowledgeDrops, detectMonarchDrops, detectMyChartDrops, detectMychartAllergyGapDrops, detectMychartConflictDrops, detectPortfolioDrops, detectRelationshipDrops, detectSavingsRateDrop, detectStudyReviewDrops, detectTextDrops, detectWatchDrops, computeSavingsRate, type EventRef, mailRelationshipThreads, type MailRef, type RelationshipBaseline, type TextThreadRef, rankDropsLearned, runAgenda } from "./_agenda";
 import { listProposals } from "../proposals";
 import { recordOutcome } from "./_learning";
+import { readInferSignals } from "./_infer";
 
 function kvStub() {
 	const map = new Map<string, string>();
@@ -28,6 +29,7 @@ const deps = (over: Partial<AgendaDeps> = {}): AgendaDeps => ({
 	consolidateFindings: vi.fn(async () => null),
 	weeklyRecallFindings: vi.fn(async () => null),
 	watchFindings: vi.fn(async () => null),
+	studyTopics: vi.fn(async () => []),
 	crossSemanticFindings: vi.fn(async () => null),
 	monarchAccounts: vi.fn(async () => []),
 	monarchTransactions: vi.fn(async () => []),
@@ -104,6 +106,20 @@ describe("agenda — detectors", () => {
 	it("no watch drops when there's nothing to report", () => {
 		expect(detectWatchDrops(null)).toHaveLength(0);
 		expect(detectWatchDrops({ checked_at: "2026-07-18T00:00:00.000Z", changed_count: 0, changed: [] })).toHaveLength(0);
+	});
+
+	it("wires studied topics due for review in as fyi drops (#1092), keyed on the review cycle", () => {
+		const drops = detectStudyReviewDrops([{ topic: "thermodynamics", title: "Intro Thermo", learned_at: 1_700_000_000_000, cycle: 1 }]);
+		expect(drops).toHaveLength(1);
+		expect(drops[0]).toMatchObject({ kind: "study_review_due", urgency: "fyi" });
+		expect(drops[0].dedupe).toBe("study_review::thermodynamics::1");
+		expect(drops[0].title).toContain("thermodynamics");
+		expect(drops[0].title).toContain("Intro Thermo");
+		expect(drops[0].action.fn).toBe("todoist");
+	});
+
+	it("no study review drops when nothing is due", () => {
+		expect(detectStudyReviewDrops([])).toHaveLength(0);
 	});
 
 	it("wires the cross-semantic sweep's findings in as an fyi drop (#785/#948), never auto-applying", () => {
@@ -184,6 +200,100 @@ describe("agenda — detectors", () => {
 			[],
 		);
 		expect(drops).toHaveLength(0);
+	});
+
+	it("Monarch: subscription creep flags a recurring merchant whose charge grew over time (#1059)", () => {
+		const drops = detectMonarchDrops(
+			"2026-07-28",
+			[],
+			[
+				{ id: "t1", amount: -9.99, merchant: "Streamflix", date: "2026-05-28" },
+				{ id: "t2", amount: -9.99, merchant: "Streamflix", date: "2026-06-28" },
+				{ id: "t3", amount: -14.99, merchant: "Streamflix", date: "2026-07-28" },
+			],
+			[],
+		);
+		const creep = drops.find((d) => d.kind === "subscription_creep");
+		expect(creep).toBeDefined();
+		expect(creep?.evidence).toMatchObject({ merchant: "Streamflix", firstAmount: 9.99, latestAmount: 14.99, occurrences: 3 });
+	});
+
+	it("Monarch: subscription creep dedupes on the amount, not the latest transaction id, so a same-amount repeat next cycle doesn't re-propose (#1067)", () => {
+		const drops1 = detectMonarchDrops(
+			"2026-07-28",
+			[],
+			[
+				{ id: "t1", amount: -9.99, merchant: "Streamflix", date: "2026-05-28" },
+				{ id: "t2", amount: -9.99, merchant: "Streamflix", date: "2026-06-28" },
+				{ id: "t3", amount: -14.99, merchant: "Streamflix", date: "2026-07-28" },
+			],
+			[],
+		);
+		// Next billing cycle: same already-flagged amount posts under a brand-new transaction id.
+		const drops2 = detectMonarchDrops(
+			"2026-08-28",
+			[],
+			[
+				{ id: "t1", amount: -9.99, merchant: "Streamflix", date: "2026-05-28" },
+				{ id: "t2", amount: -9.99, merchant: "Streamflix", date: "2026-06-28" },
+				{ id: "t3", amount: -14.99, merchant: "Streamflix", date: "2026-07-28" },
+				{ id: "t4-new-id", amount: -14.99, merchant: "Streamflix", date: "2026-08-28" },
+			],
+			[],
+		);
+		const dedupe1 = drops1.find((d) => d.kind === "subscription_creep")?.dedupe;
+		const dedupe2 = drops2.find((d) => d.kind === "subscription_creep")?.dedupe;
+		expect(dedupe1).toBeDefined();
+		expect(dedupe2).toBe(dedupe1); // same amount ⇒ same dedupe key, regardless of transaction id
+	});
+
+	it("Monarch: subscription creep does not flag a flat recurring charge or too few occurrences", () => {
+		const flat = detectMonarchDrops(
+			"2026-07-28",
+			[],
+			[
+				{ id: "t1", amount: -9.99, merchant: "Streamflix", date: "2026-05-28" },
+				{ id: "t2", amount: -9.99, merchant: "Streamflix", date: "2026-06-28" },
+				{ id: "t3", amount: -9.99, merchant: "Streamflix", date: "2026-07-28" },
+			],
+			[],
+		);
+		expect(flat.map((d) => d.kind)).not.toContain("subscription_creep");
+
+		const tooFew = detectMonarchDrops(
+			"2026-07-28",
+			[],
+			[
+				{ id: "t1", amount: -9.99, merchant: "Streamflix", date: "2026-06-28" },
+				{ id: "t2", amount: -14.99, merchant: "Streamflix", date: "2026-07-28" },
+			],
+			[],
+		);
+		expect(tooFew.map((d) => d.kind)).not.toContain("subscription_creep");
+	});
+
+	it("Monarch: subscription creep ignores a bill-sized recurring charge (already covered by bill_due)", () => {
+		const drops = detectMonarchDrops(
+			"2026-07-05",
+			[],
+			[
+				{ id: "t1", amount: -900, merchant: "Landlord LLC", date: "2026-05-05" },
+				{ id: "t2", amount: -900, merchant: "Landlord LLC", date: "2026-06-05" },
+				{ id: "t3", amount: -1200, merchant: "Landlord LLC", date: "2026-07-05" },
+			],
+			[],
+		);
+		expect(drops.map((d) => d.kind)).not.toContain("subscription_creep");
+	});
+
+	it("Monarch: unusual_charge only scans its own recency window even when transactions span the wider subscription-creep lookback", () => {
+		const drops = detectMonarchDrops(
+			"2026-07-28",
+			[],
+			[{ id: "t1", amount: -733.2, merchant: "Old LLC", date: "2026-05-01" }],
+			[],
+		);
+		expect(drops.map((d) => d.kind)).not.toContain("unusual_charge");
 	});
 });
 
@@ -508,6 +618,17 @@ describe("agenda — loop", () => {
 		expect(d.sendDigest).toHaveBeenCalledTimes(1);
 	});
 
+	it("records 'digest (vault only)' in the vault note when the send fails, not 'digest emailed' (#1089)", async () => {
+		const e = env({ AGENDA_EMAIL: "1" });
+		const d = deps({ sendDigest: vi.fn(async () => { throw new Error("no primary identity"); }) });
+		const r = await runAgenda(e, {}, d);
+		expect(r.emailed).toBe(false);
+		expect(r.digest_written).toBe(true);
+		const written = (d.digestAppend as any).mock.calls[0][2] as string;
+		expect(written).toContain("digest (vault only)");
+		expect(written).not.toContain("digest emailed");
+	});
+
 	it("ledgers the sent digest's Message-ID so _agenda_reply.ts can thread-match a later reply", async () => {
 		const e = env({ AGENDA_EMAIL: "1" });
 		const d = deps({ sendDigest: vi.fn(async () => ({ messageId: "abc123@fastmail.com" })) });
@@ -719,6 +840,112 @@ describe("agenda — loop", () => {
 	});
 });
 
+describe("agenda — Monarch infer signal wiring (#1085)", () => {
+	const TXNS = [
+		{ id: "txn1", merchant: "Coffee Shop", amount: 4.5, date: "2026-07-17" },
+		{ id: "txn2", merchant: "Grocery Store", amount: 62.1, date: "2026-07-17" },
+	];
+
+	it("does not feed the infer signal log when INFER_ARM_PURCHASES is unset (dormant by default)", async () => {
+		const e = env({ MONARCH_TOKEN: "tok" });
+		e.AI = { run: vi.fn(async () => ({ data: [[0.1, 0.2]] })) };
+		const d = deps({ monarchTransactions: vi.fn(async () => TXNS) });
+		await runAgenda(e, {}, d);
+		expect(e.AI.run).not.toHaveBeenCalled();
+		expect(await readInferSignals(e, "purchases")).toEqual([]);
+	});
+
+	it("feeds a redacted, embedded signal per new transaction when INFER_ARM_PURCHASES is armed", async () => {
+		const e = env({ MONARCH_TOKEN: "tok", INFER_ARM_PURCHASES: "1" });
+		e.AI = { run: vi.fn(async () => ({ data: [[0.1, 0.2]] })) };
+		const d = deps({ monarchTransactions: vi.fn(async () => TXNS) });
+		await runAgenda(e, {}, d);
+		expect(e.AI.run).toHaveBeenCalledTimes(TXNS.length);
+		const signals = await readInferSignals(e, "purchases");
+		expect(signals).toHaveLength(TXNS.length);
+		expect(signals.map((s) => s.source_tag).sort()).toEqual(TXNS.map((t) => `purchases:${t.id}`).sort());
+	});
+
+	it("does not re-log the same transaction across cycles (rolling-window dedupe)", async () => {
+		const e = env({ MONARCH_TOKEN: "tok", INFER_ARM_PURCHASES: "1" });
+		e.AI = { run: vi.fn(async () => ({ data: [[0.1, 0.2]] })) };
+		await runAgenda(e, { date: "2026-07-17" }, deps({ monarchTransactions: vi.fn(async () => TXNS) }));
+		// Next cycle re-fetches the same rolling window (both txns still inside it) plus one new one.
+		await runAgenda(e, { date: "2026-07-18" }, deps({ monarchTransactions: vi.fn(async () => [...TXNS, { id: "txn3", merchant: "Bookstore", amount: 18, date: "2026-07-18" }]) }));
+		const signals = await readInferSignals(e, "purchases");
+		expect(signals).toHaveLength(3);
+	});
+
+	it("dry_run never persists purchase signals", async () => {
+		const e = env({ MONARCH_TOKEN: "tok", INFER_ARM_PURCHASES: "1" });
+		e.AI = { run: vi.fn(async () => ({ data: [[0.1, 0.2]] })) };
+		await runAgenda(e, { dry_run: true }, deps({ monarchTransactions: vi.fn(async () => TXNS) }));
+		expect(e.AI.run).not.toHaveBeenCalled();
+		expect(await readInferSignals(e, "purchases")).toEqual([]);
+	});
+
+	it("a signal-log failure (e.g. AI down) is swallowed — the agenda cycle still completes", async () => {
+		const e = env({ MONARCH_TOKEN: "tok", INFER_ARM_PURCHASES: "1" });
+		e.AI = { run: vi.fn(async () => { throw new Error("AI unavailable"); }) };
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const r = await runAgenda(e, {}, deps({ monarchTransactions: vi.fn(async () => TXNS) }));
+		expect(r.digest_written).toBe(true);
+		expect(warn).toHaveBeenCalledWith(expect.stringMatching(/infer: purchases signal log failed/));
+		warn.mockRestore();
+	});
+});
+
+describe("agenda — defaultDeps.monarchTransactions pagination (#1097)", () => {
+	const page = (ids: number[], offset: number, totalCount: number) => ({
+		content: [{ text: JSON.stringify({ totalCount, count: ids.length, offset, limit: 200, transactions: ids.map((i) => ({ id: `txn${i}`, amount: -1, date: "2026-07-17" })) }) }],
+	});
+
+	it("paginates past a single 200-row page using totalCount, rather than silently truncating", async () => {
+		const { defaultDeps } = await import("./_agenda");
+		const { monarch } = await import("./monarch");
+		const run = vi
+			.spyOn(monarch, "run")
+			.mockImplementationOnce(async () => page(Array.from({ length: 200 }, (_, i) => i), 0, 350) as any)
+			.mockImplementationOnce(async () => page(Array.from({ length: 150 }, (_, i) => 200 + i), 200, 350) as any);
+
+		const deps = await defaultDeps();
+		const txns = await deps.monarchTransactions({} as any, { start: "2026-04-19", end: "2026-07-17" });
+
+		expect(run).toHaveBeenCalledTimes(2);
+		expect(run).toHaveBeenNthCalledWith(1, {}, { op: "transactions", start: "2026-04-19", end: "2026-07-17", limit: 200, offset: 0 });
+		expect(run).toHaveBeenNthCalledWith(2, {}, { op: "transactions", start: "2026-04-19", end: "2026-07-17", limit: 200, offset: 200 });
+		expect(txns).toHaveLength(350);
+		expect(txns[349]?.id).toBe("txn349");
+		run.mockRestore();
+	});
+
+	it("stops at a single page when totalCount fits (no wasted extra call)", async () => {
+		const { defaultDeps } = await import("./_agenda");
+		const { monarch } = await import("./monarch");
+		const run = vi.spyOn(monarch, "run").mockImplementationOnce(async () => page([0, 1, 2], 0, 3) as any);
+
+		const deps = await defaultDeps();
+		const txns = await deps.monarchTransactions({} as any, { start: "2026-07-14", end: "2026-07-17" });
+
+		expect(run).toHaveBeenCalledTimes(1);
+		expect(txns).toHaveLength(3);
+		run.mockRestore();
+	});
+
+	it("stops at MONARCH_TRANSACTIONS_MAX rather than looping forever on a pathological totalCount", async () => {
+		const { defaultDeps } = await import("./_agenda");
+		const { monarch } = await import("./monarch");
+		const run = vi.spyOn(monarch, "run").mockImplementation(async (_env: any, a: any) => page(Array.from({ length: 200 }, (_, i) => a.offset + i), a.offset, 1_000_000) as any);
+
+		const deps = await defaultDeps();
+		const txns = await deps.monarchTransactions({} as any, { start: "2026-04-19", end: "2026-07-17" });
+
+		expect(txns.length).toBeLessThanOrEqual(1000);
+		expect(run.mock.calls.length).toBeLessThanOrEqual(6);
+		run.mockRestore();
+	});
+});
+
 describe("agenda — pending-delivery queue survives a failed digest write (#996)", () => {
 	const RX_MAIL: MailRef = { id: "rx1", from: "pharmacy@uwmc.org", subject: "Your prescription is ready for pickup" };
 	const BILL_MAIL: MailRef = { id: "bill9", from: "billing@chase.com", subject: "Your statement is ready" };
@@ -778,5 +1005,26 @@ describe("agenda — pending-delivery queue survives a failed digest write (#996
 		const r3 = await runAgenda(e, { date: "2026-07-11" }, d3);
 		expect(d3.digestAppend).not.toHaveBeenCalled();
 		expect(r3.proposals ?? []).toHaveLength(0);
+	});
+
+	it("email delivery alone marks the digest delivered — a stuck vault write doesn't keep re-sending a growing digest (#1058)", async () => {
+		const e = env({ AGENDA_EMAIL: "1" });
+		const d1 = deps({ mailSearch: vi.fn(async () => [RX_MAIL]), calEvents: vi.fn(async () => []), digestAppend: vi.fn(async () => { throw new Error("vault down"); }) });
+		const r1 = await runAgenda(e, { date: "2026-07-10" }, d1);
+		expect(r1.digest_written).toBe(false); // vault append still failing
+		expect(d1.sendDigest).toHaveBeenCalledTimes(1); // but email succeeded
+
+		// Same cycle, a new drop arrives. The digest is already considered delivered via email —
+		// neither channel should fire again for this cycle.
+		const d2 = deps({ mailSearch: vi.fn(async () => [BILL_MAIL]), calEvents: vi.fn(async () => []) });
+		await runAgenda(e, { date: "2026-07-10" }, d2);
+		expect(d2.sendDigest).not.toHaveBeenCalled();
+		expect(d2.digestAppend).not.toHaveBeenCalled();
+
+		// Next day: nothing carried over — the pending queue was already cleared once email delivered.
+		const d3 = deps({ mailSearch: vi.fn(async () => []), calEvents: vi.fn(async () => []) });
+		await runAgenda(e, { date: "2026-07-11" }, d3);
+		expect(d3.digestAppend).not.toHaveBeenCalled();
+		expect(d3.sendDigest).not.toHaveBeenCalled();
 	});
 });

@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { hasAI, MODELS } from "../ai";
+import { aiGatewayOptions, hasAI, MODELS } from "../ai";
 import { fromB64, loadBytes } from "./_util";
 
 export const ocr: Fn = {
@@ -31,7 +31,11 @@ export const ocr: Fn = {
 			return fail(`Could not load image: ${String((e as Error).message ?? e)}`);
 		}
 		try {
-			const r = await (env as any).AI.run(MODELS.vision, { image: bytes, prompt: String(args?.prompt ?? "Transcribe all text in this image exactly."), max_tokens: 1024 });
+			const r = await (env as any).AI.run(
+				MODELS.vision,
+				{ image: bytes, prompt: String(args?.prompt ?? "Transcribe all text in this image exactly."), max_tokens: 1024 },
+				aiGatewayOptions(env),
+			);
 			return ok(String(r?.description ?? r?.response ?? "").trim() || "(no text found)");
 		} catch (e) {
 			return fail(`ocr failed: ${String((e as Error).message ?? e)}`);
