@@ -73,7 +73,7 @@ export type WatchCheckResult = { changed: boolean; first_seen: boolean; hash: st
 
 export type WatchSweepDeps = {
 	listWatches: (env: RtEnv) => Promise<WatchIndexEntry[]>;
-	checkWatch: (env: RtEnv, entry: { url: string; selector?: string; label?: string }) => Promise<WatchCheckResult>;
+	checkWatch: (env: RtEnv, entry: { url: string; selector?: string; label?: string; threshold?: number; thresholdPct?: number }) => Promise<WatchCheckResult>;
 };
 
 export type WatchSweepReport = {
@@ -116,7 +116,7 @@ export async function runWatchSweep(env: RtEnv, opts: { max?: number }, deps: Wa
 	const changed: WatchChange[] = [];
 	for (const entry of window) {
 		try {
-			const r = await deps.checkWatch(env, { url: entry.url, selector: entry.selector, label: entry.label });
+			const r = await deps.checkWatch(env, { url: entry.url, selector: entry.selector, label: entry.label, threshold: entry.threshold, thresholdPct: entry.thresholdPct });
 			if (r.changed) changed.push({ url: entry.url, selector: entry.selector, label: entry.label, hash: r.hash, previous_hash: r.previous_hash, checked_at: checkedAt });
 		} catch {
 			continue; // one unreachable watch must not sink the whole sweep
@@ -139,7 +139,7 @@ export async function defaultDeps(): Promise<WatchSweepDeps> {
 	return {
 		listWatches,
 		checkWatch: async (env, entry) => {
-			const r = await watch.run(env, { url: entry.url, selector: entry.selector, label: entry.label });
+			const r = await watch.run(env, { url: entry.url, selector: entry.selector, label: entry.label, threshold: entry.threshold, threshold_pct: entry.thresholdPct });
 			if (r.isError) throw new Error(r.content?.[0]?.text ?? "watch failed");
 			const parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
 			return { changed: Boolean(parsed.changed), first_seen: Boolean(parsed.first_seen), hash: String(parsed.hash ?? ""), previous_hash: typeof parsed.previous_hash === "string" ? parsed.previous_hash : undefined };

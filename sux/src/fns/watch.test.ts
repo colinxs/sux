@@ -154,6 +154,104 @@ describe("watch", () => {
 		expect(r.content[0].text).toMatch(/\[upstream_error\]/);
 	});
 
+	describe("numeric threshold mode (#1091)", () => {
+		it("first sight establishes the numeric baseline without reporting changed", async () => {
+			const { env } = fakeEnv();
+			body('<div id="price">$100</div>');
+			const r = parse(await watch.run(env, { url: "https://example.com/p1", selector: "#price", threshold: 5 }));
+			expect(r.first_seen).toBe(true);
+			expect(r.changed).toBe(false);
+			expect(r.numeric_value).toBe(100);
+			expect(r.previous_numeric_value).toBeUndefined();
+		});
+
+		it("a move smaller than the absolute threshold does not report changed", async () => {
+			const { env } = fakeEnv();
+			body('<div id="price">$100</div>');
+			await watch.run(env, { url: "https://example.com/p2", selector: "#price", threshold: 10 });
+			body('<div id="price">$104</div>');
+			const r = parse(await watch.run(env, { url: "https://example.com/p2", selector: "#price", threshold: 10 }));
+			expect(r.changed).toBe(false);
+			expect(r.numeric_value).toBe(104);
+			expect(r.previous_numeric_value).toBe(100);
+		});
+
+		it("a move at or past the absolute threshold reports changed and re-baselines", async () => {
+			const { env } = fakeEnv();
+			body('<div id="price">$100</div>');
+			await watch.run(env, { url: "https://example.com/p3", selector: "#price", threshold: 10 });
+			body('<div id="price">$110</div>');
+			const r = parse(await watch.run(env, { url: "https://example.com/p3", selector: "#price", threshold: 10 }));
+			expect(r.changed).toBe(true);
+			expect(r.previous_numeric_value).toBe(100);
+			// Re-baselined to 110 — a further +5 from here should not re-fire on its own.
+			body('<div id="price">$115</div>');
+			const r2 = parse(await watch.run(env, { url: "https://example.com/p3", selector: "#price", threshold: 10 }));
+			expect(r2.changed).toBe(false);
+			expect(r2.previous_numeric_value).toBe(110);
+		});
+
+		it("threshold_pct fires on a percentage move even when under the absolute threshold", async () => {
+			const { env } = fakeEnv();
+			body('<div id="price">$100</div>');
+			await watch.run(env, { url: "https://example.com/p4", selector: "#price", threshold: 1000, threshold_pct: 5 });
+			body('<div id="price">$90</div>'); // -10%, well under the $1000 abs threshold
+			const r = parse(await watch.run(env, { url: "https://example.com/p4", selector: "#price", threshold: 1000, threshold_pct: 5 }));
+			expect(r.changed).toBe(true);
+		});
+
+		it("a text-only change that leaves the tracked number untouched does not report changed", async () => {
+			const { env } = fakeEnv();
+			body('<div id="price">$100</div><footer>3 viewing</footer>');
+			await watch.run(env, { url: "https://example.com/p5", threshold: 5 });
+			body('<div id="price">$100</div><footer>91 viewing</footer>');
+			const r = parse(await watch.run(env, { url: "https://example.com/p5", threshold: 5 }));
+			expect(r.changed).toBe(false);
+			expect(r.numeric_value).toBe(100);
+		});
+
+		it("falls back to the hash diff when no number can be parsed", async () => {
+			const { env } = fakeEnv();
+			body("<p>alpha only</p>");
+			await watch.run(env, { url: "https://example.com/p6", threshold: 5 });
+			body("<p>beta only</p>");
+			const r = parse(await watch.run(env, { url: "https://example.com/p6", threshold: 5 }));
+			expect(r.changed).toBe(true);
+			expect(r.numeric_value).toBeUndefined();
+		});
+
+		it("rejects a non-numeric threshold/threshold_pct", async () => {
+			const { env } = fakeEnv();
+			const r1 = await watch.run(env, { url: "https://example.com/p7", threshold: "nope" as unknown as number });
+			expect(r1.isError).toBe(true);
+			const r2 = await watch.run(env, { url: "https://example.com/p7", threshold_pct: "nope" as unknown as number });
+			expect(r2.isError).toBe(true);
+		});
+
+		it("reset clears the numeric baseline too, so the next check re-baselines", async () => {
+			const { env, store } = fakeEnv();
+			body('<div id="price">$100</div>');
+			await watch.run(env, { url: "https://example.com/p8", selector: "#price", threshold: 5 });
+			await watch.run(env, { url: "https://example.com/p8", selector: "#price", reset: true });
+			expect(store.size).toBe(0);
+			body('<div id="price">$100</div>');
+			const r = parse(await watch.run(env, { url: "https://example.com/p8", selector: "#price", threshold: 5 }));
+			expect(r.first_seen).toBe(true);
+			expect(r.previous_numeric_value).toBeUndefined();
+		});
+
+		it("persists threshold/threshold_pct onto the directory index entry for the cron sweep, even on a no-change recheck", async () => {
+			const { env } = fakeEnv();
+			body('<div id="price">$100</div>');
+			await watch.run(env, { url: "https://example.com/p9", selector: "#price", threshold: 10, threshold_pct: 5 });
+			body('<div id="price">$102</div>'); // under both thresholds — steady state
+			await watch.run(env, { url: "https://example.com/p9", selector: "#price", threshold: 10, threshold_pct: 5 });
+			const index = await listWatches(env);
+			expect(index).toHaveLength(1);
+			expect(index[0]).toMatchObject({ url: "https://example.com/p9", threshold: 10, thresholdPct: 5 });
+		});
+	});
+
 	describe("directory index (#899)", () => {
 		it("listWatches enumerates every active watch for a cron sweep to re-check", async () => {
 			const { env } = fakeEnv();
