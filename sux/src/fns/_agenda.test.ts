@@ -23,6 +23,7 @@ const EVENTS: EventRef[] = [{ summary: "Intake appointment w/ Dr. Enoch", start:
 
 const deps = (over: Partial<AgendaDeps> = {}): AgendaDeps => ({
 	mailSearch: vi.fn(async () => MAIL),
+	mailRelationshipSearch: vi.fn(async () => []),
 	calEvents: vi.fn(async () => EVENTS),
 	digestAppend: vi.fn(async () => {}),
 	sendDigest: vi.fn(async () => {}),
@@ -737,6 +738,19 @@ describe("agenda — loop", () => {
 		expect(r3.proposals?.map((p) => p.kind)).toContain("relationship_drop");
 	});
 
+	it("keeps tracking a mail contact's cadence via mailRelationshipSearch even once their message is read, not the unread-only mailSearch stream (#1133)", async () => {
+		const e = env();
+		// mailSearch (unread inbox) is empty — as if the contact's message has already been read —
+		// while mailRelationshipSearch (recent-window, not unread-gated) still sees it.
+		const jeanne = { id: "m1", from: "Jeanne <jeanne@gmail.com>", subject: "Hey!", preview: "how's it going", date: "2026-06-01T12:00:00Z" };
+		await runAgenda(e, { date: "2026-06-01" }, deps({ mailSearch: vi.fn(async () => []), mailRelationshipSearch: vi.fn(async () => [jeanne]) }));
+		expect(e.OAUTH_KV.map.get("sux:ledger:agenda_relationship:mail:jeanne@gmail.com")).toContain("\"sampleCount\":0");
+		// Next cycle: still unread-empty via mailSearch, but mailRelationshipSearch sees a fresh message
+		// from the same contact — the baseline refines instead of freezing.
+		await runAgenda(e, { date: "2026-06-04" }, deps({ mailSearch: vi.fn(async () => []), mailRelationshipSearch: vi.fn(async () => [{ ...jeanne, date: "2026-06-04T12:00:00Z" }]) }));
+		expect(e.OAUTH_KV.map.get("sux:ledger:agenda_relationship:mail:jeanne@gmail.com")).toContain("\"sampleCount\":1");
+	});
+
 	it("dry_run never persists the relationship baseline", async () => {
 		const e = env({ IMESSAGE_URL: "https://mac.ts.net", IMESSAGE_SECRET: "s".repeat(20) });
 		await runAgenda(e, { date: "2026-06-01" }, deps({ textThreads: vi.fn(async () => [{ id: "t1", contact: "+15551234", lastFromMe: true, lastAt: "2026-06-01T12:00:00Z" }]) }));
@@ -1026,5 +1040,29 @@ describe("agenda — pending-delivery queue survives a failed digest write (#996
 		await runAgenda(e, { date: "2026-07-11" }, d3);
 		expect(d3.digestAppend).not.toHaveBeenCalled();
 		expect(d3.sendDigest).not.toHaveBeenCalled();
+	});
+
+	it("a pending-queue KV write failure never crashes the cycle (#1134)", async () => {
+		const e = env();
+		e.OAUTH_KV.put = vi.fn(async (k: string, v: string) => {
+			if (k.includes("agenda_pending")) throw new Error("KV put failed (value too large)");
+			e.OAUTH_KV.map.set(k, v);
+		});
+		const d = deps({ mailSearch: vi.fn(async () => [RX_MAIL]), calEvents: vi.fn(async () => []), digestAppend: vi.fn(async () => { throw new Error("vault down"); }) });
+		await expect(runAgenda(e, { date: "2026-07-10" }, d)).resolves.toMatchObject({ digest_written: false });
+	});
+
+	it("caps the pending queue's serialized size so a sustained outage can't grow it past KV's put limit (#1134)", async () => {
+		const e = env();
+		const bigDrop = (i: number): unknown => ({
+			proposalId: `carried-${i}`,
+			drop: { kind: "bill_due", urgency: "fyi", dedupe: `carried::${i}`, title: `old bill ${i}`, emoji: "🧾", action: { fn: "todoist", args: { action: "add", content: `old ${i}` } }, evidence: { note: "x".repeat(50_000) } },
+		});
+		e.OAUTH_KV.map.set("sux:ledger:agenda_pending:queue", JSON.stringify(Array.from({ length: 40 }, (_, i) => bigDrop(i))));
+		const d = deps({ mailSearch: vi.fn(async () => []), calEvents: vi.fn(async () => []), digestAppend: vi.fn(async () => { throw new Error("vault down"); }) });
+		await runAgenda(e, { date: "2026-07-10" }, d);
+		const persisted = e.OAUTH_KV.map.get("sux:ledger:agenda_pending:queue");
+		expect(persisted).toBeDefined();
+		expect(new TextEncoder().encode(persisted as string).length).toBeLessThan(1024 * 1024);
 	});
 });

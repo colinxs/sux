@@ -465,6 +465,16 @@ const UNUSUAL_CHARGE_WINDOW_DAYS = 3;
 // Recent-threads window scanned for the unanswered_text detector — imessage.ts's `threads` has
 // no unread concept (unlike mailSearch's `unread:true`), so recency is the only cheap bound.
 const TEXT_LOOKBACK_DAYS = 3;
+// Recent-mail window scanned for the mail half of Relationship Radar (#1133) — deliberately NOT
+// unread-gated (unlike detectDrops/mailSearch's inbox scan), so a contact's cadence keeps updating
+// after their message is read instead of freezing the moment it's marked read. A bounded window is
+// still a membership test, not a true "ever contacted" scan — too narrow and a slow-cadence contact
+// falls out of it before detectRelationshipDrops' own silenceDays threshold ever fires, same freeze
+// bug one step removed. 90d (matching AGENDA_RELATIONSHIP_MIN_SILENCE_DAYS' own max) comfortably
+// covers the default-config drop threshold (baselineDays*2) up to a ~45d cadence; widening costs
+// nothing extra server-side (mail_search's `after` filter is cheap — the `limit:50` cap below is
+// what actually bounds cost, not the window width).
+const RELATIONSHIP_MAIL_LOOKBACK_DAYS = 90;
 // Trailing window (NOT calendar-month-to-date) for the cashflow-derived savings-rate detector —
 // a fixed calendar-month window reads sharply negative for the first few days of a month before
 // income posts (a biweekly/monthly paycheck lags the 1st), a pure timing artifact rather than a
@@ -948,6 +958,10 @@ function buildDigestBlock(date: string, cycle: string, emailed: boolean, d: { su
 // ── Deps (injectable side-effect surface) ────────────────────────────────────────
 export type AgendaDeps = {
 	mailSearch: (env: RtEnv, opts: { limit: number }) => Promise<MailRef[]>;
+	/** Mail feeding mailRelationshipThreads' per-contact cadence (#1133) — a recent-window scan
+	 *  regardless of read state, NOT `mailSearch`'s unread-only inbox scan, so a contact's cadence
+	 *  keeps updating after their message is read instead of freezing forever the moment it is. */
+	mailRelationshipSearch: (env: RtEnv, opts: { since: string }) => Promise<MailRef[]>;
 	calEvents: (env: RtEnv, opts: { start: string; end: string }) => Promise<EventRef[]>;
 	digestAppend: (env: RtEnv, path: string, content: string) => Promise<void>;
 	/** Send the digest to Colin's own primary address (the one send this loop can do), and
@@ -1053,6 +1067,7 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 	// Gather (read-only, degrade-independently).
 	const status: Record<string, string> = {};
 	let mail: MailRef[] = [];
+	let relationshipMail: MailRef[] = [];
 	let events: EventRef[] = [];
 	let consolidateFindings: ConsolidateFindings | null = null;
 	let weeklyRecallFindings: WeeklyRecallFindings | null = null;
@@ -1078,6 +1093,12 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 			status.mail = `${mail.length} scanned`;
 		})().catch((e) => {
 			status.mail = `unavailable (${errMsg(e).slice(0, 90)})`;
+		}),
+		(async () => {
+			relationshipMail = await deps.mailRelationshipSearch(env, { since: addDays(date, -RELATIONSHIP_MAIL_LOOKBACK_DAYS) });
+			status.relationship_mail = `${relationshipMail.length} scanned`;
+		})().catch((e) => {
+			status.relationship_mail = `unavailable (${errMsg(e).slice(0, 90)})`;
 		}),
 		(async () => {
 			events = await deps.calEvents(env, { start: `${date}T00:00:00`, end: `${addDays(date, horizon)}T23:59:59` });
@@ -1192,7 +1213,7 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 	const currentSavingsRate = computeSavingsRate(monarchCashflow);
 	const relationshipSilenceMultiplier = floatClamp(env.AGENDA_RELATIONSHIP_SILENCE_MULTIPLIER, 1, 20, RELATIONSHIP_SILENCE_MULTIPLIER);
 	const relationshipMinSilenceDays = numClamp(env.AGENDA_RELATIONSHIP_MIN_SILENCE_DAYS, 1, 90, RELATIONSHIP_MIN_SILENCE_DAYS);
-	const relationshipThreads = [...textThreads, ...mailRelationshipThreads(mail)];
+	const relationshipThreads = [...textThreads, ...mailRelationshipThreads(relationshipMail)];
 	const priorRelationshipBaselines = relationshipThreads.length ? await loadRelationshipBaselines(env, relationshipThreads.map((t) => t.id)) : {};
 	const relationshipResult = detectRelationshipDrops(Date.parse(`${date}T00:00:00Z`), relationshipThreads, priorRelationshipBaselines, {
 		silenceMultiplier: relationshipSilenceMultiplier,
@@ -1267,6 +1288,12 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		}
 	}
 	const toDeliver = [...carried, ...proposed];
+	// Guard against unbounded growth across a sustained mail+vault outage (#1134) — KV values cap
+	// at 25MB and a growing `evidence` payload (Monarch/MyChart drops aren't small) could otherwise
+	// push a `put` over that limit. Stay well under it, mirroring _capped_kv_log.ts's byte cap. Drops
+	// the OLDEST (already-carried) entries first — this cycle's fresh proposals are never dropped.
+	const MAX_PENDING_BYTES = 1024 * 1024;
+	while (toDeliver.length > 1 && new TextEncoder().encode(JSON.stringify(toDeliver)).length > MAX_PENDING_BYTES) toDeliver.shift();
 
 	const digest = composeDigest(date, toDeliver);
 
@@ -1307,7 +1334,13 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		// Clear once EITHER channel actually delivers (this call, or an earlier call this same
 		// cycle already delivered it); otherwise re-queue everything still undelivered —
 		// including this cycle's own new proposals — for the next attempt (#1041, #1058).
-		await pending.mark(PENDING_KEY, digestWritten || emailed || alreadyDelivered ? "[]" : JSON.stringify(toDeliver));
+		try {
+			await pending.mark(PENDING_KEY, digestWritten || emailed || alreadyDelivered ? "[]" : JSON.stringify(toDeliver));
+		} catch {
+			/* a pending-queue write failure must never fail the cycle (#1134) — the proposals are
+			 * already recorded; worst case this cycle's undelivered drops aren't re-queued for the
+			 * next attempt, same as a corrupt-entry read above. */
+		}
 	}
 
 	return {
@@ -1343,6 +1376,18 @@ export async function defaultDeps(): Promise<AgendaDeps> {
 			const t = tool("mail_search");
 			if (!t) throw new Error("mail_search tool not found");
 			const r = await t.run(env, { mailbox: "inbox", unread: true, limit: o.limit });
+			if (r.isError) throw new Error(r.content?.[0]?.text ?? "mail_search failed");
+			const parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
+			return (parsed.emails ?? []).map((e: any) => ({ id: String(e?.id ?? ""), from: e?.from, subject: e?.subject, preview: e?.preview, date: e?.receivedAt }));
+		},
+		mailRelationshipSearch: async (env, o) => {
+			// Deliberately NOT `unread: true` (#1133) — mailSearch's inbox scan above drops a
+			// contact the moment their message is read, freezing detectRelationshipDrops' cadence
+			// baseline forever. This scans the same inbox by recency instead, so a read message
+			// still keeps the contact's cadence updating.
+			const t = tool("mail_search");
+			if (!t) throw new Error("mail_search tool not found");
+			const r = await t.run(env, { mailbox: "inbox", after: o.since, limit: 50 });
 			if (r.isError) throw new Error(r.content?.[0]?.text ?? "mail_search failed");
 			const parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
 			return (parsed.emails ?? []).map((e: any) => ({ id: String(e?.id ?? ""), from: e?.from, subject: e?.subject, preview: e?.preview, date: e?.receivedAt }));
