@@ -189,7 +189,7 @@ export async function writeFull(env: RtEnv, opts: { path: string; bytes: Uint8Ar
 	if (opts.rev && exists && opts.rev !== existing?.rev) throw new Error(`rev mismatch for '${p}': you have ${opts.rev}, current is ${existing?.rev}. Re-read and retry.`);
 	const willBackup = exists && opts.backup !== false;
 	if (opts.dryRun) {
-		return { action: "write", scope: "full-dropbox", path: p, exists, will_overwrite: exists, bytes: opts.bytes.length, rev_condition: opts.rev ?? null, ...(willBackup ? { backup_to: TRASH_ROOT } : {}), note: "DRY RUN — nothing written. Re-call with dry_run:false to apply." };
+		return { action: "write", scope: "full-dropbox", path: p, exists, will_overwrite: exists, bytes: opts.bytes.length, rev_condition: opts.rev ?? null, ...(willBackup ? { backup_to: TRASH_ROOT } : {}), note: "DRY RUN — nothing written. This is the stage preview: resend the same call with the returned commit_token (or force:true) to apply." };
 	}
 	const backup = willBackup ? await copyToTrash(env, p, stampNow()) : undefined;
 	// `update` conditions on an existing revision — only valid when the file EXISTS. A rev supplied
@@ -212,7 +212,7 @@ export async function deleteFull(env: RtEnv, opts: { path: string; dryRun: boole
 	const meta = await fullRpc(env, "/files/get_metadata", { path: p });
 	if (meta.status >= 400) throw new Error(`Dropbox error: ${meta.json?.error_summary ?? `HTTP ${meta.status}`} (${p}) — nothing deleted.`);
 	if (opts.dryRun) {
-		return { action: "delete", scope: "full-dropbox", path: p, kind: meta.json?.[".tag"], note: "DRY RUN — nothing deleted. Re-call with dry_run:false + confirm:true to apply. Deletes are recoverable in Dropbox 'Deleted files'." };
+		return { action: "delete", scope: "full-dropbox", path: p, kind: meta.json?.[".tag"], note: "DRY RUN — nothing deleted. This is the stage preview: resend the same call with the returned commit_token (or force:true) to apply. Deletes are recoverable in Dropbox 'Deleted files'." };
 	}
 	const r = await fullRpc(env, "/files/delete_v2", { path: p });
 	if (r.status >= 400) throw new Error(`Dropbox delete error: ${r.json?.error_summary ?? `HTTP ${r.status}`} (${p})`);
@@ -225,7 +225,7 @@ export async function moveFull(env: RtEnv, opts: { from: string; to: string; dry
 	const t = fenceFull(env, opts.to);
 	if (f === t) throw new Error("move: `to` equals `from` — nothing to move.");
 	if (opts.dryRun) {
-		return { action: "move", scope: "full-dropbox", from: f, to: t, note: "DRY RUN — nothing moved. Re-call with dry_run:false to apply." };
+		return { action: "move", scope: "full-dropbox", from: f, to: t, note: "DRY RUN — nothing moved. This is the stage preview: resend the same call with the returned commit_token (or force:true) to apply." };
 	}
 	const r = await fullRpc(env, "/files/move_v2", { from_path: f, to_path: t, autorename: false });
 	if (r.status >= 400) throw new Error(`Dropbox move error: ${r.json?.error_summary ?? `HTTP ${r.status}`} (${f} → ${t})`);
@@ -275,7 +275,7 @@ export async function operateFull(
 			...(truncated ? { truncated: true, cap: max } : {}),
 			...(opts.action === "move" ? { dest } : {}),
 			targets: paths,
-			note: `Plan only — nothing changed. Pass apply:true${opts.action === "delete" ? " + confirm:true" : ""} to execute. Each op is fenced, rev-safe, and recoverable.`,
+			note: "Plan only — nothing changed. This is the stage preview: resend the same call with the returned commit_token (or force:true) to execute. Each op is fenced, rev-safe, and recoverable.",
 		};
 	}
 	if (opts.action === "delete" && opts.confirm !== true) throw new Error("operate delete apply requires confirm:true.");
