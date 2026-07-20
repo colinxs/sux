@@ -33,7 +33,7 @@ const CATEGORIES = [
 	["Personal finance", ["monarch"]],
 	["Personal health", ["mychart", "mychart_reconcile_plan"]],
 	["Feedback / meta", ["issue", "suggest"]],
-	["Infra / meta", ["selftest", "autonomy_status", "controld", "tailscale", "sux", "fn", "todoist"]],
+	["Infra / meta", ["selftest", "autonomy_status", "controld", "tailscale", "sux", "fn", "todoist", "audit_log"]],
 ];
 
 const files = readdirSync(FNS).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && f !== "index.ts" && !f.startsWith("_"));

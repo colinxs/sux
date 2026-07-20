@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { readAuditEntries } from "./audit-log";
 import { commit, conscience, stage, STAGE_KINDS, staged } from "./stage";
 
 const fakeKV = () => {
@@ -77,7 +78,7 @@ describe("stage-then-commit", () => {
 		const out = await staged(env, "cal_delete", { force: true }, { href: "/x" }, { preview: "p" }, mutate);
 		expect("result" in out && out.result).toBe("SENT");
 		expect(mutate).toHaveBeenCalledTimes(1);
-		expect([...kv.s.keys()]).toHaveLength(0); // force never stages
+		expect([...kv.s.keys()].filter((k) => k.startsWith("sux:stage:"))).toHaveLength(0); // force never stages
 	});
 
 	it("an irreversible:false (reversible) kind auto-mutates on default args", async () => {
@@ -87,7 +88,7 @@ describe("stage-then-commit", () => {
 		const out = await staged(env, "contact_create", {}, { name: "x" }, { preview: "p" }, mutate);
 		expect("result" in out && out.result).toBe("CREATED"); // reversible → just run it
 		expect(mutate).toHaveBeenCalledTimes(1);
-		expect([...kv.s.keys()]).toHaveLength(0); // nothing staged
+		expect([...kv.s.keys()].filter((k) => k.startsWith("sux:stage:"))).toHaveLength(0); // nothing staged
 	});
 
 	it("the conscience advisory rides into a staged mail_send preview for a typo'd recipient", async () => {
@@ -115,7 +116,7 @@ describe("stage-then-commit", () => {
 		const out = await staged(env, "mail_send", { force: true, stage: true }, { to: ["x@y"] }, { preview: "p" }, mutate);
 		expect("result" in out && out.result).toBe("DONE");
 		expect(mutate).toHaveBeenCalledTimes(1);
-		expect([...kv.s.keys()]).toHaveLength(0); // nothing staged in KV
+		expect([...kv.s.keys()].filter((k) => k.startsWith("sux:stage:"))).toHaveLength(0); // nothing staged in KV
 	});
 
 	// Adversarial: the double-send race. Two commits of ONE token fired concurrently
@@ -139,6 +140,54 @@ describe("stage-then-commit", () => {
 		expect(mutate).toHaveBeenCalledTimes(1);
 		// A later commit of the same (now-spent) token is still rejected.
 		await expect(commit(env, "mail_send", s.commit_token, payload)).rejects.toThrow(/spent|invalid|expired/);
+	});
+});
+
+// The forensic audit log (#1111) is hooked at this exact chokepoint: staged() is the one place
+// every gated mutate() call runs through, so a single recordAudit() call here — right after
+// mutate() succeeds — captures nearly every STAGE_KINDS-annotated action with no per-verb wiring.
+describe("staged() records to the forensic audit log after a successful mutate()", () => {
+	it("records on force:true (bypasses staging, still audited)", async () => {
+		const env = { OAUTH_KV: fakeKV() } as any;
+		const mutate = vi.fn(async () => ({ id: "1" }));
+		await staged(env, "cal_delete", { force: true }, { href: "/x" }, { action: "delete event", href: "/x" }, mutate);
+		const entries = await readAuditEntries(env);
+		expect(entries).toHaveLength(1);
+		expect(entries[0]).toMatchObject({ kind: "cal_delete", preview: { action: "delete event", href: "/x" }, result: { id: "1" } });
+	});
+
+	it("records on commit_token (the two-step stage→commit path), not on the earlier stage() preview", async () => {
+		const env = { OAUTH_KV: fakeKV() } as any;
+		const mutate = vi.fn(async () => "SENT");
+		const s = await stage(env, "mail_send", { to: ["x@y.com"] }, { action: "send" });
+		expect(await readAuditEntries(env)).toHaveLength(0); // staging alone mutates/audits nothing
+		await staged(env, "mail_send", { commit_token: s.commit_token }, { to: ["x@y.com"] }, { action: "send" }, mutate);
+		const entries = await readAuditEntries(env);
+		expect(entries).toHaveLength(1);
+		expect(entries[0]).toMatchObject({ kind: "mail_send", result: "SENT" });
+	});
+
+	it("records on the default auto-mutate path for an irreversible:false kind", async () => {
+		const env = { OAUTH_KV: fakeKV() } as any;
+		const mutate = vi.fn(async () => ({ id: "c1" }));
+		await staged(env, "contact_create", {}, { name: "x" }, { action: "create contact" }, mutate);
+		expect(await readAuditEntries(env, { kind: "contact_create" })).toHaveLength(1);
+	});
+
+	it("does NOT record on a bare stage:true preview — nothing mutated yet", async () => {
+		const env = { OAUTH_KV: fakeKV() } as any;
+		const mutate = vi.fn(async () => "SENT");
+		await staged(env, "mail_send", { stage: true }, { to: ["x@y"] }, { action: "send" }, mutate);
+		expect(mutate).not.toHaveBeenCalled();
+		expect(await readAuditEntries(env)).toHaveLength(0);
+	});
+
+	it("a KV-write failure in the audit log never breaks the real mutation's result", async () => {
+		const kv = { get: async () => null, put: async () => { throw new Error("kv down"); }, delete: async () => {} };
+		const env = { OAUTH_KV: kv } as any;
+		const mutate = vi.fn(async () => "DONE");
+		const out = await staged(env, "cal_delete", { force: true }, { href: "/x" }, { action: "delete" }, mutate);
+		expect("result" in out && out.result).toBe("DONE");
 	});
 });
 

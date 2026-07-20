@@ -1,3 +1,4 @@
+import { recordAudit } from "./audit-log";
 import { type RtEnv } from "./registry";
 
 // Stage-then-commit — the accidental-misuse guard for every side-effectful verb. A caller
@@ -221,15 +222,23 @@ export async function commit(env: RtEnv, kind: string, token: string, payload: u
  * Returns the StageResult in the stage cases; else the mutate result.
  */
 export async function staged<T>(env: RtEnv, kind: string, args: { stage?: boolean; commit_token?: string; force?: boolean }, payload: unknown, preview: unknown, mutate: () => Promise<T>): Promise<{ stageResult: StageResult } | { result: T }> {
+	// Every path that actually mutates funnels through here — the one forensic-audit-log
+	// chokepoint (#1111): record AFTER mutate() succeeds (never before, and never on a
+	// stage-only preview, since nothing happened yet). Best-effort; see audit-log.ts.
+	const runMutate = async (): Promise<T> => {
+		const result = await mutate();
+		await recordAudit(env, kind, preview, result);
+		return result;
+	};
 	// `force` is the generalized `!`-override: opt out of staging outright, ahead of
 	// any stage/commit_token, so a caller that has decided can't be forced into a
 	// round-trip. It never mints or consumes a token.
 	if (args?.force === true) {
-		return { result: await mutate() };
+		return { result: await runMutate() };
 	}
 	if (args?.commit_token) {
 		await commit(env, kind, String(args.commit_token), payload);
-		return { result: await mutate() };
+		return { result: await runMutate() };
 	}
 	if (args?.stage === true) {
 		return { stageResult: await stage(env, kind, payload, preview) };
@@ -242,5 +251,5 @@ export async function staged<T>(env: RtEnv, kind: string, args: { stage?: boolea
 	if (ann.irreversible) {
 		return { stageResult: await stage(env, kind, payload, preview) };
 	}
-	return { result: await mutate() };
+	return { result: await runMutate() };
 }
