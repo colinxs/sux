@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { composeDigest, type AgendaDeps, type Drop, detectCrossSemanticDrops, detectDrops, detectKnowledgeDrops, detectMonarchDrops, detectMyChartDrops, detectMychartAllergyGapDrops, detectMychartConflictDrops, detectPortfolioDrops, detectRelationshipDrops, detectSavingsRateDrop, detectTextDrops, detectWatchDrops, computeSavingsRate, type EventRef, mailRelationshipThreads, type MailRef, type RelationshipBaseline, type TextThreadRef, rankDropsLearned, runAgenda } from "./_agenda";
 import { listProposals } from "../proposals";
 import { recordOutcome } from "./_learning";
+import { readInferSignals } from "./_infer";
 
 function kvStub() {
 	const map = new Map<string, string>();
@@ -781,6 +782,61 @@ describe("agenda — loop", () => {
 
 		const r = await runAgenda(e, { date: "2026-07-18" }, deps({ monarchHoldings: vi.fn(async () => [{ ticker: "AAPL", value: 9000 }, { ticker: "MSFT", value: 1000 }]) }));
 		expect(r.proposals?.map((p) => p.kind)).not.toContain("portfolio_drift");
+	});
+});
+
+describe("agenda — Monarch infer signal wiring (#1085)", () => {
+	const TXNS = [
+		{ id: "txn1", merchant: "Coffee Shop", amount: 4.5, date: "2026-07-17" },
+		{ id: "txn2", merchant: "Grocery Store", amount: 62.1, date: "2026-07-17" },
+	];
+
+	it("does not feed the infer signal log when INFER_ARM_PURCHASES is unset (dormant by default)", async () => {
+		const e = env({ MONARCH_TOKEN: "tok" });
+		e.AI = { run: vi.fn(async () => ({ data: [[0.1, 0.2]] })) };
+		const d = deps({ monarchTransactions: vi.fn(async () => TXNS) });
+		await runAgenda(e, {}, d);
+		expect(e.AI.run).not.toHaveBeenCalled();
+		expect(await readInferSignals(e, "purchases")).toEqual([]);
+	});
+
+	it("feeds a redacted, embedded signal per new transaction when INFER_ARM_PURCHASES is armed", async () => {
+		const e = env({ MONARCH_TOKEN: "tok", INFER_ARM_PURCHASES: "1" });
+		e.AI = { run: vi.fn(async () => ({ data: [[0.1, 0.2]] })) };
+		const d = deps({ monarchTransactions: vi.fn(async () => TXNS) });
+		await runAgenda(e, {}, d);
+		expect(e.AI.run).toHaveBeenCalledTimes(TXNS.length);
+		const signals = await readInferSignals(e, "purchases");
+		expect(signals).toHaveLength(TXNS.length);
+		expect(signals.map((s) => s.source_tag).sort()).toEqual(TXNS.map((t) => `purchases:${t.id}`).sort());
+	});
+
+	it("does not re-log the same transaction across cycles (rolling-window dedupe)", async () => {
+		const e = env({ MONARCH_TOKEN: "tok", INFER_ARM_PURCHASES: "1" });
+		e.AI = { run: vi.fn(async () => ({ data: [[0.1, 0.2]] })) };
+		await runAgenda(e, { date: "2026-07-17" }, deps({ monarchTransactions: vi.fn(async () => TXNS) }));
+		// Next cycle re-fetches the same rolling window (both txns still inside it) plus one new one.
+		await runAgenda(e, { date: "2026-07-18" }, deps({ monarchTransactions: vi.fn(async () => [...TXNS, { id: "txn3", merchant: "Bookstore", amount: 18, date: "2026-07-18" }]) }));
+		const signals = await readInferSignals(e, "purchases");
+		expect(signals).toHaveLength(3);
+	});
+
+	it("dry_run never persists purchase signals", async () => {
+		const e = env({ MONARCH_TOKEN: "tok", INFER_ARM_PURCHASES: "1" });
+		e.AI = { run: vi.fn(async () => ({ data: [[0.1, 0.2]] })) };
+		await runAgenda(e, { dry_run: true }, deps({ monarchTransactions: vi.fn(async () => TXNS) }));
+		expect(e.AI.run).not.toHaveBeenCalled();
+		expect(await readInferSignals(e, "purchases")).toEqual([]);
+	});
+
+	it("a signal-log failure (e.g. AI down) is swallowed — the agenda cycle still completes", async () => {
+		const e = env({ MONARCH_TOKEN: "tok", INFER_ARM_PURCHASES: "1" });
+		e.AI = { run: vi.fn(async () => { throw new Error("AI unavailable"); }) };
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const r = await runAgenda(e, {}, deps({ monarchTransactions: vi.fn(async () => TXNS) }));
+		expect(r.digest_written).toBe(true);
+		expect(warn).toHaveBeenCalledWith(expect.stringMatching(/infer: purchases signal log failed/));
+		warn.mockRestore();
 	});
 });
 

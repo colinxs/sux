@@ -31,6 +31,10 @@ const flagOn = (v: string | undefined): boolean => {
 // detector reuses this same gate + signal-log shape rather than inventing a parallel one.
 // "vault" added (#865) for the design doc §4 "first slice" — emerging-topic drift is scoped
 // to vault+mail specifically, so the detector needs a vault arm alongside the original five.
+// Arming a domain's flag is a no-op until something actually calls appendInferSignal for it
+// (#1085) — "purchases" got its producer in _agenda.ts's logPurchaseSignals (Monarch
+// transactions); "calendar"/"files"/"health" are still placeholders with no writer anywhere,
+// each waiting on its own detector issue before arming does anything observable.
 export type InferDomain = "mail" | "purchases" | "calendar" | "files" | "health" | "vault";
 
 const ARM_ENV_KEY: Record<InferDomain, keyof RtEnv> = {

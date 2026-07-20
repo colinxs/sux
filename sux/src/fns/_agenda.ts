@@ -34,6 +34,9 @@ import { hasImessage, imessage } from "./imessage";
 import { hasMonarch, monarch } from "./monarch";
 import { crossOrgAllergyGaps, crossOrgMedicationAllergyConflicts, mychartConfigured, orgLabel, summarizeMyChart } from "../mychart";
 import { errMsg, vaultToday } from "./_util";
+import { embedOne } from "./_embed";
+import { appendInferSignal, hasInferArm } from "./_infer";
+import { redactPII } from "./redact";
 import type { WatchFindings } from "./_watch_sweep";
 import type { WeeklyRecallFindings } from "./_weekly_recall";
 
@@ -472,6 +475,33 @@ const daysLeftInMonth = (date: string): number => {
 	const lastDay = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
 	return lastDay - d.getUTCDate();
 };
+
+const PURCHASE_SIGNAL_SNIPPET_MAX = 1000;
+
+/** Best-effort feed into the infer signal log (#864's substrate) — a no-op unless
+ *  INFER_ARM_PURCHASES is set, checked first so a dormant domain costs zero embed/ledger
+ *  calls (#1085: arming INFER_ARM_PURCHASES previously had zero observable effect, since
+ *  nothing ever called appendInferSignal for this domain). Never throws into the caller: a
+ *  failed embed/append must not affect the agenda cycle. Dedupes per transaction id via a
+ *  ledger — monarchTransactions re-fetches a rolling SUBSCRIPTION_LOOKBACK_DAYS-wide window
+ *  every cycle, so without a seen-set the same transaction would re-embed and re-append on
+ *  every single cycle it stays inside that window. */
+async function logPurchaseSignals(env: RtEnv, transactions: MonarchTxnRef[]): Promise<void> {
+	if (!hasInferArm(env, "purchases")) return;
+	const led = ledger(env, "agenda_infer_purchases");
+	for (const t of transactions) {
+		if (!(await led.markIfNew(t.id))) continue;
+		try {
+			const raw = `${t.merchant || "unknown merchant"} ${typeof t.amount === "number" ? t.amount.toFixed(2) : ""} ${t.date ?? ""}`.trim();
+			const { redacted } = redactPII(raw);
+			const snippet = redacted.slice(0, PURCHASE_SIGNAL_SNIPPET_MAX);
+			const vec = await embedOne(env, snippet);
+			await appendInferSignal(env, "purchases", { ts: Date.now(), vec, redacted_snippet: snippet, source_tag: `purchases:${t.id}` });
+		} catch (e) {
+			console.warn(`infer: purchases signal log failed for ${t.id} — ${errMsg(e)}`);
+		}
+	}
+}
 
 /** Turn Monarch's read-only accounts/transactions/budgets into drops (W7) — same
  *  read-only-sense/reversible-propose contract as every other detector here. Bill-due,
@@ -1144,6 +1174,10 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		// this cycle only — fall back to the prior snapshot's rate so one bad cycle doesn't
 		// clobber the known-good baseline detectSavingsRateDrop compares against (#874).
 		await saveMonarchSnapshot(env, { date, allocation: computePortfolioAllocation(monarchHoldings), savingsRate: currentSavingsRate ?? priorMonarchSnapshot?.savingsRate });
+		// Feed the infer signal log (#864 substrate) with this cycle's Monarch transactions —
+		// dormant no-op unless INFER_ARM_PURCHASES is set (#1085). Same dry_run-never-persists
+		// contract as the snapshot save above.
+		await logPurchaseSignals(env, monarchTransactions);
 	}
 	// Same dry_run-never-persists contract as the Monarch snapshot above.
 	if (!dryRun && relationshipThreads.length) await saveRelationshipBaselines(env, relationshipResult.baselines);
