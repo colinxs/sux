@@ -385,6 +385,17 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   this isn't a sandbox artifact skip-able by trusting real CI. Don't re-attempt #1078 until
   suxlib gets its own fix landed first (separate repo/PR — `../suxlib` is read-only here). See
   `docs/design/improvement-backlog.md` item #10 (#1080).
+- **A test asserting a literal `"Daily/YYYY-MM-DD.md"` string against code that calls
+  `vaultToday()`/`new Date()` is a date bomb — it passes only until real wall-clock time rolls
+  past that hardcoded day, then fails for EVERY branch/PR, not just the one that happens to run
+  it that day.** Confirmed on `_infer_nudge.test.ts`'s digest-block test, which hardcoded
+  `Daily/2026-07-19.md` and started failing on real CI + every sandbox `npm test` run once the
+  date ticked over to 2026-07-20 (#1085's build hit this while working an unrelated issue). Fix
+  pattern: compute the expected path the same way the code under test does (`` `Daily/${vaultToday("UTC")}.md` ``),
+  never a literal date string. If a gate fails on a test unrelated to your diff, `git stash` and
+  re-run on a clean checkout before assuming it's pre-existing-and-ignorable — if it's a date
+  bomb like this one, it blocks every PR today and is worth fixing inline rather than reporting
+  as unrelated noise.
 
 ## House style
 
