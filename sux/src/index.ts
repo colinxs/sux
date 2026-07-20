@@ -15,7 +15,7 @@ import { hasAI, llm } from "./ai";
 const SUMMARIZE_MIN_CHARS = 400;
 import { FUNCTIONS } from "./fns";
 import { LIFE_SKILL_DESCRIPTION, LIFE_SKILL_PROMPT, SUX_SKILL_DESCRIPTION, SUX_SKILL_PROMPT } from "./skill-prompt";
-import { selfImproveTick } from "./fns/_self_improve";
+import { selfImproveStaleSweepTick, selfImproveTick } from "./fns/_self_improve";
 import { runSubJob } from "./cron-heartbeat";
 import { recordCall } from "./metrics";
 import { shipGithubBillingSnapshot, shipMetricsSnapshot, shipToLoki } from "./grafana";
@@ -1021,6 +1021,9 @@ export default {
 		}
 		ctx.waitUntil(maintenanceTick(env, ctx));
 		ctx.waitUntil(runSubJob(env, "self_improve", () => selfImproveTick(env)));
+		// #1124: re-checks open self-improve stub PRs and closes the ones that sat empty past
+		// SELF_IMPROVE_STALE_DAYS, so a fixed-elsewhere complaint doesn't linger unmerged forever.
+		ctx.waitUntil(runSubJob(env, "self_improve_sweep", () => selfImproveStaleSweepTick(env)));
 	},
 	async fetch(request: Request, env: RtEnv, ctx: ExecutionContext): Promise<Response> {
 		// Public, unauthenticated observability routes (health/metrics/logs) are
@@ -1129,8 +1132,9 @@ export default {
 					else if (job === "agenda") out = await agendaTick(env);
 					else if (job === "agenda-reply") out = await agendaReplyTick(env);
 					else if (job === "self-improve") out = await selfImproveTick(env);
+					else if (job === "self-improve-sweep") out = await selfImproveStaleSweepTick(env);
 					else if (job === "maintenance") { await maintenanceTick(env, ctx); out = { ok: true }; }
-					else return new Response(JSON.stringify({ error: "unknown job", jobs: ["mail-triage", "weekly-recall", "briefing", "agenda", "agenda-reply", "self-improve", "maintenance"] }), { status: 400, headers: { "content-type": "application/json" } });
+					else return new Response(JSON.stringify({ error: "unknown job", jobs: ["mail-triage", "weekly-recall", "briefing", "agenda", "agenda-reply", "self-improve", "self-improve-sweep", "maintenance"] }), { status: 400, headers: { "content-type": "application/json" } });
 					return new Response(JSON.stringify({ ok: true, job, result: out }, null, 2), { headers: { "content-type": "application/json" } });
 				} catch (e) {
 					return new Response(JSON.stringify({ error: String((e as Error)?.message ?? e) }), { status: 500, headers: { "content-type": "application/json" } });

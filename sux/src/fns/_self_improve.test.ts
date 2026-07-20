@@ -3,7 +3,20 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import type { FeedbackEntry } from "./_feedback";
-import { canAutoMerge, canOpenPr, classifyConfidence, classifyLane, type Finding, type GithubClient, hasSelfImprove, isKilled, selfImproveTick } from "./_self_improve";
+import {
+	canAutoMerge,
+	canOpenPr,
+	classifyConfidence,
+	classifyLane,
+	type Finding,
+	type GithubClient,
+	hasSelfImprove,
+	isKilled,
+	SELF_IMPROVE_STALE_DAYS,
+	selfImproveStaleSweepTick,
+	selfImproveTick,
+	type StalePrCandidate,
+} from "./_self_improve";
 
 // In-memory KV + a spy on put, so tests can assert what keys the loop writes.
 function fakeKv() {
@@ -26,9 +39,11 @@ type FakeGithub = GithubClient & {
 	commentPr: ReturnType<typeof vi.fn>;
 	openSelfImprovePrCount: ReturnType<typeof vi.fn>;
 	openSelfImproveIssueCount: ReturnType<typeof vi.fn>;
+	listOpenSelfImprovePrs: ReturnType<typeof vi.fn>;
+	closeStalePr: ReturnType<typeof vi.fn>;
 };
 
-function fakeGithub(opts: { openCount?: number; openIssueCount?: number } = {}): FakeGithub {
+function fakeGithub(opts: { openCount?: number; openIssueCount?: number; stalePrs?: StalePrCandidate[] } = {}): FakeGithub {
 	let n = 0;
 	let m = 0;
 	const openPr = vi.fn(async (_f: Finding) => ({ number: ++n, sha: `sha-${n}` }));
@@ -37,7 +52,9 @@ function fakeGithub(opts: { openCount?: number; openIssueCount?: number } = {}):
 	const commentPr = vi.fn(async (_pr: number, _body: string) => {});
 	const openSelfImprovePrCount = vi.fn(async () => opts.openCount ?? 0);
 	const openSelfImproveIssueCount = vi.fn(async () => opts.openIssueCount ?? 0);
-	return { openPr, openIssue, labelPr, commentPr, openSelfImprovePrCount, openSelfImproveIssueCount };
+	const listOpenSelfImprovePrs = vi.fn(async () => opts.stalePrs ?? []);
+	const closeStalePr = vi.fn(async (_pr: number, _comment: string) => {});
+	return { openPr, openIssue, labelPr, commentPr, openSelfImprovePrCount, openSelfImproveIssueCount, listOpenSelfImprovePrs, closeStalePr };
 }
 
 const baseEnv = (over: Record<string, string> = {}) => {
@@ -464,6 +481,72 @@ describe("selfImproveTick gating matrix", () => {
 		const r = await selfImproveTick(env, { github: gh });
 		expect(r.processed).toBe(2);
 		expect(store.get("sux:selfimprove:cursor")).toBe("200"); // still advanced fully
+	});
+});
+
+describe("selfImproveStaleSweepTick (#1124)", () => {
+	const daysAgo = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString();
+	const candidate = (over: Partial<StalePrCandidate> = {}): StalePrCandidate => ({
+		number: 42,
+		createdAt: daysAgo(SELF_IMPROVE_STALE_DAYS + 1),
+		changedFiles: 0,
+		hasHoldLabel: true,
+		hasAutomergeLabel: false,
+		...over,
+	});
+
+	it("dormant when disabled/killed, same as the main tick — never lists or closes", async () => {
+		const { env } = baseEnv();
+		const gh = fakeGithub();
+		const r = await selfImproveStaleSweepTick(env, { github: gh });
+		expect(r.dormant).toBe(true);
+		expect(r.reason).toBe("disabled");
+		expect(gh.listOpenSelfImprovePrs).not.toHaveBeenCalled();
+	});
+
+	it("closes a hold-labeled, still-empty PR older than the staleness window", async () => {
+		const { env } = baseEnv(ENABLED_PR);
+		const gh = fakeGithub({ stalePrs: [candidate()] });
+		const r = await selfImproveStaleSweepTick(env, { github: gh });
+		expect(gh.closeStalePr).toHaveBeenCalledTimes(1);
+		expect(gh.closeStalePr.mock.calls[0][0]).toBe(42);
+		expect(r.closed).toBe(1);
+		expect(r.checked).toBe(1);
+	});
+
+	it("leaves a PR that already carries a real fix (changedFiles > 0) alone", async () => {
+		const { env } = baseEnv(ENABLED_PR);
+		const gh = fakeGithub({ stalePrs: [candidate({ changedFiles: 3 })] });
+		const r = await selfImproveStaleSweepTick(env, { github: gh });
+		expect(gh.closeStalePr).not.toHaveBeenCalled();
+		expect(r.closed).toBe(0);
+		expect(r.skipped).toBe(1);
+	});
+
+	it("leaves an armed (automerge-labeled) PR alone even if it's empty and old", async () => {
+		const { env } = baseEnv(ENABLED_PR);
+		const gh = fakeGithub({ stalePrs: [candidate({ hasAutomergeLabel: true })] });
+		const r = await selfImproveStaleSweepTick(env, { github: gh });
+		expect(gh.closeStalePr).not.toHaveBeenCalled();
+		expect(r.skipped).toBe(1);
+	});
+
+	it("leaves a fresh PR (younger than the staleness window) alone", async () => {
+		const { env } = baseEnv(ENABLED_PR);
+		const gh = fakeGithub({ stalePrs: [candidate({ createdAt: daysAgo(1) })] });
+		const r = await selfImproveStaleSweepTick(env, { github: gh });
+		expect(gh.closeStalePr).not.toHaveBeenCalled();
+		expect(r.skipped).toBe(1);
+	});
+
+	it("a close failure is swallowed — counted as skipped, doesn't throw", async () => {
+		const { env } = baseEnv(ENABLED_PR);
+		const gh = fakeGithub({ stalePrs: [candidate()] });
+		gh.closeStalePr.mockRejectedValueOnce(new Error("api down"));
+		const r = await selfImproveStaleSweepTick(env, { github: gh });
+		expect(r.closed).toBe(0);
+		expect(r.skipped).toBe(1);
+		expect(r.error).toBeUndefined();
 	});
 });
 

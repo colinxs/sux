@@ -253,7 +253,20 @@ export interface GithubClient {
 	openSelfImprovePrCount(): Promise<number>;
 	/** Count currently-open `self-improve`-labeled issues, to enforce the open-issue cap. */
 	openSelfImproveIssueCount(): Promise<number>;
+	/** List every open `self-improve/*` PR with enough detail to judge staleness (#1124). */
+	listOpenSelfImprovePrs(): Promise<StalePrCandidate[]>;
+	/** Close a stale, still-empty self-improve PR — comments first (why), then closes. */
+	closeStalePr(prNumber: number, comment: string): Promise<void>;
 }
+
+/** One open self-improve PR, as the staleness sweep needs to see it. */
+export type StalePrCandidate = {
+	number: number;
+	createdAt: string; // ISO 8601, from the PR's created_at
+	changedFiles: number; // 0 ⇒ still the empty stub commit, no fix has landed on it
+	hasHoldLabel: boolean;
+	hasAutomergeLabel: boolean;
+};
 
 const GH_API = "https://api.github.com";
 const GH_HEADERS = { Accept: "application/vnd.github+json", "User-Agent": "sux-self-improve", "X-GitHub-Api-Version": "2022-11-28" };
@@ -339,6 +352,34 @@ export function githubClient(env: RtEnv): GithubClient {
 			if (r.status >= 400) throw new Error(`self-improve: open-issue count failed HTTP ${r.status}`);
 			const list: any[] = Array.isArray(r.json) ? r.json : [];
 			return list.filter((i) => !i?.pull_request).length; // the /issues list includes PRs — exclude them
+		},
+		async listOpenSelfImprovePrs() {
+			// The list endpoint doesn't carry changed_files/labels detail; fetch each candidate's
+			// own PR resource (cheap — bounded by MAX_OPEN_SELF_IMPROVE_PRS, at most 5 at once).
+			const r = await ghFetch(env, "GET", `${base}/pulls?state=open&per_page=100`);
+			if (r.status >= 400) throw new Error(`self-improve: list open PRs failed HTTP ${r.status}`);
+			const list: any[] = Array.isArray(r.json) ? r.json : [];
+			const heads = list.filter((p) => String(p?.head?.ref ?? "").startsWith(BRANCH_PREFIX));
+			const out: StalePrCandidate[] = [];
+			for (const p of heads) {
+				const detail = await ghFetch(env, "GET", `${base}/pulls/${p.number}`);
+				if (detail.status >= 400) continue; // best-effort — an unreadable PR is skipped, not fatal
+				const labels: string[] = Array.isArray(detail.json?.labels) ? detail.json.labels.map((l: any) => String(l?.name ?? "")) : [];
+				out.push({
+					number: Number(p.number),
+					createdAt: String(detail.json?.created_at ?? p.created_at ?? ""),
+					changedFiles: Number(detail.json?.changed_files ?? -1),
+					hasHoldLabel: labels.includes(HOLD_LABEL),
+					hasAutomergeLabel: labels.includes(AUTOMERGE_LABEL),
+				});
+			}
+			return out;
+		},
+		async closeStalePr(prNumber, comment) {
+			const c = await ghFetch(env, "POST", `${base}/issues/${prNumber}/comments`, { body: comment });
+			if (c.status >= 400) throw new Error(`self-improve: stale-close comment failed HTTP ${c.status}`);
+			const r = await ghFetch(env, "PATCH", `${base}/pulls/${prNumber}`, { state: "closed" });
+			if (r.status >= 400) throw new Error(`self-improve: stale-close failed HTTP ${r.status}`);
 		},
 	};
 }
@@ -623,6 +664,95 @@ export async function selfImproveTick(env: RtEnv, deps: { github?: GithubClient 
 		// Release the lease so the next scheduled tick isn't blocked; the TTL is only a
 		// crash-safety net. A release failure is inert — the lease simply expires on its own.
 		if (held) await releaseTick(env).catch(() => {});
+	}
+	return result;
+}
+
+// ── Stale-stub sweep (#1124) ───────────────────────────────────────────────────
+// A MEDIUM/HIGH-confidence stub PR carries no code change until either the @claude
+// autofix hand-off or a maintainer authors a real fix onto its branch — but nothing
+// previously re-checked whether that ever happened. #1119's audit found stub PRs that
+// sat open, still empty, for a day-plus after their underlying complaint had already been
+// fixed by unrelated work elsewhere — a human (or the daily tick) had no reason to look at
+// them again. This sweep rides the same daily cron and closes exactly the PRs that are
+// still doing nothing: hold-labeled (never armed for auto-merge), still tree-identical to
+// base (changedFiles === 0 — no fix has landed), and older than SELF_IMPROVE_STALE_DAYS.
+// Closing them is a strict subset of what the module could already do (openPr already
+// creates and, via automerge.yml, native GitHub already closes or merges PRs) — this never
+// authors code, never touches an armed or already-fixed-in-place PR, and a recurring
+// complaint simply re-opens a fresh finding next tick if it still reproduces.
+export const SELF_IMPROVE_STALE_DAYS = 7;
+
+export type SweepResult = {
+	dormant: boolean;
+	reason: string;
+	checked: number;
+	closed: number;
+	skipped: number;
+	error?: string;
+};
+
+const staleCloseComment = (): string =>
+	[
+		`Closing as stale: this self-improve stub PR has carried no code change for over ${SELF_IMPROVE_STALE_DAYS} days.`,
+		`Its underlying finding may already be fixed by unrelated work elsewhere (see #1124/#1119) — if it still reproduces, re-file the feedback and a fresh finding will open a new PR.`,
+	].join("\n");
+
+/**
+ * Daily sweep (rides the same cron as selfImproveTick, gated by the same predicates — it
+ * only ever CLOSES a PR this module itself opened, never authors or merges). Skips any PR
+ * that's armed (automerge label — mid-merge, leave it alone) or already carries a real fix
+ * (changedFiles > 0 — doing exactly what it should). Everything else is fail-open by
+ * design: a listing/close failure is logged and that PR is left for the next sweep, never
+ * retried within the same tick.
+ */
+export async function selfImproveStaleSweepTick(env: RtEnv, deps: { github?: GithubClient } = {}): Promise<SweepResult> {
+	const result: SweepResult = { dormant: false, reason: "", checked: 0, closed: 0, skipped: 0 };
+	try {
+		if (isKilled(env)) {
+			result.dormant = true;
+			result.reason = "killed";
+			return result;
+		}
+		if (!hasSelfImprove(env)) {
+			result.dormant = true;
+			result.reason = "disabled";
+			return result;
+		}
+		if (!canOpenPr(env)) {
+			result.dormant = true;
+			result.reason = "review-only";
+			return result;
+		}
+		const github = deps.github ?? githubClient(env);
+		const candidates = await github.listOpenSelfImprovePrs();
+		const cutoff = Date.now() - SELF_IMPROVE_STALE_DAYS * 24 * 60 * 60 * 1000;
+		for (const c of candidates) {
+			result.checked++;
+			if (c.hasAutomergeLabel || !c.hasHoldLabel) {
+				result.skipped++; // armed, or not one of this module's non-armed stub PRs — leave it alone
+				continue;
+			}
+			if (c.changedFiles !== 0) {
+				result.skipped++; // a real fix has landed — this is exactly the intended outcome
+				continue;
+			}
+			const createdAt = Date.parse(c.createdAt);
+			if (!Number.isFinite(createdAt) || createdAt > cutoff) {
+				result.skipped++; // not stale yet
+				continue;
+			}
+			try {
+				await github.closeStalePr(c.number, staleCloseComment());
+				result.closed++;
+			} catch (e) {
+				result.skipped++;
+				console.warn(`sux self-improve stale sweep: close PR #${c.number} failed: ${String((e as Error)?.message ?? e)}`);
+			}
+		}
+	} catch (e) {
+		result.error = String((e as Error)?.message ?? e);
+		console.warn(`sux self-improve stale sweep error: ${result.error}`);
 	}
 	return result;
 }
