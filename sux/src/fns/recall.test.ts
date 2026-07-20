@@ -423,5 +423,23 @@ describe("recall", () => {
 			expect(system).toContain("[whitelisted:*]");
 			expect(system).toMatch(/OUTRANKS your own general knowledge/);
 		});
+
+		it("doesn't drag a non-whitelisted oracle topic bundled with a whitelisted one ahead of more relevant vault material (#1135)", async () => {
+			const e = env();
+			await e.OAUTH_KV.put("sux:oracle:dbt", JSON.stringify({ distilled: "DBT-FACT: opposite action for unjustified emotions.", chunks: ["c"], sources: ["book.pdf"], updated_at: 1, whitelist: { source: "book.pdf", kind: "pdf", via: "study", learned_at: 1 } }));
+			await e.OAUTH_KV.put("sux:oracle:trivia", JSON.stringify({ distilled: "TRIVIA-FACT: unrelated plain oracle note.", chunks: ["c"], sources: ["x"], updated_at: 1 }));
+			const out = await gatherRecall(e, "who is my oncologist?", ["vault", "oracle"]);
+			const dbtIdx = out.materials.findIndex((m) => m.includes("[whitelisted:dbt]"));
+			const vaultIdx = out.materials.findIndex((m) => m.includes("[vault:"));
+			const triviaIdx = out.materials.findIndex((m) => m.includes("[oracle:trivia]"));
+			expect(dbtIdx).toBeGreaterThanOrEqual(0);
+			expect(vaultIdx).toBeGreaterThanOrEqual(0);
+			expect(triviaIdx).toBeGreaterThanOrEqual(0);
+			// Whitelisted still leads everything...
+			expect(dbtIdx).toBeLessThan(vaultIdx);
+			// ...but the unrelated plain topic bundled with it in the same fromOracle call no longer
+			// rides ahead of the more relevant vault material just because they share one call.
+			expect(vaultIdx).toBeLessThan(triviaIdx);
+		});
 	});
 });
