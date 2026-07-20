@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { composeDigest, type AgendaDeps, type Drop, detectCrossSemanticDrops, detectDrops, detectKnowledgeDrops, detectMonarchDrops, detectMyChartDrops, detectMychartAllergyGapDrops, detectMychartConflictDrops, detectPortfolioDrops, detectRelationshipDrops, detectSavingsRateDrop, detectTextDrops, detectWatchDrops, computeSavingsRate, type EventRef, mailRelationshipThreads, type MailRef, type RelationshipBaseline, type TextThreadRef, rankDropsLearned, runAgenda } from "./_agenda";
+import { composeDigest, type AgendaDeps, type Drop, detectCrossSemanticDrops, detectDrops, detectKnowledgeDrops, detectMonarchDrops, detectMyChartDrops, detectMychartAllergyGapDrops, detectMychartConflictDrops, detectPortfolioDrops, detectRelationshipDrops, detectSavingsRateDrop, detectStudyReviewDrops, detectTextDrops, detectWatchDrops, computeSavingsRate, type EventRef, mailRelationshipThreads, type MailRef, type RelationshipBaseline, type TextThreadRef, rankDropsLearned, runAgenda } from "./_agenda";
 import { listProposals } from "../proposals";
 import { recordOutcome } from "./_learning";
 import { readInferSignals } from "./_infer";
@@ -29,6 +29,7 @@ const deps = (over: Partial<AgendaDeps> = {}): AgendaDeps => ({
 	consolidateFindings: vi.fn(async () => null),
 	weeklyRecallFindings: vi.fn(async () => null),
 	watchFindings: vi.fn(async () => null),
+	studyTopics: vi.fn(async () => []),
 	crossSemanticFindings: vi.fn(async () => null),
 	monarchAccounts: vi.fn(async () => []),
 	monarchTransactions: vi.fn(async () => []),
@@ -105,6 +106,20 @@ describe("agenda — detectors", () => {
 	it("no watch drops when there's nothing to report", () => {
 		expect(detectWatchDrops(null)).toHaveLength(0);
 		expect(detectWatchDrops({ checked_at: "2026-07-18T00:00:00.000Z", changed_count: 0, changed: [] })).toHaveLength(0);
+	});
+
+	it("wires studied topics due for review in as fyi drops (#1092), keyed on the review cycle", () => {
+		const drops = detectStudyReviewDrops([{ topic: "thermodynamics", title: "Intro Thermo", learned_at: 1_700_000_000_000, cycle: 1 }]);
+		expect(drops).toHaveLength(1);
+		expect(drops[0]).toMatchObject({ kind: "study_review_due", urgency: "fyi" });
+		expect(drops[0].dedupe).toBe("study_review::thermodynamics::1");
+		expect(drops[0].title).toContain("thermodynamics");
+		expect(drops[0].title).toContain("Intro Thermo");
+		expect(drops[0].action.fn).toBe("todoist");
+	});
+
+	it("no study review drops when nothing is due", () => {
+		expect(detectStudyReviewDrops([])).toHaveLength(0);
 	});
 
 	it("wires the cross-semantic sweep's findings in as an fyi drop (#785/#948), never auto-applying", () => {

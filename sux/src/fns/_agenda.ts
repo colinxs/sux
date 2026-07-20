@@ -39,6 +39,7 @@ import { appendInferSignal, hasInferArm } from "./_infer";
 import { redactPII } from "./redact";
 import type { WatchFindings } from "./_watch_sweep";
 import type { WeeklyRecallFindings } from "./_weekly_recall";
+import { dueForReview, hasStudyReview, reviewIntervalDays, studyReviewCandidates, type DueReview, type StudiedTopicRef } from "./_study_review";
 
 // ── Gates ────────────────────────────────────────────────────────────────────
 const flagOn = (v: string | undefined): boolean => {
@@ -417,6 +418,28 @@ export function detectWatchDrops(findings: WatchFindings | null): Drop[] {
 			emoji: "👀",
 			action: task(`Check watched page — changed${label}: ${c.url}`),
 			evidence: { url: c.url, label: c.label, hash: c.hash, previous_hash: c.previous_hash },
+		});
+	}
+	return sortByUrgency(drops);
+}
+
+/** Turn the studied topics due for another look (#1092) into drops — same read-only-sense/
+ *  reversible-propose contract as the other detectors here, just fed from study.ts's own
+ *  whitelisted-topic list instead of a live fan-out. The dedupe key mixes in the review
+ *  `cycle`, not just the topic, so a topic due again next interval gets a fresh proposal
+ *  instead of being silently swallowed by the ledger after its first nudge. */
+export function detectStudyReviewDrops(due: DueReview[]): Drop[] {
+	const drops: Drop[] = [];
+	for (const d of due) {
+		const label = d.title ? ` — ${d.title}` : "";
+		drops.push({
+			kind: "study_review_due",
+			urgency: "fyi",
+			dedupe: `study_review::${d.topic}::${d.cycle}`,
+			title: `Review due: ${d.topic}${label}`,
+			emoji: "📚",
+			action: task(`Review studied material — ${d.topic}${label} (quiz yourself with oracle({problem, topic:"${d.topic}"}))`),
+			evidence: { topic: d.topic, title: d.title, learned_at: d.learned_at, cycle: d.cycle },
 		});
 	}
 	return sortByUrgency(drops);
@@ -932,6 +955,9 @@ export type AgendaDeps = {
 	/** The watch sweep's most recent findings (#899) — a ledger-cache read, never a fresh
 	 *  page re-check. */
 	watchFindings: (env: RtEnv) => Promise<WatchFindings | null>;
+	/** Every whitelisted `study` topic (#1092) — a KV list read, never a fresh distill. Only
+	 *  called when hasStudyReview(env). */
+	studyTopics: (env: RtEnv) => Promise<StudiedTopicRef[]>;
 	/** The cross-domain-link sweep's most recent findings (#785/#948) — a ledger-cache
 	 *  read, never a fresh cross-domain rank. */
 	crossSemanticFindings: (env: RtEnv) => Promise<CrossSemanticFindings | null>;
@@ -1022,6 +1048,7 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 	let consolidateFindings: ConsolidateFindings | null = null;
 	let weeklyRecallFindings: WeeklyRecallFindings | null = null;
 	let watchFindings: WatchFindings | null = null;
+	let studyTopics: StudiedTopicRef[] = [];
 	let crossSemanticFindings: CrossSemanticFindings | null = null;
 	let monarchAccounts: MonarchAccountRef[] = [];
 	let monarchTransactions: MonarchTxnRef[] = [];
@@ -1066,6 +1093,16 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 			status.watch = watchFindings ? `${watchFindings.changed_count} changed as of ${watchFindings.checked_at}` : "no findings yet";
 		})().catch((e) => {
 			status.watch = `unavailable (${errMsg(e).slice(0, 90)})`;
+		}),
+		(async () => {
+			if (!hasStudyReview(env)) {
+				status.study_review = "disabled";
+				return;
+			}
+			studyTopics = await deps.studyTopics(env);
+			status.study_review = `${studyTopics.length} whitelisted topic(s)`;
+		})().catch((e) => {
+			status.study_review = `unavailable (${errMsg(e).slice(0, 90)})`;
 		}),
 		(async () => {
 			crossSemanticFindings = await deps.crossSemanticFindings(env);
@@ -1152,12 +1189,14 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		silenceMultiplier: relationshipSilenceMultiplier,
 		minSilenceDays: relationshipMinSilenceDays,
 	});
+	const studyReviewDue = hasStudyReview(env) ? dueForReview(studyTopics, Date.parse(`${date}T00:00:00Z`), reviewIntervalDays(env)) : [];
 	const drops = await rankDropsLearned(env, [
 		...detectDrops(mail, events),
 		...detectTextDrops(textThreads),
 		...relationshipResult.drops,
 		...detectKnowledgeDrops(consolidateFindings, weeklyRecallFindings),
 		...detectWatchDrops(watchFindings),
+		...detectStudyReviewDrops(studyReviewDue),
 		...detectCrossSemanticDrops(crossSemanticFindings),
 		...detectMonarchDrops(date, monarchAccounts, monarchTransactions, monarchBudgets, { lowBalanceThreshold, unusualChargeThreshold }),
 		...detectPortfolioDrops(date, monarchHoldings, priorMonarchSnapshot?.allocation ?? null, { concentrationThreshold: portfolioConcentrationThreshold, driftThreshold: portfolioDriftThreshold }),
@@ -1362,6 +1401,7 @@ export async function defaultDeps(): Promise<AgendaDeps> {
 		consolidateFindings: lastConsolidateFindings,
 		weeklyRecallFindings: lastWeeklyRecallFindings,
 		watchFindings: lastWatchFindings,
+		studyTopics: studyReviewCandidates,
 		crossSemanticFindings: lastCrossSemanticFindings,
 		monarchAccounts: async (env) => {
 			const r = await monarch.run(env, { op: "accounts" });

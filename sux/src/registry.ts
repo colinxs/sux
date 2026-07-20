@@ -391,6 +391,15 @@ export type RtEnv = Env &
 		// orgs' PHI at once rather than one org's redacted snapshot in isolation. Unset/"0"/
 		// "false"/"off" ⇒ inert, same fail-closed two-stage convention as MAIL_TRIAGE_ENABLED.
 		MYCHART_RECONCILE_ENABLED?: string;
+		// Spaced-repetition review detector (fns/_study_review.ts, #1092) — surfaces an fyi
+		// drop when a whitelisted `study` topic's last touch is at least STUDY_REVIEW_INTERVAL_
+		// DAYS ago, so studied material gets reinforced instead of sitting distilled and never
+		// revisited. Same two-stage fail-closed gate as MYCHART_RECONCILE_ENABLED: ALSO requires
+		// AGENDA_ENABLED. Detection only — arithmetic over study.ts's own provenance timestamps,
+		// no model call, no KB mutation. STUDY_REVIEW_INTERVAL_DAYS optional; unset ⇒ 14 days,
+		// clamped [1,180].
+		STUDY_REVIEW_ENABLED?: string;
+		STUDY_REVIEW_INTERVAL_DAYS?: string;
 		// Relationship-decay detector thresholds (fns/_agenda.ts's detectRelationshipDrops,
 		// #930) — a contact's own EWMA cadence baseline must be exceeded by BOTH a multiple
 		// (default 2x) and an absolute floor (default 5 days) before it's proposed. Both
