@@ -503,3 +503,14 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   attempt dropped it for exactly that reason) built clean well under budget once it had the
   whole session to itself — a new sibling module, a second nudge-recipe path, cron wiring, and
   tests. Re-check the batch's actual issue count before reflexively re-dropping.
+
+- **`op-engine/durable.ts`'s `interpretDurable` only maps `LeafOpts.retries`/`SinkOpts.retries`
+  onto `step.do`'s `WorkflowStepConfig` (#1071) — `heavy`/`memo` still have no durable
+  equivalent.** suxlib's inline interpreter (`control/governor.ts`'s `runGoverned`) implements
+  `heavy` as a second concurrency gate and `memo` as a `caps.cache` short-circuit; Cloudflare
+  Workflows has no built-in primitive for either, so a durable op declaring them silently gets
+  neither (no error) — same class of gap the retries fix closed, just not mapped yet. A leaf
+  authored assuming heavy-concurrency or memo parity between inline and durable runtimes will
+  be wrong until `caps.governors`/`caps.cache` get threaded into `makeCaps` for the durable
+  path (`op-engine/caps.ts`) and `interpretDurable` calls `runGoverned` (or an equivalent)
+  instead of the bare `node.fn(input, caps)` it calls today.
