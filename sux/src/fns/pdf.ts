@@ -182,7 +182,7 @@ export const pdf: Fn = {
 		"Kind is auto-detected from magic bytes. Options: `pages` (1-indexed range like '1-3,5,8-' applied to the merged doc), `toc` ([{title, page, level}] → nested bookmarks/outline), " +
 		"`fields` ([{name,type,page,x,y,width,height,value}] → interactive AcroForm, origin bottom-left unless `origin:'top'`), `flatten` (bake forms), " +
 		"`title`/`author`/`subject`/`keywords` (metadata), and `ocr: true` (transcribe image sources via Workers AI and append the text as searchable pages). " +
-		"`compress: true` re-saves with object streams and strips metadata for smaller size. Returns JSON { mime, size, base64 } (or a compact ref with `as: \"url\"`). " +
+		"`compress: true` re-saves with object streams and strips metadata for smaller size. Prefer `as: \"url\"` — a compact ref (~100 tokens, chainable as any other fn's `url` input) — over inline base64; output over ~150KB auto-promotes to a ref even when `as` is unset, so only small PDFs actually inline. Returns { url, sha256, size, content_type } as a ref, or { mime, size, base64 } inline. " +
 		"Note: text/HTML/markdown render as plain reflowed text (Helvetica); high-fidelity HTML/Office rendering and true OCR text overlays need the WASM renderer (PLAN P5).",
 	inputSchema: {
 		type: "object",
@@ -209,7 +209,12 @@ export const pdf: Fn = {
 			fields: { type: "array", description: "Form fields to add.", items: { type: "object" } },
 			origin: { type: "string", enum: ["bottom", "top"], default: "bottom" },
 			flatten: { type: "boolean", default: false },
-			as: { type: "string", enum: ["base64", "url"], default: "base64", description: "Delivery: inline base64 (default) or a content-addressed /s/<uuid> URL (~100 tokens)." },
+			as: {
+				type: "string",
+				enum: ["base64", "url"],
+				default: "base64",
+				description: "Delivery: prefer \"url\" — a content-addressed /s/<uuid> ref (~100 tokens) — over inline base64. Output over ~150KB auto-promotes to a ref even when unset.",
+			},
 			ocr: { type: "boolean", description: "Transcribe image sources with Workers AI and append the recognized text.", default: false },
 			compress: { type: "boolean", description: "Re-save with object streams and strip metadata for smaller size.", default: false },
 			title: { type: "string" },

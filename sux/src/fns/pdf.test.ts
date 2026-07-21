@@ -124,6 +124,29 @@ describe("pdf", () => {
 		expect(ref.size).toBeGreaterThan(0);
 	});
 
+	// Real (not smoke) test of deliverBytes' size-based auto-promotion, driven through
+	// the actual pdf fn rather than the shared util in isolation: a >150KB output must
+	// come back as a ref even though NO `as` was given, and a small one must still inline.
+	it("auto-promotes to a ref when output exceeds the size threshold, even with no `as` arg", async () => {
+		const env = { R2: { put: async () => {} }, OAUTH_KV: { put: async () => {} } } as any;
+		// ~50k space-separated tokens wraps across enough Letter-size pages to clear the
+		// 150KB threshold (measured ~155-200KB for this range) without an oversize fixture.
+		const bigText = Array.from({ length: 50_000 }, (_, i) => `word${i % 1000}`).join(" ");
+		const r = await pdf.run(env, { text: bigText });
+		expect(r.isError).toBeFalsy();
+		const parsed = JSON.parse(r.content[0].text);
+		expect(parsed.url).toMatch(/\/s\/[0-9a-f-]{36}$/);
+		expect(parsed.base64).toBeUndefined();
+	});
+
+	it("keeps small output inlined when `as` is omitted (below the size threshold)", async () => {
+		const r = await run({ text: "hello" });
+		expect(r.isError).toBeFalsy();
+		const parsed = JSON.parse(r.content[0].text);
+		expect(typeof parsed.base64).toBe("string");
+		expect(parsed.url).toBeUndefined();
+	});
+
 	it("is marked raw", () => {
 		expect(pdf.raw).toBe(true);
 	});
