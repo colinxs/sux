@@ -463,3 +463,12 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   cast at a new call site. Known imprecision: two different client apps authenticated under
   the same GitHub login collide (last `initialize` wins for both) — accepted as the best
   signal this architecture offers, not a bug to "fix" without adding real session infra.
+
+- **An `effort:large` issue previously dropped under the "#920 precedent" (needs a dedicated
+  session, not a batch slot) deserves a fresh look when it's the ONLY issue in the current
+  batch** — that precedent is about an `effort:large` issue losing to sibling issues competing
+  for the same turn/time budget, not about the work being inherently unbuildable in one
+  session. #1144 (scalar trend/anomaly detector, dispatched solo after an earlier batched
+  attempt dropped it for exactly that reason) built clean well under budget once it had the
+  whole session to itself — a new sibling module, a second nudge-recipe path, cron wiring, and
+  tests. Re-check the batch's actual issue count before reflexively re-dropping.
