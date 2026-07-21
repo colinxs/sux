@@ -429,6 +429,13 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   actually landed (#1116). Any future PR-opening automation must explicitly apply `hold`
   itself if the PR isn't meant to auto-merge yet.
 
+- **`ocr.ts`'s `ocr` fn only accepts an image (`url`/`image` → Workers-AI vision) — it has no PDF
+  path.** A feature ingesting scanned personal documents (passport, license, a PDF scan) can't
+  just point everything at `ocr`; a PDF needs `study.ts`'s `extractDocText` (or a Mode-A shared-
+  link + `study` pdf-kind path, per the Dropbox-Mode-A/B gotcha above) instead. `_document_radar.ts`
+  (#1148) scoped its first cut to images only for exactly this reason — PDF ingestion is a
+  distinct follow-up, not an oversight.
+
 ## House style
 
 - No trailing/inline comments explaining the obvious; comment *why*, not *what*.
