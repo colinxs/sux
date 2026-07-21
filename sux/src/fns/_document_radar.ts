@@ -11,14 +11,16 @@
 // wrote.
 //
 // FAIL-CLOSED: ingestion is dormant unless DOCUMENT_RADAR_ENABLED is set (mirrors
-// _briefing/_agenda/_learning_folder). Only images (a photo of a document) are OCR'd — PDF text
-// extraction is a separate concern (study.ts's extractDocText) this doesn't need.
+// _briefing/_agenda/_learning_folder). Images (a photo of a document) are OCR'd (ocr.ts); PDF
+// scans go through study.ts's extractDocText (same Mode-A shared-link pattern
+// _learning_folder.ts uses) — #1153.
 import { type RtEnv } from "../registry";
 import { hasDropbox, sharedLink } from "./dropbox";
 import { dropboxRawUrl, errMsg } from "./_util";
 import { ledger } from "../ledger";
 import { ocr } from "./ocr";
 import { obsidian } from "./obsidian";
+import { parseFrontmatter } from "../vault-graph";
 
 const flagOn = (v: string | undefined): boolean => {
 	const s = String(v ?? "").trim().toLowerCase();
@@ -38,6 +40,13 @@ export const documentRadarVaultFolder = (env: RtEnv): string => String(env.DOCUM
 // unbounded number of Workers-AI vision calls in one tick.
 const MAX_PER_RUN = 5;
 const IMAGE_RE = /\.(jpe?g|png|heic|heif)$/i;
+const PDF_RE = /\.pdf$/i;
+
+// ID/legal documents sit in the watched folder indefinitely — the dedup ledger's default 30-day
+// TTL (ledger.ts) is meant for transient sweep state, not "have I ever ingested this path,"
+// so a long-lived document would silently re-OCR and clobber a hand-entered expiry_date once
+// the entry aged out (#1154). 10 years is effectively permanent for this use.
+const LEDGER_TTL_SECONDS = 3650 * 24 * 3600;
 
 const MONTHS: Record<string, number> = {
 	jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
@@ -121,7 +130,11 @@ export type DocumentRadarDeps = {
 	listFolder: (env: RtEnv) => Promise<DocumentRadarEntry[]>;
 	shareUrl: (env: RtEnv, path: string) => Promise<string | undefined>;
 	ocrImage: (env: RtEnv, url: string) => Promise<string | undefined>;
+	extractPdfText: (env: RtEnv, path: string) => Promise<string | undefined>;
 	writeNote: (env: RtEnv, path: string, content: string) => Promise<{ ok: boolean; error?: string }>;
+	/** Read a previously-written note's body (undefined if it doesn't exist) — used to preserve a
+	 *  hand-entered expiry_date across a re-process rather than overwrite it blank (#1154). */
+	readNote: (env: RtEnv, path: string) => Promise<string | undefined>;
 };
 
 async function defaultListFolder(env: RtEnv): Promise<DocumentRadarEntry[]> {
@@ -134,7 +147,8 @@ async function defaultListFolder(env: RtEnv): Promise<DocumentRadarEntry[]> {
 		if (r.isError) throw new Error(r.content?.[0]?.text ?? `dropbox list failed for ${path}`);
 		const j = JSON.parse(r.content?.[0]?.text ?? "{}");
 		for (const e of j.entries ?? []) {
-			if (e.kind === "file" && IMAGE_RE.test(String(e.name ?? ""))) entries.push({ path: String(e.path), name: String(e.name) });
+			const name = String(e.name ?? "");
+			if (e.kind === "file" && (IMAGE_RE.test(name) || PDF_RE.test(name))) entries.push({ path: String(e.path), name });
 		}
 		cursor = j.has_more ? j.cursor : undefined;
 	} while (cursor);
@@ -148,14 +162,33 @@ async function defaultOcrImage(env: RtEnv, url: string): Promise<string | undefi
 	return text && text !== "(no text found)" ? text : undefined;
 }
 
+async function defaultExtractPdfText(env: RtEnv, path: string): Promise<string | undefined> {
+	const { extractDocText } = await import("./study");
+	const { text } = await extractDocText(env, path);
+	return text || undefined;
+}
+
 async function defaultWriteNote(env: RtEnv, path: string, content: string): Promise<{ ok: boolean; error?: string }> {
 	const r = await obsidian.run(env, { action: "write", path, content, backend: "git" });
 	if (r.isError) return { ok: false, error: r.content?.[0]?.text };
 	return { ok: true };
 }
 
+async function defaultReadNote(env: RtEnv, path: string): Promise<string | undefined> {
+	const r = await obsidian.run(env, { action: "read", path, backend: "git" });
+	if (r.isError) return undefined;
+	return r.content?.[0]?.text;
+}
+
 export function defaultDeps(): DocumentRadarDeps {
-	return { listFolder: defaultListFolder, shareUrl: sharedLink, ocrImage: defaultOcrImage, writeNote: defaultWriteNote };
+	return {
+		listFolder: defaultListFolder,
+		shareUrl: sharedLink,
+		ocrImage: defaultOcrImage,
+		extractPdfText: defaultExtractPdfText,
+		writeNote: defaultWriteNote,
+		readNote: defaultReadNote,
+	};
 }
 
 export type DocumentRadarResult = { dormant?: true; folder?: string; total?: number; processed?: string[]; skipped?: string[]; errors?: string[] };
@@ -170,7 +203,7 @@ export async function runDocumentRadarSync(env: RtEnv, deps: DocumentRadarDeps =
 	const folder = documentRadarPath(env);
 	const vaultFolder = documentRadarVaultFolder(env);
 	const entries = await deps.listFolder(env);
-	const led = ledger(env, "document_radar");
+	const led = ledger(env, "document_radar", LEDGER_TTL_SECONDS);
 
 	const processed: string[] = [];
 	const skipped: string[] = [];
@@ -185,19 +218,32 @@ export async function runDocumentRadarSync(env: RtEnv, deps: DocumentRadarDeps =
 		}
 		budget--;
 		try {
-			const url = await deps.shareUrl(env, entry.path);
-			if (!url) {
-				errors.push(`${entry.path}: could not mint a shared link`);
-				continue;
+			const isPdf = PDF_RE.test(entry.name);
+			let text: string | undefined;
+			if (isPdf) {
+				text = await deps.extractPdfText(env, entry.path);
+			} else {
+				const url = await deps.shareUrl(env, entry.path);
+				if (!url) {
+					errors.push(`${entry.path}: could not mint a shared link`);
+					continue;
+				}
+				text = await deps.ocrImage(env, dropboxRawUrl(url));
 			}
-			const text = await deps.ocrImage(env, dropboxRawUrl(url));
 			if (!text) {
-				errors.push(`${entry.path}: OCR returned no text`);
+				errors.push(`${entry.path}: ${isPdf ? "PDF extraction" : "OCR"} returned no text`);
 				continue;
 			}
 			const docType = classifyDocType(text);
-			const expiryDate = findExpiryDate(text);
+			let expiryDate = findExpiryDate(text);
 			const notePath = `${vaultFolder}/${slugify(entry.name)}.md`;
+			if (!expiryDate) {
+				// A re-process (e.g. after a rare ledger loss) must not blank out an expiry the
+				// user typed in by hand once OCR/extraction couldn't find one — #1154.
+				const existing = await deps.readNote(env, notePath);
+				const existingExpiry = existing ? parseFrontmatter(existing).expiry_date : undefined;
+				if (typeof existingExpiry === "string" && existingExpiry) expiryDate = existingExpiry;
+			}
 			const w = await deps.writeNote(env, notePath, renderNote({ sourcePath: entry.path, name: entry.name, docType, expiryDate }));
 			if (!w.ok) {
 				errors.push(`${entry.path}: ${w.error ?? "vault write failed"}`);

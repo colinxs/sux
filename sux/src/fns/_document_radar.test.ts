@@ -63,7 +63,9 @@ describe("runDocumentRadarSync", () => {
 			listFolder: vi.fn(async () => [{ path: "/documents/passport.jpg", name: "passport.jpg" }]),
 			shareUrl: vi.fn(async () => "https://dropbox.example/s/abc"),
 			ocrImage: vi.fn(async () => "PASSPORT\nExpires: 2031-04-12"),
+			extractPdfText: vi.fn(async () => undefined),
 			writeNote,
+			readNote: vi.fn(async () => undefined),
 		};
 		const r = await runDocumentRadarSync(e, deps);
 		expect(r.processed).toEqual(["/documents/passport.jpg"]);
@@ -80,16 +82,54 @@ describe("runDocumentRadarSync", () => {
 
 	it("records an error and skips the note write when OCR finds no text", async () => {
 		const e = env({ DOCUMENT_RADAR_ENABLED: "1", DROPBOX_TOKEN: "t", DROPBOX_APP_FOLDER: "f" });
-		const writeNote = vi.fn(async () => ({ ok: true }));
+		const writeNote = vi.fn(async (_env: unknown, _path: string, _content: string) => ({ ok: true }));
 		const r = await runDocumentRadarSync(e, {
 			listFolder: vi.fn(async () => [{ path: "/documents/blank.jpg", name: "blank.jpg" }]),
 			shareUrl: vi.fn(async () => "https://dropbox.example/s/abc"),
 			ocrImage: vi.fn(async () => undefined),
+			extractPdfText: vi.fn(async () => undefined),
 			writeNote,
+			readNote: vi.fn(async () => undefined),
 		});
 		expect(r.processed).toEqual([]);
 		expect(r.errors?.[0]).toContain("OCR returned no text");
 		expect(writeNote).not.toHaveBeenCalled();
+	});
+
+	it("routes a .pdf entry through extractPdfText instead of OCR (#1153)", async () => {
+		const e = env({ DOCUMENT_RADAR_ENABLED: "1", DROPBOX_TOKEN: "t", DROPBOX_APP_FOLDER: "f" });
+		const writeNote = vi.fn(async (_env: unknown, _path: string, _content: string) => ({ ok: true }));
+		const ocrImage = vi.fn(async () => undefined);
+		const extractPdfText = vi.fn(async () => "VEHICLE REGISTRATION\nExpires: 2031-04-12");
+		const r = await runDocumentRadarSync(e, {
+			listFolder: vi.fn(async () => [{ path: "/documents/registration.pdf", name: "registration.pdf" }]),
+			shareUrl: vi.fn(async () => "https://dropbox.example/s/abc"),
+			ocrImage,
+			extractPdfText,
+			writeNote,
+			readNote: vi.fn(async () => undefined),
+		});
+		expect(r.processed).toEqual(["/documents/registration.pdf"]);
+		expect(extractPdfText).toHaveBeenCalledWith(e, "/documents/registration.pdf");
+		expect(ocrImage).not.toHaveBeenCalled();
+		expect(writeNote.mock.calls[0]?.[2]).toContain("expiry_date: 2031-04-12");
+	});
+
+	it("preserves a hand-entered expiry_date when a re-process finds no date (#1154)", async () => {
+		const e = env({ DOCUMENT_RADAR_ENABLED: "1", DROPBOX_TOKEN: "t", DROPBOX_APP_FOLDER: "f" });
+		const writeNote = vi.fn(async (_env: unknown, _path: string, _content: string) => ({ ok: true }));
+		const readNote = vi.fn(async () => "---\ntype: document_radar\nexpiry_date: 2031-04-12\n---\n\n# passport\n");
+		const r = await runDocumentRadarSync(e, {
+			listFolder: vi.fn(async () => [{ path: "/documents/passport.jpg", name: "passport.jpg" }]),
+			shareUrl: vi.fn(async () => "https://dropbox.example/s/abc"),
+			ocrImage: vi.fn(async () => "PASSPORT no date this time"),
+			extractPdfText: vi.fn(async () => undefined),
+			writeNote,
+			readNote,
+		});
+		expect(r.processed).toEqual(["/documents/passport.jpg"]);
+		expect(readNote).toHaveBeenCalledWith(e, "Documents/passport.md");
+		expect(writeNote.mock.calls[0]?.[2]).toContain("expiry_date: 2031-04-12");
 	});
 });
 

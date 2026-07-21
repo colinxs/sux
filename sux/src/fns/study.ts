@@ -72,7 +72,7 @@ function segments(text: string): string[] {
  *  to bytes, then Workers-AI `toMarkdown` transcribes the document (native PDF text + image OCR).
  *  A textual Dropbox file is returned as-is. Throws (caller wraps) when the source can't be read or
  *  the toMarkdown binding is unavailable — the caller is told to pass the extracted `text` instead. */
-async function extractDocText(env: RtEnv, source: string): Promise<{ text: string; name: string }> {
+export async function extractDocText(env: RtEnv, source: string): Promise<{ text: string; name: string }> {
 	const s = source.trim();
 	let bytes: Uint8Array;
 	let name: string;
