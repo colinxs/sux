@@ -27,6 +27,19 @@ describe("collectBinaryCandidates", () => {
 		expect(truncated).toBe(false);
 	});
 
+	it("keeps a textual file over files_semantic's size cap instead of vanishing from both detectors (#1040)", async () => {
+		listChanges.mockResolvedValue({
+			entries: [
+				{ kind: "file", path: "/small.csv", size: 100, content_hash: "h1" }, // under cap — files_semantic's turf
+				{ kind: "file", path: "/big.csv", size: 5_000_000, content_hash: "h2" }, // over cap — falls through to us
+			],
+			has_more: false,
+			cursor: "c1",
+		});
+		const { files } = await collectBinaryCandidates({} as any);
+		expect(files).toEqual([{ path: "/big.csv", content_hash: "h2" }]);
+	});
+
 	it("pages through list_folder/continue until has_more is false", async () => {
 		listChanges
 			.mockResolvedValueOnce({ entries: [{ kind: "file", path: "/a.png", size: 1, content_hash: "h1" }], has_more: true, cursor: "c1" })

@@ -43,6 +43,12 @@ const pj = (s: string): any => {
 };
 
 type Gathered = { material: string; refs: string[] };
+/** Multi-part variant, so a source whose gathered material has an internal authority split
+ *  (fromOracle's whitelisted vs. plain KBs) can hand gatherRecall SEPARATE materials/citations
+ *  entries per part instead of one merged blob — otherwise a query that matches even one
+ *  whitelisted KB would promote a WHOLE joined string, dragging unrelated non-whitelisted parts
+ *  bundled into it ahead of more relevant vault/mail material too (#1135). */
+type GatheredParts = { parts: Gathered[] };
 
 /** Vault: search the notes, read the top matches, excerpt them. Prefers the remote backend
  *  (Local REST /search/simple actually searches the live vault). On the git backend, GitHub
@@ -54,25 +60,32 @@ type Gathered = { material: string; refs: string[] };
 async function fromVault(env: RtEnv, question: string): Promise<Gathered> {
 	const remote = Boolean((env as { OBSIDIAN_REMOTE_URL?: string; OBSIDIAN_REMOTE_KEY?: string }).OBSIDIAN_REMOTE_URL && (env as { OBSIDIAN_REMOTE_KEY?: string }).OBSIDIAN_REMOTE_KEY);
 	if (!remote) return fromVaultSemantic(env, question);
-	const r = await obsidian.run(env, { action: "search", query: question, backend: "remote" });
-	if (r.isError) throw new Error(r.content?.[0]?.text ?? "vault search failed");
-	const hits = (pj(r.content?.[0]?.text ?? "")?.hits ?? []) as Array<{ path?: string }>;
-	const parts: string[] = [];
-	const refs: string[] = [];
-	for (const h of hits.slice(0, 3)) {
-		const path = h?.path;
-		if (!path) continue;
-		try {
-			const rd = await obsidian.run(env, { action: "read", path, backend: "remote" });
-			if (!rd.isError) {
-				parts.push(`[vault:${path}]\n${(rd.content?.[0]?.text ?? "").slice(0, 1500)}`);
-				refs.push(`vault:${path}`);
+	try {
+		const r = await obsidian.run(env, { action: "search", query: question, backend: "remote" });
+		if (r.isError) throw new Error(r.content?.[0]?.text ?? "vault search failed");
+		const hits = (pj(r.content?.[0]?.text ?? "")?.hits ?? []) as Array<{ path?: string }>;
+		const parts: string[] = [];
+		const refs: string[] = [];
+		for (const h of hits.slice(0, 3)) {
+			const path = h?.path;
+			if (!path) continue;
+			try {
+				const rd = await obsidian.run(env, { action: "read", path, backend: "remote" });
+				if (!rd.isError) {
+					parts.push(`[vault:${path}]\n${(rd.content?.[0]?.text ?? "").slice(0, 1500)}`);
+					refs.push(`vault:${path}`);
+				}
+			} catch {
+				/* skip an unreadable note */
 			}
-		} catch {
-			/* skip an unreadable note */
 		}
+		return { material: parts.join("\n\n"), refs };
+	} catch {
+		// Remote Obsidian backend is configured but unreachable right now (e.g. a sleeping/
+		// offline home Tailscale Funnel) — fall back to the local semantic index rather than
+		// losing the vault source entirely, same as the "not configured" branch above.
+		return fromVaultSemantic(env, question);
 	}
-	return { material: parts.join("\n\n"), refs };
 }
 
 /** Git-backend vault leg: rank the vault's HEAD-keyed embedded chunk index (built by
@@ -248,7 +261,7 @@ async function fromLearned(env: RtEnv, question: string): Promise<Gathered> {
  *  material the user owns/has the right to use) is tagged `[whitelisted:topic]` instead of
  *  `[oracle:topic]` and is placed FIRST, so it leads the gathered material and the synthesizer
  *  (see recallSystem) weights it above the model's own knowledge and above [web]. */
-async function fromOracle(env: RtEnv, _question: string): Promise<Gathered> {
+async function fromOracle(env: RtEnv, _question: string): Promise<Gathered | GatheredParts> {
 	const kv = (env as { OAUTH_KV?: KVNamespace }).OAUTH_KV;
 	if (!kv) return { material: "", refs: [] }; // no KV binding — nothing to read, degrade quietly
 	const KV_PREFIX = "sux:oracle:";
@@ -287,9 +300,16 @@ async function fromOracle(env: RtEnv, _question: string): Promise<Gathered> {
 		bucket.parts.push(entry.part);
 		bucket.refs.push(entry.ref);
 	}
-	// Whitelisted material leads, so it survives the synthesis-input truncation and the model reads
-	// it before the model-knowledge/web tiers — the retrieval-side half of the weighting order.
-	return { material: [...whitelisted.parts, ...plain.parts].join("\n\n"), refs: [...whitelisted.refs, ...plain.refs] };
+	// Whitelisted vs. plain stay SEPARATE materials/citations entries (#1135) — a query that
+	// matches a whitelisted KB must not drag whatever unrelated plain KBs also matched along with
+	// it ahead of more relevant vault/mail material; gatherRecall's lead/rest split (below) acts
+	// per-part, promoting only the genuinely whitelisted one.
+	return {
+		parts: [
+			{ material: whitelisted.parts.join("\n\n"), refs: whitelisted.refs },
+			{ material: plain.parts.join("\n\n"), refs: plain.refs },
+		].filter((p) => p.material),
+	};
 }
 
 // Stopwords + a 4-char stem so "when's the follow-up with my oncologist" narrows to {foll, onco}
@@ -436,7 +456,7 @@ async function fromImessage(env: RtEnv, question: string): Promise<Gathered> {
 	return { material: parts.join("\n\n"), refs };
 }
 
-const SOURCES: Record<string, (env: RtEnv, q: string) => Promise<Gathered>> = { vault: fromVault, files: fromFiles, mail: fromMail, web: fromWeb, learned: fromLearned, oracle: fromOracle, calendar: fromCalendar, contacts: fromContacts, imessage: fromImessage };
+const SOURCES: Record<string, (env: RtEnv, q: string) => Promise<Gathered | GatheredParts>> = { vault: fromVault, files: fromFiles, mail: fromMail, web: fromWeb, learned: fromLearned, oracle: fromOracle, calendar: fromCalendar, contacts: fromContacts, imessage: fromImessage };
 const BASE_SOURCES = ["vault", "files", "mail", "learned", "oracle", "calendar", "contacts", "imessage"];
 /** `web` is a default source ONLY when it's FREE — i.e. Kagi-on-the-subscription (KAGI_SESSION)
  *  is configured, so recall never silently bills a search. Without it, web stays opt-in
@@ -467,18 +487,22 @@ export async function gatherRecall(
 	chosen.forEach((s: string, i: number) => {
 		const r = results[i];
 		if (r.status === "fulfilled") {
-			if (r.value.material) {
+			// A GatheredParts source (oracle) hands separate parts through as separate
+			// materials/citations entries (#1135), instead of one merged blob — see GatheredParts.
+			const parts: Gathered[] = "parts" in r.value ? r.value.parts : [r.value];
+			let hits = 0;
+			for (const part of parts) {
+				if (!part.material) continue;
 				// SECURITY: only fromOracle may legitimately emit "[whitelisted:...]" — every other
 				// source is attacker-influenced (mail/web) or user-editable (vault/files), so a literal
 				// "[whitelisted:...]" planted there is forged and must not ride into synthesis looking
 				// authoritative. Defuse it here, before it ever reaches the lead/rest split below.
-				materials.push(s === "oracle" ? r.value.material : defuseCitationTag(r.value.material));
+				materials.push(s === "oracle" ? part.material : defuseCitationTag(part.material));
 				materialSources.push(s);
-				citations.push(...r.value.refs);
-				status[s] = `${r.value.refs.length} hit(s)`;
-			} else {
-				status[s] = "no matches";
+				citations.push(...part.refs);
+				hits += part.refs.length;
 			}
+			status[s] = hits ? `${hits} hit(s)` : "no matches";
 		} else {
 			status[s] = `unavailable (${errMsg(r.reason).replace(/^\[[a-z_]+\]\s*/, "").slice(0, 90)})`;
 		}

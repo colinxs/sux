@@ -8,7 +8,7 @@ vi.mock("./proxy", () => ({
 	),
 }));
 
-import { DATA_CLOSE, DATA_OPEN, guardInstruction, hasAI, llm, textFromUrlOr, wrapUntrusted } from "./ai";
+import { aiGatewayOptions, DATA_CLOSE, DATA_OPEN, guardInstruction, hasAI, llm, textFromUrlOr, wrapUntrusted } from "./ai";
 
 const envWith = (response: unknown) => ({ AI: { run: vi.fn(async () => ({ response })) } }) as any;
 
@@ -55,6 +55,23 @@ describe("llm", () => {
 	it("hasAI detects the binding", () => {
 		expect(hasAI({ AI: { run: () => {} } } as any)).toBe(true);
 		expect(hasAI({} as any)).toBe(false);
+	});
+
+	it("passes aiGatewayOptions through as the third run() argument", async () => {
+		const run = vi.fn(async () => ({ response: "ok" }));
+		await llm({ AI: { run }, AI_GATEWAY_ID: "my-gateway" } as any, "sys", "user");
+		expect(run).toHaveBeenCalledWith(expect.anything(), expect.anything(), { gateway: { id: "my-gateway" } });
+	});
+});
+
+describe("aiGatewayOptions", () => {
+	it("is undefined when AI_GATEWAY_ID is unset — every call behaves exactly as before", () => {
+		expect(aiGatewayOptions({})).toBeUndefined();
+		expect(aiGatewayOptions({ AI_GATEWAY_ID: "" })).toBeUndefined();
+	});
+
+	it("routes through the gateway id once it's set", () => {
+		expect(aiGatewayOptions({ AI_GATEWAY_ID: "my-gateway" })).toEqual({ gateway: { id: "my-gateway" } });
 	});
 });
 

@@ -5,7 +5,7 @@ cluster: meta
 type: backlog
 summary: "The single ranked top-10 highest-value improvements synthesized from the session's audit backlog, de-duplicated and with in-flight work excluded; each tagged SAFE (auto-deployable) vs UNSAFE (needs review), rough effort, and any in-flight dependency."
 tags: [sux, meta, backlog]
-updated: 2026-07-15 (3rd pass — #5 confirmed already-done)
+updated: 2026-07-19 (4th pass — #10 confirmed blocked on suxlib, #1080)
 related: ["[[session-audit-summary]]", "[[design-review-2026-07]]", "[[autonomous-pipeline]]"]
 ---
 
@@ -34,8 +34,8 @@ an in-flight workstream owns; it can't start until that lands.
 | 6 | Unify the 3 destructive-confirm DSLs into one path | best-practices (D1) | **UNSAFE** | M | after mail-cal + vault land |
 | 7 | ~~Remove `geo_fetch`~~ — DONE (folded into proxy `x-exit-geo`) | debloat (S2) | SAFE | S–M | none |
 | 8 | ~~Document `GITHUB_TOKEN` scope~~ — DONE (secrets.md ⇄ keys.md reconciled) | best-practices (C1) | SAFE | S | none |
-| 9 | Route Workers-AI through AI Gateway (cache / observe / cost-cap) | best-practices (E1) | **UNSAFE** | M | none |
-| 10 | Enable `noUncheckedIndexedAccess` + add a lint gate (staged) | best-practices (F) | **UNSAFE** | L | none |
+| 9 | ~~Route Workers-AI through AI Gateway~~ — WIRED (#1060): every `env.AI.run()` call site passes `aiGatewayOptions(env)`, dormant behind the out-of-band `AI_GATEWAY_ID` secret until a human creates the gateway and sets it | best-practices (E1) | SAFE | M | none |
+| 10 | Enable `noUncheckedIndexedAccess` + add a lint gate (staged) | best-practices (F) | **UNSAFE** | L | **blocked** — see rationale |
 
 ## Rationale (why this order)
 
@@ -77,6 +77,21 @@ an in-flight workstream owns; it can't start until that lands.
 10. **`noUncheckedIndexedAccess` + lint gate** — the broadest correctness net here,
     but a large, churny rollout (every unchecked index access surfaces). Staged, and
     last because effort dwarfs the others.
+    **Blocked (confirmed 2026-07-19, #1080):** flipping the flag in `sux/tsconfig.json`
+    surfaces not just the 1,571 errors across 247 files in `sux/src`, but 92 more
+    inside `../suxlib`'s own `.ts` sources (e.g. `suxlib/src/op/spec.ts`,
+    `suxlib/src/domain/transform.ts`, `suxlib/src/runtime/inline.ts`) — the `file:`
+    dependency's raw sources are pulled into the same `tsc` program and checked
+    under sux's `compilerOptions` (`skipLibCheck` only exempts `.d.ts`, and there's
+    no per-directory staging: `compilerOptions` is one global block covering all of
+    `src/**/*.ts`). This isn't a sandbox artifact: `.github/workflows/ci.yml`'s own
+    suxlib step (`git clone --depth 1 --branch main .../SuxOS/suxlib.git ../suxlib`)
+    clones the same raw `.ts` source real CI type-checks against, not a prebuilt
+    `.d.ts` package — so real CI would hit the identical 92 errors, not just this
+    sandbox. A sux-only staged rollout can't go green until suxlib gets its own
+    `noUncheckedIndexedAccess` fix landed first (a separate repo/PR — `../suxlib` is
+    read-only from a sux bot-build sandbox, see `CLAUDE.md`'s known-gotcha log).
+    Don't re-attempt #1078 until that lands.
 
 ## Below the line (tracked, not top-10)
 

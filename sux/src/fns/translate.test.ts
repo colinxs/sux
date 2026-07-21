@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 vi.mock("../ai", () => ({
 	hasAI: (env: any) => typeof env?.AI?.run === "function",
 	MODELS: { translate: "@cf/meta/m2m100-1.2b" },
+	aiGatewayOptions: (env: any) => (env?.AI_GATEWAY_ID ? { gateway: { id: env.AI_GATEWAY_ID } } : undefined),
 }));
 
 import { translate } from "./translate";
@@ -28,7 +29,7 @@ describe("translate", () => {
 		const r = await translate.run(env, { text: "hi", to: "es", from: "en" });
 		expect(r.isError).toBeFalsy();
 		expect(r.content[0].text).toBe("hola");
-		expect(run).toHaveBeenCalledWith("@cf/meta/m2m100-1.2b", expect.objectContaining({ text: "hi", target_lang: "es", source_lang: "en" }));
+		expect(run).toHaveBeenCalledWith("@cf/meta/m2m100-1.2b", expect.objectContaining({ text: "hi", target_lang: "es", source_lang: "en" }), undefined);
 	});
 
 	it("fails (uncacheable) when the model returns an empty translation instead of caching a sentinel", async () => {

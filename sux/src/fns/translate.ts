@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { hasAI, MODELS } from "../ai";
+import { aiGatewayOptions, hasAI, MODELS } from "../ai";
 
 export const translate: Fn = {
 	name: "translate",
@@ -30,11 +30,15 @@ export const translate: Fn = {
 			// surface to hijack. Fencing the text with <<<DATA>>> markers would instead
 			// corrupt the translation (the model would translate the markers). The content
 			// is already processed strictly as data.
-			const r = await (env as any).AI.run(MODELS.translate, {
-				text: text.slice(0, 24_000),
-				target_lang: to,
-				...(args?.from ? { source_lang: String(args.from) } : {}),
-			});
+			const r = await (env as any).AI.run(
+				MODELS.translate,
+				{
+					text: text.slice(0, 24_000),
+					target_lang: to,
+					...(args?.from ? { source_lang: String(args.from) } : {}),
+				},
+				aiGatewayOptions(env),
+			);
 			// An empty translated_text (transient AI-binding hiccup, or an unsupported
 			// language pair silently yielding nothing) is a failure, not a result —
 			// fail() so it's never cached as a success and the next call retries.

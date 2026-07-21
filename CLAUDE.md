@@ -357,6 +357,84 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   issue, `git log --all --oneline | grep -i <keyword>` (per the orphaned-commit gotcha above) —
   it may turn up a MERGED commit, not just an orphaned one. Drop it with `"superseded": true` in
   the disposition so it closes instead of getting rebuilt.
+- **An issue whose auto-build comment thread just says "couldn't get the gates green" (no
+  detail) can hide a specific, checkable cause** — `gh run view <run-id> --log` (or `--json
+  jobs`) on the linked run often shows the real reason before you re-attempt blindly. Confirmed
+  on #1046 (unify `confirm:true` delete gates onto `staged()`): all 6 prior attempts' linked
+  runs showed the identical `Action failed with error: Claude execution failed: Reached maximum
+  number of turns (90)` — the session ran out of turn budget mid-build, not a design/gate
+  problem — which combined with its own `effort:large` label was enough to apply `needs-human`
+  immediately (per the `#920` precedent above) instead of attempting a 7th identical-shaped
+  retry. Also: the issue's own premise can be partly stale even when the label says otherwise —
+  #1046 named calendar's `delete`/`task_delete` as still gated by a bare `confirm:true`, but
+  `fns/calendar.ts` only dispatches into `mail-mcp.ts`'s `cal_delete`, which already routes
+  through `staged()`/`STAGE_KINDS` (added earlier for mail/contact/cal/task) — only the doc
+  string in `calendar.ts` was stale, not the actual gate.
+- **A suxlib type-shape change can break more call sites than an audit issue names** — #1069
+  named `sink.fanout("r2", "vault")` → `sink.fanout(["r2", "vault"])` at its two literal call
+  sites, but suxlib's `SinkFanoutTarget = string | {name, opts?}` union also broke
+  `op-engine/durable.ts`'s `interpretDurable`'s `"sink"` case, which indexed `caps.sinks[t]`
+  by the whole target instead of extracting `t.name` — a downstream CONSUMER of the type, not
+  a call site of the changed function, invisible to a grep for `sink.fanout`. When a suxlib
+  signature/type changes, `npm run type-check` after the named fix (not just editing the named
+  lines) is what catches the rest — don't assume the issue's file list is exhaustive.
+- **#1078 (enable `noUncheckedIndexedAccess`) is blocked, not just large** — flipping it in
+  `sux/tsconfig.json` surfaces 92 errors inside `../suxlib`'s own `.ts` sources too (the `file:`
+  dep's raw sources share sux's one global `compilerOptions` block; `skipLibCheck` only exempts
+  `.d.ts`), and `.github/workflows/ci.yml` clones that same raw `.ts` source for real CI — so
+  this isn't a sandbox artifact skip-able by trusting real CI. Don't re-attempt #1078 until
+  suxlib gets its own fix landed first (separate repo/PR — `../suxlib` is read-only here). See
+  `docs/design/improvement-backlog.md` item #10 (#1080).
+- **A test asserting a literal `"Daily/YYYY-MM-DD.md"` string against code that calls
+  `vaultToday()`/`new Date()` is a date bomb — it passes only until real wall-clock time rolls
+  past that hardcoded day, then fails for EVERY branch/PR, not just the one that happens to run
+  it that day.** Confirmed on `_infer_nudge.test.ts`'s digest-block test, which hardcoded
+  `Daily/2026-07-19.md` and started failing on real CI + every sandbox `npm test` run once the
+  date ticked over to 2026-07-20 (#1085's build hit this while working an unrelated issue). Fix
+  pattern: compute the expected path the same way the code under test does (`` `Daily/${vaultToday("UTC")}.md` ``),
+  never a literal date string. If a gate fails on a test unrelated to your diff, `git stash` and
+  re-run on a clean checkout before assuming it's pre-existing-and-ignorable — if it's a date
+  bomb like this one, it blocks every PR today and is worth fixing inline rather than reporting
+  as unrelated noise.
+- **`_capped_kv_log.ts`'s `update(mutate)` (added for #1090) skips its `save()` call when
+  `mutate` returns the EXACT SAME array reference it was given — that's the deliberate no-op
+  signal for "nothing changed, don't write." A `mutate` that edits the array IN PLACE and
+  returns that same reference (e.g. `items.unshift(x); return items;`) therefore silently never
+  persists, which is exactly why `push()` itself builds a new array (`[...entries, ...items]`)
+  instead of mutating and returning `items`. Any new `update()`/`push()` caller must return a
+  fresh array whenever a write should actually happen — only hand back the original reference
+  for the genuine "no change" case (see `_infer.ts`'s delete/purge paths for the pattern).
+
+- **`gh api repos/SuxOS/.github` 404s from inside a bot-build sandbox even when the repo/action
+  is fine** — that token just lacks visibility into the private hub repo. Before assuming a
+  reusable workflow/action (`SuxOS/.github/.github/{workflows,actions}/*`) doesn't exist or
+  guessing its input names, check `/home/runner/work/_actions/SuxOS/.github/main/` — the
+  runner's local Actions cache from checking out this very job's own reusable-workflow refs
+  already has a full local checkout of the hub repo, `action.yml`s included. Confirmed while
+  building #1105 (converting `deploy.yml`/`health.yml`'s hand-rolled tracking-issue upserts onto
+  the hub's `upsert-tracking-issue` composite action) — reading its `action.yml` there gave the
+  exact input names (`title`/`body`/`github-token`/`mode`/`update-mode`/`labels`) instead of
+  guessing blind.
+
+- **`automerge.yml`'s real eligibility rule (since its 2026-07-15 rewrite) is just "not draft &&
+  not labelled `hold`"** — the older safe-type-title/eligible-label taxonomy some in-repo
+  comments still describe is gone from the actual reusable workflow (verify against the local
+  hub checkout, `/home/runner/work/_actions/SuxOS/.github/main/.github/workflows/automerge.yml`,
+  not stale comments). Any code that opens a PR in this repo and assumes WITHHOLDING an
+  "eligible" label (e.g. `automerge`) is enough to keep it from merging is wrong — only the
+  `hold` label actually blocks native auto-merge; everything else auto-merges the instant
+  required checks go green. This bit `_self_improve.ts`'s stub PRs hard: their initial commit
+  is tree-identical to `main`, so CI passes trivially and instantly, and 8/8 checked
+  self-improve merges on `main` turned out to be empty no-ops — the described fix never
+  actually landed (#1116). Any future PR-opening automation must explicitly apply `hold`
+  itself if the PR isn't meant to auto-merge yet.
+
+- **`ocr.ts`'s `ocr` fn only accepts an image (`url`/`image` → Workers-AI vision) — it has no PDF
+  path.** A feature ingesting scanned personal documents (passport, license, a PDF scan) can't
+  just point everything at `ocr`; a PDF needs `study.ts`'s `extractDocText` (or a Mode-A shared-
+  link + `study` pdf-kind path, per the Dropbox-Mode-A/B gotcha above) instead. `_document_radar.ts`
+  (#1148) scoped its first cut to images only for exactly this reason — PDF ingestion is a
+  distinct follow-up, not an oversight.
 
 ## House style
 
@@ -364,3 +442,40 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
 - Bidirectional naming (a reader can go name→behavior and behavior→name).
 - Match surrounding code's idiom, comment density, and structure.
 - One change per cycle; land it green before starting the next.
+
+## Converting a bare `confirm:true` delete onto `stage()`/`STAGE_KINDS` (#1046 series)
+
+- `stage()`'s KV-backed `commit()` (and `stage()` itself) can genuinely THROW (bad/expired/
+  mismatched `commit_token`) — a `raw:true` fn's `run()` calling `staged()` must wrap that
+  call in its own try/catch (or already have an outer one covering it, like `dropbox.ts`/
+  `todoist.ts`) and turn the throw into `fail(...)`. `kv_delete.ts` didn't, and `fuzz.test.ts`
+  (which feeds every fn garbage `commit_token`s) caught it immediately (#1051) — the
+  "fns never throw" invariant applies here same as anywhere else.
+- `ok()` (from `registry.ts`) takes a STRING, not an object — a converted fn returning
+  `staged()`'s `StageResult` must `ok(oj(stageResult))`, not `ok(stageResult)` directly.
+
+## sux's `/mcp` transport is fully stateless — no session, only OAuth `login`
+
+- `index.ts`'s `handleRpc` implements NO `Mcp-Session-Id` / Durable-Object session — every
+  request (`initialize`, `tools/call`, ...) is handled independently with zero correlation
+  between them. The ONE identity signal present on every single request is the OAuth-
+  authenticated `login` (`ctx.props?.login`, set by `OAuthProvider` before `rtServer.fetch`
+  runs). A feature that needs to remember something about "this connection" across requests
+  (client capabilities, a multi-step flow, per-client rate limiting, ...) has to key off
+  `login` — there is no session id, and `tools/call` never resends `initialize`'s params
+  (`clientInfo`, `capabilities`), so those are only ever visible at the one `initialize` call
+  site. `login` is threaded onto `RtEnv._egress.login` (`proxy.ts`'s `EgressContext`) for this
+  purpose (#1143's client-UI-capability negotiation in `fns/_ui.ts` is the first consumer) —
+  reuse that field rather than re-deriving the `ctx as ExecutionContext & {props?: Props}`
+  cast at a new call site. Known imprecision: two different client apps authenticated under
+  the same GitHub login collide (last `initialize` wins for both) — accepted as the best
+  signal this architecture offers, not a bug to "fix" without adding real session infra.
+
+- **An `effort:large` issue previously dropped under the "#920 precedent" (needs a dedicated
+  session, not a batch slot) deserves a fresh look when it's the ONLY issue in the current
+  batch** — that precedent is about an `effort:large` issue losing to sibling issues competing
+  for the same turn/time budget, not about the work being inherently unbuildable in one
+  session. #1144 (scalar trend/anomaly detector, dispatched solo after an earlier batched
+  attempt dropped it for exactly that reason) built clean well under budget once it had the
+  whole session to itself — a new sibling module, a second nudge-recipe path, cron wiring, and
+  tests. Re-check the batch's actual issue count before reflexively re-dropping.

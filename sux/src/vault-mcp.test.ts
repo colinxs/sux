@@ -9,6 +9,10 @@ vi.mock("./proxy", () => ({
 
 import { VAULT_TOOLS } from "./vault-mcp";
 
+function kvStub() {
+	const map = new Map<string, string>();
+	return { map, get: vi.fn(async (k: string) => map.get(k) ?? null), put: vi.fn(async (k: string, v: string) => void map.set(k, v)), delete: vi.fn(async (k: string) => void map.delete(k)) };
+}
 const ENV = { OBSIDIAN_VAULT_REPO: "me/vault" } as any;
 const b64 = (s: string) => Buffer.from(s, "utf8").toString("base64");
 // The vault owner's LOCAL day (default Pacific) — NOT UTC. Computing this the
@@ -338,6 +342,13 @@ describe("vault MCP tools", () => {
 		expect(gone.content[0].text).toMatch(/^\[not_found\]/); // patch a note that isn't there
 	});
 
+	it("vault_query({query}) self-corrects toward vault_search_body/vault_semantic instead of a bare bad_input (#1121)", async () => {
+		const bad = await tool("vault_query").run(ENV, { query: "some text" });
+		expect(bad.isError).toBe(true);
+		expect(bad.content[0].text).toMatch(/vault_search_body/);
+		expect(bad.content[0].text).toMatch(/vault_semantic/);
+	});
+
 	it("vault_daily_append targets today's daily note", async () => {
 		let putPath = "";
 		routes.handler = (url, init) => {
@@ -352,10 +363,37 @@ describe("vault MCP tools", () => {
 		expect(putPath).toBe(`Daily/${date}.md`);
 	});
 
-	it("vault_delete refuses without confirm:true", async () => {
-		const out = await tool("vault_delete").run(ENV, { path: "old.md" });
-		expect(out.isError).toBe(true);
-		expect(out.content[0].text).toMatch(/confirm:true/);
+	it("vault_delete stages a preview (with inbound-link note), then commits on the token", async () => {
+		const env = { ...ENV, OAUTH_KV: kvStub() };
+		const notes: Record<string, string> = {
+			"old.md": "old note",
+			"Notes/a.md": "see [[old]] for context",
+		};
+		routes.handler = (url, init) => {
+			if (url.includes("/git/trees/")) return new Response(JSON.stringify({ tree: Object.keys(notes).map((p) => ({ type: "blob", path: p })) }), { status: 200 });
+			const m = /\/contents\/(.+?)(\?|$)/.exec(url);
+			const path = m ? decodeURIComponent(m[1]) : "";
+			if (init?.method === "DELETE") return new Response(JSON.stringify({ commit: { sha: "c2" } }), { status: 200 });
+			if (notes[path] === undefined) return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+			return new Response(JSON.stringify({ content: b64(notes[path]), sha: "s1" }), { status: 200 });
+		};
+
+		const st = parse(await tool("vault_delete").run(env, { path: "old.md", stage: true }));
+		expect(st).toMatchObject({ staged: true, kind: "vault_delete", preview: { path: "old.md", note: "1 note link here." } });
+
+		const done = parse(await tool("vault_delete").run(env, { path: "old.md", commit_token: st.commit_token }));
+		expect(done).toMatchObject({ ok: true, deleted: "old.md" });
+	});
+
+	it("vault_delete auto-stages by default (irreversible kind) rather than deleting outright", async () => {
+		const env = { ...ENV, OAUTH_KV: kvStub() };
+		routes.handler = (url) => {
+			if (url.includes("/git/trees/")) return new Response(JSON.stringify({ tree: [] }), { status: 200 });
+			return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+		};
+		const out = await tool("vault_delete").run(env, { path: "old.md" });
+		expect(out.isError).toBeFalsy();
+		expect(parse(out)).toMatchObject({ staged: true, kind: "vault_delete" });
 	});
 
 	it("vault_edit rides the surgical find/replace (unique-match contract)", async () => {

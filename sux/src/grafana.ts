@@ -199,3 +199,69 @@ export async function shipMetricsSnapshot(env: RtEnv, ctx: { waitUntil(p: Promis
 			.catch((err) => console.warn(`grafana metrics push failed: ${String((err as Error)?.message ?? err)}`)),
 	);
 }
+
+const DEFAULT_BILLING_OWNER = "SuxOS";
+
+// The subset of GitHub's `GET /orgs/{org}/settings/billing/actions` response this cares
+// about — the endpoint also returns a per-runner-OS `minutes_used_breakdown`, which isn't
+// shipped (it would multiply cardinality for a number nobody's asked to watch yet).
+type GithubBillingUsage = { total_minutes_used?: number; included_minutes?: number };
+
+/** Build the GH Actions billing gauges as Influx line protocol — pure over its input (easy
+ * to unit-test), same shape as buildInfluxSnapshot. Missing/non-finite fields are omitted,
+ * never emitted as 0 or NaN (Influx rejects NaN; a 0 would misreport as "zero minutes used"). */
+export function buildGithubBillingSnapshot(usage: GithubBillingUsage, atMs: number): string {
+	const ts = `${atMs}000000`;
+	const lines: string[] = [];
+	if (Number.isFinite(usage.total_minutes_used)) lines.push(`gh_actions_minutes_used_total value=${usage.total_minutes_used} ${ts}`);
+	if (Number.isFinite(usage.included_minutes)) lines.push(`gh_actions_minutes_included value=${usage.included_minutes} ${ts}`);
+	return lines.join("\n");
+}
+
+// scripts/billing-check.mjs's githubActionsMeter() independently fetches this same
+// /settings/billing/actions endpoint (with a different GH_BILLING_OWNER default,
+// "colinxs" there vs "SuxOS" here) — see that file before assuming this is the only
+// caller, and consider consolidating if you touch either (#1101).
+//
+// Poll GitHub Actions billing usage and push it as a Prometheus gauge, once per daily
+// maintenance tick (spend-observability-plan.md's plumbing step 1). Reuses the SAME
+// Influx-line-protocol transport as shipMetricsSnapshot — same secrets, same shared bearer
+// — so there's no new credential to mint beyond the GITHUB_TOKEN self-improve already needs.
+// No-op (returns {dormant:true}) unless both the Prometheus secrets AND GITHUB_TOKEN are
+// set; never throws — a billing-poll hiccup must not sink the rest of the daily tick.
+export async function shipGithubBillingSnapshot(
+	env: RtEnv,
+	ctx: { waitUntil(p: Promise<unknown>): void },
+): Promise<{ dormant: true } | { ok: true; total_minutes_used?: number; included_minutes?: number } | { error: string }> {
+	const url = env.GRAFANA_PROM_URL;
+	const user = env.GRAFANA_PROM_USER;
+	const token = env.GRAFANA_LOKI_TOKEN;
+	const ghToken = env.GITHUB_TOKEN;
+	if (!url || !user || !token || !ghToken) return { dormant: true };
+
+	const owner = String(env.GH_BILLING_OWNER ?? "").trim() || DEFAULT_BILLING_OWNER;
+	try {
+		// GitHub has no repo-scoped Actions-billing endpoint — minutes are billed against the
+		// owning account, not an individual repo (#1098). This is the org (or user) login, not
+		// an owner/repo pair; the equivalent for a personal-account owner is /users/{owner}/....
+		const res = await fetch(`https://api.github.com/orgs/${owner}/settings/billing/actions`, {
+			headers: { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github.v3+json" },
+		});
+		if (!res.ok) return { error: `GitHub billing API HTTP ${res.status}: ${clipErr(await res.text())}` };
+		const usage = (await res.json()) as GithubBillingUsage;
+
+		const body = buildGithubBillingSnapshot(usage, Date.now());
+		if (!body) return { error: "GitHub billing API returned no usable minutes fields" };
+		const authorization = `Basic ${btoa(`${user}:${token}`)}`;
+		ctx.waitUntil(
+			fetch(url, { method: "POST", headers: { "content-type": "text/plain", authorization }, body })
+				.then(async (r) => {
+					if (!r.ok) console.warn(`grafana gh-billing push HTTP ${r.status}: ${clipErr(await r.text())}`);
+				})
+				.catch((err) => console.warn(`grafana gh-billing push failed: ${String((err as Error)?.message ?? err)}`)),
+		);
+		return { ok: true, total_minutes_used: usage.total_minutes_used, included_minutes: usage.included_minutes };
+	} catch (err) {
+		return { error: String((err as Error)?.message ?? err) };
+	}
+}

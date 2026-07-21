@@ -33,10 +33,10 @@ const normEmail = (e: string): string => e.trim().toLowerCase();
  *  same archive re-propose forever (#989). Check the RAW name, before normName() strips it. */
 const isMergedArchive = (name?: string): boolean => /\(merged into [^)]*\)/.test(name ?? "");
 
-/** Strips a trailing extension suffix (" ext 22", " ext. 22", "x22", "#22") before digit
- *  normalization — otherwise "555-123-4567 ext 22" and "555-123-4567" digit-collapse to
- *  different-length keys and never cluster as the same underlying number (#1013). */
-const stripExtension = (p: string): string => p.replace(/\s*(?:ext\.?|x|#)\s*\d+\s*$/i, "");
+/** Strips a trailing extension suffix (" ext 22", " ext. 22", "x22", "#22", "Ext: 22") before
+ *  digit normalization — otherwise "555-123-4567 ext 22" and "555-123-4567" digit-collapse to
+ *  different-length keys and never cluster as the same underlying number (#1013, #1032). */
+const stripExtension = (p: string): string => p.replace(/\s*[(\[]?\s*(?:ext\.?|x|#)\s*[:.]?\s*\d+\s*[)\]]?\s*$/i, "");
 
 /** Digits only, US country-code (leading "1" on 11 digits) stripped so "+1 (555) 123-4567" and
  *  "555-123-4567" collapse to the same key. Shorter than 7 digits is too weak a signal (a

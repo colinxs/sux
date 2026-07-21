@@ -1,4 +1,4 @@
-import { type Fn, FRONT_VERBS } from "../registry";
+import { type Fn, FRONT_VERBS, isFrontVerb } from "../registry";
 
 // The sux capability surface — the single curated map of the whole toolset, shared
 // by the `sux` root verb (mobile-safe tool call) and the public `GET /llms.txt`
@@ -99,9 +99,22 @@ export function renderDomain(fns: Fn[], domain: string): string | null {
 	const byName = new Map(fns.map((f) => [f.name, f]));
 	const lines = d.leaves.map((n) => {
 		const fn = byName.get(n);
-		return fn ? `- \`${n}\` — ${firstSentence(fn.description)}` : `- \`${n}\` — (unavailable)`;
+		if (!fn) return `- \`${n}\` — (unavailable)`;
+		const via = isFrontVerb(fn) ? "" : ` (not on tools/list — call via \`fn({name:"${n}",...})\`)`;
+		return `- \`${n}\` — ${firstSentence(fn.description)}${via}`;
 	});
-	return [`# sux · ${d.key}`, "", d.blurb, "", `Call any of these directly as its own tool, e.g. \`${d.leaves[0]}({…})\`.`, "", ...lines].join("\n");
+	// tools/list only advertises front verbs (registry.ts's isFrontVerb) — a domain whose
+	// leaves are all non-front (e.g. meta's selftest/autonomy_status) can't be called by
+	// literal name from a client that only authors calls against tools/list, so the example
+	// line must point at a genuinely front leaf (or fall back to the `fn` escape hatch).
+	const exampleLeaf = d.leaves.find((n) => {
+		const fn = byName.get(n);
+		return fn ? isFrontVerb(fn) : false;
+	});
+	const callLine = exampleLeaf
+		? `Call any of these directly as its own tool, e.g. \`${exampleLeaf}({…})\`. Leaves not on \`tools/list\` still work via \`fn({name,args})\`.`
+		: `None of these are on \`tools/list\` — call them via \`fn({name:"${d.leaves[0]}", args:{…}})\`.`;
+	return [`# sux · ${d.key}`, "", d.blurb, "", callLine, "", ...lines].join("\n");
 }
 
 export const domainKeys = (): string[] => DOMAINS.map((x) => x.key);

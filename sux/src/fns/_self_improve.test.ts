@@ -160,14 +160,16 @@ describe("selfImproveTick gating matrix", () => {
 		expect(store.get("sux:selfimprove:findings")).toBeTruthy();
 	});
 
-	it("PR-only fix finding: opens a PR, labels self-improve, comments @claude, never merges", async () => {
+	it("PR-only fix finding: opens a PR, labels self-improve+hold, comments @claude, never merges", async () => {
 		const { env, store } = baseEnv(ENABLED_PR);
 		seedFeedback(store, [{ kind: "issue", text: "the dns tool crashed with a 500 error", at: 100 }]);
 		const gh = fakeGithub();
 		const r = await selfImproveTick(env, { github: gh });
 		expect(r.reason).toBe("pr-only");
 		expect(gh.openPr).toHaveBeenCalledTimes(1);
-		expect(gh.labelPr).toHaveBeenCalledWith(1, ["self-improve"]);
+		// hold blocks automerge.yml's real eligibility gate (not draft && not hold) until a
+		// human clears it — a bare stub PR would otherwise auto-merge its empty commit (#1116).
+		expect(gh.labelPr).toHaveBeenCalledWith(1, ["self-improve", "hold"]);
 		// fix lane is auto-fixable ⇒ hand-off comment to the existing @claude loop.
 		expect(gh.commentPr).toHaveBeenCalledTimes(1);
 		expect(gh.commentPr.mock.calls[0][1]).toContain("@claude");
@@ -188,12 +190,12 @@ describe("selfImproveTick gating matrix", () => {
 		expect(gh.openIssue).not.toHaveBeenCalled();
 	});
 
-	it("HIGH fix but the auto-merge flag is OFF ⇒ MEDIUM path (self-improve only, never armed)", async () => {
+	it("HIGH fix but the auto-merge flag is OFF ⇒ MEDIUM path (self-improve+hold, never armed)", async () => {
 		const { env, store } = baseEnv(ENABLED_PR); // SELF_IMPROVE_AUTOMERGE unset
 		seedFeedback(store, [{ kind: "issue", text: "the scrape tool crashed with a 500 error", at: 100, tool: "scrape" }]);
 		const gh = fakeGithub();
 		const r = await selfImproveTick(env, { github: gh });
-		expect(gh.labelPr).toHaveBeenCalledWith(1, ["self-improve"]); // no automerge label
+		expect(gh.labelPr).toHaveBeenCalledWith(1, ["self-improve", "hold"]); // no automerge label; held instead
 		expect(r.armed).toBe(0);
 		expect(r.prs).toBe(1);
 	});
@@ -203,7 +205,7 @@ describe("selfImproveTick gating matrix", () => {
 		seedFeedback(store, [{ kind: "issue", text: "the auth token crashed with a leak error", at: 100, tool: "scrape" }]);
 		const gh = fakeGithub();
 		const r = await selfImproveTick(env, { github: gh });
-		expect(gh.labelPr).toHaveBeenCalledWith(1, ["self-improve"]); // no automerge label on a spicy lane
+		expect(gh.labelPr).toHaveBeenCalledWith(1, ["self-improve", "hold"]); // no automerge label on a spicy lane; held instead
 		expect(r.armed).toBe(0);
 	});
 
@@ -258,13 +260,13 @@ describe("selfImproveTick gating matrix", () => {
 		expect(store.get("sux:selfimprove:findings")).toBeTruthy();
 	});
 
-	it("security lane: PR + label, but NO @claude comment (suggest-only)", async () => {
+	it("security lane: PR + label + hold, but NO @claude comment (suggest-only, and nothing ever unholds it)", async () => {
 		const { env, store } = baseEnv(ENABLED_PR);
 		seedFeedback(store, [{ kind: "issue", text: "there is an auth token leak in the login flow", at: 100 }]);
 		const gh = fakeGithub();
 		const r = await selfImproveTick(env, { github: gh });
 		expect(gh.openPr).toHaveBeenCalledTimes(1);
-		expect(gh.labelPr).toHaveBeenCalledWith(1, ["self-improve"]);
+		expect(gh.labelPr).toHaveBeenCalledWith(1, ["self-improve", "hold"]);
 		expect(gh.commentPr).not.toHaveBeenCalled(); // security is not handed to autofix
 		expect(r.comments).toBe(0);
 	});
@@ -279,7 +281,7 @@ describe("selfImproveTick gating matrix", () => {
 		expect(r.comments).toBe(0);
 	});
 
-	it("the label is only 'self-improve' — never an auto-merge-eligible label", async () => {
+	it("a non-armed PR is never an auto-merge-eligible label combo, and always carries hold", async () => {
 		const { env, store } = baseEnv(ENABLED_PR);
 		seedFeedback(store, [{ kind: "issue", text: "there is an auth token leak", at: 100 }]);
 		const gh = fakeGithub();
@@ -288,6 +290,10 @@ describe("selfImproveTick gating matrix", () => {
 			const labels: string[] = call[1];
 			// automerge.yml treats these labels as eligible — self-improve must add none of them.
 			for (const bad of ["automerge", "bug", "security", "chore-safe"]) expect(labels).not.toContain(bad);
+			// #1116: automerge.yml's real eligibility is "not draft && not hold" — a non-armed
+			// stub PR's empty initial commit passes CI trivially, so omitting an eligible label
+			// alone no longer keeps it unmerged. hold is the one thing that actually does.
+			expect(labels).toContain("hold");
 		}
 	});
 

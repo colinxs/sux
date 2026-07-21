@@ -527,6 +527,16 @@ describe("substancesOverlap — conservative, non-diagnostic text match (#1005)"
 		expect(substancesOverlap("", "Penicillin")).toBe(false);
 		expect(substancesOverlap("Penicillin", "")).toBe(false);
 	});
+
+	it("ignores bare numeric dosage tokens so unrelated substances never share only a dose (#1031)", () => {
+		expect(substancesOverlap("Calcium Carbonate 1000 MG Oral Tablet", "Vitamin D3 1000 UNT Tablet")).toBe(false);
+		expect(substancesOverlap("Metformin 500 MG Tablet", "Naproxen 500 MG Tablet")).toBe(false);
+	});
+
+	it("ignores a fused dose+unit token like \"500mg\" so unrelated substances never share only a dose (#1038)", () => {
+		expect(substancesOverlap("Ibuprofen 500mg tablet", "Tylenol 500mg tablet")).toBe(false);
+		expect(substancesOverlap("Aspirin 81mg tablet", "Warfarin 81mg tablet")).toBe(false);
+	});
 });
 
 describe("crossOrgMedicationAllergyConflicts — cross-org continuity check (#1005)", () => {
@@ -598,8 +608,20 @@ describe("crossOrgAllergyGaps — one-sided allergy continuity gap (#1009)", () 
 		await seedGrant(env, ORG, "P1");
 		await seedGrant(env, ORG2, "P1");
 		await seedBundle(env, ORG, "P1", "AllergyIntolerance", "2026-07-18T00-00-00-000Z", [{ resourceType: "AllergyIntolerance", id: "al1", code: { text: "Penicillin" } }]);
-		await seedBundle(env, ORG2, "P1", "Condition", "2026-07-18T00-00-00-000Z", [{ resourceType: "Condition", id: "cond1" }]); // ORG2 pulled, but no allergies at all
+		await seedBundle(env, ORG2, "P1", "Condition", "2026-07-18T00-00-00-000Z", [{ resourceType: "Condition", id: "cond1" }]);
+		// ORG2 confirmed-empty for AllergyIntolerance specifically (a real pull of that label, zero results) —
+		// distinct from never having pulled the label at all (#1044).
+		await seedBundle(env, ORG2, "P1", "AllergyIntolerance", "2026-07-18T00-00-00-000Z", []);
 		expect(await crossOrgAllergyGaps(env)).toEqual([{ org: ORG, allergyId: "al1", allergySubstance: "Penicillin", missingOrg: ORG2 }]);
+	});
+
+	it("does NOT flag a gap when the other org never pulled AllergyIntolerance at all (#1044)", async () => {
+		const env = baseEnv();
+		await seedGrant(env, ORG, "P1");
+		await seedGrant(env, ORG2, "P1");
+		await seedBundle(env, ORG, "P1", "AllergyIntolerance", "2026-07-18T00-00-00-000Z", [{ resourceType: "AllergyIntolerance", id: "al1", code: { text: "Penicillin" } }]);
+		await seedBundle(env, ORG2, "P1", "Condition", "2026-07-18T00-00-00-000Z", [{ resourceType: "Condition", id: "cond1" }]); // ORG2 pulled Condition only — AllergyIntolerance was never asked for
+		expect(await crossOrgAllergyGaps(env)).toEqual([]);
 	});
 
 	it("does not flag an allergy that both orgs already have on file", async () => {
@@ -627,6 +649,19 @@ describe("crossOrgAllergyGaps — one-sided allergy continuity gap (#1009)", () 
 			{ resourceType: "AllergyIntolerance", id: "al1", code: { text: "Penicillin" }, clinicalStatus: { coding: [{ code: "resolved" }] } },
 		]);
 		await seedBundle(env, ORG2, "P1", "Condition", "2026-07-18T00-00-00-000Z", [{ resourceType: "Condition", id: "cond1" }]);
+		expect(await crossOrgAllergyGaps(env)).toEqual([]);
+	});
+
+	it("does not flag a gap when the OTHER org's matching record is inactive/resolved (#1057)", async () => {
+		const env = baseEnv();
+		await seedGrant(env, ORG, "P1");
+		await seedGrant(env, ORG2, "P1");
+		await seedBundle(env, ORG, "P1", "AllergyIntolerance", "2026-07-18T00-00-00-000Z", [{ resourceType: "AllergyIntolerance", id: "al1", code: { text: "Penicillin" } }]);
+		// ORG2 has a matching record, just marked resolved/entered-in-error — still "has a record of
+		// it at all", so this must NOT read as "org B has no record" the way an empty list would.
+		await seedBundle(env, ORG2, "P1", "AllergyIntolerance", "2026-07-18T00-00-00-000Z", [
+			{ resourceType: "AllergyIntolerance", id: "al2", code: { text: "Penicillin" }, clinicalStatus: { coding: [{ code: "resolved" }] } },
+		]);
 		expect(await crossOrgAllergyGaps(env)).toEqual([]);
 	});
 });

@@ -148,9 +148,14 @@ export type RtEnv = Env &
 		//                         the first N would-fire cycles per cluster log to an audit trail
 		//                         instead of the Daily note (default 3); only after N does that
 		//                         cluster's writes go live.
+		//   INFER_NUDGE_ANOMALY_MIN_Z  — z-score floor for the scalar-anomaly recipe path
+		//                         (#1144, fns/_infer_anomaly.ts), same belt-and-suspenders
+		//                         re-check as INFER_NUDGE_MIN_CONFIDENCE (default 2, matching
+		//                         _infer_anomaly.ts's own default threshold).
 		INFER_NUDGE_MIN_CONFIDENCE?: string;
 		INFER_NUDGE_COOLDOWN_DAYS?: string;
 		INFER_NUDGE_WARMUP_CYCLES?: string;
+		INFER_NUDGE_ANOMALY_MIN_Z?: string;
 
 		// IANA tz for the vault owner's "today" (daily-note tools). Default Pacific.
 		VAULT_TZ?: string;
@@ -391,6 +396,15 @@ export type RtEnv = Env &
 		// orgs' PHI at once rather than one org's redacted snapshot in isolation. Unset/"0"/
 		// "false"/"off" ⇒ inert, same fail-closed two-stage convention as MAIL_TRIAGE_ENABLED.
 		MYCHART_RECONCILE_ENABLED?: string;
+		// Spaced-repetition review detector (fns/_study_review.ts, #1092) — surfaces an fyi
+		// drop when a whitelisted `study` topic's last touch is at least STUDY_REVIEW_INTERVAL_
+		// DAYS ago, so studied material gets reinforced instead of sitting distilled and never
+		// revisited. Same two-stage fail-closed gate as MYCHART_RECONCILE_ENABLED: ALSO requires
+		// AGENDA_ENABLED. Detection only — arithmetic over study.ts's own provenance timestamps,
+		// no model call, no KB mutation. STUDY_REVIEW_INTERVAL_DAYS optional; unset ⇒ 14 days,
+		// clamped [1,180].
+		STUDY_REVIEW_ENABLED?: string;
+		STUDY_REVIEW_INTERVAL_DAYS?: string;
 		// Relationship-decay detector thresholds (fns/_agenda.ts's detectRelationshipDrops,
 		// #930) — a contact's own EWMA cadence baseline must be exceeded by BOTH a multiple
 		// (default 2x) and an absolute floor (default 5 days) before it's proposed. Both
@@ -424,6 +438,18 @@ export type RtEnv = Env &
 		LEARNING_FOLDER_ENABLED?: string;
 		LEARNING_FOLDER_PATH?: string;
 		LEARNING_FOLDER_TOPIC?: string;
+
+		// Document-expiry radar (fns/_document_radar.ts + _agenda.ts's detectDocumentExpiryDrops,
+		// #1148) — sweeps a Dropbox app-folder subfolder for new scanned photos of personal legal/
+		// ID documents (passport, driver's license, insurance card, warranty, registration), OCRs
+		// them, and tracks each as a vault note (type + expiry). Same fail-closed gate as
+		// LEARNING_FOLDER_*: unset DOCUMENT_RADAR_ENABLED ⇒ the ingestion sweep is a total no-op
+		// (also requires hasDropbox); the agenda DETECTOR only needs the flag, since it reads
+		// tracked-document notes back regardless of whether this sweep or a human wrote them. Path/
+		// vault-folder default to /documents and "Documents" when unset.
+		DOCUMENT_RADAR_ENABLED?: string;
+		DOCUMENT_RADAR_PATH?: string;
+		DOCUMENT_RADAR_VAULT_FOLDER?: string;
 
 		// Manual ops trigger for the daily cron ticks (POST /admin/tick?job=…), bearer-gated
 		// by this token. Unset ⇒ the endpoint 404s (feature off). Lets an operator run a
@@ -476,6 +502,13 @@ export type RtEnv = Env &
 
 		YOUTUBE_API_KEY?: string;
 		AI?: AiBinding;
+		// AI Gateway id (#1060) — routes every env.AI.run() call (ai.ts's llm(),
+		// _embed.ts's embed(), translate, ocr) through Cloudflare AI Gateway for
+		// response caching, observability, and a cost ceiling. Dormant until a human
+		// creates the gateway in the Cloudflare account and sets this var (same
+		// convention as MONARCH_TOKEN above) — absent, every call behaves exactly as
+		// it does today, no gateway option passed. See ai.ts's aiGatewayOptions().
+		AI_GATEWAY_ID?: string;
 		IMAGES?: ImagesBinding;
 
 		BROWSER?: BrowserWorker;
@@ -531,6 +564,16 @@ export type RtEnv = Env &
 		// push is a pure no-op. See shipMetricsSnapshot in sux/src/grafana.ts.
 		GRAFANA_PROM_URL?: string;
 		GRAFANA_PROM_USER?: string;
+
+		// GitHub Actions billing gauge (spend-observability-plan.md #1) — reuses the
+		// Prometheus push above (same URL/USER + shared GRAFANA_LOKI_TOKEN bearer) plus the
+		// existing GITHUB_TOKEN (self-improve's) to poll /orgs/{org}/settings/billing/actions
+		// once a day. Actions minutes bill against the owning account, not an individual repo
+		// (#1098), so this is an org/user login, not an owner/repo pair — defaults to the SuxOS
+		// org; override only if this ever needs to watch a different account. Absent
+		// GITHUB_TOKEN or Prometheus secrets ⇒ dormant. See shipGithubBillingSnapshot in
+		// sux/src/grafana.ts.
+		GH_BILLING_OWNER?: string;
 
 		MCP_RATE_LIMITER?: { limit: (opts: { key: string }) => Promise<{ success: boolean }> };
 		// Coarse per-IP limiter for the anonymous observability/content routes

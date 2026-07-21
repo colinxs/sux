@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import type { InferNudgeDeps } from "./_infer_nudge";
-import { readInferNudgeWarmupLog, runInferNudge } from "./_infer_nudge";
+import type { InferAnomalyNudgeDeps, InferNudgeDeps } from "./_infer_nudge";
+import { readInferNudgeWarmupLog, runInferAnomalyNudge, runInferNudge } from "./_infer_nudge";
 import type { DriftCandidate } from "./_infer_drift";
+import type { AnomalyCandidate } from "./_infer_anomaly";
 import { readInferInferences, type InferSignal } from "./_infer";
+import { vaultToday } from "./_util";
 
 function fakeKv() {
 	const store = new Map<string, string>();
@@ -126,7 +128,7 @@ describe("runInferNudge — digest block", () => {
 		expect(digestAppend).toHaveBeenCalledTimes(1);
 		const [calledEnv, path, content] = (digestAppend as any).mock.calls[0];
 		expect(calledEnv).toBe(env);
-		expect(path).toBe("Daily/2026-07-19.md");
+		expect(path).toBe(`Daily/${vaultToday("UTC")}.md`);
 		expect(content).toContain("**suggests:** I noticed a lot about kayaking lately");
 		expect(content).toContain("[mail:thread-1] [redacted] a lot about kayaking");
 		expect(content).toContain("[vault:note-1] [redacted] kayak trip notes");
@@ -246,5 +248,131 @@ describe("runInferNudge — suggest-only warm-up (#868)", () => {
 		expect(await readInferNudgeWarmupLog(env, "mail+vault")).toHaveLength(1);
 
 		expect(await env.OAUTH_KV.get("kv:infer:warmup:mail+vault:count")).toBeNull();
+	});
+});
+
+// ── Scalar-anomaly recipe path (#1144) — same rate-cap/dedupe/cooldown/warm-up machinery, driven
+// by _infer_anomaly.ts's detector instead of centroid drift. Only the parts that differ from the
+// drift-path suite above get their own coverage here (gating, per-recipe fan-out, digest content);
+// the shared cap/warm-up mechanics are already exercised end-to-end by the tests above.
+const anomalyEnv = (over: Record<string, string> = {}) => ({ OAUTH_KV: fakeKv(), VAULT_TZ: "UTC", INFER_ARM_PURCHASES: "1", ...over }) as any;
+
+const ANOMALY_CANDIDATE: AnomalyCandidate = {
+	cluster: "purchases:spending",
+	domain: "purchases",
+	label: "spending",
+	zScore: 3,
+	recentCount: 12,
+	baselineMean: 0,
+	baselineStd: 0,
+	evidenceIds: ["p1", "p2"],
+};
+
+const ANOMALY_SIGNALS: InferSignal[] = [
+	{ id: "p1", ts: 1, vec: [1], redacted_snippet: "[redacted] merchant a 9.99", source_tag: "purchases:t1" },
+	{ id: "p2", ts: 2, vec: [1], redacted_snippet: "[redacted] merchant b 19.99", source_tag: "purchases:t2" },
+];
+
+function anomalyDeps(over: Partial<InferAnomalyNudgeDeps> = {}): InferAnomalyNudgeDeps {
+	return {
+		detectAnomaly: vi.fn(async () => ANOMALY_CANDIDATE),
+		signalsFor: vi.fn(async () => ANOMALY_SIGNALS),
+		phrase: vi.fn(async () => "I noticed a lot more spending lately — want me to pull up the transactions?"),
+		digestAppend: vi.fn(async () => {}),
+		...over,
+	};
+}
+
+describe("runInferAnomalyNudge — gating", () => {
+	it("is dormant when INFER_KILL is set, even with a recipe domain armed", async () => {
+		const env = anomalyEnv({ INFER_KILL: "1" });
+		const d = anomalyDeps();
+		const r = await runInferAnomalyNudge(env, {}, d);
+		expect(r.dormant).toBe(true);
+		expect(d.detectAnomaly).not.toHaveBeenCalled();
+	});
+
+	it("is dormant when no recipe domain is armed", async () => {
+		const env = anomalyEnv({ INFER_ARM_PURCHASES: "" });
+		const d = anomalyDeps();
+		const r = await runInferAnomalyNudge(env, {}, d);
+		expect(r.dormant).toBe(true);
+		expect(d.detectAnomaly).not.toHaveBeenCalled();
+	});
+
+	it("no candidate ⇒ suppressed, no write", async () => {
+		const env = anomalyEnv();
+		const d = anomalyDeps({ detectAnomaly: vi.fn(async () => null) });
+		const r = await runInferAnomalyNudge(env, {}, d);
+		expect(r.results).toEqual([{ domain: "purchases", label: "spending", cluster: "purchases:spending", suppressed: "no_candidate" }]);
+		expect(d.digestAppend).not.toHaveBeenCalled();
+	});
+
+	it("below the z-score floor ⇒ suppressed, no write", async () => {
+		const env = anomalyEnv({ INFER_NUDGE_ANOMALY_MIN_Z: "10" });
+		const d = anomalyDeps();
+		const r = await runInferAnomalyNudge(env, {}, d);
+		expect(r.results?.[0].suppressed).toBe("below_floor");
+		expect(d.digestAppend).not.toHaveBeenCalled();
+	});
+});
+
+const NO_WARMUP_ANOMALY = { INFER_NUDGE_WARMUP_CYCLES: "0" };
+
+describe("runInferAnomalyNudge — caps + digest", () => {
+	it("fires once and writes the digest with the count summary, why-trail, and controls", async () => {
+		const env = anomalyEnv(NO_WARMUP_ANOMALY);
+		const digestAppend = vi.fn(async () => {});
+		const r = await runInferAnomalyNudge(env, {}, anomalyDeps({ digestAppend }));
+
+		expect(r.results?.[0].fired).toBe(true);
+		expect(r.results?.[0].cluster).toBe("purchases:spending");
+		expect(digestAppend).toHaveBeenCalledTimes(1);
+
+		const [calledEnv, path, content] = (digestAppend as any).mock.calls[0];
+		expect(calledEnv).toBe(env);
+		expect(path).toBe(`Daily/${vaultToday("UTC")}.md`);
+		expect(content).toContain("scalar-anomaly · purchases:spending · z 3.00");
+		expect(content).toContain("**suggests:** I noticed a lot more spending lately");
+		expect(content).toContain("12 spending signals in the last 14d vs a baseline avg of 0.0 per 14d (z=3.00)");
+		expect(content).toContain("[purchases:t1] [redacted] merchant a 9.99");
+		expect(content).toContain("never-for-this purchases:spending");
+	});
+
+	it("rate-caps a second nudge for the same cluster within 24h", async () => {
+		const env = anomalyEnv(NO_WARMUP_ANOMALY);
+		const digestAppend = vi.fn(async () => {});
+		await runInferAnomalyNudge(env, {}, anomalyDeps({ digestAppend }));
+		const r2 = await runInferAnomalyNudge(env, {}, anomalyDeps({ digestAppend }));
+		expect(r2.results?.[0].suppressed).toBe("rate_capped");
+		expect(digestAppend).toHaveBeenCalledTimes(1);
+	});
+
+	it("a fresh cluster starts in warm-up: zero Daily-note writes, logged to the audit trail instead", async () => {
+		const env = anomalyEnv();
+		const digestAppend = vi.fn(async () => {});
+		const r = await runInferAnomalyNudge(env, {}, anomalyDeps({ digestAppend }));
+
+		expect(r.results?.[0].warmup).toBe(true);
+		expect(r.results?.[0].fired).toBeUndefined();
+		expect(digestAppend).not.toHaveBeenCalled();
+
+		const log = await readInferNudgeWarmupLog(env, "purchases:spending");
+		expect(log).toHaveLength(1);
+		expect(log[0].score).toBe(3);
+	});
+
+	it("evaluates every armed recipe independently in one cycle", async () => {
+		const env = anomalyEnv(NO_WARMUP_ANOMALY);
+		const digestAppend = vi.fn(async () => {});
+		const otherCandidate: AnomalyCandidate = { ...ANOMALY_CANDIDATE, cluster: "purchases:refunds", label: "refunds" };
+		const r = await runInferAnomalyNudge(
+			env,
+			{ recipes: [{ domain: "purchases", label: "spending" }, { domain: "purchases", label: "refunds" }] },
+			anomalyDeps({ digestAppend, detectAnomaly: vi.fn(async (_e, recipe) => (recipe.label === "refunds" ? otherCandidate : ANOMALY_CANDIDATE)) }),
+		);
+		expect(r.results).toHaveLength(2);
+		expect(r.results?.map((x) => x.cluster).sort()).toEqual(["purchases:refunds", "purchases:spending"]);
+		expect(digestAppend).toHaveBeenCalledTimes(2);
 	});
 });

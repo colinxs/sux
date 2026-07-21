@@ -2,6 +2,10 @@ import { DROPBOX_API as API, DROPBOX_CONTENT as CONTENT, type DropboxScope, drop
 import { type Fn, fail, ok, type RtEnv } from "../registry";
 import { maybeDecompress } from "./_gzip";
 import { fromB64, toB64, oj } from "./_util";
+import { staged } from "../stage";
+import { embedOne } from "./_embed";
+import { appendInferSignal, hasInferArm } from "./_infer";
+import { redactPII } from "./redact";
 
 // Dropbox as the human-facing blob store (R2 `store` is the machine-facing
 // twin). The token belongs to an App-folder-scoped app: it structurally cannot
@@ -84,11 +88,34 @@ export async function dropboxPut(env: RtEnv, path: string, bytes: Uint8Array, op
 	return { path: stored, size: json?.size ?? bytes.length, url: await sharedLink(env, stored) };
 }
 
+const FILES_SIGNAL_SNIPPET_MAX = 1000;
+
+/** Best-effort feed into the infer signal log (#864's substrate) — a no-op unless
+ *  INFER_ARM_FILES is set, checked first so a dormant domain costs zero embed calls
+ *  (#1142: arming INFER_ARM_FILES previously had zero observable effect, since nothing
+ *  ever called appendInferSignal for this domain — "files" here means the Dropbox
+ *  app-folder namespace, per ingest.ts's logVaultSignal comment on the vault/files
+ *  domain split, #1004). Never throws into the caller: a failed embed/append must not
+ *  affect an upload that already landed in Dropbox. Only fires for textual `data`
+ *  uploads (mirrors ingest.ts's logVaultSignal, which only ever embeds text) — a
+ *  `base64` binary upload has no meaningful text to embed. */
+async function logFilesSignal(env: RtEnv, path: string, text: string): Promise<void> {
+	if (!hasInferArm(env, "files")) return;
+	try {
+		const { redacted } = redactPII(text);
+		const snippet = redacted.slice(0, FILES_SIGNAL_SNIPPET_MAX);
+		const vec = await embedOne(env, snippet);
+		await appendInferSignal(env, "files", { ts: Date.now(), vec, redacted_snippet: snippet, source_tag: `files:${path}` });
+	} catch (e) {
+		console.warn(`infer: files signal log failed for ${path} — ${(e as Error)?.message ?? e}`);
+	}
+}
+
 export const dropbox: Fn = {
 	name: "dropbox",
 	cost: 2,
 	description:
-		"Dropbox app-folder blob store — the human-facing twin of R2 `store`: files land in /Apps/<app>/ and sync to every device (the App-folder token cannot see the rest of Dropbox). op: put (`path` + `data` utf-8 or `base64` binary → uploads and returns the shared link) | get (`path` → text for textual extensions, else base64; large files return metadata + shared link) | list (`path` folder, default root; paginate with `cursor`) | delete (`path` + `confirm:true` — deletes go to recoverable Dropbox 'Deleted files') | share (`path` → shared link, created or reused) | move (`path` + `to` → rename/relocate). Shared links are PUBLIC 'anyone with the link' URLs. Paths are relative to the app-folder root. Needs DROPBOX_TOKEN (App-folder scoped access token).",
+		"Dropbox app-folder blob store — the human-facing twin of R2 `store`: files land in /Apps/<app>/ and sync to every device (the App-folder token cannot see the rest of Dropbox). op: put (`path` + `data` utf-8 or `base64` binary → uploads and returns the shared link) | get (`path` → text for textual extensions, else base64; large files return metadata + shared link) | list (`path` folder, default root; paginate with `cursor`) | delete (`path` — goes to recoverable Dropbox 'Deleted files'; STAGES A PREVIEW BY DEFAULT — re-call with the returned commit_token, or pass force:true, to apply in one shot) | share (`path` → shared link, created or reused) | move (`path` + `to` → rename/relocate). Shared links are PUBLIC 'anyone with the link' URLs. Paths are relative to the app-folder root. Needs DROPBOX_TOKEN (App-folder scoped access token).",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -100,7 +127,9 @@ export const dropbox: Fn = {
 			data: { type: "string", description: "put: UTF-8 text to upload." },
 			base64: { type: "string", description: "put: base64 bytes to upload (binary)." },
 			to: { type: "string", description: "move: destination path (rename or relocate `path`)." },
-			confirm: { type: "boolean", description: "delete: REQUIRED — must be true. A deliberate two-step (the file lands in recoverable Dropbox 'Deleted files', but delete is never fire-at-will)." },
+			stage: { type: "boolean", description: "delete: preview only — returns {preview, commit_token}, deletes nothing." },
+			commit_token: { type: "string", description: "delete: commit a previously staged delete (the payload must match what was staged)." },
+			force: { type: "boolean", description: "delete: skip staging and delete in one shot (the ! override). By default a delete stages a preview first." },
 		},
 	},
 	cacheable: false,
@@ -115,11 +144,15 @@ export const dropbox: Fn = {
 			if (op === "put") {
 				if (!path) return fail("op=put requires a `path`.");
 				let bytes: Uint8Array;
+				let text: string | undefined;
 				if (typeof args?.base64 === "string" && args.base64) bytes = fromB64(args.base64);
-				else if (typeof args?.data === "string") bytes = new TextEncoder().encode(args.data); // "" is a valid empty upload
-				else return fail("op=put requires `data` (utf-8) or `base64` (binary).");
+				else if (typeof args?.data === "string") {
+					bytes = new TextEncoder().encode(args.data); // "" is a valid empty upload
+					text = args.data;
+				} else return fail("op=put requires `data` (utf-8) or `base64` (binary).");
 				const r = await dropboxPut(env, path, bytes);
 				if ("error" in r) return fail(r.error);
+				if (text) await logFilesSignal(env, r.path, text);
 				return ok(oj({ ok: true, ...r, ...(r.url ? {} : { warning: "uploaded, but no shared link minted — check the token's sharing scope" }) }));
 			}
 			if (op === "get") {
@@ -163,10 +196,14 @@ export const dropbox: Fn = {
 			}
 			if (op === "delete") {
 				if (!path) return fail("op=delete requires a `path`.");
-				if (args?.confirm !== true) return fail("op=delete requires confirm:true (the file goes to recoverable Dropbox 'Deleted files', but delete is a deliberate two-step — never fire-at-will).");
-				const { status, json } = await rpc(env, "/files/delete_v2", { path });
-				if (status >= 400) return fail(`Dropbox delete error: ${json?.error_summary ?? `HTTP ${status}`} (${path})`);
-				return ok(oj({ ok: true, deleted: json?.metadata?.path_display ?? path }));
+				const mutate = async () => {
+					const { status, json } = await rpc(env, "/files/delete_v2", { path });
+					if (status >= 400) throw new Error(`Dropbox delete error: ${json?.error_summary ?? `HTTP ${status}`} (${path})`);
+					return { ok: true, deleted: json?.metadata?.path_display ?? path };
+				};
+				const gateArgs = { stage: args?.stage === true, commit_token: args?.commit_token ? String(args.commit_token) : undefined, force: args?.force === true };
+				const out = await staged(env, "dropbox_delete", gateArgs, { path }, { action: "dropbox delete", path }, mutate);
+				return ok(oj("stageResult" in out ? out.stageResult : out.result));
 			}
 			if (op === "move") {
 				if (!path) return fail("op=move requires a `path` (source).");

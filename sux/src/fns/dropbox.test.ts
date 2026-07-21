@@ -117,6 +117,42 @@ describe("dropbox (app-folder blob store)", () => {
 		expect(JSON.parse(r.content[0].text).url).toBe("https://www.dropbox.com/s/old/a.txt");
 	});
 
+	it("put feeds the infer signal log for the 'files' domain when INFER_ARM_FILES is set", async () => {
+		const { readInferSignals } = await import("./_infer");
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (u: string | URL) => {
+				const url = String(u);
+				if (url.endsWith("/files/upload")) return new Response(JSON.stringify({ path_display: "/notes/a.txt", size: 2 }), { status: 200 });
+				return new Response(JSON.stringify({ url: "https://www.dropbox.com/s/x/a.txt" }), { status: 200 });
+			}),
+		);
+		const embedRun = vi.fn(async () => ({ data: [[0.1, 0.2, 0.3]] }));
+		const env = { ...ENV, INFER_ARM_FILES: "1", AI: { run: embedRun }, OAUTH_KV: fakeKV() } as any;
+		await dropbox.run(env, { op: "put", path: "notes/a.txt", data: "hi there" });
+		expect(embedRun).toHaveBeenCalled();
+		const signals = await readInferSignals(env, "files");
+		expect(signals).toHaveLength(1);
+		expect(signals[0].source_tag).toBe("files:/notes/a.txt");
+	});
+
+	it("put does NOT feed the infer signal log when INFER_ARM_FILES is unset", async () => {
+		const { readInferSignals } = await import("./_infer");
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (u: string | URL) => {
+				const url = String(u);
+				if (url.endsWith("/files/upload")) return new Response(JSON.stringify({ path_display: "/notes/a.txt", size: 2 }), { status: 200 });
+				return new Response(JSON.stringify({ url: "https://www.dropbox.com/s/x/a.txt" }), { status: 200 });
+			}),
+		);
+		const embedRun = vi.fn(async () => ({ data: [[0.1, 0.2, 0.3]] }));
+		const env = { ...ENV, AI: { run: embedRun }, OAUTH_KV: fakeKV() } as any;
+		await dropbox.run(env, { op: "put", path: "notes/a.txt", data: "hi there" });
+		expect(embedRun).not.toHaveBeenCalled();
+		expect(await readInferSignals(env, "files")).toHaveLength(0);
+	});
+
 	it("get checks metadata first, then returns text for textual extensions", async () => {
 		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
 			const url = String(u);
@@ -210,23 +246,38 @@ describe("dropbox (app-folder blob store)", () => {
 		expect(out.warning).toMatch(/no shared link/);
 	});
 
-	it("deletes a path (with confirm:true)", async () => {
+	it("deletes a path (with force:true)", async () => {
 		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
 			expect(String(u)).toContain("/files/delete_v2");
 			expect(JSON.parse(init.body).path).toBe("/a.pdf");
 			return new Response(JSON.stringify({ metadata: { path_display: "/a.pdf" } }), { status: 200 });
 		}));
-		const r = await dropbox.run(ENV, { op: "delete", path: "a.pdf", confirm: true });
+		const r = await dropbox.run(ENV, { op: "delete", path: "a.pdf", force: true });
 		expect(JSON.parse(r.content[0].text)).toMatchObject({ ok: true, deleted: "/a.pdf" });
 	});
 
-	it("delete without confirm:true is rejected and never calls Dropbox (no fire-at-will)", async () => {
+	it("delete STAGES by default and never calls Dropbox (no fire-at-will)", async () => {
 		const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
 		vi.stubGlobal("fetch", fetchMock);
-		const r = await dropbox.run(ENV, { op: "delete", path: "a.pdf" });
-		expect(r.isError).toBe(true);
-		expect(r.content[0].text).toMatch(/confirm:true/);
+		const env = { ...ENV, OAUTH_KV: fakeKV() };
+		const r = await dropbox.run(env, { op: "delete", path: "a.pdf" });
+		expect(r.isError).toBeFalsy();
+		const out = JSON.parse(r.content[0].text);
+		expect(out).toMatchObject({ staged: true, kind: "dropbox_delete" });
+		expect(out.commit_token).toBeTruthy();
 		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("commit_token from a staged delete applies it", async () => {
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
+			expect(String(u)).toContain("/files/delete_v2");
+			expect(JSON.parse(init.body).path).toBe("/a.pdf");
+			return new Response(JSON.stringify({ metadata: { path_display: "/a.pdf" } }), { status: 200 });
+		}));
+		const env = { ...ENV, OAUTH_KV: fakeKV() };
+		const staged = JSON.parse((await dropbox.run(env, { op: "delete", path: "a.pdf" })).content[0].text);
+		const r = await dropbox.run(env, { op: "delete", path: "a.pdf", commit_token: staged.commit_token });
+		expect(JSON.parse(r.content[0].text)).toMatchObject({ ok: true, deleted: "/a.pdf" });
 	});
 
 	it("moves/renames a path via move_v2", async () => {
@@ -249,7 +300,7 @@ describe("dropbox (app-folder blob store)", () => {
 
 	it("delete surfaces the real Dropbox error text (not a blanket 'Not found')", async () => {
 		vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error_summary: "path_lookup/not_found/" }), { status: 409 })));
-		const r = await dropbox.run(ENV, { op: "delete", path: "missing.pdf", confirm: true });
+		const r = await dropbox.run(ENV, { op: "delete", path: "missing.pdf", force: true });
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toContain("path_lookup/not_found");
 		expect(r.content[0].text).toContain("missing.pdf");

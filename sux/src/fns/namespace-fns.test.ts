@@ -119,18 +119,21 @@ describe("vault verb dispatches into VAULT_TOOLS byte-identically", () => {
 		expect(viaVerb).toEqual(viaTool);
 	});
 
-	it("vault({action:'delete'}) without confirm passes the reversibility guard through (bad_input, confirm:true)", async () => {
+	it("vault({action:'delete'}) auto-stages (the stage/commit_token kernel, not a bare confirm gate)", async () => {
+		wire();
 		const r = await vault.run(vaultEnv, { action: "delete", path: "Inbox/x.md" });
-		expect(r.errorCode).toBe("bad_input");
-		expect(r.content[0].text).toContain("confirm:true");
+		expect(r.isError).toBeFalsy();
+		const parsed = JSON.parse(r.content[0].text);
+		expect(parsed).toMatchObject({ staged: true, kind: "vault_delete" });
 	});
 });
 
-describe("files verb preserves the delete confirm gate", () => {
-	it("files({action:'delete'}) without confirm → bad_input confirm:true", async () => {
+describe("files verb preserves the delete stage guard", () => {
+	it("files({action:'delete'}) without stage/commit_token/force → stages a preview, deletes nothing", async () => {
 		const r = await files.run({} as RtEnv, { action: "delete", path: "/x.txt" });
-		expect(r.errorCode).toBe("bad_input");
-		expect(r.content[0].text).toContain("confirm:true");
+		const out = JSON.parse(r.content[0].text);
+		expect(out).toMatchObject({ staged: true, kind: "dropbox_delete" });
+		expect(out.commit_token).toBeTruthy();
 	});
 });
 
@@ -234,10 +237,12 @@ describe("front-door integration (/mcp)", () => {
 	};
 
 	it("tools/call name:'vault' dispatches into VAULT_TOOLS (not an unknown-tool error)", async () => {
+		routes.handler = () => new Response(JSON.stringify({ tree: [] }), { status: 200, headers: { "content-type": "application/json" } });
 		const out = await call({ name: "vault", arguments: { action: "delete", path: "Inbox/x.md" } });
 		expect(out.error).toBeUndefined(); // resolved to a real fn, not -32601
-		expect(out.result.isError).toBe(true);
-		expect(out.result.content[0].text).toContain("confirm:true"); // reached vault_delete's guard
+		expect(out.result.isError).toBeFalsy();
+		const parsed = JSON.parse(out.result.content[0].text);
+		expect(parsed).toMatchObject({ staged: true, kind: "vault_delete" }); // reached vault_delete's stage guard
 	});
 
 	it("tools/list advertises the namespace verbs", async () => {

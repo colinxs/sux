@@ -34,8 +34,13 @@ import { hasImessage, imessage } from "./imessage";
 import { hasMonarch, monarch } from "./monarch";
 import { crossOrgAllergyGaps, crossOrgMedicationAllergyConflicts, mychartConfigured, orgLabel, summarizeMyChart } from "../mychart";
 import { errMsg, vaultToday } from "./_util";
+import { embedOne } from "./_embed";
+import { appendInferSignal, hasInferArm } from "./_infer";
+import { redactPII } from "./redact";
 import type { WatchFindings } from "./_watch_sweep";
 import type { WeeklyRecallFindings } from "./_weekly_recall";
+import { dueForReview, hasStudyReview, reviewIntervalDays, studyReviewCandidates, type DueReview, type StudiedTopicRef } from "./_study_review";
+import { documentRadarArmed, listTrackedDocuments, type TrackedDocumentRef } from "./_document_radar";
 
 // ── Gates ────────────────────────────────────────────────────────────────────
 const flagOn = (v: string | undefined): boolean => {
@@ -177,7 +182,7 @@ export function detectDrops(mail: MailRef[], events: EventRef[]): Drop[] {
  *  detector below. `lastFromMe` undefined means "couldn't determine" (e.g. an unreadable
  *  thread), which the detector treats the same as "already answered": fail-closed, same as
  *  every other detector here. */
-export type TextThreadRef = { id: string; contact?: string; name?: string; lastText?: string; lastFromMe?: boolean; lastAt?: string };
+export type TextThreadRef = { id: string; contact?: string; name?: string; lastText?: string; lastFromMe?: boolean; lastAt?: string; lastMessageId?: string };
 
 /** Placeholder imessage-service returns for a message with no decodable text (reactions/
  *  tapbacks, some rich attachments) — see imessage_server.py's _decode_text (#852). Not a real
@@ -198,7 +203,8 @@ export function detectTextDrops(threads: TextThreadRef[]): Drop[] {
 		if (!t.lastText || t.lastText === UNPARSEABLE_TEXT) continue;
 		const who = t.name || t.contact || "someone";
 		const preview = (t.lastText || "(message)").slice(0, 120);
-		drops.push({ kind: "unanswered_text", urgency: "fyi", dedupe: `reply_text::${t.id}`, title: `Reply to ${who} (text): ${preview}`, emoji: "💬", action: task(`Reply to ${who} (text) — ${preview}`), evidence: { id: t.id, contact: t.contact } });
+		const dedupeSuffix = t.lastMessageId ?? t.lastAt ?? "";
+		drops.push({ kind: "unanswered_text", urgency: "fyi", dedupe: `reply_text::${t.id}::${dedupeSuffix}`, title: `Reply to ${who} (text): ${preview}`, emoji: "💬", action: task(`Reply to ${who} (text) — ${preview}`), evidence: { id: t.id, contact: t.contact } });
 	}
 	return sortByUrgency(drops);
 }
@@ -405,14 +411,38 @@ export function detectWatchDrops(findings: WatchFindings | null): Drop[] {
 	const drops: Drop[] = [];
 	for (const c of findings.changed) {
 		const label = c.label ? ` (${c.label})` : "";
+		const hasDelta = c.numeric_value !== undefined && c.previous_numeric_value !== undefined;
+		const delta = hasDelta ? ` (${c.previous_numeric_value} → ${c.numeric_value})` : "";
 		drops.push({
 			kind: "watch_changed",
 			urgency: "fyi",
 			dedupe: `watch::${c.url}::${c.label ?? ""}::${c.hash}`,
-			title: `Watched page changed${label}: ${c.url}`,
+			title: `Watched page changed${label}${delta}: ${c.url}`,
 			emoji: "👀",
-			action: task(`Check watched page — changed${label}: ${c.url}`),
-			evidence: { url: c.url, label: c.label, hash: c.hash, previous_hash: c.previous_hash },
+			action: task(`Check watched page — changed${label}${delta}: ${c.url}`),
+			evidence: { url: c.url, label: c.label, hash: c.hash, previous_hash: c.previous_hash, numeric_value: c.numeric_value, previous_numeric_value: c.previous_numeric_value },
+		});
+	}
+	return sortByUrgency(drops);
+}
+
+/** Turn the studied topics due for another look (#1092) into drops — same read-only-sense/
+ *  reversible-propose contract as the other detectors here, just fed from study.ts's own
+ *  whitelisted-topic list instead of a live fan-out. The dedupe key mixes in the review
+ *  `cycle`, not just the topic, so a topic due again next interval gets a fresh proposal
+ *  instead of being silently swallowed by the ledger after its first nudge. */
+export function detectStudyReviewDrops(due: DueReview[]): Drop[] {
+	const drops: Drop[] = [];
+	for (const d of due) {
+		const label = d.title ? ` — ${d.title}` : "";
+		drops.push({
+			kind: "study_review_due",
+			urgency: "fyi",
+			dedupe: `study_review::${d.topic}::${d.cycle}`,
+			title: `Review due: ${d.topic}${label}`,
+			emoji: "📚",
+			action: task(`Review studied material — ${d.topic}${label} (quiz yourself with oracle({problem, topic:"${d.topic}"}))`),
+			evidence: { topic: d.topic, title: d.title, learned_at: d.learned_at, cycle: d.cycle },
 		});
 	}
 	return sortByUrgency(drops);
@@ -436,6 +466,16 @@ const UNUSUAL_CHARGE_WINDOW_DAYS = 3;
 // Recent-threads window scanned for the unanswered_text detector — imessage.ts's `threads` has
 // no unread concept (unlike mailSearch's `unread:true`), so recency is the only cheap bound.
 const TEXT_LOOKBACK_DAYS = 3;
+// Recent-mail window scanned for the mail half of Relationship Radar (#1133) — deliberately NOT
+// unread-gated (unlike detectDrops/mailSearch's inbox scan), so a contact's cadence keeps updating
+// after their message is read instead of freezing the moment it's marked read. A bounded window is
+// still a membership test, not a true "ever contacted" scan — too narrow and a slow-cadence contact
+// falls out of it before detectRelationshipDrops' own silenceDays threshold ever fires, same freeze
+// bug one step removed. 90d (matching AGENDA_RELATIONSHIP_MIN_SILENCE_DAYS' own max) comfortably
+// covers the default-config drop threshold (baselineDays*2) up to a ~45d cadence; widening costs
+// nothing extra server-side (mail_search's `after` filter is cheap — the `limit:50` cap below is
+// what actually bounds cost, not the window width).
+const RELATIONSHIP_MAIL_LOOKBACK_DAYS = 90;
 // Trailing window (NOT calendar-month-to-date) for the cashflow-derived savings-rate detector —
 // a fixed calendar-month window reads sharply negative for the first few days of a month before
 // income posts (a biweekly/monthly paycheck lags the 1st), a pure timing artifact rather than a
@@ -450,12 +490,61 @@ const PORTFOLIO_DRIFT_THRESHOLD = 0.1;
 // A savings rate this many percentage points below the last checked cycle reads as a real drop,
 // not day-to-day noise in a rolling window.
 const SAVINGS_RATE_DROP_THRESHOLD = 0.15;
+// Subscription-creep detector (#1059, W7): needs several months of transaction history to spot
+// a recurring pattern at all — far wider than unusual_charge's 3-day recency window, so the
+// transactions fetch itself is widened to this and unusual_charge re-filters down to its own
+// window (see detectMonarchDrops).
+const SUBSCRIPTION_LOOKBACK_DAYS = 90;
+// A merchant needs at least this many charges within the lookback window before its pattern is
+// trusted as "recurring" rather than coincidence.
+const SUBSCRIPTION_MIN_OCCURRENCES = 3;
+// A recurring charge growing at least this fraction above its first-seen amount reads as creep
+// (a price hike, plan upgrade, or add-on quietly stacked on) — small billing noise (tax/FX
+// rounding) stays under this.
+const SUBSCRIPTION_GROWTH_THRESHOLD = 0.2;
+// Recurring charges above this read as a bill (rent, insurance) already covered by bill_due,
+// not a subscription.
+const SUBSCRIPTION_MAX_CHARGE = 200;
+// defaultDeps.monarchTransactions pagination (#1097): monarch.ts's transactions op caps a single
+// page at 200 and reports totalCount, so the wider SUBSCRIPTION_LOOKBACK_DAYS window (anyone above
+// ~1.1 txns/day) needs an offset loop rather than one unpaginated call, or rows past the first page
+// silently vanish. MAX bounds the loop itself — a sane ceiling, not a truncation anyone should hit
+// at a 90-day window, so a pathological account/API bug can't turn one cycle into unbounded fetches.
+const MONARCH_TRANSACTIONS_PAGE_SIZE = 200;
+const MONARCH_TRANSACTIONS_MAX = 1000;
 
 const daysLeftInMonth = (date: string): number => {
 	const d = new Date(`${date}T00:00:00Z`);
 	const lastDay = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
 	return lastDay - d.getUTCDate();
 };
+
+const PURCHASE_SIGNAL_SNIPPET_MAX = 1000;
+
+/** Best-effort feed into the infer signal log (#864's substrate) — a no-op unless
+ *  INFER_ARM_PURCHASES is set, checked first so a dormant domain costs zero embed/ledger
+ *  calls (#1085: arming INFER_ARM_PURCHASES previously had zero observable effect, since
+ *  nothing ever called appendInferSignal for this domain). Never throws into the caller: a
+ *  failed embed/append must not affect the agenda cycle. Dedupes per transaction id via a
+ *  ledger — monarchTransactions re-fetches a rolling SUBSCRIPTION_LOOKBACK_DAYS-wide window
+ *  every cycle, so without a seen-set the same transaction would re-embed and re-append on
+ *  every single cycle it stays inside that window. */
+async function logPurchaseSignals(env: RtEnv, transactions: MonarchTxnRef[]): Promise<void> {
+	if (!hasInferArm(env, "purchases")) return;
+	const led = ledger(env, "agenda_infer_purchases");
+	for (const t of transactions) {
+		if (!(await led.markIfNew(t.id))) continue;
+		try {
+			const raw = `${t.merchant || "unknown merchant"} ${typeof t.amount === "number" ? t.amount.toFixed(2) : ""} ${t.date ?? ""}`.trim();
+			const { redacted } = redactPII(raw);
+			const snippet = redacted.slice(0, PURCHASE_SIGNAL_SNIPPET_MAX);
+			const vec = await embedOne(env, snippet);
+			await appendInferSignal(env, "purchases", { ts: Date.now(), vec, redacted_snippet: snippet, source_tag: `purchases:${t.id}` });
+		} catch (e) {
+			console.warn(`infer: purchases signal log failed for ${t.id} — ${errMsg(e)}`);
+		}
+	}
+}
 
 /** Turn Monarch's read-only accounts/transactions/budgets into drops (W7) — same
  *  read-only-sense/reversible-propose contract as every other detector here. Bill-due,
@@ -483,8 +572,12 @@ export function detectMonarchDrops(date: string, accounts: MonarchAccountRef[], 
 		});
 	}
 
+	// unusual_charge only cares about the recent window even though `transactions` may span the
+	// wider SUBSCRIPTION_LOOKBACK_DAYS fetched for the subscription-creep scan below (#1059).
+	const unusualChargeSince = addDays(date, -UNUSUAL_CHARGE_WINDOW_DAYS);
 	for (const t of transactions) {
 		if (typeof t.amount !== "number" || t.amount >= 0 || Math.abs(t.amount) < unusualChargeThreshold) continue;
+		if (t.date && t.date < unusualChargeSince) continue;
 		const who = t.merchant || "a transaction";
 		const amt = Math.abs(t.amount).toFixed(2);
 		drops.push({
@@ -513,6 +606,38 @@ export function detectMonarchDrops(date: string, accounts: MonarchAccountRef[], 
 				evidence: { category: b.category, remaining: b.remaining, month },
 			});
 		}
+	}
+
+	// Subscription creep: group negative-amount charges by merchant across the whole window
+	// (unlike unusual_charge above, which only cares about a single outsized transaction),
+	// and flag a merchant whose charge amount has grown since its first-seen occurrence.
+	const byMerchant = new Map<string, MonarchTxnRef[]>();
+	for (const t of transactions) {
+		if (typeof t.amount !== "number" || t.amount >= 0) continue;
+		const amt = Math.abs(t.amount);
+		if (amt > SUBSCRIPTION_MAX_CHARGE) continue;
+		const merchant = t.merchant?.trim();
+		if (!merchant) continue;
+		const list = byMerchant.get(merchant) ?? [];
+		list.push(t);
+		byMerchant.set(merchant, list);
+	}
+	for (const [merchant, txns] of byMerchant) {
+		if (txns.length < SUBSCRIPTION_MIN_OCCURRENCES) continue;
+		const sorted = [...txns].sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+		const first = Math.abs(sorted[0].amount as number);
+		const latest = sorted[sorted.length - 1];
+		const latestAmount = Math.abs(latest.amount as number);
+		if (first <= 0 || latestAmount < first * (1 + SUBSCRIPTION_GROWTH_THRESHOLD)) continue;
+		drops.push({
+			kind: "subscription_creep",
+			urgency: "fyi",
+			dedupe: `monarch::subscription_creep::${merchant}::${Math.round(latestAmount * 100)}`,
+			title: `Subscription creep: ${merchant} rose from $${first.toFixed(2)} to $${latestAmount.toFixed(2)}`,
+			emoji: "📈",
+			action: task(`Review recurring charge growth: ${merchant} ($${first.toFixed(2)} → $${latestAmount.toFixed(2)})`),
+			evidence: { merchant, firstAmount: first, latestAmount, occurrences: sorted.length },
+		});
 	}
 
 	return sortByUrgency(drops);
@@ -768,6 +893,41 @@ export function detectMychartAllergyGapDrops(gaps: MyChartAllergyGapRef[]): Drop
 	);
 }
 
+const DOC_RADAR_DAY_MS = 24 * 60 * 60 * 1000;
+const DOCUMENT_RADAR_WARN_DAYS = 30;
+
+/** Silently-expiring personal legal/ID documents (passport, driver's license, insurance card,
+ *  warranty, registration — #1148), the same "drop about to happen" shape as MyChart's Rx
+ *  refills and Monarch's bills, but sourced from _document_radar.ts's tracked-document vault
+ *  notes (written by that sweep, or by hand) instead of a live API. Dedupe includes the expiry
+ *  date itself so a renewed document (new expiry_date in its note) proposes again, same as
+ *  every other date-keyed dedupe in this file. */
+export function detectDocumentExpiryDrops(today: string, docs: TrackedDocumentRef[], opts?: { warnDays?: number }): Drop[] {
+	const warnDays = opts?.warnDays ?? DOCUMENT_RADAR_WARN_DAYS;
+	const todayMs = Date.parse(`${today}T00:00:00Z`);
+	const drops: Drop[] = [];
+	for (const doc of docs) {
+		if (!doc.expiryDate) continue;
+		const expiryMs = Date.parse(`${doc.expiryDate}T00:00:00Z`);
+		if (!Number.isFinite(expiryMs)) continue;
+		const daysLeft = Math.round((expiryMs - todayMs) / DOC_RADAR_DAY_MS);
+		if (daysLeft > warnDays) continue;
+		const label = doc.label || doc.docType || "document";
+		const urgency: Urgency = daysLeft <= 7 ? "today" : "soon";
+		const title = daysLeft < 0 ? `${label} expired ${-daysLeft}d ago — renew it` : `${label} expires in ${daysLeft}d (${doc.expiryDate}) — renew it`;
+		drops.push({
+			kind: "document_expiry",
+			urgency,
+			dedupe: `document_radar::expiry::${doc.path}::${doc.expiryDate}`,
+			title,
+			emoji: "🪪",
+			action: task(`Renew ${label}`, doc.expiryDate),
+			evidence: { path: doc.path, docType: doc.docType, expiryDate: doc.expiryDate, daysLeft },
+		});
+	}
+	return sortByUrgency(drops);
+}
+
 /** Load each tracked thread's cached cadence baseline — one KV key per thread id, unlike
  *  Monarch's single combined snapshot, since there's no fixed shape to bound one key's size
  *  against. A missing or unparseable entry is simply absent, same as lastMonarchSnapshot
@@ -834,6 +994,10 @@ function buildDigestBlock(date: string, cycle: string, emailed: boolean, d: { su
 // ── Deps (injectable side-effect surface) ────────────────────────────────────────
 export type AgendaDeps = {
 	mailSearch: (env: RtEnv, opts: { limit: number }) => Promise<MailRef[]>;
+	/** Mail feeding mailRelationshipThreads' per-contact cadence (#1133) — a recent-window scan
+	 *  regardless of read state, NOT `mailSearch`'s unread-only inbox scan, so a contact's cadence
+	 *  keeps updating after their message is read instead of freezing forever the moment it is. */
+	mailRelationshipSearch: (env: RtEnv, opts: { since: string }) => Promise<MailRef[]>;
 	calEvents: (env: RtEnv, opts: { start: string; end: string }) => Promise<EventRef[]>;
 	digestAppend: (env: RtEnv, path: string, content: string) => Promise<void>;
 	/** Send the digest to Colin's own primary address (the one send this loop can do), and
@@ -850,6 +1014,9 @@ export type AgendaDeps = {
 	/** The watch sweep's most recent findings (#899) — a ledger-cache read, never a fresh
 	 *  page re-check. */
 	watchFindings: (env: RtEnv) => Promise<WatchFindings | null>;
+	/** Every whitelisted `study` topic (#1092) — a KV list read, never a fresh distill. Only
+	 *  called when hasStudyReview(env). */
+	studyTopics: (env: RtEnv) => Promise<StudiedTopicRef[]>;
 	/** The cross-domain-link sweep's most recent findings (#785/#948) — a ledger-cache
 	 *  read, never a fresh cross-domain rank. */
 	crossSemanticFindings: (env: RtEnv) => Promise<CrossSemanticFindings | null>;
@@ -877,6 +1044,9 @@ export type AgendaDeps = {
 	/** Cross-org one-sided allergy gaps (#1009) — only called when hasMychartReconcile(env)
 	 *  && mychartConfigured(env). [] when fewer than 2 orgs have ever pulled. */
 	mychartAllergyGaps: (env: RtEnv) => Promise<MyChartAllergyGapRef[]>;
+	/** Tracked-document vault notes (passport/license/insurance/warranty/registration, #1148) —
+	 *  a vault scan, never a live API. Only called when documentRadarArmed(env). */
+	trackedDocuments: (env: RtEnv) => Promise<TrackedDocumentRef[]>;
 };
 
 export type AgendaOpts = { date?: string; max_mail?: number; horizon_days?: number; dry_run?: boolean; cycle_id?: string };
@@ -936,10 +1106,12 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 	// Gather (read-only, degrade-independently).
 	const status: Record<string, string> = {};
 	let mail: MailRef[] = [];
+	let relationshipMail: MailRef[] = [];
 	let events: EventRef[] = [];
 	let consolidateFindings: ConsolidateFindings | null = null;
 	let weeklyRecallFindings: WeeklyRecallFindings | null = null;
 	let watchFindings: WatchFindings | null = null;
+	let studyTopics: StudiedTopicRef[] = [];
 	let crossSemanticFindings: CrossSemanticFindings | null = null;
 	let monarchAccounts: MonarchAccountRef[] = [];
 	let monarchTransactions: MonarchTxnRef[] = [];
@@ -954,12 +1126,19 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 	let mychartNewDocuments: MyChartEntryRef[] = [];
 	let mychartConflicts: MyChartConflictRef[] = [];
 	let mychartAllergyGaps: MyChartAllergyGapRef[] = [];
+	let trackedDocuments: TrackedDocumentRef[] = [];
 	await Promise.all([
 		(async () => {
 			mail = await deps.mailSearch(env, { limit: maxMail });
 			status.mail = `${mail.length} scanned`;
 		})().catch((e) => {
 			status.mail = `unavailable (${errMsg(e).slice(0, 90)})`;
+		}),
+		(async () => {
+			relationshipMail = await deps.mailRelationshipSearch(env, { since: addDays(date, -RELATIONSHIP_MAIL_LOOKBACK_DAYS) });
+			status.relationship_mail = `${relationshipMail.length} scanned`;
+		})().catch((e) => {
+			status.relationship_mail = `unavailable (${errMsg(e).slice(0, 90)})`;
 		}),
 		(async () => {
 			events = await deps.calEvents(env, { start: `${date}T00:00:00`, end: `${addDays(date, horizon)}T23:59:59` });
@@ -986,6 +1165,16 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 			status.watch = `unavailable (${errMsg(e).slice(0, 90)})`;
 		}),
 		(async () => {
+			if (!hasStudyReview(env)) {
+				status.study_review = "disabled";
+				return;
+			}
+			studyTopics = await deps.studyTopics(env);
+			status.study_review = `${studyTopics.length} whitelisted topic(s)`;
+		})().catch((e) => {
+			status.study_review = `unavailable (${errMsg(e).slice(0, 90)})`;
+		}),
+		(async () => {
 			crossSemanticFindings = await deps.crossSemanticFindings(env);
 			status.cross_semantic = crossSemanticFindings ? `week ${crossSemanticFindings.week}` : "no findings yet";
 		})().catch((e) => {
@@ -996,7 +1185,7 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 				status.monarch = "not_configured";
 				return;
 			}
-			const windowStart = addDays(date, -UNUSUAL_CHARGE_WINDOW_DAYS);
+			const windowStart = addDays(date, -SUBSCRIPTION_LOOKBACK_DAYS);
 			const [accts, txns, budgetRows, cashflow, holdings] = await Promise.all([
 				deps.monarchAccounts(env),
 				deps.monarchTransactions(env, { start: windowStart, end: date }),
@@ -1053,6 +1242,16 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		})().catch((e) => {
 			status.mychart_reconcile = `unavailable (${errMsg(e).slice(0, 90)})`;
 		}),
+		(async () => {
+			if (!documentRadarArmed(env)) {
+				status.document_radar = "disabled";
+				return;
+			}
+			trackedDocuments = await deps.trackedDocuments(env);
+			status.document_radar = `${trackedDocuments.length} tracked document(s)`;
+		})().catch((e) => {
+			status.document_radar = `unavailable (${errMsg(e).slice(0, 90)})`;
+		}),
 	]);
 
 	const lowBalanceThreshold = numClamp(env.MONARCH_LOW_BALANCE_THRESHOLD, 0, 1_000_000, 100);
@@ -1064,18 +1263,20 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 	const currentSavingsRate = computeSavingsRate(monarchCashflow);
 	const relationshipSilenceMultiplier = floatClamp(env.AGENDA_RELATIONSHIP_SILENCE_MULTIPLIER, 1, 20, RELATIONSHIP_SILENCE_MULTIPLIER);
 	const relationshipMinSilenceDays = numClamp(env.AGENDA_RELATIONSHIP_MIN_SILENCE_DAYS, 1, 90, RELATIONSHIP_MIN_SILENCE_DAYS);
-	const relationshipThreads = [...textThreads, ...mailRelationshipThreads(mail)];
+	const relationshipThreads = [...textThreads, ...mailRelationshipThreads(relationshipMail)];
 	const priorRelationshipBaselines = relationshipThreads.length ? await loadRelationshipBaselines(env, relationshipThreads.map((t) => t.id)) : {};
 	const relationshipResult = detectRelationshipDrops(Date.parse(`${date}T00:00:00Z`), relationshipThreads, priorRelationshipBaselines, {
 		silenceMultiplier: relationshipSilenceMultiplier,
 		minSilenceDays: relationshipMinSilenceDays,
 	});
+	const studyReviewDue = hasStudyReview(env) ? dueForReview(studyTopics, Date.parse(`${date}T00:00:00Z`), reviewIntervalDays(env)) : [];
 	const drops = await rankDropsLearned(env, [
 		...detectDrops(mail, events),
 		...detectTextDrops(textThreads),
 		...relationshipResult.drops,
 		...detectKnowledgeDrops(consolidateFindings, weeklyRecallFindings),
 		...detectWatchDrops(watchFindings),
+		...detectStudyReviewDrops(studyReviewDue),
 		...detectCrossSemanticDrops(crossSemanticFindings),
 		...detectMonarchDrops(date, monarchAccounts, monarchTransactions, monarchBudgets, { lowBalanceThreshold, unusualChargeThreshold }),
 		...detectPortfolioDrops(date, monarchHoldings, priorMonarchSnapshot?.allocation ?? null, { concentrationThreshold: portfolioConcentrationThreshold, driftThreshold: portfolioDriftThreshold }),
@@ -1083,6 +1284,7 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		...detectMyChartDrops(mychartLabFlags, mychartRefillsDue, mychartNewConditions, mychartNewDocuments),
 		...detectMychartConflictDrops(mychartConflicts),
 		...detectMychartAllergyGapDrops(mychartAllergyGaps),
+		...detectDocumentExpiryDrops(date, trackedDocuments),
 	]);
 
 	// Advance the "since last check" baseline every successful Monarch fetch, regardless of
@@ -1092,6 +1294,10 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		// this cycle only — fall back to the prior snapshot's rate so one bad cycle doesn't
 		// clobber the known-good baseline detectSavingsRateDrop compares against (#874).
 		await saveMonarchSnapshot(env, { date, allocation: computePortfolioAllocation(monarchHoldings), savingsRate: currentSavingsRate ?? priorMonarchSnapshot?.savingsRate });
+		// Feed the infer signal log (#864 substrate) with this cycle's Monarch transactions —
+		// dormant no-op unless INFER_ARM_PURCHASES is set (#1085). Same dry_run-never-persists
+		// contract as the snapshot save above.
+		await logPurchaseSignals(env, monarchTransactions);
 	}
 	// Same dry_run-never-persists contract as the Monarch snapshot above.
 	if (!dryRun && relationshipThreads.length) await saveRelationshipBaselines(env, relationshipResult.baselines);
@@ -1132,7 +1338,23 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 			}
 		}
 	}
+	// Guard against unbounded growth across a sustained mail+vault outage (#1134) — KV values cap
+	// at 25MB and a growing `evidence` payload (Monarch/MyChart drops aren't small) could otherwise
+	// push a `put` over that limit. Stay well under it, mirroring _capped_kv_log.ts's byte cap.
+	// Trims `carried` (the OLDEST, already-carried-over entries) FIRST, on its own, so this
+	// cycle's fresh `proposed` entries are never touched while carried still has slack to shed.
+	// Only once carried is fully exhausted and the combined set STILL doesn't fit does the loop
+	// fall through to trimming `toDeliver` itself (now proposed-only) — logged separately since
+	// that genuinely means this cycle's own proposals alone blew the budget (#1140), the opposite
+	// of dropping already-carried leftovers.
+	const MAX_PENDING_BYTES = 1024 * 1024;
+	const byteLen = (arr: ProposedDrop[]) => new TextEncoder().encode(JSON.stringify(arr)).length;
+	while (carried.length && byteLen([...carried, ...proposed]) > MAX_PENDING_BYTES) carried.shift();
 	const toDeliver = [...carried, ...proposed];
+	if (byteLen(toDeliver) > MAX_PENDING_BYTES) {
+		console.warn(`agenda: pending digest still over ${MAX_PENDING_BYTES} bytes after dropping every carried-over entry — trimming this cycle's own fresh proposals`);
+		while (toDeliver.length > 1 && byteLen(toDeliver) > MAX_PENDING_BYTES) toDeliver.shift();
+	}
 
 	const digest = composeDigest(date, toDeliver);
 
@@ -1141,13 +1363,11 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 	if (!dryRun && toDeliver.length) {
 		const dled = ledger(env, "agenda_digest");
 		const digKey = `digest::${cycle}`;
-		if (!(await dled.seen(digKey))) {
-			try {
-				await deps.digestAppend(env, `Daily/${vaultToday(env.VAULT_TZ)}.md`, buildDigestBlock(date, cycle, hasAgendaEmail(env), digest));
-				digestWritten = true;
-			} catch {
-				/* a vault-append failure must never fail the cycle */
-			}
+		const alreadyDelivered = await dled.seen(digKey);
+		if (!alreadyDelivered) {
+			// Attempt the send BEFORE the vault append so the append's "digest emailed" text
+			// reflects the true outcome, not the config flag (#1089) — a send failure here must
+			// still never fail the cycle (the vault digest lands below regardless).
 			if (hasAgendaEmail(env)) {
 				try {
 					const sent = await deps.sendDigest(env, digest.subject, digest.body);
@@ -1160,12 +1380,28 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 					/* an email failure must never fail the cycle — the proposals are already recorded */
 				}
 			}
-			// Mark AFTER a successful write so a failed append retries next tick (mirrors _weekly_recall.ts).
-			if (digestWritten) await dled.mark(digKey);
+			try {
+				await deps.digestAppend(env, `Daily/${vaultToday(env.VAULT_TZ)}.md`, buildDigestBlock(date, cycle, emailed, digest));
+				digestWritten = true;
+			} catch {
+				/* a vault-append failure must never fail the cycle */
+			}
+			// Mark AFTER a successful write on EITHER channel — vault append or email — so a cycle
+			// where only one channel is down doesn't re-send/re-append an ever-growing digest to the
+			// channel that's working (#1058); a failed channel still retries next tick since only ITS
+			// own flag stayed false, not the shared ledger mark.
+			if (digestWritten || emailed) await dled.mark(digKey);
 		}
-		// Clear once the vault write actually lands; otherwise re-queue everything still
-		// undelivered — including this cycle's own new proposals — for the next attempt.
-		await pending.mark(PENDING_KEY, digestWritten ? "[]" : JSON.stringify(toDeliver));
+		// Clear once EITHER channel actually delivers (this call, or an earlier call this same
+		// cycle already delivered it); otherwise re-queue everything still undelivered —
+		// including this cycle's own new proposals — for the next attempt (#1041, #1058).
+		try {
+			await pending.mark(PENDING_KEY, digestWritten || emailed || alreadyDelivered ? "[]" : JSON.stringify(toDeliver));
+		} catch {
+			/* a pending-queue write failure must never fail the cycle (#1134) — the proposals are
+			 * already recorded; worst case this cycle's undelivered drops aren't re-queued for the
+			 * next attempt, same as a corrupt-entry read above. */
+		}
 	}
 
 	return {
@@ -1201,6 +1437,18 @@ export async function defaultDeps(): Promise<AgendaDeps> {
 			const t = tool("mail_search");
 			if (!t) throw new Error("mail_search tool not found");
 			const r = await t.run(env, { mailbox: "inbox", unread: true, limit: o.limit });
+			if (r.isError) throw new Error(r.content?.[0]?.text ?? "mail_search failed");
+			const parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
+			return (parsed.emails ?? []).map((e: any) => ({ id: String(e?.id ?? ""), from: e?.from, subject: e?.subject, preview: e?.preview, date: e?.receivedAt }));
+		},
+		mailRelationshipSearch: async (env, o) => {
+			// Deliberately NOT `unread: true` (#1133) — mailSearch's inbox scan above drops a
+			// contact the moment their message is read, freezing detectRelationshipDrops' cadence
+			// baseline forever. This scans the same inbox by recency instead, so a read message
+			// still keeps the contact's cadence updating.
+			const t = tool("mail_search");
+			if (!t) throw new Error("mail_search tool not found");
+			const r = await t.run(env, { mailbox: "inbox", after: o.since, limit: 50 });
 			if (r.isError) throw new Error(r.content?.[0]?.text ?? "mail_search failed");
 			const parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
 			return (parsed.emails ?? []).map((e: any) => ({ id: String(e?.id ?? ""), from: e?.from, subject: e?.subject, preview: e?.preview, date: e?.receivedAt }));
@@ -1268,6 +1516,7 @@ export async function defaultDeps(): Promise<AgendaDeps> {
 		consolidateFindings: lastConsolidateFindings,
 		weeklyRecallFindings: lastWeeklyRecallFindings,
 		watchFindings: lastWatchFindings,
+		studyTopics: studyReviewCandidates,
 		crossSemanticFindings: lastCrossSemanticFindings,
 		monarchAccounts: async (env) => {
 			const r = await monarch.run(env, { op: "accounts" });
@@ -1276,10 +1525,19 @@ export async function defaultDeps(): Promise<AgendaDeps> {
 			return (parsed.accounts ?? []).map((a: any) => ({ id: String(a?.id ?? ""), name: a?.name, balance: typeof a?.balance === "number" ? a.balance : undefined, type: a?.type, subtype: a?.subtype }));
 		},
 		monarchTransactions: async (env, o) => {
-			const r = await monarch.run(env, { op: "transactions", start: o.start, end: o.end, limit: 100 });
-			if (r.isError) throw new Error(r.content?.[0]?.text ?? "monarch transactions failed");
-			const parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
-			return (parsed.transactions ?? []).map((t: any) => ({ id: String(t?.id ?? ""), amount: typeof t?.amount === "number" ? t.amount : undefined, date: t?.date, merchant: t?.merchant }));
+			let all: MonarchTxnRef[] = [];
+			let offset = 0;
+			for (;;) {
+				const r = await monarch.run(env, { op: "transactions", start: o.start, end: o.end, limit: MONARCH_TRANSACTIONS_PAGE_SIZE, offset });
+				if (r.isError) throw new Error(r.content?.[0]?.text ?? "monarch transactions failed");
+				const parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
+				const page = (parsed.transactions ?? []).map((t: any) => ({ id: String(t?.id ?? ""), amount: typeof t?.amount === "number" ? t.amount : undefined, date: t?.date, merchant: t?.merchant }));
+				all = all.concat(page);
+				const totalCount = typeof parsed.totalCount === "number" ? parsed.totalCount : all.length;
+				offset += MONARCH_TRANSACTIONS_PAGE_SIZE;
+				if (page.length < MONARCH_TRANSACTIONS_PAGE_SIZE || all.length >= totalCount || all.length >= MONARCH_TRANSACTIONS_MAX) break;
+			}
+			return all.slice(0, MONARCH_TRANSACTIONS_MAX);
 		},
 		monarchBudgets: async (env, o) => {
 			const r = await monarch.run(env, { op: "budgets", month: o.month });
@@ -1319,7 +1577,7 @@ export async function defaultDeps(): Promise<AgendaDeps> {
 					const msgs = (JSON.parse(mr.content?.[0]?.text ?? "{}").messages ?? []) as any[];
 					const last = msgs[msgs.length - 1];
 					if (!last) continue;
-					out.push({ id: String(t.id), contact: t.contact, name: t.name ?? undefined, lastText: last?.text, lastFromMe: Boolean(last?.from_me), lastAt: last?.at });
+					out.push({ id: String(t.id), contact: t.contact, name: t.name ?? undefined, lastText: last?.text, lastFromMe: Boolean(last?.from_me), lastAt: last?.at, lastMessageId: last?.id !== undefined && last?.id !== null ? String(last.id) : undefined });
 				} catch {
 					/* skip a single unreadable thread */
 				}
@@ -1329,5 +1587,6 @@ export async function defaultDeps(): Promise<AgendaDeps> {
 		mychartSummary: async (env, o) => summarizeMyChart(env, { now: o.now, refillWindowDays: o.refillWindowDays }),
 		mychartConflicts: async (env) => crossOrgMedicationAllergyConflicts(env),
 		mychartAllergyGaps: async (env) => crossOrgAllergyGaps(env),
+		trackedDocuments: async (env) => listTrackedDocuments(env),
 	};
 }

@@ -7,6 +7,15 @@ async function sha256Text(s: string): Promise<string> {
 	return sha256Hex(new TextEncoder().encode(s));
 }
 
+/** First numeric value found in text (commas stripped), e.g. "$1,234.56 →Buy" → 1234.56.
+ *  Returns null when no digit run is present — callers fall back to the hash-only diff. */
+function extractNumber(text: string): number | null {
+	const m = text.match(/-?\d[\d,]*\.?\d*/);
+	if (!m) return null;
+	const n = Number(m[0].replace(/,/g, ""));
+	return Number.isFinite(n) ? n : null;
+}
+
 // ── Directory index (#899) ──────────────────────────────────────────────────────
 // A single sux:watch:index key holding every active watch's {keyId, url, selector?,
 // label?, lastChecked} — the only way a cron sweep can enumerate "which watches exist"
@@ -16,7 +25,7 @@ async function sha256Text(s: string): Promise<string> {
 // so a steady page costs no extra KV traffic beyond what watch already did.
 const INDEX_KEY = "sux:watch:index";
 
-export type WatchIndexEntry = { keyId: string; url: string; selector?: string; label?: string; lastChecked: string };
+export type WatchIndexEntry = { keyId: string; url: string; selector?: string; label?: string; threshold?: number; thresholdPct?: number; lastChecked: string };
 
 async function readWatchIndex(env: RtEnv): Promise<WatchIndexEntry[]> {
 	try {
@@ -35,12 +44,27 @@ export const listWatches = readWatchIndex;
 
 /** Upsert this watch into the directory — called only from the first_seen/change-detected
  *  paths (see run() below), never on a no-change recheck. Best-effort: an index write
- *  failure must never break the check itself, which already succeeded by this point. */
-async function upsertWatchIndex(env: RtEnv, keyId: string, url: string, selector: string, label: string): Promise<void> {
+ *  failure must never break the check itself, which already succeeded by this point.
+ *  Merges into an existing entry for this keyId rather than rebuilding from scratch: a
+ *  recheck call that omits threshold/threshold_pct (valid per the schema — they're meant
+ *  to persist onto the watch) must carry forward the previously-stored threshold/thresholdPct
+ *  instead of silently wiping them (#1108). */
+async function upsertWatchIndex(env: RtEnv, keyId: string, url: string, selector: string, label: string, threshold?: number, thresholdPct?: number): Promise<void> {
 	try {
 		const entries = await readWatchIndex(env);
-		const entry: WatchIndexEntry = { keyId, url, ...(selector ? { selector } : {}), ...(label ? { label } : {}), lastChecked: new Date().toISOString() };
 		const idx = entries.findIndex((e) => e.keyId === keyId);
+		const existing = idx >= 0 ? entries[idx] : undefined;
+		const finalThreshold = threshold !== undefined ? threshold : existing?.threshold;
+		const finalThresholdPct = thresholdPct !== undefined ? thresholdPct : existing?.thresholdPct;
+		const entry: WatchIndexEntry = {
+			keyId,
+			url,
+			...(selector ? { selector } : {}),
+			...(label ? { label } : {}),
+			...(finalThreshold !== undefined ? { threshold: finalThreshold } : {}),
+			...(finalThresholdPct !== undefined ? { thresholdPct: finalThresholdPct } : {}),
+			lastChecked: new Date().toISOString(),
+		};
 		if (idx >= 0) entries[idx] = entry;
 		else entries.push(entry);
 		await env.OAUTH_KV.put(INDEX_KEY, JSON.stringify(entries));
@@ -82,7 +106,7 @@ async function reduce(html: string, selector: string): Promise<string> {
 export const watch: Fn = {
 	name: "watch",
 	description:
-		"Detect whether a page's content changed since the last check. Fetches `url` through the residential proxy, optionally reduces to a CSS `selector` region, SHA-256 hashes it, and compares to the last-seen hash stored in KV (namespaced by url+selector+label). First check records the hash (first_seen:true, changed:false); later checks report changed = hash differs from the stored one and update it. reset:true deletes the stored baseline for that url+selector+label (the only way to un-watch — the sux:watch: keys are outside kv_delete's reach) so the next check re-baselines. Returns JSON {url, label?, changed, first_seen, hash, previous_hash?, checked_at}. Stateful — never cached.",
+		"Detect whether a page's content changed since the last check. Fetches `url` through the residential proxy, optionally reduces to a CSS `selector` region, SHA-256 hashes it, and compares to the last-seen hash stored in KV (namespaced by url+selector+label). First check records the hash (first_seen:true, changed:false); later checks report changed = hash differs from the stored one and update it. Numeric-diff mode: set `threshold` and/or `threshold_pct` to extract the first number in the (selector-reduced) content and only report changed:true when it moves by at least that absolute amount or that percentage (either crossing counts) since the last reported value — cuts noisy proposals from a page that changes text without its tracked number moving (e.g. a price page's \"N people viewing\" banner). Falls back to the plain hash diff when no number can be parsed. reset:true deletes the stored baseline (hash + numeric, if any) for that url+selector+label (the only way to un-watch — the sux:watch: keys are outside kv_delete's reach) so the next check re-baselines. Returns JSON {url, label?, changed, first_seen, hash, previous_hash?, numeric_value?, previous_numeric_value?, checked_at}. Stateful — never cached.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -92,6 +116,8 @@ export const watch: Fn = {
 			selector: { type: "string", description: "Optional CSS selector — hash only this region instead of the whole page." },
 			label: { type: "string", description: "Optional namespacing string so the same url+selector can be tracked under distinct watches." },
 			reset: { type: "boolean", description: "Delete the stored baseline for this url+selector+label instead of checking — un-watches it so the next check re-baselines (first_seen:true). No fetch." },
+			threshold: { type: "number", description: "Numeric-diff mode: only report changed:true when the number extracted from the content moves by at least this absolute amount since the last reported value. OR'd with threshold_pct when both are set. Persists onto the watch so the cron sweep (#899) applies it too." },
+			threshold_pct: { type: "number", description: "Numeric-diff mode: only report changed:true when the extracted number moves by at least this percentage of the last reported value. OR'd with threshold when both are set." },
 		},
 	},
 	cacheable: false,
@@ -101,11 +127,16 @@ export const watch: Fn = {
 			const selector = args?.selector != null ? String(args.selector) : "";
 			const label = args?.label != null ? String(args.label) : "";
 			const reset = args?.reset === true;
+			const threshold = args?.threshold != null ? Number(args.threshold) : undefined;
+			const thresholdPct = args?.threshold_pct != null ? Number(args.threshold_pct) : undefined;
 
 			if (!isHttpUrl(url)) return failWith("bad_input", "Provide an absolute http(s) url.");
+			if (threshold !== undefined && !Number.isFinite(threshold)) return failWith("bad_input", "threshold must be a number.");
+			if (thresholdPct !== undefined && !Number.isFinite(thresholdPct)) return failWith("bad_input", "threshold_pct must be a number.");
 
 			const keyId = await sha256Text(`${url}\n${selector}\n${label}`);
 			const kvKey = `sux:watch:${keyId}`;
+			const valueKey = `${kvKey}:value`;
 
 			// reset un-watches: drop the baseline so the next check re-baselines. No fetch —
 			// this is the only user-facing removal, since sux:watch: keys are outside kv_delete's
@@ -114,6 +145,7 @@ export const watch: Fn = {
 				const existed = (await env.OAUTH_KV.get(kvKey)) !== null;
 				if (existed) {
 					await env.OAUTH_KV.delete(kvKey);
+					await env.OAUTH_KV.delete(valueKey);
 					await removeWatchIndex(env, keyId);
 				}
 				const result = ok(
@@ -137,15 +169,40 @@ export const watch: Fn = {
 
 			const previous = await env.OAUTH_KV.get(kvKey);
 			const firstSeen = previous === null;
-			const changed = !firstSeen && hash !== previous;
+			let changed = !firstSeen && hash !== previous;
+
+			// Numeric-diff mode (#1091): when a threshold is configured and a number can be
+			// parsed out of the content, `changed` is decided off the numeric delta against the
+			// last REPORTED value (not the immediately-prior check), not the raw hash diff — a
+			// footer/ad re-render that leaves the tracked number untouched no longer counts as a
+			// change. No number found ⇒ falls back to the hash diff already computed above.
+			const numericMode = threshold !== undefined || thresholdPct !== undefined;
+			const numericValue = numericMode ? extractNumber(content) : null;
+			let previousNumericValue: number | undefined;
+			if (numericValue !== null) {
+				const storedValue = await env.OAUTH_KV.get(valueKey);
+				if (storedValue === null) {
+					changed = false; // establishing the numeric baseline is not itself a reportable change
+				} else {
+					previousNumericValue = Number(storedValue);
+					const delta = numericValue - previousNumericValue;
+					const crossesAbs = threshold !== undefined && Math.abs(delta) >= threshold;
+					const crossesPct = thresholdPct !== undefined && previousNumericValue !== 0 && (Math.abs(delta) / Math.abs(previousNumericValue)) * 100 >= thresholdPct;
+					changed = crossesAbs || crossesPct;
+				}
+				if (storedValue === null || changed) await env.OAUTH_KV.put(valueKey, String(numericValue));
+			}
 
 			// Store the new hash whenever it differs from what's recorded (first sight,
-			// or an actual change) — a no-change re-check needs no write. The directory index
-			// (#899) rides the same condition, so a cron sweep has something to enumerate.
-			if (firstSeen || changed) {
-				await env.OAUTH_KV.put(kvKey, hash);
-				await upsertWatchIndex(env, keyId, url, selector, label);
-			}
+			// or an actual change) — a no-change re-check needs no write.
+			if (firstSeen || changed) await env.OAUTH_KV.put(kvKey, hash);
+
+			// The directory index (#899) normally rides the same condition as the hash write, so a
+			// cron sweep has something to enumerate. Numeric mode breaks that coupling: `changed`
+			// is deliberately false most steady-state checks, but the sweep still needs this call's
+			// threshold/thresholdPct written onto the entry (#1091) — so a numeric-mode call always
+			// syncs the index, not just on firstSeen/changed.
+			if (firstSeen || changed || numericMode) await upsertWatchIndex(env, keyId, url, selector, label, threshold, thresholdPct);
 
 			const out: Record<string, unknown> = {
 				url,
@@ -154,6 +211,7 @@ export const watch: Fn = {
 				first_seen: firstSeen,
 				hash,
 				...(firstSeen ? {} : { previous_hash: previous }),
+				...(numericValue !== null ? { numeric_value: numericValue, ...(previousNumericValue !== undefined ? { previous_numeric_value: previousNumericValue } : {}) } : {}),
 				checked_at: new Date().toISOString(),
 			};
 			const result = ok(oj(out));

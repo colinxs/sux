@@ -76,6 +76,20 @@ describe("runWatchSweep", () => {
 		expect(report.changed).toEqual([{ url: "https://b", label: "price", hash: "new", previous_hash: "old", checked_at: expect.any(String) }]);
 	});
 
+	it("forwards each entry's threshold/thresholdPct (#1091) to checkWatch so a numeric-mode watch stays noise-filtered under the sweep", async () => {
+		const env = envWith({ WATCH_SWEEP_ENABLED: "1" });
+		const seen: Array<{ url: string; threshold?: number; thresholdPct?: number }> = [];
+		const deps: WatchSweepDeps = {
+			listWatches: async () => [entry("https://price", { threshold: 10, thresholdPct: 5 })],
+			checkWatch: async (_env, e) => {
+				seen.push({ url: e.url, threshold: e.threshold, thresholdPct: e.thresholdPct });
+				return unchanged();
+			},
+		};
+		await runWatchSweep(env, {}, deps);
+		expect(seen).toEqual([{ url: "https://price", threshold: 10, thresholdPct: 5 }]);
+	});
+
 	it("bounds the per-tick check count and rotates the window on the next tick", async () => {
 		const env = envWith({ WATCH_SWEEP_ENABLED: "1" });
 		const entries = [entry("https://1"), entry("https://2"), entry("https://3")];

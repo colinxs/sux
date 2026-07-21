@@ -59,7 +59,11 @@ function commandSigningString(c: Omit<SignedCommand, "sig">): string {
 }
 
 // Deterministic JSON for the signing string: object keys sorted recursively so the
-// box (busybox `jq -S`) and the Worker produce the same canonical bytes.
+// box (busybox `jq -S`) and the Worker produce the same canonical bytes. Deliberately
+// NOT routed through @suxos/lib's canonicalize/idempotencyKey (#1104) — this is a
+// security wire contract (HMAC command signing) and canonicalize's extra Date
+// special-casing needs byte-identical verification against `jq -S` before it can
+// safely replace this copy; see #1104 for the direction if that verification is done.
 function stableStringify(v: unknown): string {
 	if (v === null || typeof v !== "object") return JSON.stringify(v);
 	if (Array.isArray(v)) return `[${v.map(stableStringify).join(",")}]`;

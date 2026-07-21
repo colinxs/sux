@@ -1,3 +1,4 @@
+import { recordAudit } from "./audit-log";
 import { type RtEnv } from "./registry";
 
 // Stage-then-commit — the accidental-misuse guard for every side-effectful verb. A caller
@@ -53,11 +54,26 @@ export const STAGE_KINDS: Record<string, StageKind> = {
 	// …) that need to auto-run — gating them here would mean threading force:true
 	// through every one of those call sites, well beyond this fix's scope.
 	store_put: { irreversible: true },
+	// vault — git history keeps a delete recoverable, but mail_masked_delete/contact_delete
+	// already stage despite being recoverable too; same precedent applies here.
+	vault_delete: { irreversible: true },
 	// put — the bulk sibling of store.put: one call downloads up to 100 URLs and mints a
 	// world-readable /s/<uuid> ref PER URL, so it's even higher-amplification than store_put
 	// on the same egress channel. Stages by default. Unlike dropbox/obsidian/kv_*/ingest it
 	// has NO internal callers, so auto-staging needs no force:true threaded through call sites.
 	put_batch: { irreversible: true },
+	// kv_delete — KV has no git history or trash, so a delete is genuinely irreversible.
+	kv_delete: { irreversible: true },
+	// learn(action=reset) — clears the WHOLE learned-example KV set and is not
+	// batch-undoable (unlike action=undo, which is scoped to one batch), same
+	// irreversible shape as kv_delete above.
+	learn_reset: { irreversible: true },
+	// dropbox app-folder (Mode A) delete — Dropbox's own recoverable-trash doesn't exempt it,
+	// same as mail_masked_delete above (recoverable-but-still-gated is already the precedent).
+	dropbox_delete: { irreversible: true },
+	// todoist — delete is permanent (not a recoverable trash), unlike complete (reversible via reopen).
+	todoist_delete: { irreversible: true },
+	todoist_delete_many: { irreversible: true },
 };
 
 // In-isolate spent-token claim. A commit's KV get→verify→delete is not atomic —
@@ -122,6 +138,20 @@ export function conscience(_kind: string, payload: unknown): string[] {
 	const notes: string[] = [];
 	const p = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
 	const asArr = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : v ? [String(v)] : []);
+
+	// A path-shaped delete (dropbox_delete, files_delete_full, …) whose target looks like a
+	// directory/broad prefix rather than a single file — thin signal, but worth a flag before
+	// an agent deletes more than it meant to.
+	if (/delete/i.test(_kind) && typeof p.path === "string" && p.path) {
+		const path = p.path;
+		if (path.endsWith("/") || !/\.[a-zA-Z0-9]{1,8}$/.test(path)) notes.push(`'${path}' looks like a directory or extensionless target rather than a single file — confirm the delete is scoped as intended.`);
+	}
+
+	// Bulk Todoist delete — thin signal (just ids), so flag the size of the blast radius.
+	if (_kind === "todoist_delete_many" && Array.isArray(p.ids) && p.ids.length >= 5) {
+		notes.push(`deleting ${p.ids.length} Todoist tasks — confirm this is the intended set.`);
+	}
+
 	const to = asArr(p.to);
 	const cc = asArr(p.cc);
 	const bcc = asArr(p.bcc);
@@ -196,15 +226,23 @@ export async function commit(env: RtEnv, kind: string, token: string, payload: u
  * Returns the StageResult in the stage cases; else the mutate result.
  */
 export async function staged<T>(env: RtEnv, kind: string, args: { stage?: boolean; commit_token?: string; force?: boolean }, payload: unknown, preview: unknown, mutate: () => Promise<T>): Promise<{ stageResult: StageResult } | { result: T }> {
+	// Every path that actually mutates funnels through here — the one forensic-audit-log
+	// chokepoint (#1111): record AFTER mutate() succeeds (never before, and never on a
+	// stage-only preview, since nothing happened yet). Best-effort; see audit-log.ts.
+	const runMutate = async (): Promise<T> => {
+		const result = await mutate();
+		await recordAudit(env, kind, preview, result);
+		return result;
+	};
 	// `force` is the generalized `!`-override: opt out of staging outright, ahead of
 	// any stage/commit_token, so a caller that has decided can't be forced into a
 	// round-trip. It never mints or consumes a token.
 	if (args?.force === true) {
-		return { result: await mutate() };
+		return { result: await runMutate() };
 	}
 	if (args?.commit_token) {
 		await commit(env, kind, String(args.commit_token), payload);
-		return { result: await mutate() };
+		return { result: await runMutate() };
 	}
 	if (args?.stage === true) {
 		return { stageResult: await stage(env, kind, payload, preview) };
@@ -217,5 +255,5 @@ export async function staged<T>(env: RtEnv, kind: string, args: { stage?: boolea
 	if (ann.irreversible) {
 		return { stageResult: await stage(env, kind, payload, preview) };
 	}
-	return { result: await mutate() };
+	return { result: await runMutate() };
 }

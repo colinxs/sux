@@ -395,3 +395,24 @@ test("files-duplicates sink skips a malformed item (moves not lining up with arc
 	expect(moveFull).not.toHaveBeenCalled();
 	expect(out).toEqual({ moved: 0, groups: 1 });
 });
+
+test("makeCaps wires a governor for the heavy 'extract' leaf and a cache backed by OAUTH_KV", async () => {
+	const store = new Map<string, string>();
+	const kv = {
+		get: async (k: string) => store.get(k) ?? null,
+		put: async (k: string, v: string) => void store.set(k, v),
+	};
+	const caps = makeCaps({ OAUTH_KV: kv } as unknown as RtEnv);
+
+	expect(caps.governors?.extract?.heavyConcurrency).toBeDefined();
+
+	expect(await caps.cache?.get("k")).toBeUndefined();
+	await caps.cache?.put("k", { r2Key: "cas/x", sha256: "x", type: "text/plain", size: 1 });
+	expect(await caps.cache?.get("k")).toEqual({ r2Key: "cas/x", sha256: "x", type: "text/plain", size: 1 });
+});
+
+test("makeCaps's cache degrades to a graceful no-op with no OAUTH_KV binding", async () => {
+	const caps = makeCaps({} as unknown as RtEnv);
+	await expect(caps.cache?.put("k", { a: 1 })).resolves.toBeUndefined();
+	expect(await caps.cache?.get("k")).toBeUndefined();
+});

@@ -121,6 +121,7 @@ import { todoist } from "./todoist";
 import { voice } from "./voice";
 import { fontcase } from "./fontcase";
 import { recall } from "./recall";
+import { audit_log } from "./audit_log";
 import { contact_consolidate_plan } from "./contact_consolidate_plan";
 import { files_consolidate_plan } from "./files_consolidate_plan";
 import { get } from "./get";
@@ -254,6 +255,7 @@ export const FUNCTIONS: Fn[] = [
 	voice,
 	fontcase,
 	recall,
+	audit_log,
 	contact_consolidate_plan,
 	files_consolidate_plan,
 	get,

@@ -23,6 +23,7 @@ import { fingerprint, ledger } from "../ledger";
 import { hasAI, llm } from "../ai";
 import { appendInferInference, deleteInferInference, hasInferArm, isInferKilled, readInferSignals, type InferDomain, type InferSignal } from "./_infer";
 import { detectCentroidDrift, type DriftCandidate, type DriftOptions } from "./_infer_drift";
+import { ANOMALY_RECIPES, detectScalarAnomaly, type AnomalyCandidate, type AnomalyOptions, type AnomalyRecipe } from "./_infer_anomaly";
 import { cappedKvLog } from "./_capped_kv_log";
 import { errMsg, vaultToday } from "./_util";
 
@@ -40,6 +41,13 @@ const FIRST_SLICE_DOMAINS: InferDomain[] = ["vault", "mail"];
 const confidenceFloor = (env: RtEnv): number => {
 	const n = Number(env.INFER_NUDGE_MIN_CONFIDENCE);
 	return Number.isFinite(n) && n > 0 ? n : 0.15;
+};
+
+/** Same belt-and-suspenders re-check as confidenceFloor, for the scalar-anomaly recipe path —
+ *  default matches _infer_anomaly.ts's own detector threshold. */
+const zScoreFloor = (env: RtEnv): number => {
+	const n = Number(env.INFER_NUDGE_ANOMALY_MIN_Z);
+	return Number.isFinite(n) && n > 0 ? n : 2;
 };
 
 /** How long a fired inference's evidence-fingerprint is suppressed from re-firing — the
@@ -60,7 +68,9 @@ const warmupCyclesRequired = (env: RtEnv): number => {
 export type InferNudgeWarmupEntry = {
 	ts: number;
 	cluster: string;
-	driftScore: number;
+	/** The candidate's confidence score — driftScore for centroid drift, zScore for scalar
+	 *  anomaly. Named generically since this log is shared across both recipe paths. */
+	score: number;
 	evidenceIds: string[];
 	phrasing: string;
 	whyTrail: string[];
@@ -125,6 +135,24 @@ function buildDigestBlock(candidate: DriftCandidate, phrasing: string, whyTrail:
 		"",
 		`## sux nudge — ${new Date().toISOString()}`,
 		`_emerging-topic · ${candidate.cluster} · confidence ${candidate.driftScore.toFixed(2)} · recipe centroid_drift_`,
+		"",
+		`**suggests:** ${phrasing}`,
+		"",
+		"why:",
+		...whyTrail.map((w) => `- ${w}`),
+		"",
+		`controls: reply \`yes ${shortId}\` (confirm) · \`dismiss ${shortId}\` (one-off) · \`not-useful ${shortId}\` (raise the bar) · \`never-for-this ${candidate.cluster}\` (suppress this domain)`,
+		"",
+	];
+	return lines.join("\n");
+}
+
+function buildAnomalyDigestBlock(candidate: AnomalyCandidate, phrasing: string, whyTrail: string[], inferenceId: string): string {
+	const shortId = inferenceId.slice(0, 8);
+	const lines = [
+		"",
+		`## sux nudge — ${new Date().toISOString()}`,
+		`_scalar-anomaly · ${candidate.cluster} · z ${candidate.zScore.toFixed(2)} · recipe scalar_anomaly_`,
 		"",
 		`**suggests:** ${phrasing}`,
 		"",
@@ -222,7 +250,7 @@ export async function runInferNudge(env: RtEnv, opts: { domains?: InferDomain[] 
 			await warmupLog(env, candidate.cluster).push({
 				ts: Date.now(),
 				cluster: candidate.cluster,
-				driftScore: candidate.driftScore,
+				score: candidate.driftScore,
 				evidenceIds: candidate.evidenceIds,
 				phrasing,
 				whyTrail,
@@ -266,28 +294,204 @@ export async function runInferNudge(env: RtEnv, opts: { domains?: InferDomain[] 
 // configured, so the nudge surface degrades to a plain template rather than failing closed.
 const fallbackPhrasing = (cluster: string): string => `A lot about ${cluster} lately — start a note/project for it?`;
 
+const PHRASING_SYSTEM_PROMPT =
+	"You turn redacted evidence lines into exactly ONE short, warm suggestion sentence in the form " +
+	"'I noticed <plain evidence> — want me to <gentle action>?'. Output ONLY that one sentence: no preamble, " +
+	"no markdown, no extra commentary. Never invent a fact that isn't present in the evidence, and never name " +
+	"a medical condition or diagnosis.";
+
+/** The one LLM touch every nudge-recipe path makes (design doc §1's "rules-then-LLM ladder") —
+ *  phrasing only, fed redacted evidence lines, never the raw candidate/decision. Degrades to a
+ *  static template when Workers-AI isn't configured or there's no evidence to phrase from.
+ *  Shared by defaultDeps (centroid drift) and defaultAnomalyDeps (scalar anomaly) — the phrasing
+ *  contract doesn't depend on which detector produced the candidate. */
+async function phraseEvidence(env: RtEnv, evidenceLines: string, cluster: string): Promise<string> {
+	if (!hasAI(env) || !evidenceLines.trim()) return fallbackPhrasing(cluster);
+	const out = await llm(env, PHRASING_SYSTEM_PROMPT, evidenceLines, 120, "phrasing a proactive nudge from redacted signal evidence");
+	return out.trim() || fallbackPhrasing(cluster);
+}
+
+/** The git-backed vault append every nudge-recipe path's digestAppend dep uses. Dynamically
+ *  imports obsidian so a cycle that never actually fires (the common case) never pulls it in. */
+async function appendDigest(env: RtEnv, path: string, content: string): Promise<void> {
+	const { obsidian } = await import("./obsidian");
+	const r = await obsidian.run(env, { action: "append", path, content, backend: "git" });
+	if (r.isError) throw new Error(r.content?.[0]?.text ?? "vault append failed");
+}
+
 /** Production surface: the real centroid-drift detector, signal-log reads, a Workers-AI
  *  phrasing call (redacted evidence only, `llm()`'s `<<<DATA>>>` fence — see ai.ts), and the
  *  git-backed vault append. Dynamically imported so the cron path pulls these in only when
  *  armed (mirrors _agenda/_ask_gate_reminder/_infer_drift). */
 export async function defaultDeps(): Promise<InferNudgeDeps> {
-	const { obsidian } = await import("./obsidian");
 	return {
 		detectDrift: (env, domains, opts) => detectCentroidDrift(env, domains, opts),
 		signalsFor: (env, domain) => readInferSignals(env, domain),
-		phrase: async (env, evidenceLines, cluster) => {
-			if (!hasAI(env) || !evidenceLines.trim()) return fallbackPhrasing(cluster);
-			const system =
-				"You turn redacted evidence lines into exactly ONE short, warm suggestion sentence in the form " +
-				"'I noticed <plain evidence> — want me to <gentle action>?'. Output ONLY that one sentence: no preamble, " +
-				"no markdown, no extra commentary. Never invent a fact that isn't present in the evidence, and never name " +
-				"a medical condition or diagnosis.";
-			const out = await llm(env, system, evidenceLines, 120, "phrasing a proactive nudge from redacted signal evidence");
-			return out.trim() || fallbackPhrasing(cluster);
-		},
-		digestAppend: async (env, path, content) => {
-			const r = await obsidian.run(env, { action: "append", path, content, backend: "git" });
-			if (r.isError) throw new Error(r.content?.[0]?.text ?? "vault append failed");
-		},
+		phrase: phraseEvidence,
+		digestAppend: appendDigest,
+	};
+}
+
+// ── Scalar-anomaly nudge path (#1144) — same rate-cap/dedupe/cooldown/warm-up machinery as the
+// centroid-drift path above, driven by _infer_anomaly.ts's detector instead. Kept as a second,
+// parallel entry point rather than folded into runInferNudge: a scalar-anomaly candidate is
+// inherently per-recipe (one domain's count series), not a merged-evidence set across domains
+// like drift's FIRST_SLICE_DOMAINS, so one cycle can — and should — evaluate every armed recipe,
+// not just the first one that clears its caps.
+
+export type InferAnomalyNudgeDeps = {
+	detectAnomaly: (env: RtEnv, recipe: AnomalyRecipe, opts?: AnomalyOptions) => Promise<AnomalyCandidate | null>;
+	signalsFor: (env: RtEnv, domain: InferDomain) => Promise<InferSignal[]>;
+	/** Same phrasing contract as InferNudgeDeps.phrase — redacted evidence only. */
+	phrase: (env: RtEnv, evidenceLines: string, cluster: string) => Promise<string>;
+	digestAppend: (env: RtEnv, path: string, content: string) => Promise<void>;
+};
+
+export type InferAnomalyRecipeReport = {
+	domain: InferDomain;
+	label: string;
+	cluster: string;
+	fired?: boolean;
+	warmup?: boolean;
+	cyclesRemaining?: number;
+	suppressed?: "no_candidate" | "below_floor" | "rate_capped" | "deduped";
+	zScore?: number;
+	inferenceId?: string;
+	error?: string;
+	markFailed?: string;
+};
+
+export type InferAnomalyNudgeReport = {
+	dormant?: boolean;
+	note?: string;
+	/** One entry per armed recipe evaluated this cycle — absent (not empty) when dormant. */
+	results?: InferAnomalyRecipeReport[];
+};
+
+/** One recipe's worth of runInferNudge's cap-then-write pipeline, adapted for a single-domain
+ *  scalar-anomaly candidate instead of a merged-evidence drift candidate. See runInferNudge for
+ *  the rationale behind each step; this mirrors it exactly, just keyed by `candidate.cluster`
+ *  (`"<domain>:<label>"`, e.g. `"purchases:spending"` — distinct from drift's `domains.join("+")`
+ *  clusters, so the two paths safely share the same rate/dedupe ledger namespaces and warm-up log).
+ */
+async function runOneAnomalyRecipe(env: RtEnv, recipe: AnomalyRecipe, deps: InferAnomalyNudgeDeps): Promise<InferAnomalyRecipeReport> {
+	const base = { domain: recipe.domain, label: recipe.label, cluster: `${recipe.domain}:${recipe.label}` };
+
+	let candidate: AnomalyCandidate | null;
+	try {
+		candidate = await deps.detectAnomaly(env, recipe);
+	} catch (e) {
+		return { ...base, error: `anomaly detection failed: ${errMsg(e)}` };
+	}
+	if (!candidate) return { ...base, suppressed: "no_candidate" };
+	if (candidate.zScore < zScoreFloor(env)) return { ...base, suppressed: "below_floor", zScore: candidate.zScore };
+
+	const rate = ledger(env, "infer_nudge_rate", RATE_WINDOW_SECONDS);
+	if (await rate.seen(candidate.cluster)) return { ...base, suppressed: "rate_capped", zScore: candidate.zScore };
+
+	const fp = await evidenceFingerprint(candidate.evidenceIds);
+	const dedupe = ledger(env, "infer_nudge_dedupe", cooldownDays(env) * 86400);
+	const dedupeKey = `${candidate.cluster}:${fp}`;
+	if (await dedupe.seen(dedupeKey)) return { ...base, suppressed: "deduped", zScore: candidate.zScore };
+
+	const signals = await deps.signalsFor(env, recipe.domain);
+	const byId = new Map(signals.map((s) => [s.id, s] as const));
+	const evidence = candidate.evidenceIds
+		.map((id) => byId.get(id))
+		.filter((s): s is InferSignal => Boolean(s))
+		.slice(0, 8);
+	const countSummary = `${candidate.recentCount} ${recipe.label} signals in the last 14d vs a baseline avg of ${candidate.baselineMean.toFixed(1)} per 14d (z=${candidate.zScore.toFixed(2)})`;
+	const whyTrail = [countSummary, ...evidence.map((s) => `[${s.source_tag}] ${s.redacted_snippet}`)];
+
+	let phrasing: string;
+	try {
+		phrasing = await deps.phrase(env, whyTrail.join("\n"), candidate.cluster);
+	} catch (e) {
+		return { ...base, error: `phrasing failed: ${errMsg(e)}`, zScore: candidate.zScore };
+	}
+
+	const rec = await appendInferInference(env, recipe.domain, {
+		domain: recipe.domain,
+		kind: "scalar_anomaly",
+		evidenceIds: candidate.evidenceIds,
+		createdAt: Date.now(),
+		payload: { cluster: candidate.cluster, zScore: candidate.zScore, recentCount: candidate.recentCount, baselineMean: candidate.baselineMean },
+	});
+	const inferenceId = rec.id ?? crypto.randomUUID();
+	const digestContent = buildAnomalyDigestBlock(candidate, phrasing, whyTrail, inferenceId);
+
+	const warmupRequired = warmupCyclesRequired(env);
+	const warmupEntries = await readInferNudgeWarmupLog(env, candidate.cluster);
+	const warmupCount = (warmupEntries[0]?.cycle ?? -1) + 1;
+	const inWarmup = warmupCount < warmupRequired;
+
+	if (inWarmup) {
+		try {
+			await warmupLog(env, candidate.cluster).push({
+				ts: Date.now(),
+				cluster: candidate.cluster,
+				score: candidate.zScore,
+				evidenceIds: candidate.evidenceIds,
+				phrasing,
+				whyTrail,
+				wouldWriteDigest: digestContent,
+				cycle: warmupCount,
+			});
+		} catch (e) {
+			await deleteInferInference(env, recipe.domain, inferenceId);
+			return { ...base, error: `warm-up log write failed: ${errMsg(e)}`, zScore: candidate.zScore, inferenceId };
+		}
+	} else {
+		try {
+			await deps.digestAppend(env, `Daily/${vaultToday(env.VAULT_TZ)}.md`, digestContent);
+		} catch (e) {
+			await deleteInferInference(env, recipe.domain, inferenceId);
+			return { ...base, error: `vault append failed: ${errMsg(e)}`, zScore: candidate.zScore, inferenceId };
+		}
+	}
+
+	let markFailed: string | undefined;
+	try {
+		await rate.mark(candidate.cluster);
+		await dedupe.mark(dedupeKey);
+	} catch (e) {
+		markFailed = errMsg(e);
+	}
+
+	return inWarmup
+		? { ...base, warmup: true, zScore: candidate.zScore, inferenceId, cyclesRemaining: warmupRequired - (warmupCount + 1), ...(markFailed ? { markFailed } : {}) }
+		: { ...base, fired: true, zScore: candidate.zScore, inferenceId, ...(markFailed ? { markFailed } : {}) };
+}
+
+/** Run one scalar-anomaly nudge-write cycle across every armed recipe (default: ANOMALY_RECIPES —
+ *  today just "purchases"). Fail-closed: dormant unless at least one recipe's domain is armed and
+ *  INFER_KILL isn't set, same contract as runInferNudge. Unlike runInferNudge (one merged-evidence
+ *  candidate per cycle), this evaluates every armed recipe independently — each has its own
+ *  domain-scoped signal series, so there's no shared candidate to merge them into. */
+export async function runInferAnomalyNudge(env: RtEnv, opts: { recipes?: AnomalyRecipe[] }, deps: InferAnomalyNudgeDeps): Promise<InferAnomalyNudgeReport> {
+	if (isInferKilled(env)) {
+		return { dormant: true, note: "infer_nudge (scalar-anomaly) is dormant — INFER_KILL is set. Fail-closed: no candidate is ever detected or written while killed." };
+	}
+	const recipes = (opts.recipes ?? ANOMALY_RECIPES).filter((r) => hasInferArm(env, r.domain));
+	if (!recipes.length) {
+		return {
+			dormant: true,
+			note: "infer_nudge (scalar-anomaly) is dormant — no anomaly-recipe domain is armed. Set INFER_ARM_PURCHASES (per-domain toggle, unset ⇒ inert) to let the scalar-anomaly detector surface a spending nudge to the Daily note.",
+		};
+	}
+
+	const results: InferAnomalyRecipeReport[] = [];
+	for (const recipe of recipes) results.push(await runOneAnomalyRecipe(env, recipe, deps));
+	return { results };
+}
+
+/** Production surface for the scalar-anomaly path — mirrors defaultDeps, swapping in
+ *  _infer_anomaly.ts's detector. Shares the same phrasing/digest-append contract. */
+export async function defaultAnomalyDeps(): Promise<InferAnomalyNudgeDeps> {
+	return {
+		detectAnomaly: (env, recipe, opts) => detectScalarAnomaly(env, recipe, opts),
+		signalsFor: (env, domain) => readInferSignals(env, domain),
+		phrase: phraseEvidence,
+		digestAppend: appendDigest,
 	};
 }

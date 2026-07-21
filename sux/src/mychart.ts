@@ -436,6 +436,18 @@ async function hasEverPulled(env: RtEnv, org: string, patient: string): Promise<
 	return listing.objects.length > 0;
 }
 
+/** True once a SPECIFIC resource label (e.g. "AllergyIntolerance") has ever been pulled for
+ * this org/patient — unlike `hasEverPulled`, which only proves SOME resource type was pulled.
+ * `pull()`'s `opts.types` narrowing (see `resourcePlan`) means an org can be "ever pulled" while
+ * a given label was never fetched; callers that need to tell "confirmed empty" apart from
+ * "never asked" for one specific label (e.g. cross-org allergy-gap reconciliation) must gate on
+ * this, not `hasEverPulled`. limit:1 keeps this a cheap existence check, not a full listing. */
+async function hasPulledLabel(env: RtEnv, org: string, patient: string, label: string): Promise<boolean> {
+	if (!env.R2) return false;
+	const listing = await env.R2.list({ prefix: `${PHI_PREFIX}mychart/${org}/${patient}/${label}/`, limit: 1 });
+	return listing.objects.length > 0;
+}
+
 // USCDI ObservationInterpretation codes (http://terminology.hl7.org/CodeSystem/v3-
 // ObservationInterpretation) this cares about — everything else (incl. "N" normal) is
 // left unflagged. High/Low/Abnormal only; critical variants collapse into the same
@@ -626,7 +638,11 @@ const SUBSTANCE_STOPWORDS = new Set([
 ]);
 
 function normalizeSubstance(s: string): string {
-	return s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+	return s
+		.toLowerCase()
+		.replace(/(\d)([a-z])/g, "$1 $2")
+		.replace(/[^a-z0-9]+/g, " ")
+		.trim();
 }
 
 /** Conservative, non-diagnostic substance-string overlap: true when a significant
@@ -639,12 +655,23 @@ export function substancesOverlap(medName: string, allergySubstance: string): bo
 	const med = normalizeSubstance(medName);
 	const allergy = normalizeSubstance(allergySubstance);
 	if (!med || !allergy) return false;
-	if (med.includes(allergy) || allergy.includes(med)) return true;
-	const medWords = new Set(med.split(" ").filter((w) => w.length >= 4 && !SUBSTANCE_STOPWORDS.has(w)));
-	return allergy.split(" ").some((w) => w.length >= 4 && !SUBSTANCE_STOPWORDS.has(w) && medWords.has(w));
+	const containsWholeWord = (haystack: string, needle: string) => {
+		const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+		return new RegExp(`\\b${escaped}\\b`).test(haystack);
+	};
+	if (containsWholeWord(med, allergy) || containsWholeWord(allergy, med)) return true;
+	const isSignificant = (w: string) => w.length >= 4 && !SUBSTANCE_STOPWORDS.has(w) && !/^\d+$/.test(w);
+	const medWords = new Set(med.split(" ").filter(isSignificant));
+	return allergy.split(" ").some((w) => isSignificant(w) && medWords.has(w));
 }
 
-type OrgMedAllergySet = { org: string; meds: Array<{ id: string; name: string }>; allergies: Array<{ id: string; substance: string }> };
+type OrgMedAllergySet = {
+	org: string;
+	meds: Array<{ id: string; name: string }>;
+	allergies: Array<{ id: string; substance: string }>;
+	allAllergies: Array<{ id: string; substance: string }>;
+	allergiesPulled: boolean;
+};
 
 /** Every connected, ever-pulled org's ACTIVE medications + allergies, shared by
  * crossOrgMedicationAllergyConflicts and crossOrgAllergyGaps so the two cross-org checks
@@ -661,19 +688,23 @@ async function gatherContributingMedsAndAllergies(env: RtEnv): Promise<OrgMedAll
 			const grant = await readGrant(env, org);
 			if (!grant?.patient) return null;
 			if (!(await hasEverPulled(env, org, grant.patient))) return null;
-			const [meds, allergies] = await Promise.all([
+			const [meds, allergies, allergiesPulled] = await Promise.all([
 				latestPulledResources(env, org, grant.patient, "MedicationRequest"),
 				latestPulledResources(env, org, grant.patient, "AllergyIntolerance"),
+				hasPulledLabel(env, org, grant.patient, "AllergyIntolerance"),
 			]);
 			const activeMeds = meds
 				.filter((r) => r?.id && r?.status === "active")
 				.map((r) => ({ id: String(r.id), name: codeableConceptText(r.medicationCodeableConcept) }))
 				.filter((m): m is { id: string; name: string } => Boolean(m.name));
-			const activeAllergies = allergies
-				.filter((r) => r?.id && isAllergyActive(r))
-				.map((r) => ({ id: String(r.id), substance: codeableConceptText(r.code) }))
-				.filter((a): a is { id: string; substance: string } => Boolean(a.substance));
-			return { org, meds: activeMeds, allergies: activeAllergies };
+			const toAllergyList = (records: any[]) =>
+				records
+					.filter((r) => r?.id)
+					.map((r) => ({ id: String(r.id), substance: codeableConceptText(r.code) }))
+					.filter((a): a is { id: string; substance: string } => Boolean(a.substance));
+			const activeAllergies = toAllergyList(allergies.filter((r) => isAllergyActive(r)));
+			const allAllergies = toAllergyList(allergies);
+			return { org, meds: activeMeds, allergies: activeAllergies, allAllergies, allergiesPulled };
 		}),
 	);
 	return perOrg.filter((v): v is OrgMedAllergySet => v !== null);
@@ -731,7 +762,14 @@ export async function crossOrgAllergyGaps(env: RtEnv): Promise<MyChartAllergyGap
 		for (const allergy of source.allergies) {
 			for (const other of contributing) {
 				if (other.org === source.org) continue;
-				const knownAtOther = other.allergies.some((a) => substancesOverlap(a.substance, allergy.substance));
+				// An org that never actually pulled AllergyIntolerance has an empty `allergies`
+				// array indistinguishable from a confirmed-empty list — treat it as unknown, not
+				// as a real gap (see hasPulledLabel's docstring).
+				if (!other.allergiesPulled) continue;
+				// Match against the OTHER org's full allergy list regardless of active status — an
+				// inactive/resolved/entered-in-error record there still means org B has SOME record of
+				// it (#1057), unlike crossOrgMedicationAllergyConflicts's active-only med↔allergy check.
+				const knownAtOther = other.allAllergies.some((a) => substancesOverlap(a.substance, allergy.substance));
 				if (!knownAtOther) gaps.push({ org: source.org, allergyId: allergy.id, allergySubstance: allergy.substance, missingOrg: other.org });
 			}
 		}

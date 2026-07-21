@@ -1,7 +1,7 @@
 import { type Fn, failWith, ok, type RtEnv, type ToolResult } from "../registry";
 import { oj } from "./_util";
 import type { RetailProduct } from "./_retail";
-import { escapeHtml, uiMeta, withUiResource } from "./_ui";
+import { clientDeclaredUiSupport, escapeHtml, uiMeta, withUiResource } from "./_ui";
 
 // Fan one `term` across the retailer fns concurrently and merge their products
 // into one list. Each retailer is invoked through the FUNCTIONS registry (imported
@@ -160,7 +160,7 @@ export const product_search: Fn = {
 		const by_retailer: Record<string, number> = {};
 		for (const p of capped) by_retailer[p.retailer] = (by_retailer[p.retailer] ?? 0) + 1;
 		const result: ToolResult = ok(oj({ term, count: capped.length, by_retailer, products: capped, errors }));
-		if (args?.ui) return withUiResource(result, "product-search-dashboard", renderProductDashboard(term, capped));
+		if (args?.ui && (await clientDeclaredUiSupport(env))) return withUiResource(result, "product-search-dashboard", renderProductDashboard(term, capped));
 		return result;
 	},
 };

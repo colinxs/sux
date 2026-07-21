@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { buildInfluxSnapshot, shipEgress, shipMetricsSnapshot, shipToLoki } from "./grafana";
+import { buildGithubBillingSnapshot, buildInfluxSnapshot, shipEgress, shipGithubBillingSnapshot, shipMetricsSnapshot, shipToLoki } from "./grafana";
 import { applyEvent, type CallEvent, emptyMetrics } from "./metrics";
 import type { RtEnv } from "./registry";
 
@@ -249,5 +249,72 @@ describe("shipMetricsSnapshot", () => {
 		expect(headers["content-type"]).toBe("text/plain");
 		expect(headers.authorization).toBe(`Basic ${btoa("12345:t1")}`);
 		expect(init.body as string).toContain("sux_tool_calls_total,tool=dns value=1");
+	});
+});
+
+describe("buildGithubBillingSnapshot", () => {
+	it("emits both gauges when both fields are present", () => {
+		const body = buildGithubBillingSnapshot({ total_minutes_used: 42, included_minutes: 2000 }, 1_700_000_000_000);
+		const lines = body.split("\n");
+		expect(lines).toContain("gh_actions_minutes_used_total value=42 1700000000000000000");
+		expect(lines).toContain("gh_actions_minutes_included value=2000 1700000000000000000");
+	});
+
+	it("omits a missing/non-finite field instead of emitting 0 or NaN", () => {
+		const body = buildGithubBillingSnapshot({ total_minutes_used: 7 }, 1_700_000_000_000);
+		expect(body).toContain("gh_actions_minutes_used_total value=7");
+		expect(body).not.toContain("gh_actions_minutes_included");
+		expect(body).not.toContain("NaN");
+	});
+});
+
+describe("shipGithubBillingSnapshot", () => {
+	const GH_CONFIGURED = { ...PROM_CONFIGURED, GITHUB_TOKEN: "gh-tok" } as const;
+
+	it("is a no-op (returns dormant, no fetch) unless the Prometheus secrets and GITHUB_TOKEN are all set", async () => {
+		const fetchSpy = vi.fn(async () => new Response(null, { status: 204 }));
+		vi.stubGlobal("fetch", fetchSpy);
+		const partials: Partial<typeof GH_CONFIGURED>[] = [{}, { GITHUB_TOKEN: "gh-tok" }, PROM_CONFIGURED as Partial<typeof GH_CONFIGURED>];
+		for (const extra of partials) {
+			const env = fakeEnv({}, extra as Partial<RtEnv>);
+			const { ctx, promises } = fakeCtx();
+			const report = await shipGithubBillingSnapshot(env, ctx);
+			expect(report).toEqual({ dormant: true });
+			expect(promises).toHaveLength(0);
+		}
+		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
+	it("fetches billing usage from the default org and pushes the gauges via the shared transport", async () => {
+		const fetchSpy = vi.fn(async (url: string) => {
+			if (String(url) === "https://api.github.com/orgs/SuxOS/settings/billing/actions") {
+				return new Response(JSON.stringify({ total_minutes_used: 100, included_minutes: 2000 }), { status: 200 });
+			}
+			return new Response(null, { status: 204 });
+		});
+		vi.stubGlobal("fetch", fetchSpy);
+		const env = fakeEnv({}, GH_CONFIGURED as Partial<RtEnv>);
+		const { ctx, settle } = fakeCtx();
+		const report = await shipGithubBillingSnapshot(env, ctx);
+		await settle();
+
+		expect(report).toEqual({ ok: true, total_minutes_used: 100, included_minutes: 2000 });
+		const billingCall = fetchSpy.mock.calls.find(([u]) => String(u).includes("settings/billing/actions")) as unknown as [string, RequestInit] | undefined;
+		expect(billingCall?.[1]?.headers).toMatchObject({ Authorization: "Bearer gh-tok" });
+		const pushCall = fetchSpy.mock.calls.find(([u]) => u === GH_CONFIGURED.GRAFANA_PROM_URL);
+		expect(pushCall).toBeTruthy();
+		const [, init] = pushCall as unknown as [string, RequestInit];
+		expect((init.headers as Record<string, string>).authorization).toBe(`Basic ${btoa("12345:t1")}`);
+		expect(init.body as string).toContain("gh_actions_minutes_used_total value=100");
+	});
+
+	it("returns an error report (no push) on a non-OK GitHub response", async () => {
+		const fetchSpy = vi.fn(async () => new Response("rate limited", { status: 403 }));
+		vi.stubGlobal("fetch", fetchSpy);
+		const env = fakeEnv({}, GH_CONFIGURED as Partial<RtEnv>);
+		const { ctx, promises } = fakeCtx();
+		const report = await shipGithubBillingSnapshot(env, ctx);
+		expect(report).toMatchObject({ error: expect.stringContaining("403") });
+		expect(promises).toHaveLength(0);
 	});
 });

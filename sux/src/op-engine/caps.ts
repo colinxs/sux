@@ -1,4 +1,4 @@
-import type { Caps, Handle, Llm, SinkTarget, Store } from "@suxos/lib";
+import { type Cache, type Caps, createGovernor, type Governor, type Handle, type Llm, type SinkTarget, type Store } from "@suxos/lib";
 import { llm } from "../ai.js";
 import type { RtEnv } from "../registry.js";
 
@@ -427,6 +427,36 @@ function filesDuplicatesSink(env: RtEnv): SinkTarget {
 	};
 }
 
+// KV-backed memo cache for `LeafOpts.memo`/`SinkOpts.memo` — suxlib's runGoverned
+// (inline) and durable.ts's runStep (once #1071 lands) both short-circuit on a hit here
+// keyed by control/memo.ts's memoKey. Values are whatever shape the leaf/sink returns
+// (a Handle, an array of Handles, a plain object) — round-tripped through JSON since
+// KV only stores strings. Graceful no-op with no OAUTH_KV binding, same as ledger.ts.
+const MEMO_TTL_SECONDS = 24 * 3600;
+function kvCache(env: RtEnv): Cache {
+	const kv = env.OAUTH_KV;
+	return {
+		async get(key: string): Promise<unknown> {
+			const raw = await kv?.get(`cache:op:${key}`);
+			return raw == null ? undefined : JSON.parse(raw);
+		},
+		async put(key: string, value: unknown): Promise<void> {
+			await kv?.put(`cache:op:${key}`, JSON.stringify(value), { expirationTtl: MEMO_TTL_SECONDS });
+		},
+	};
+}
+
+// Per-leaf concurrency governors, keyed by leaf name (matches how suxlib's runGoverned
+// looks them up: `caps.governors?.[name]`). `extract` (registry.ts's assimilate-pdfs
+// map) is the one leaf declared `heavy: true` today — cap its concurrency lower than the
+// map node's own `aimd({start: 4})` so PDF→markdown conversion (LLM/CPU-bound) doesn't
+// saturate Workers-AI even when the map is willing to fan out wider.
+function makeGovernors(): Record<string, Governor> {
+	return {
+		extract: createGovernor("extract", { heavyConcurrency: { kind: "fixed", n: 2 } }),
+	};
+}
+
 export function makeCaps(env: RtEnv): Caps {
 	return {
 		store: r2Store(env),
@@ -434,5 +464,7 @@ export function makeCaps(env: RtEnv): Caps {
 		// Read only inside a memoized step.do body (see durable.ts) so replays stay deterministic.
 		clock: { now: () => Date.now() },
 		sinks: makeSinks(env),
+		governors: makeGovernors(),
+		cache: kvCache(env),
 	};
 }

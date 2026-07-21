@@ -1,7 +1,13 @@
 import { smartFetch } from "./proxy";
 import type { TailscaleEnv } from "./proxy";
 
-export type AiEnv = TailscaleEnv & { AI?: { run: (model: string, inputs: any) => Promise<any> } };
+export type AiEnv = TailscaleEnv & {
+	AI?: { run: (model: string, inputs: any, options?: Record<string, unknown>) => Promise<any> };
+	// AI Gateway id (#1060) — dormant until a human creates the gateway in the
+	// Cloudflare account and sets this (same convention as MONARCH_TOKEN etc.):
+	// unset means every Workers-AI call behaves exactly as it does today.
+	AI_GATEWAY_ID?: string;
+};
 
 export const MODELS = {
 	text: "@cf/meta/llama-3.2-3b-instruct",
@@ -12,6 +18,14 @@ export const MODELS = {
 
 export function hasAI(env: AiEnv): boolean {
 	return typeof env.AI?.run === "function";
+}
+
+/** Options for env.AI.run() that route the call through Cloudflare AI Gateway
+ *  (response caching, observability, cost ceiling) once AI_GATEWAY_ID is set —
+ *  undefined (the default, no-op) otherwise, so every call site opts in for free
+ *  once the account-side gateway exists without any further call-site changes. */
+export function aiGatewayOptions(env: { AI_GATEWAY_ID?: string }): Record<string, unknown> | undefined {
+	return env.AI_GATEWAY_ID ? { gateway: { id: env.AI_GATEWAY_ID } } : undefined;
 }
 
 // Prompt-injection defense. Everything llm() summarizes/classifies is scraped web
@@ -59,15 +73,19 @@ export function wrapUntrusted(content: string): string {
 
 export async function llm(env: AiEnv, system: string, user: string, maxTokens = 1024, task = "this task"): Promise<string> {
 	if (!hasAI(env)) throw new Error("Workers AI binding not configured (add \"ai\": { \"binding\": \"AI\" } to wrangler).");
-	const r = await env.AI!.run(MODELS.text, {
-		messages: [
-			// The guard rides in the system role (trusted) so the untrusted user content
-			// below can never dislodge it; the user content is fenced as data.
-			{ role: "system", content: `${system}\n\n${guardInstruction(task)}` },
-			{ role: "user", content: wrapUntrusted(user) },
-		],
-		max_tokens: maxTokens,
-	});
+	const r = await env.AI!.run(
+		MODELS.text,
+		{
+			messages: [
+				// The guard rides in the system role (trusted) so the untrusted user content
+				// below can never dislodge it; the user content is fenced as data.
+				{ role: "system", content: `${system}\n\n${guardInstruction(task)}` },
+				{ role: "user", content: wrapUntrusted(user) },
+			],
+			max_tokens: maxTokens,
+		},
+		aiGatewayOptions(env),
+	);
 	// Some Workers-AI models return `response` as an already-parsed object; String()
 	// would yield "[object Object]", so JSON-encode non-strings.
 	const resp = r?.response;

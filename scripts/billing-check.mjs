@@ -78,6 +78,10 @@ async function ghJson(path, token) {
 	return { status: r.status, body: r.ok ? await r.json() : await r.text().catch(() => "") };
 }
 
+// sux/src/grafana.ts's shipGithubBillingSnapshot() independently fetches this same
+// /settings/billing/actions endpoint (with a different GH_BILLING_OWNER default,
+// "SuxOS" there vs "colinxs" here) — see that file before assuming this is the only
+// caller, and consider consolidating if you touch either (#1101).
 async function githubActionsMeter() {
 	const token = process.env.GH_BILLING_TOKEN || process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
 	const m = { name: "GitHub Actions minutes", unit: "min", limit: LIMITS.ghActionsMinutes };

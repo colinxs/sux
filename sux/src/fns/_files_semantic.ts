@@ -33,7 +33,7 @@ const INDEX_MAX = 3000;
 const MAX_FILES = 500;
 // Only small textual files are ever embedded — mirrors fromFiles's own inline gate
 // (recall.ts:173), so the semantic index never covers ground the keyword leg wouldn't.
-const FILE_SIZE_CAP = 200_000;
+export const FILE_SIZE_CAP = 200_000;
 export const FILES_SEMANTIC_TEXT_EXT = /\.(md|txt|json|csv|tsv|ya?ml|xml|html?)$/i;
 // list_folder/continue pages at most this many pages per call; caps the paging loop
 // against a huge backlog (a first-ever build, or an update stale by months) rather than
