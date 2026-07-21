@@ -91,6 +91,28 @@
       "id": 7,
       "targets": [{ "refId": "A", "expr": "topk(10, rate(sux_tool_calls_total[15m]) * 60)", "legendFormat": "{{tool}}" }],
       "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "title": "GH Actions minutes used (billing period)",
+      "type": "gauge",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 22 },
+      "id": 8,
+      "description": "gh_actions_minutes_used_total / gh_actions_minutes_included, pushed daily by shipGithubBillingSnapshot (sux/src/grafana.ts). No data until GRAFANA_PROM_* + GITHUB_TOKEN are set and the daily tick has run once.",
+      "targets": [{ "refId": "A", "expr": "gh_actions_minutes_used_total / gh_actions_minutes_included" }],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.8 }, { "color": "red", "value": 0.95 }] } }, "overrides": [] }
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "title": "GH Actions minutes (raw)",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 22 },
+      "id": 9,
+      "targets": [
+        { "refId": "A", "expr": "gh_actions_minutes_used_total", "legendFormat": "used" },
+        { "refId": "B", "expr": "gh_actions_minutes_included", "legendFormat": "included" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
     }
   ],
   "refresh": "5m",

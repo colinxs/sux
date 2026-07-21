@@ -24,8 +24,8 @@
 // Cloudflare's "Rules of Workflows" explicitly supports ("works correctly across
 // engine lifetimes"); only `Promise.race`/`Promise.any` need wrapping. `map` stays
 // bounded by the op's own limiter (`node.concurrency`), matching `runInline`.
-import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep, type WorkflowTimeoutDuration } from "cloudflare:workers";
-import { runReconcile, type Caps, type Op } from "@suxos/lib";
+import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep, type WorkflowStepConfig, type WorkflowTimeoutDuration } from "cloudflare:workers";
+import { runReconcile, type Caps, type LeafOpts, type Op, type SinkOpts } from "@suxos/lib";
 import type { RtEnv } from "../registry.js";
 
 // Above this, the fan-out would blow through the per-instance step ceiling (25k) —
@@ -33,6 +33,18 @@ import type { RtEnv } from "../registry.js";
 const MAP_FANOUT_CEILING = 20_000;
 
 export type OpParams = { opId: string; input: any };
+
+// Maps a leaf/sink's declared retries onto step.do's own WorkflowStepConfig — the
+// one piece of LeafOpts/SinkOpts that has a direct Workflows equivalent (#1071).
+// `heavy`/`memo` have no Workflows primitive to map onto (they're inline.ts's
+// runGoverned concurrency/cache gating, which durable has no caps.governors/
+// caps.cache wiring for yet); left as a follow-up rather than guessed at here.
+// Undeclared retries falls through to Workflows' own built-in default retry
+// policy (undefined config), same behavior as before this change.
+function stepConfig(opts: LeafOpts | SinkOpts | undefined): WorkflowStepConfig | undefined {
+	if (!opts?.retries) return undefined;
+	return { retries: { limit: opts.retries, delay: "10 seconds", backoff: "exponential" } };
+}
 
 /** Thrown when a human answers an `ask` gate with `{approved: false}` — a graceful
  * reject-and-stop distinct from the wait simply timing out. `instance.status()` surfaces
@@ -55,8 +67,10 @@ export class AskRejectedError extends Error {
  */
 export async function interpretDurable(node: Op, input: any, step: WorkflowStep, caps: Caps, path: string): Promise<any> {
 	switch (node.tag) {
-		case "leaf":
-			return step.do(`${path}:${node.name}`, () => node.fn(input, caps));
+		case "leaf": {
+			const config = stepConfig(node.opts);
+			return config ? step.do(`${path}:${node.name}`, config, () => node.fn(input, caps)) : step.do(`${path}:${node.name}`, () => node.fn(input, caps));
+		}
 		case "pipe": {
 			let v = input;
 			let i = 0;
@@ -119,7 +133,11 @@ export async function interpretDurable(node: Op, input: any, step: WorkflowStep,
 			await Promise.all(
 				node.targets.map((t) => {
 					const name = typeof t === "string" ? t : t.name;
-					return step.do(`${path}:sink:${name}`, () => caps.sinks[name].write(input, caps));
+					// A bare target name falls back to the sink call's own opts, same
+					// precedence suxlib's sink.fanout combinator documents.
+					const config = stepConfig(typeof t === "string" ? node.opts : (t.opts ?? node.opts));
+					const write = () => caps.sinks[name].write(input, caps);
+					return config ? step.do(`${path}:sink:${name}`, config, write) : step.do(`${path}:sink:${name}`, write);
 				}),
 			);
 			return input;

@@ -199,14 +199,18 @@ async function handleEnqueue(request: Request, env: RtEnv): Promise<Response> {
 	return json({ ok: true, node_id: nodeId, queued: cmd, queue_depth: queue.length });
 }
 
-// operator→Worker status read. Bearer-authed. Returns the node's last-seen health +
-// timestamp (or not_found), plus the current queue depth so an operator can see
-// whether a command is still waiting to be collected.
-async function handleStatus(url: URL, env: RtEnv): Promise<Response> {
-	const nodeId = url.searchParams.get("node_id") ?? "";
-	if (!NODE_ID_RE.test(nodeId)) return json({ error: "bad_node_id" }, 400);
+export type NodeStatusResult =
+	| { ok: true; status: StoredStatus; pending_commands: number; server_time: number; age_seconds: number }
+	| { ok: false; error: "not_found" | "corrupt_status"; node_id: string };
+
+// Shared by the admin-authed /recovery/status route AND gatherHealth's public
+// dashboard read (#1075) — a node's last-seen checkin + queue depth, keyed by
+// node_id, with no auth/response-shaping baked in so both callers can wrap it
+// (a 200/404 Response for the operator route, a redacted health-page field for
+// the hub) however they need.
+export async function readNodeStatus(env: RtEnv, nodeId: string): Promise<NodeStatusResult> {
 	const raw = await env.OAUTH_KV.get(statusKey(nodeId));
-	if (!raw) return json({ error: "not_found", node_id: nodeId }, 404);
+	if (!raw) return { ok: false, error: "not_found", node_id: nodeId };
 	const now = Math.floor(Date.now() / 1000);
 	// Parity with readQueue: handleRecovery runs before index.ts's try/catch, so an
 	// unguarded throw here escapes as a raw Worker 5xx instead of a clean JSON error.
@@ -214,10 +218,21 @@ async function handleStatus(url: URL, env: RtEnv): Promise<Response> {
 	try {
 		status = JSON.parse(raw) as StoredStatus;
 	} catch {
-		return json({ error: "corrupt_status", node_id: nodeId }, 500);
+		return { ok: false, error: "corrupt_status", node_id: nodeId };
 	}
 	const pending = (await readQueue(env, nodeId)).filter((c) => c.expires > now).length;
-	return json({ ok: true, status, pending_commands: pending, server_time: now, age_seconds: now - status.received_at });
+	return { ok: true, status, pending_commands: pending, server_time: now, age_seconds: now - status.received_at };
+}
+
+// operator→Worker status read. Bearer-authed. Returns the node's last-seen health +
+// timestamp (or not_found), plus the current queue depth so an operator can see
+// whether a command is still waiting to be collected.
+async function handleStatus(url: URL, env: RtEnv): Promise<Response> {
+	const nodeId = url.searchParams.get("node_id") ?? "";
+	if (!NODE_ID_RE.test(nodeId)) return json({ error: "bad_node_id" }, 400);
+	const result = await readNodeStatus(env, nodeId);
+	if (!result.ok) return json({ error: result.error, node_id: nodeId }, result.error === "not_found" ? 404 : 500);
+	return json(result);
 }
 
 // Bearer check for the operator routes. Distinct 404 (not 401) when the admin secret

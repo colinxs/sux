@@ -703,7 +703,13 @@ async function gatherContributingMedsAndAllergies(env: RtEnv): Promise<OrgMedAll
 					.map((r) => ({ id: String(r.id), substance: codeableConceptText(r.code) }))
 					.filter((a): a is { id: string; substance: string } => Boolean(a.substance));
 			const activeAllergies = toAllergyList(allergies.filter((r) => isAllergyActive(r)));
-			const allAllergies = toAllergyList(allergies);
+			// #1057 widened this to also count inactive/resolved records as "org B has some
+			// record of it" — but "refuted"/"entered-in-error" is the OPPOSITE signal (org B
+			// affirmatively determined the patient is NOT allergic), not a weaker positive, so
+			// those must still be excluded here same as the active set (#1084).
+			const allAllergies = toAllergyList(
+				allergies.filter((r) => !codeableConceptHasCode(r?.verificationStatus, "refuted") && !codeableConceptHasCode(r?.verificationStatus, "entered-in-error")),
+			);
 			return { org, meds: activeMeds, allergies: activeAllergies, allAllergies, allergiesPulled };
 		}),
 	);

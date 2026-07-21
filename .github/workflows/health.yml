@@ -1,10 +1,12 @@
 name: Health check
 
 # Daily regression canary (tests) + live smoke check of the deployed Worker, plus a
-# billing/usage guard (scripts/billing-check.mjs) so a spend blowout across GitHub
-# Actions minutes / CF Workers requests+neurons / Anthropic API is caught automatically
-# instead of only when a human remembers to run the script by hand. On failure either
-# job opens (or updates) a tracking issue so nothing gets missed on a day no one pushed.
+# billing/usage guard (scripts/billing-check.mjs) and a branch-protection guard
+# (scripts/branch-protection-check.mjs, #1076) so a spend blowout across GitHub
+# Actions minutes / CF Workers requests+neurons / Anthropic API, or main's
+# required_status_checks getting silently flipped off, is caught automatically
+# instead of only when a human remembers to check. On failure any job opens (or
+# updates) a tracking issue so nothing gets missed on a day no one pushed.
 # Reusable workflow: SuxOS/.github/.github/workflows/health.yml
 
 on:
@@ -63,3 +65,41 @@ jobs:
             - Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
             Run `node scripts/billing-check.mjs` locally (or with `--json`) for the full report.
+
+  branch-protection:
+    name: Branch protection guard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      # No npm ci — the script has zero external deps (node:url only).
+      - name: Branch protection check
+        env:
+          GH_BILLING_TOKEN: ${{ secrets.GH_BILLING_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/branch-protection-check.mjs
+
+      # main's required_status_checks getting flipped off silently is one of the
+      # highest-leverage failure modes docs/design/generalized-watchdog-debug.md
+      # flags — same shared upsert as the billing job above.
+      - name: Open or update branch-protection-drift issue on breach
+        if: failure()
+        uses: SuxOS/.github/.github/actions/upsert-tracking-issue@main
+        with:
+          github-token: ${{ github.token }}
+          title: "sux main branch protection drift"
+          body: |
+            main's required_status_checks appears to be missing or misconfigured.
+
+            - Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            Run `node scripts/branch-protection-check.mjs --json` locally (with a repo-admin
+            token in GH_BILLING_TOKEN) for the full report, and check the repo's Settings →
+            Branches → main rule.

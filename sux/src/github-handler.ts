@@ -12,6 +12,8 @@ import {
 import { hmacHex, isTailscaleConfigured, proxyEnabled, smartFetch, type TailscaleEnv } from "./proxy";
 import { deriveMetrics, readMetrics } from "./metrics";
 import { readHeartbeats } from "./cron-heartbeat";
+import { readNodeStatus } from "./recovery";
+import { githubAuthHeaders } from "./github-auth";
 import type { RtEnv } from "./registry";
 import { safeParseJson } from "./fns/_util";
 
@@ -139,6 +141,52 @@ export function bindingsOk(b: any): boolean {
 	return Boolean(b?.kv?.ok && b?.r2?.ok && b?.ai?.bound && b?.images?.bound && b?.browser?.bound);
 }
 
+// The only router node the recovery dead-drop currently talks to (see recovery.ts /
+// recovery.test.ts). A checkin older than this is treated as stale — the box phones
+// home well inside this window on a healthy WAN, so a gap this wide means either the
+// box is down or its uplink (the exact case the dead-drop exists to detect).
+const ROUTER_NODE_ID = "owl-tegu";
+const ROUTER_STALE_SECONDS = 900;
+
+/** Router (owl-tegu) liveness via the recovery dead-drop's last checkin — the "checkin
+ * KV → /health" gap docs/design/generalized-watchdog-debug.md's Next-step §1 calls for
+ * (#1075). Never throws: a KV miss/parse failure just degrades to `available: false`. */
+async function gatherRouterHealth(env: RtEnv): Promise<Record<string, unknown>> {
+	const result = await readNodeStatus(env, ROUTER_NODE_ID).catch((e) => ({ ok: false as const, error: "read_failed" as const, node_id: ROUTER_NODE_ID, reason: String((e as Error)?.message ?? e) }));
+	if (!result.ok) return { available: false, node_id: ROUTER_NODE_ID, reason: "error" in result ? result.error : "unknown" };
+	const stale = result.age_seconds > ROUTER_STALE_SECONDS;
+	return { available: true, node_id: ROUTER_NODE_ID, ok: !stale, stale, age_seconds: result.age_seconds, pending_commands: result.pending_commands, health: result.status.health };
+}
+
+/** Recent bot-tier health (§Next step 3): last few GitHub Actions workflow-run
+ * conclusions + the repo's open-issue count, so all three watchdog tiers (bots /
+ * router / Worker) read from the one /health page instead of only the Worker's own.
+ * Dormant (`available: false`) unless GITHUB_TOKEN is set; never throws. */
+async function gatherBotsHealth(env: RtEnv): Promise<Record<string, unknown>> {
+	const token = env.GITHUB_TOKEN;
+	if (!token) return { available: false, reason: "GITHUB_TOKEN not set" };
+	const repo = String(env.SELF_IMPROVE_REPO ?? "").trim() || "SuxOS/sux";
+	const headers = { Accept: "application/vnd.github+json", "User-Agent": "sux-health", "X-GitHub-Api-Version": "2022-11-28", ...githubAuthHeaders({ GITHUB_TOKEN: token }, "https://api.github.com/") };
+	try {
+		const [runsRes, repoRes] = await Promise.all([
+			fetch(`https://api.github.com/repos/${repo}/actions/runs?per_page=15`, { headers, signal: AbortSignal.timeout(8000) }),
+			fetch(`https://api.github.com/repos/${repo}`, { headers, signal: AbortSignal.timeout(8000) }),
+		]);
+		if (!runsRes.ok || !repoRes.ok) return { available: false, reason: `HTTP ${runsRes.status}/${repoRes.status}` };
+		const runsJson: any = await runsRes.json().catch(() => null);
+		const repoJson: any = await repoRes.json().catch(() => null);
+		const runs: any[] = Array.isArray(runsJson?.workflow_runs) ? runsJson.workflow_runs : [];
+		const conclusions: Record<string, number> = {};
+		for (const r of runs) {
+			const c = typeof r?.conclusion === "string" ? r.conclusion : r?.status === "in_progress" ? "in_progress" : "unknown";
+			conclusions[c] = (conclusions[c] ?? 0) + 1;
+		}
+		return { available: true, recent_runs: runs.length, conclusions, open_issues: typeof repoJson?.open_issues_count === "number" ? repoJson.open_issues_count : null };
+	} catch (e) {
+		return { available: false, reason: String((e as Error)?.message ?? e) };
+	}
+}
+
 // deriveMetrics now lives beside the other Metrics derivations in ./metrics; re-
 // exported here so existing importers (and the health page below) keep working.
 export { deriveMetrics };
@@ -152,7 +200,7 @@ async function gatherHealth(env: HandlerEnv): Promise<Record<string, unknown>> {
 
 	// Residential (through the proxy) vs datacenter (direct) egress + tunnel latency.
 	const t0 = Date.now();
-	const [proxied, direct, status, rawMetrics, bindings] = await Promise.all([
+	const [proxied, direct, status, rawMetrics, bindings, router, bots] = await Promise.all([
 		withTimeout(ipInfo((u) => smartFetch(env, u, {})), 9000, null),
 		withTimeout(ipInfo((u) => fetch(u)), 9000, null),
 		withTimeout(nodeStatus(env), 9000, { available: false, reason: "timeout" } as Record<string, unknown>),
@@ -167,6 +215,11 @@ async function gatherHealth(env: HandlerEnv): Promise<Record<string, unknown>> {
 			images: { bound: false },
 			browser: { bound: false },
 		} as Record<string, unknown>),
+		// Router (owl-tegu) dead-drop checkin — the KV-backed edge of the recovery
+		// tier the watchdog hub was missing (#1075).
+		withTimeout(gatherRouterHealth(env as unknown as RtEnv), 9000, { available: false, reason: "timeout" } as Record<string, unknown>),
+		// Bots tier — recent workflow-run conclusions + open-issue count (#1075).
+		withTimeout(gatherBotsHealth(env as unknown as RtEnv), 9000, { available: false, reason: "timeout" } as Record<string, unknown>),
 	]);
 	const tunnelMs = Date.now() - t0;
 	const metrics = rawMetrics ? deriveMetrics(rawMetrics) : null;
@@ -212,7 +265,7 @@ async function gatherHealth(env: HandlerEnv): Promise<Record<string, unknown>> {
 	}
 
 	const ok = config.kagiKey && config.githubClient && upstream.reachable && bindingsOk(bindings);
-	return { status: ok ? "ok" : "degraded", config, tailscale, upstream, metrics, cron, bindings };
+	return { status: ok ? "ok" : "degraded", config, tailscale, upstream, metrics, cron, bindings, router, bots };
 }
 
 function renderHealthHtml(h: any): string {
@@ -269,6 +322,33 @@ function renderHealthHtml(h: any): string {
  ${cronRow("Briefing", cron.briefing)}
  ${cronRow("Adblock engine", cron.adblock)}
  ${cronRow("Self-improve", cron.self_improve)}
+</div>`;
+
+	// Watchdog tiers: router (recovery dead-drop checkin) + bots (workflow runs/open
+	// issues) alongside this Worker's own cron/bindings, per docs/design/
+	// generalized-watchdog-debug.md's three-tier hub (#1075).
+	const router = h.router ?? { available: false };
+	const routerCard = `<div class="card"><h2>watchdog · router</h2>
+ <div class="row"><span class="k">Node</span><span class="v">${esc(router.node_id ?? "—")}</span></div>
+ ${
+		router.available
+			? `<div class="row"><span class="k">Checkin</span><span class="v">${dot(Boolean(router.ok))} ${router.stale ? "stale" : "ok"} · ${ago(router.age_seconds * 1000)}</span></div>
+ <div class="row"><span class="k">Pending commands</span><span class="v">${router.pending_commands ?? 0}</span></div>`
+			: `<div class="row"><span class="k">Status</span><span class="v">${dot(false)} unavailable</span></div>
+ <div class="row"><span class="k">Reason</span><span class="v">${esc(router.reason ?? "—")}</span></div>`
+	}
+</div>`;
+
+	const bots = h.bots ?? { available: false };
+	const conclusionsStr = bots.conclusions && typeof bots.conclusions === "object" ? Object.entries(bots.conclusions).map(([k, v]) => `${k}:${v}`).join(", ") : "—";
+	const botsCard = `<div class="card"><h2>watchdog · bots</h2>
+ ${
+		bots.available
+			? `<div class="row"><span class="k">Recent runs (${bots.recent_runs ?? 0})</span><span class="v">${esc(conclusionsStr)}</span></div>
+ <div class="row"><span class="k">Open issues</span><span class="v">${bots.open_issues ?? "—"}</span></div>`
+			: `<div class="row"><span class="k">Status</span><span class="v">${dot(false)} unavailable</span></div>
+ <div class="row"><span class="k">Reason</span><span class="v">${esc(bots.reason ?? "—")}</span></div>`
+	}
 </div>`;
 	return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>sux · health</title>
@@ -331,6 +411,10 @@ function renderHealthHtml(h: any): string {
 
 ${cronCard}
 
+${routerCard}
+
+${botsCard}
+
 <div class="card"><h2>tailscale · node <code>tailscaled status</code></h2>
  ${
 		node.available
@@ -374,6 +458,11 @@ export function redactPublicHealth(h: Record<string, unknown>): Record<string, u
 			if (job && typeof job === "object" && "error" in (job as any)) delete (job as any).error;
 		}
 	}
+	// The router's self-reported checkin body is arbitrary box-local diagnostic text
+	// (see recovery.ts's StoredStatus.health) — keep only the ok/stale/age liveness
+	// signal for anonymous callers, same redaction policy as tailscale.node above.
+	const router = clone.router;
+	if (router && typeof router === "object" && "health" in router) delete router.health;
 	return clone;
 }
 
