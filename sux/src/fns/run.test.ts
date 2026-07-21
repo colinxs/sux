@@ -1,5 +1,5 @@
 import { test, expect, vi } from "vitest";
-import { ask, catchOp, fixed, map, mapField, op } from "@suxos/lib";
+import { ask, catchOp, cond, fixed, map, mapField, op, parallel } from "@suxos/lib";
 import { answerVerb, cancelVerb, collectAskGates, describeOp, listDurableRuns, needsDurable, run, runVerb, statusVerb } from "./run.js";
 
 // A minimal in-memory KVNamespace — just enough of put/get/list for the run index.
@@ -236,6 +236,32 @@ test("needsDurable is true for a map fanning out an ask (existing map recursion,
 	const gated = map(ask("approve each?", { timeout: "1 hour", onTimeout: "fail" }), { concurrency: fixed(1) });
 	expect(needsDurable(gated)).toBe(true);
 	expect(collectAskGates(gated)).toEqual([{ prompt: "approve each?", timeout: "1 hour", onTimeout: "fail" }]);
+});
+
+test("needsDurable/collectAskGates recurse into an ask nested under cond's cases and default", () => {
+	const caseAsk = ask("case approve?", { timeout: "1 hour", onTimeout: "proceed" });
+	const defaultAsk = ask("default approve?", { timeout: "1 hour", onTimeout: "proceed" });
+	const gated = cond([{ when: { field: "kind", equals: "a" }, then: caseAsk }], defaultAsk);
+	expect(needsDurable(gated)).toBe(true);
+	expect(collectAskGates(gated)).toEqual([
+		{ prompt: "case approve?", timeout: "1 hour", onTimeout: "proceed" },
+		{ prompt: "default approve?", timeout: "1 hour", onTimeout: "proceed" },
+	]);
+});
+
+test("needsDurable is false for a cond whose cases/default are all plain leaves", () => {
+	const plain = cond(
+		[{ when: { field: "kind", equals: "a" }, then: op("a", async () => "A", { kind: "pure" }) }],
+		op("fallback", async () => "F", { kind: "pure" }),
+	);
+	expect(needsDurable(plain)).toBe(false);
+	expect(collectAskGates(plain)).toEqual([]);
+});
+
+test("needsDurable/collectAskGates recurse into an ask nested under a parallel branch", () => {
+	const gated = parallel([op("plain", async (n: number) => n, { kind: "pure" }), ask("approve branch?", { timeout: "1 hour", onTimeout: "fail" })]);
+	expect(needsDurable(gated)).toBe(true);
+	expect(collectAskGates(gated)).toEqual([{ prompt: "approve branch?", timeout: "1 hour", onTimeout: "fail" }]);
 });
 
 test("run fn's describe action returns the op's ask gates without an instanceId", async () => {

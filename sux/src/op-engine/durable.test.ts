@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { MemoryCache, MemoryStore, fixed, op, pipe, map, mapField, reconcile, sink, ask, catchOp, stamp, type Caps } from "@suxos/lib";
+import { MemoryCache, MemoryStore, fixed, op, pipe, map, mapField, reconcile, sink, ask, catchOp, cond, parallel, stamp, type Caps } from "@suxos/lib";
 import { AskRejectedError, interpretDurable } from "./durable.js";
 
 // A FAKE WorkflowStep: `do` runs the callback inline (so the interpreter's step
@@ -289,4 +289,40 @@ test("interpretDurable gates a heavy leaf's concurrency through caps.governors' 
 	const tree = map(heavyLeaf, { concurrency: fixed(2) });
 	await interpretDurable(tree, [1, 2, 3], fakeStep({ events: [] }), caps, "op17");
 	expect(maxInflight).toBe(1);
+});
+
+test("interpretDurable's cond picks the first matching case, falling back to default", async () => {
+	const caps = { store: new MemoryStore(), llm: {}, clock: { now: () => 0 }, sinks: {} } as unknown as Caps;
+	const tree = cond(
+		[
+			{ when: { field: "kind", equals: "a" }, then: op("a", async () => "A", { kind: "pure" }) },
+			{ when: { field: "kind", equals: "b" }, then: op("b", async () => "B", { kind: "pure" }) },
+		],
+		op("fallback", async () => "F", { kind: "pure" }),
+	);
+	expect(await interpretDurable(tree, { kind: "b" }, fakeStep({ events: [] }), caps, "op18")).toBe("B");
+	expect(await interpretDurable(tree, { kind: "z" }, fakeStep({ events: [] }), caps, "op19")).toBe("F");
+});
+
+test("interpretDurable's cond throws when no case matches and there's no default", async () => {
+	const caps = { store: new MemoryStore(), llm: {}, clock: { now: () => 0 }, sinks: {} } as unknown as Caps;
+	const tree = cond([{ when: { field: "kind", equals: "a" }, then: op("a", async () => "A", { kind: "pure" }) }]);
+	await expect(interpretDurable(tree, { kind: "z" }, fakeStep({ events: [] }), caps, "op20")).rejects.toThrow(/no case matched/);
+});
+
+test("interpretDurable's parallel runs every branch concurrently and collects results by index", async () => {
+	const caps = { store: new MemoryStore(), llm: {}, clock: { now: () => 0 }, sinks: {} } as unknown as Caps;
+	const tree = parallel([op("double", async (n: number) => n * 2, { kind: "pure" }), op("square", async (n: number) => n * n, { kind: "pure" })]);
+	expect(await interpretDurable(tree, 3, fakeStep({ events: [] }), caps, "op21")).toEqual([6, 9]);
+});
+
+test("interpretDurable's parallel propagates a branch's error", async () => {
+	const caps = { store: new MemoryStore(), llm: {}, clock: { now: () => 0 }, sinks: {} } as unknown as Caps;
+	const tree = parallel([
+		op("ok", async (n: number) => n, { kind: "pure" }),
+		op("boom", async () => {
+			throw new Error("branch failed");
+		}, { kind: "pure" }),
+	]);
+	await expect(interpretDurable(tree, 1, fakeStep({ events: [] }), caps, "op22")).rejects.toThrow("branch failed");
 });
