@@ -51,12 +51,13 @@ task falls in (or need the full map). Kept out of this file so a routine trigger
 doesn't pull in categories the task doesn't touch.
 
 Leaf index (semantics + args in `references/capability-tables.md`; call any via
-`fn({name, args})`): `ace`, `advise`, `agenda`, `amazon`, `autonomy_status`, `batch_fetch`,
-`briefing`, `citation`, `consolidate`, `costco`, `dropbox`, `feed`, `fontcase`, `get`, `homedepot`,
-`imessage`, `jmap`, `kv_get`, `kv_put`, `kv_list`, `kv_delete`, `learn`, `life_wiki`, `linkedin`, `lowes`,
-`mail_domain_backfill`, `mail_sieve`, `mail_sieve_hc`, `mail_sieve_backfill`, `mail_triage`, `mail_triage_plan`, `monarch`, `mychart`, `obsidian`, `people_finder`, `put`, `redirects`,
-`robots`, `sitemap`, `study`, `suggest`, `todoist`, `uw`, `vault_consolidate_plan`, `voice`, `walmart`, `watch`,
-`watch_pipeline`, `web_search`, `weekly_ad`.
+`fn({name, args})`): `ace`, `advise`, `agenda`, `amazon`, `audit_log`, `autonomy_status`, `batch_fetch`,
+`briefing`, `citation`, `consolidate`, `contact_consolidate_plan`, `costco`, `dropbox`, `feed`,
+`files_consolidate_plan`, `fontcase`, `get`, `homedepot`, `imessage`, `jmap`, `kv_get`, `kv_put`, `kv_list`, `kv_delete`,
+`learn`, `life_wiki`, `linkedin`, `lowes`, `mail_domain_backfill`, `mail_sieve`, `mail_sieve_hc`, `mail_sieve_backfill`,
+`mail_triage`, `mail_triage_plan`, `monarch`, `mychart`, `mychart_reconcile_plan`, `obsidian`, `onboard`, `people_finder`, `put`,
+`redirects`, `robots`, `sitemap`, `study`, `suggest`, `todoist`, `uw`, `vault_consolidate_plan`, `vault_cross_link_plan`,
+`voice`, `walmart`, `watch`, `watch_pipeline`, `web_search`, `webpush`, `weekly_ad`.
 
 ## Conventions
 
