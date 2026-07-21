@@ -25,26 +25,75 @@
 // engine lifetimes"); only `Promise.race`/`Promise.any` need wrapping. `map` stays
 // bounded by the op's own limiter (`node.concurrency`), matching `runInline`.
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep, type WorkflowStepConfig, type WorkflowTimeoutDuration } from "cloudflare:workers";
-import { runReconcile, type Caps, type LeafOpts, type Op, type SinkOpts } from "@suxos/lib";
+import { memoKey, runReconcile, type Caps, type LeafOpts, type Op, type SinkOpts } from "@suxos/lib";
 import type { RtEnv } from "../registry.js";
 
 // Above this, the fan-out would blow through the per-instance step ceiling (25k) —
 // past the MVP's job (a 2–3 item tracer bullet). Fail loud rather than silently wedge.
 const MAP_FANOUT_CEILING = 20_000;
 
-export type OpParams = { opId: string; input: any };
-
-// Maps a leaf/sink's declared retries onto step.do's own WorkflowStepConfig — the
-// one piece of LeafOpts/SinkOpts that has a direct Workflows equivalent (#1071).
-// `heavy`/`memo` have no Workflows primitive to map onto (they're inline.ts's
-// runGoverned concurrency/cache gating, which durable has no caps.governors/
-// caps.cache wiring for yet); left as a follow-up rather than guessed at here.
-// Undeclared retries falls through to Workflows' own built-in default retry
-// policy (undefined config), same behavior as before this change.
+// suxlib's `LeafOpts.retries`/`SinkOpts.retries` count EXTRA attempts after the
+// first (see suxlib's control/governor.ts `runGoverned`'s `maxRetries`), the same
+// meaning as Workflows' own `WorkflowStepConfig.retries.limit` — so the count maps
+// straight across. Only emitted when a node actually DECLARES a count: a bare
+// `step.do(name, fn)` (no config) falls back to the Workflows engine's own default
+// retry policy, which we leave alone rather than silently forcing `limit: 0` onto
+// every leaf/sink that never opted into a specific number.
+const DEFAULT_RETRY_DELAY = "10 seconds";
 function stepConfig(opts: LeafOpts | SinkOpts | undefined): WorkflowStepConfig | undefined {
-	if (!opts?.retries) return undefined;
-	return { retries: { limit: opts.retries, delay: "10 seconds", backoff: "exponential" } };
+	if (opts?.retries === undefined) return undefined;
+	return { retries: { limit: opts.retries, delay: DEFAULT_RETRY_DELAY, backoff: "exponential" } };
 }
+
+/**
+ * Runs one leaf/sink-target effect through `step.do`, honoring the same `opts`
+ * fields inline.ts's `runGoverned` already honors for the inline runtime — so a
+ * durable run doesn't silently drop declared retry/heavy/memo semantics (#1071):
+ *   • `retries` → `stepConfig` above, Workflows' own step-level retry.
+ *   • `memo` → short-circuits via `caps.cache` under a `governorName`-keyed
+ *     `memoKey`, same cache shape runGoverned uses; a no-op with no cache wired.
+ *   • `heavy` → prefers `caps.governors[governorName].heavyConcurrency` over its
+ *     plain `concurrency` for the acquire/release gate around the step, matching
+ *     runGoverned; a no-op with no governor wired for that name.
+ * `gated` mirrors runGoverned's own `opts.kind === 'effect'` check — a 'pure' leaf
+ * still gets memoized+retried but is never concurrency-gated (sinks are always
+ * gated, same as runGoverned treats every sink write as an effect).
+ */
+async function runStep(
+	step: WorkflowStep,
+	stepName: string,
+	governorName: string,
+	opts: LeafOpts | SinkOpts | undefined,
+	gated: boolean,
+	input: any,
+	caps: Caps,
+	fn: () => Promise<any>,
+): Promise<any> {
+	if (opts && opts.memo && caps.cache) {
+		const key = await memoKey(governorName, input);
+		const cached = await caps.cache.get(key);
+		if (cached !== undefined) return cached;
+		const result = await runStep(step, stepName, governorName, { ...opts, memo: false }, gated, input, caps, fn);
+		await caps.cache.put(key, result);
+		return result;
+	}
+	const config = stepConfig(opts);
+	const run = () => (config ? step.do(stepName, config, fn) : step.do(stepName, fn));
+	const governor = gated ? caps.governors?.[governorName] : undefined;
+	const concurrency = opts?.heavy ? (governor?.heavyConcurrency ?? governor?.concurrency) : governor?.concurrency;
+	if (!concurrency) return run();
+	await concurrency.acquire();
+	try {
+		const result = await run();
+		concurrency.release(true);
+		return result;
+	} catch (e) {
+		concurrency.release(false);
+		throw e;
+	}
+}
+
+export type OpParams = { opId: string; input: any };
 
 /** Thrown when a human answers an `ask` gate with `{approved: false}` — a graceful
  * reject-and-stop distinct from the wait simply timing out. `instance.status()` surfaces
@@ -67,10 +116,8 @@ export class AskRejectedError extends Error {
  */
 export async function interpretDurable(node: Op, input: any, step: WorkflowStep, caps: Caps, path: string): Promise<any> {
 	switch (node.tag) {
-		case "leaf": {
-			const config = stepConfig(node.opts);
-			return config ? step.do(`${path}:${node.name}`, config, () => node.fn(input, caps)) : step.do(`${path}:${node.name}`, () => node.fn(input, caps));
-		}
+		case "leaf":
+			return runStep(step, `${path}:${node.name}`, node.name, node.opts, node.opts.kind === "effect", input, caps, () => node.fn(input, caps));
 		case "pipe": {
 			let v = input;
 			let i = 0;
@@ -127,17 +174,19 @@ export async function interpretDurable(node: Op, input: any, step: WorkflowStep,
 		case "reconcile":
 			return step.do(`${path}:reconcile`, () => runReconcile(node.opts, input, caps.store));
 		case "sink": {
-			// A fanout target is either a bare name or a `{ name, opts }` pair (suxlib's
-			// SinkFanoutTarget) -- extract the name for both the sink lookup and the step
-			// name, same as suxlib's own inline interpreter does.
 			await Promise.all(
 				node.targets.map((t) => {
+					// A bare string target falls back entirely to the fanout node's own
+					// `opts`; a `{ name, opts }` pair overrides per-field (suxlib #251) —
+					// mirrors inline.ts's identical per-target merge.
 					const name = typeof t === "string" ? t : t.name;
-					// A bare target name falls back to the sink call's own opts, same
-					// precedence suxlib's sink.fanout combinator documents.
-					const config = stepConfig(typeof t === "string" ? node.opts : (t.opts ?? node.opts));
-					const write = () => caps.sinks[name].write(input, caps);
-					return config ? step.do(`${path}:sink:${name}`, config, write) : step.do(`${path}:sink:${name}`, write);
+					const targetOpts = typeof t === "string" ? undefined : t.opts;
+					const opts: SinkOpts = {
+						retries: targetOpts?.retries ?? node.opts?.retries,
+						heavy: targetOpts?.heavy ?? node.opts?.heavy,
+						memo: targetOpts?.memo ?? node.opts?.memo,
+					};
+					return runStep(step, `${path}:sink:${name}`, `sink:${name}`, opts, true, input, caps, () => caps.sinks[name].write(input, caps));
 				}),
 			);
 			return input;

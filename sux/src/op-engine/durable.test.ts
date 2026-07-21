@@ -1,13 +1,21 @@
 import { test, expect } from "vitest";
-import { MemoryStore, fixed, op, pipe, map, mapField, reconcile, sink, ask, catchOp, stamp, type Caps } from "@suxos/lib";
+import { MemoryCache, MemoryStore, fixed, op, pipe, map, mapField, reconcile, sink, ask, catchOp, stamp, type Caps } from "@suxos/lib";
 import { AskRejectedError, interpretDurable } from "./durable.js";
 
 // A FAKE WorkflowStep: `do` runs the callback inline (so the interpreter's step
 // bodies execute in plain node vitest, no workerd), and `waitForEvent` records the
 // event `type` it was asked to wait on. This is exactly the seam a real workflow
 // runtime provides — memoized `do`, event-driven `waitForEvent` — minus durability.
-const fakeStep = (rec: { events: string[]; sinks?: string[] }): any => ({
-	do: async (_name: string, fn: any) => fn(),
+// `do` accepts both the real API's 2-arg (name, fn) and 3-arg (name, config, fn)
+// overloads — `configs` records every config a 3-arg call was given, keyed by step
+// name, so a test can assert what retries/etc. the interpreter actually threaded
+// through without needing a real workerd Workflow instance.
+const fakeStep = (rec: { events: string[]; sinks?: string[]; configs?: Record<string, unknown> }): any => ({
+	do: async (name: string, a: any, b?: any) => {
+		if (typeof a === "function") return a();
+		if (rec.configs) rec.configs[name] = a;
+		return b();
+	},
 	// Real API is waitForEvent(name, { type, timeout }) — the type is on the 2nd arg.
 	waitForEvent: async (_name: string, opts: { type: string }) => {
 		rec.events.push(opts.type);
@@ -19,7 +27,7 @@ const fakeStep = (rec: { events: string[]; sinks?: string[] }): any => ({
 // A fake WorkflowStep whose waitForEvent always rejects — the seam an `ask` node's
 // try/catch is built to handle (a real Workflow throws once a wait's timeout elapses).
 const rejectingStep = (message = "waitForEvent timed out"): any => ({
-	do: async (_name: string, fn: any) => fn(),
+	do: async (_name: string, a: any, b?: any) => (typeof a === "function" ? a() : b()),
 	waitForEvent: async (_name: string, _opts: { type: string }) => {
 		throw new Error(message);
 	},
@@ -199,4 +207,86 @@ test("interpretDurable dispatches reconcile modes — last-write-wins selects th
 	const out = await interpretDurable(reconcile({ mode: "last-write-wins" }), [older, newer], fakeStep({ events: [] }), caps, "op6");
 	expect(out.sha256).toBe(newer.sha256);
 	expect(new TextDecoder().decode(await store.get(out))).toBe("newer");
+});
+
+test("interpretDurable threads a leaf's declared retries into step.do's WorkflowStepConfig", async () => {
+	const caps = { store: new MemoryStore(), llm: {}, clock: { now: () => 0 }, sinks: {} } as unknown as Caps;
+	const rec = { events: [] as string[], configs: {} as Record<string, unknown> };
+	const flaky = op("flaky", async (n: number) => n + 1, { kind: "effect", retries: 5 });
+	const out = await interpretDurable(flaky, 1, fakeStep(rec), caps, "op14");
+	expect(out).toBe(2);
+	expect(rec.configs["op14:flaky"]).toEqual({ retries: { limit: 5, delay: "10 seconds", backoff: "exponential" } });
+});
+
+test("interpretDurable calls step.do with no config for a leaf that never declares retries", async () => {
+	const caps = { store: new MemoryStore(), llm: {}, clock: { now: () => 0 }, sinks: {} } as unknown as Caps;
+	const rec = { events: [] as string[], configs: {} as Record<string, unknown> };
+	const plain = op("plain", async (n: number) => n + 1, { kind: "effect" });
+	await interpretDurable(plain, 1, fakeStep(rec), caps, "op15");
+	expect(rec.configs["op15:plain"]).toBeUndefined();
+});
+
+test("interpretDurable's sink fanout threads per-target retries and resolves an object-shaped { name, opts } target", async () => {
+	const caps = {
+		store: new MemoryStore(),
+		llm: {},
+		clock: { now: () => 0 },
+		sinks: {
+			a: { name: "a", write: async (v: any) => v },
+			b: { name: "b", write: async (v: any) => v },
+		},
+	} as unknown as Caps;
+	const rec = { events: [] as string[], configs: {} as Record<string, unknown> };
+	// target "a" is a bare string (falls back to the fanout's own opts: retries 2);
+	// target "b" overrides with its own retries: 0.
+	const tree = sink.fanout(["a", { name: "b", opts: { retries: 0 } }], { retries: 2 });
+	await interpretDurable(tree, "payload", fakeStep(rec), caps, "op16");
+	expect(rec.configs["op16:sink:a"]).toEqual({ retries: { limit: 2, delay: "10 seconds", backoff: "exponential" } });
+	expect(rec.configs["op16:sink:b"]).toEqual({ retries: { limit: 0, delay: "10 seconds", backoff: "exponential" } });
+});
+
+test("interpretDurable memoizes a leaf's result via caps.cache when opts.memo is set", async () => {
+	const cache = new MemoryCache();
+	const caps = { store: new MemoryStore(), llm: {}, clock: { now: () => 0 }, sinks: {}, cache } as unknown as Caps;
+	let calls = 0;
+	const memoLeaf = op(
+		"memo-leaf",
+		async (n: number) => {
+			calls++;
+			return n * 2;
+		},
+		{ kind: "effect", memo: true },
+	);
+	const first = await interpretDurable(memoLeaf, 21, fakeStep({ events: [] }), caps, "opA");
+	const second = await interpretDurable(memoLeaf, 21, fakeStep({ events: [] }), caps, "opB");
+	expect(first).toBe(42);
+	expect(second).toBe(42);
+	expect(calls).toBe(1);
+});
+
+test("interpretDurable gates a heavy leaf's concurrency through caps.governors' heavyConcurrency limiter", async () => {
+	const caps = {
+		store: new MemoryStore(),
+		llm: {},
+		clock: { now: () => 0 },
+		sinks: {},
+		governors: { "heavy-leaf": { heavyConcurrency: fixed(1) } },
+	} as unknown as Caps;
+
+	let inflight = 0;
+	let maxInflight = 0;
+	const heavyLeaf = op(
+		"heavy-leaf",
+		async (n: number) => {
+			inflight++;
+			maxInflight = Math.max(maxInflight, inflight);
+			await new Promise((r) => setTimeout(r, 0));
+			inflight--;
+			return n;
+		},
+		{ kind: "effect", heavy: true },
+	);
+	const tree = map(heavyLeaf, { concurrency: fixed(2) });
+	await interpretDurable(tree, [1, 2, 3], fakeStep({ events: [] }), caps, "op17");
+	expect(maxInflight).toBe(1);
 });

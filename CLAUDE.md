@@ -459,6 +459,21 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   `ci.yml`/`deploy.yml`/`e2e-mcp.yml`'s clone steps) got seeded with a real SHA instead of
   a `main` sentinel — check `../suxlib`'s own remote before assuming a suxlib ref is
   unresolvable from inside a sandbox.
+- **The `../suxlib` sandbox gotcha above ("Cannot find module") isn't the only shape this
+  takes — a sandbox's `../suxlib` checkout can also resolve fine but sit at a DIFFERENT
+  commit than what real CI clones fresh at run time, producing real-looking but sandbox-only
+  type/runtime errors.** Confirmed while building #1071: this session's `../suxlib` had
+  `sink.fanout`'s signature as `(targets: SinkFanoutTarget[], opts?)` (a single array arg),
+  which made `registry.ts`'s existing `sink.fanout("r2", "vault")` call (two bare strings)
+  fail `tsc` AND made `sux/src/op-engine/tracer.test.ts`'s inline run throw `node.targets.map
+  is not a function` at runtime — yet `gh run view <latest-main-run-id> --log` showed real
+  CI's OWN fresh `git clone --branch main` of suxlib, run minutes later, passing `tsc` and
+  `npm test` cleanly on the identical sux commit. Same verification as the missing-module
+  case applies: reproduce on a clean `main` checkout first (here, `git stash` and re-run) — if
+  the failure is identical before your diff, it's the sandbox's suxlib pin, not your change or
+  a real `main` break, no matter how specific/real the error looks. Don't hand-fix the sux-side
+  call site to match your sandbox's suxlib shape; it'd likely just break it again against
+  real CI's actual (possibly older, possibly newer) suxlib.
 
 ## House style
 
