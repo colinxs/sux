@@ -59,6 +59,24 @@ function stepConfig(opts: LeafOpts | SinkOpts | undefined): WorkflowStepConfig |
  * still gets memoized+retried but is never concurrency-gated (sinks are always
  * gated, same as runGoverned treats every sink write as an effect).
  */
+/** Runs `fn` behind the same concurrency gate `runStep` applies for a gated leaf/sink —
+ * factored out so the memo branch below can nest it INSIDE a single `step.do`, rather than
+ * wrapping a `step.do` from outside. */
+async function runGated(governorName: string, opts: LeafOpts | SinkOpts | undefined, gated: boolean, caps: Caps, fn: () => Promise<any>): Promise<any> {
+	const governor = gated ? caps.governors?.[governorName] : undefined;
+	const concurrency = opts?.heavy ? (governor?.heavyConcurrency ?? governor?.concurrency) : governor?.concurrency;
+	if (!concurrency) return fn();
+	await concurrency.acquire();
+	try {
+		const result = await fn();
+		concurrency.release(true);
+		return result;
+	} catch (e) {
+		concurrency.release(false);
+		throw e;
+	}
+}
+
 async function runStep(
 	step: WorkflowStep,
 	stepName: string,
@@ -69,28 +87,28 @@ async function runStep(
 	caps: Caps,
 	fn: () => Promise<any>,
 ): Promise<any> {
-	if (opts && opts.memo && caps.cache) {
-		const key = await memoKey(governorName, input);
-		const cached = await caps.cache.get(key);
-		if (cached !== undefined) return cached;
-		const result = await runStep(step, stepName, governorName, { ...opts, memo: false }, gated, input, caps, fn);
-		await caps.cache.put(key, result);
-		return result;
-	}
 	const config = stepConfig(opts);
-	const run = () => (config ? step.do(stepName, config, fn) : step.do(stepName, fn));
-	const governor = gated ? caps.governors?.[governorName] : undefined;
-	const concurrency = opts?.heavy ? (governor?.heavyConcurrency ?? governor?.concurrency) : governor?.concurrency;
-	if (!concurrency) return run();
-	await concurrency.acquire();
-	try {
-		const result = await run();
-		concurrency.release(true);
-		return result;
-	} catch (e) {
-		concurrency.release(false);
-		throw e;
-	}
+	// The memo lookup (key derivation, cache get/put) must live INSIDE step.do, not as bare
+	// awaits around it (#1169) — otherwise a workflow replay (isolate eviction, an `ask` pause
+	// resuming, a retry-triggered replay-from-top) re-runs the cache read on every pass, and a
+	// changed/expired cache entry between two replays of the SAME instance can hand back a
+	// different result than the one durably recorded the first time, breaking this file's
+	// replay-determinism guarantee (see the header note). Wrapping the whole decision in one
+	// step.do means it's observed and persisted exactly once per instance, same as every other
+	// effect here.
+	const body = async () => {
+		if (opts && opts.memo && caps.cache) {
+			const cache = caps.cache;
+			const key = await memoKey(governorName, input);
+			const cached = await cache.get(key);
+			if (cached !== undefined) return cached;
+			const result = await runGated(governorName, opts, gated, caps, fn);
+			await cache.put(key, result);
+			return result;
+		}
+		return runGated(governorName, opts, gated, caps, fn);
+	};
+	return config ? step.do(stepName, config, body) : step.do(stepName, body);
 }
 
 export type OpParams = { opId: string; input: any };

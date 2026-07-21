@@ -75,7 +75,7 @@ const MAX_ARG_BYTES = 256_000;
 // ⇒ "forbidden", the spec default) — most of sux's ~95 fns are fast enough
 // that task augmentation would just add a round-trip. Extend this set as more
 // fns want it; no dispatch change needed.
-const TASK_CAPABLE_TOOLS = new Set(["pipe", "batch", "render", "crawl", "batch_fetch", "shop", "onboard", "recall", "advise", "life_wiki", "consolidate"]);
+const TASK_CAPABLE_TOOLS = new Set(["pipe", "batch", "render", "crawl", "batch_fetch", "shop", "onboard", "recall", "advise", "life_wiki", "consolidate", "mychart"]);
 
 // Race a fn.run against a hard deadline so no fn can hang the isolate. On timeout
 // we RESOLVE (not reject) with a clean isError ToolResult and abandon the run

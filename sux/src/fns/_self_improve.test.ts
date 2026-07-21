@@ -26,6 +26,8 @@ type FakeGithub = GithubClient & {
 	commentPr: ReturnType<typeof vi.fn>;
 	openSelfImprovePrCount: ReturnType<typeof vi.fn>;
 	openSelfImproveIssueCount: ReturnType<typeof vi.fn>;
+	getPr: ReturnType<typeof vi.fn>;
+	armPr: ReturnType<typeof vi.fn>;
 };
 
 function fakeGithub(opts: { openCount?: number; openIssueCount?: number } = {}): FakeGithub {
@@ -37,7 +39,9 @@ function fakeGithub(opts: { openCount?: number; openIssueCount?: number } = {}):
 	const commentPr = vi.fn(async (_pr: number, _body: string) => {});
 	const openSelfImprovePrCount = vi.fn(async () => opts.openCount ?? 0);
 	const openSelfImproveIssueCount = vi.fn(async () => opts.openIssueCount ?? 0);
-	return { openPr, openIssue, labelPr, commentPr, openSelfImprovePrCount, openSelfImproveIssueCount };
+	const getPr = vi.fn(async (pr: number) => ({ sha: `sha-${pr}`, open: true })); // matches openPr's sha by default (no divergence yet)
+	const armPr = vi.fn(async (_pr: number) => {});
+	return { openPr, openIssue, labelPr, commentPr, openSelfImprovePrCount, openSelfImproveIssueCount, getPr, armPr };
 }
 
 const baseEnv = (over: Record<string, string> = {}) => {
@@ -177,17 +181,43 @@ describe("selfImproveTick gating matrix", () => {
 		expect(r.comments).toBe(1);
 	});
 
-	it("HIGH fix + auto-merge armed: PR + self-improve + automerge label + @claude comment", async () => {
+	it("HIGH fix + auto-merge armed: PR + self-improve+hold at open, tracked for a later swap, @claude comment", async () => {
 		const { env, store } = baseEnv({ ...ENABLED_PR, SELF_IMPROVE_AUTOMERGE: "on" });
 		seedFeedback(store, [{ kind: "issue", text: "the scrape tool crashed with a 500 error", at: 100, tool: "scrape" }]);
 		const gh = fakeGithub();
 		const r = await selfImproveTick(env, { github: gh });
 		expect(gh.openPr).toHaveBeenCalledTimes(1);
-		expect(gh.labelPr).toHaveBeenCalledWith(1, ["self-improve", "automerge"]);
+		// #1167: never `automerge` at open time — the stub commit is tree-identical to base and
+		// would auto-merge empty before the @claude hand-off lands. Always `hold` until the sweep
+		// (a later tick) observes the branch has actually diverged from the stub sha.
+		expect(gh.labelPr).toHaveBeenCalledWith(1, ["self-improve", "hold"]);
+		expect(gh.armPr).not.toHaveBeenCalled();
 		expect(gh.commentPr).toHaveBeenCalledTimes(1); // fix lane still hands off to @claude
 		expect(r.armed).toBe(1);
 		expect(r.prs).toBe(1);
 		expect(gh.openIssue).not.toHaveBeenCalled();
+	});
+
+	it("armed-PR sweep: a later tick swaps hold -> automerge once the branch has diverged from the stub sha", async () => {
+		const { env, store } = baseEnv({ ...ENABLED_PR, SELF_IMPROVE_AUTOMERGE: "on" });
+		seedFeedback(store, [{ kind: "issue", text: "the scrape tool crashed with a 500 error", at: 100, tool: "scrape" }]);
+		const gh = fakeGithub();
+		await selfImproveTick(env, { github: gh }); // opens + arms-pending PR #1 at sha-1
+		gh.getPr.mockImplementation(async (pr: number) => ({ sha: pr === 1 ? "sha-1-after-claude-fix" : "sha-unchanged", open: true }));
+		await selfImproveTick(env, { github: gh }); // no new feedback — sweep only
+		expect(gh.armPr).toHaveBeenCalledWith(1);
+	});
+
+	it("armed-PR sweep: leaves a still-stub PR pending and doesn't re-check a closed/merged one", async () => {
+		const { env, store } = baseEnv({ ...ENABLED_PR, SELF_IMPROVE_AUTOMERGE: "on" });
+		seedFeedback(store, [{ kind: "issue", text: "the scrape tool crashed with a 500 error", at: 100, tool: "scrape" }]);
+		const gh = fakeGithub();
+		await selfImproveTick(env, { github: gh }); // pending PR #1 at sha-1, getPr defaults to unchanged
+		await selfImproveTick(env, { github: gh });
+		expect(gh.armPr).not.toHaveBeenCalled();
+		gh.getPr.mockImplementation(async (_pr: number) => ({ sha: "sha-1", open: false })); // closed unmerged
+		await selfImproveTick(env, { github: gh });
+		expect(gh.armPr).not.toHaveBeenCalled();
 	});
 
 	it("HIGH fix but the auto-merge flag is OFF ⇒ MEDIUM path (self-improve+hold, never armed)", async () => {

@@ -107,6 +107,10 @@ const COUNT_PREFIX = "sux:selfimprove:count:";
 const ISSUE_COUNT_PREFIX = "sux:selfimprove:issuecount:";
 const FINDINGS_KEY = "sux:selfimprove:findings";
 const FINDINGS_CAP = 200;
+// Armed PRs pending the hold->automerge swap (#1167) — the stub commit's sha is recorded at
+// open time; the sweep below arms a PR only once its HEAD has diverged from that sha.
+const ARMED_PENDING_KEY = "sux:selfimprove:armed-pending";
+const ARMED_PENDING_CAP = 50;
 const COUNTER_TTL_SECONDS = 60 * 60 * 48; // two days — a day-counter needs no longer
 // Single-flight lease over the whole tick — its cap counters read-then-write KV, which has
 // no CAS, so two ticks running at once could each read a day-counter before either writes and
@@ -253,6 +257,13 @@ export interface GithubClient {
 	openSelfImprovePrCount(): Promise<number>;
 	/** Count currently-open `self-improve`-labeled issues, to enforce the open-issue cap. */
 	openSelfImproveIssueCount(): Promise<number>;
+	/** Current head sha + open/closed state of a PR — used by the armed-PR sweep (#1167) to
+	 * detect the @claude autofix commit actually landing on a stub PR. */
+	getPr(prNumber: number): Promise<{ sha: string; open: boolean }>;
+	/** Swap `hold` for `automerge` on an armed PR once its branch has diverged from the stub
+	 * commit (#1167) — never attached at PR-open time, since the stub's initial commit is
+	 * tree-identical to base and would otherwise auto-merge empty. */
+	armPr(prNumber: number): Promise<void>;
 }
 
 const GH_API = "https://api.github.com";
@@ -340,6 +351,17 @@ export function githubClient(env: RtEnv): GithubClient {
 			const list: any[] = Array.isArray(r.json) ? r.json : [];
 			return list.filter((i) => !i?.pull_request).length; // the /issues list includes PRs — exclude them
 		},
+		async getPr(prNumber) {
+			const r = await ghFetch(env, "GET", `${base}/pulls/${prNumber}`);
+			if (r.status >= 400) throw new Error(`self-improve: get-PR failed HTTP ${r.status}`);
+			return { sha: String(r.json?.head?.sha ?? ""), open: r.json?.state === "open" };
+		},
+		async armPr(prNumber) {
+			const del = await ghFetch(env, "DELETE", `${base}/issues/${prNumber}/labels/${HOLD_LABEL}`);
+			if (del.status >= 400 && del.status !== 404) throw new Error(`self-improve: hold-label remove failed HTTP ${del.status}`);
+			const add = await ghFetch(env, "POST", `${base}/issues/${prNumber}/labels`, { labels: [AUTOMERGE_LABEL] });
+			if (add.status >= 400) throw new Error(`self-improve: automerge-label add failed HTTP ${add.status}`);
+		},
 	};
 }
 
@@ -406,6 +428,38 @@ async function recordFinding(env: RtEnv, finding: Finding): Promise<void> {
 	// Queryable analytics (#220): self-improve's finding-to-shipped-PR ratio needs the
 	// finding side tracked durably, not just the capped-array KV log's latest 200.
 	recordAnalyticsEvent(env, "self_improve_finding", { blobs: [finding.lane, finding.confidence, finding.kind] });
+}
+
+// ── Armed-PR sweep (#1167) — hold -> automerge only once the @claude commit actually lands ───
+type ArmedPending = { pr: number; sha: string; at: number };
+const armedPendingLog = (env: RtEnv) => cappedKvLog<ArmedPending>(env, ARMED_PENDING_KEY, ARMED_PENDING_CAP);
+
+/** Runs once per tick before new findings are processed. For every PR armed by a prior tick,
+ * checks whether its branch HEAD has diverged from the recorded stub sha — i.e. the @claude
+ * autofix loop (or a maintainer) has actually pushed a real commit — and only then swaps
+ * `hold` for `automerge`. A closed or merged PR is dropped from the pending set; a still-stub PR
+ * (or a transient GitHub failure) is left pending for the next tick. */
+async function sweepArmedPrs(env: RtEnv, github: GithubClient): Promise<void> {
+	const log = armedPendingLog(env);
+	await log.update(async (pending) => {
+		if (pending.length === 0) return pending;
+		const kept: ArmedPending[] = [];
+		for (const entry of pending) {
+			try {
+				const pr = await github.getPr(entry.pr);
+				if (!pr.open) continue; // closed or merged — nothing left to arm
+				if (pr.sha !== entry.sha) {
+					await github.armPr(entry.pr);
+				} else {
+					kept.push(entry); // still the bare stub commit — keep waiting
+				}
+			} catch (e) {
+				kept.push(entry); // transient failure — retry next tick
+				console.warn(`sux self-improve: armed-PR sweep entry #${entry.pr} failed: ${String((e as Error)?.message ?? e)}`);
+			}
+		}
+		return kept.length === pending.length ? pending : kept; // same-ref ⇒ update() skips the write
+	});
 }
 
 // ── Single-flight lease (serialize overlapping ticks — see LOCK_KEY) ───────────
@@ -516,15 +570,20 @@ async function routeFinding(env: RtEnv, finding: Finding, github: GithubClient, 
 	result.prs++;
 	budget.openSlots--;
 
-	// Arm ONLY on HIGH + an auto-fixable lane + the (default-off) flag. Every other route
-	// withholds the `automerge` label and instead applies `hold` — automerge.yml's real
-	// eligibility gate (see the SAFETY MODEL note above) — so a non-armed stub PR can't
-	// auto-merge its empty initial commit. classifyConfidence already caps security/feature
-	// at medium, so the lane check here is belt-and-suspenders.
+	// Arm ONLY on HIGH + an auto-fixable lane + the (default-off) flag. classifyConfidence
+	// already caps security/feature at medium, so the lane check here is belt-and-suspenders.
+	// Every route — armed or not — carries `hold` at PR-open time (#1167): the stub commit is
+	// tree-identical to base, so it passes CI almost instantly, and automerge.yml's real
+	// eligibility gate (see the SAFETY MODEL note above) is just "not draft && not hold" — an
+	// `automerge` label attached here would race the @claude autofix hand-off and merge the
+	// still-empty stub. The sweep below (sweepArmedPrs) swaps hold -> automerge once the
+	// branch's HEAD actually diverges from this stub sha.
 	const arm = finding.confidence === "high" && AUTOFIX_LANES.has(finding.lane) && canAutoMerge(env);
-	const labels = arm ? [SELF_IMPROVE_LABEL, AUTOMERGE_LABEL] : [SELF_IMPROVE_LABEL, HOLD_LABEL];
-	await github.labelPr(pr.number, labels);
-	if (arm) result.armed++;
+	await github.labelPr(pr.number, [SELF_IMPROVE_LABEL, HOLD_LABEL]);
+	if (arm) {
+		result.armed++;
+		await armedPendingLog(env).push({ pr: pr.number, sha: pr.sha, at: Date.now() });
+	}
 
 	// Auto-fixable lanes hand the actual authoring to the EXISTING @claude loop.
 	if (AUTOFIX_LANES.has(finding.lane)) {
@@ -562,6 +621,14 @@ export async function selfImproveTick(env: RtEnv, deps: { github?: GithubClient 
 		const github = deps.github ?? githubClient(env);
 		const opening = canOpenPr(env);
 		result.reason = opening ? "pr-only" : "review-only";
+
+		// Sweep armed PRs from prior ticks before opening any new ones this tick (#1167) — swaps
+		// hold -> automerge only once each one's branch has actually diverged from its stub sha.
+		if (opening) {
+			await sweepArmedPrs(env, github).catch((e) => {
+				console.warn(`sux self-improve: armed-PR sweep failed: ${String((e as Error)?.message ?? e)}`);
+			});
+		}
 
 		// The open-PR cap is a LIVE count of self-improve/* PRs still open on GitHub, read
 		// once per tick and drawn down locally. Fail-closed: if the count can't be read,
