@@ -5,6 +5,7 @@ import { jmap } from "./fns/jmap";
 import { doUpload, downloadBlobBytes, jstr, scopeProbe, submissionMaxDelayedSend } from "./fns/_jmap";
 import { embedOne } from "./fns/_embed";
 import { mailSemanticIndex, topKMailByCosine } from "./fns/_mail_semantic";
+import { contactSemanticIndex, topKContactByCosine } from "./fns/_contact_semantic";
 import { buildVEvent, buildVTodo, CALDAV_NOT_CONFIGURED, type CalendarRef, caldavFetch, calendarHome, dateProp, hasCalDav, icalDateToIso, listCalendars, parseICal, replaceProps, reportObjects, textProp } from "./fns/_caldav";
 import { htmlToMd } from "./fns/_markup";
 import { errMsg, putBlob, storeBase } from "./fns/_util";
@@ -1081,6 +1082,37 @@ const TOOLS: MailTool[] = [
 				const c = resultFor(resp, "ContactCard/get")?.list?.[0];
 				if (!c) return failWith("not_found", `No contact '${a.id}'.`);
 				return ok({ ...shapeContact(c), raw: c });
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "contact_semantic",
+		description:
+			"Semantic search over contacts via Workers-AI embeddings — finds cards by MEANING, not exact text (complements contact_search's server-side JMAP text filter, e.g. 'who do I know at that hospital' when no card literally says 'hospital'). Brute-force cosine kNN over the whole address book's name+company+emails+phones, chunked+embedded and KV-cached, INCREMENTALLY maintained against JMAP's ContactCard state (ContactCard/changes adds new/updated cards and drops deleted ones, rather than re-embedding the whole address book each call). Returns the top-k matching cards. Needs the Workers-AI binding and a FASTMAIL_TOKEN scoped for contacts.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["q"],
+			properties: {
+				q: { type: "string", description: "Natural-language query." },
+				k: { type: "integer", minimum: 1, maximum: 50, description: "How many contacts to return (default 8)." },
+			},
+		},
+		run: async (env, a) => {
+			const gate = await scopeGate(env, "contacts");
+			if (gate) return failWith("not_configured", gate);
+			const q = typeof a?.q === "string" ? a.q.trim() : "";
+			if (!q) return failWith("bad_input", "contact_semantic requires a non-empty `q`.");
+			if (!hasAI(env)) return failWith("not_configured", 'Workers AI binding not configured (add "ai" to wrangler) — needed to embed the address book and the query.');
+			try {
+				const idx = await contactSemanticIndex(env);
+				if (!idx) return failWith("not_configured", "Fastmail JMAP not configured — needed to build/read the contact semantic index.");
+				const vec = await embedOne(env, q);
+				const k = Math.min(50, Math.max(1, Number(a?.k) || 8));
+				const hits = topKContactByCosine(vec, idx.chunks, k);
+				return ok({ q, count: hits.length, hits, scanned: idx.chunks.length, total: idx.total, truncated: idx.truncated });
 			} catch (e) {
 				return fail(errMsg(e));
 			}

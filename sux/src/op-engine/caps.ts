@@ -250,7 +250,7 @@ function relatedLinksSink(env: RtEnv): SinkTarget {
 				const r = await obsidian.run(env, { action: "read", path: vaultPath, backend: "git" });
 				const already = !r.isError && typeof r.content?.[0]?.text === "string" && r.content[0].text.includes(marker);
 				if (already) continue;
-				const lines = links.map((l) => `> - ${l.domain === "mail" ? "📧" : "📁"} ${l.label}`);
+				const lines = links.map((l) => `> - ${l.domain === "mail" ? "📧" : l.domain === "contacts" ? "👤" : "📁"} ${l.label}`);
 				const block = `\n\n${marker}\n> [!note] Related\n${lines.join("\n")}\n`;
 				const a = await obsidian.run(env, { action: "append", path: vaultPath, content: block, backend: "git" });
 				if (a.isError) {

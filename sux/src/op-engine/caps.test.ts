@@ -210,6 +210,16 @@ test("related-links sink groups matches by vaultPath into ONE append-only 'Relat
 	expect(out).toEqual({ linked: 1, notes: 1 });
 });
 
+test("related-links sink marks a contacts match with the 👤 emoji, distinct from mail/files", async () => {
+	obsidianRun.mockClear();
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	const out = await sinks["related-links"].write([{ vaultPath: "People/aunt-sue.md", domain: "contacts", key: "c1", label: "Aunt Sue", score: 0.9 }], {} as Caps);
+	const appendCalls = obsidianRun.mock.calls.filter((c: any[]) => c[1].action === "append");
+	expect(appendCalls).toHaveLength(1);
+	expect(appendCalls[0][1]).toMatchObject({ path: "People/aunt-sue.md", content: expect.stringContaining("👤 Aunt Sue") });
+	expect(out).toEqual({ linked: 1, notes: 1 });
+});
+
 test("related-links sink is a no-op on an empty batch (never an error)", async () => {
 	obsidianRun.mockClear();
 	const { sinks } = makeCaps({} as unknown as RtEnv);

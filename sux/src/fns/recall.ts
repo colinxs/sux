@@ -12,6 +12,7 @@ import { maybeDecompressString } from "./_gzip";
 import { topKByCosine, vaultSemanticIndex } from "./_vault_semantic";
 import { mailSemanticIndex, topKMailByCosine } from "./_mail_semantic";
 import { filesSemanticIndex, topKFilesByCosine } from "./_files_semantic";
+import { contactSemanticIndex, topKContactByCosine } from "./_contact_semantic";
 import { errMsg, oj } from "./_util";
 
 // recall — "what do I know about X?" answered from YOUR life. It fans out server-side
@@ -367,7 +368,13 @@ async function fromCalendar(env: RtEnv, question: string): Promise<Gathered> {
 
 /** Contacts (JMAP ContactCard): free-text query the address book, excerpt name + emails/phones — the
  *  token-cheap reference, never the full card. Maps a name in the question to who/how-to-reach. Same
- *  query→get one-round-trip shape as fromMail; an unscoped token errors → the source is skipped. */
+ *  query→get one-round-trip shape as fromMail; an unscoped token errors → the source is skipped. THEN
+ *  (when Workers-AI is configured) rank the incrementally-maintained contact semantic index
+ *  (_contact_semantic.ts, the vault_semantic/mail_semantic pattern applied to contacts) by MEANING and
+ *  merge in whatever the keyword leg missed — same complementary pairing as fromMail/fromFiles: JMAP's
+ *  server-side `text` filter is pure keyword, so "who do I know at that hospital" misses a card whose
+ *  company field says "St. Luke's" but never "hospital". A semantic hiccup degrades silently (caught,
+ *  not thrown) — the keyword leg already gives fromContacts a working result without it. */
 async function fromContacts(env: RtEnv, question: string): Promise<Gathered> {
 	const r = await jmap.run(env, {
 		calls: [
@@ -380,6 +387,7 @@ async function fromContacts(env: RtEnv, question: string): Promise<Gathered> {
 	const list = (mr?.[1]?.list ?? []) as any[];
 	const parts: string[] = [];
 	const refs: string[] = [];
+	const seenIds = new Set<string>();
 	for (const c of list.slice(0, 5)) {
 		const emails = c?.emails ? Object.values(c.emails).map((e: any) => e?.address).filter(Boolean) : [];
 		const phones = c?.phones ? Object.values(c.phones).map((p: any) => p?.number).filter(Boolean) : [];
@@ -387,6 +395,24 @@ async function fromContacts(env: RtEnv, question: string): Promise<Gathered> {
 		const name = c?.name?.full || company || emails[0] || "(no name)";
 		parts.push(`[contact:${name}]${company ? ` · ${company}` : ""}${emails.length ? ` · ${emails.join(", ")}` : ""}${phones.length ? ` · ${phones.join(", ")}` : ""}`);
 		refs.push(`contact:${name}`);
+		if (c?.id) seenIds.add(String(c.id));
+	}
+	if (hasAI(env)) {
+		try {
+			const idx = await contactSemanticIndex(env);
+			if (idx) {
+				const vec = await embedOne(env, question);
+				const hits = topKContactByCosine(vec, idx.chunks, 5).filter((h) => !seenIds.has(h.id));
+				for (const h of hits) {
+					parts.push(`[contact:${h.name}]${h.company ? ` · ${h.company}` : ""}${h.emails.length ? ` · ${h.emails.join(", ")}` : ""}${h.phones.length ? ` · ${h.phones.join(", ")}` : ""}`);
+					refs.push(`contact:${h.name}`);
+					seenIds.add(h.id);
+				}
+			}
+		} catch {
+			/* the keyword leg above already produced a (possibly empty) result — a semantic index
+			 * failure (JMAP hiccup, embed error) must not sink fromContacts entirely. */
+		}
 	}
 	return { material: parts.join("\n\n"), refs };
 }

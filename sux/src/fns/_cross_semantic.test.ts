@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { crossDomainLinks, filesToCrossItems, hasCrossSemantic, lastCrossSemanticFindings, mailToCrossItems, runCrossSemanticSweep, type CrossDomainItem, type CrossSemanticSweepDeps } from "./_cross_semantic";
+import { contactsToCrossItems, crossDomainLinks, filesToCrossItems, hasCrossSemantic, lastCrossSemanticFindings, mailToCrossItems, runCrossSemanticSweep, type CrossDomainItem, type CrossSemanticSweepDeps } from "./_cross_semantic";
 import type { SemanticChunk } from "./_vault_semantic";
 import type { MailSemanticChunk } from "./_mail_semantic";
 import type { FilesSemanticChunk } from "./_files_semantic";
+import type { ContactSemanticChunk } from "./_contact_semantic";
 
 const vaultChunk = (path: string, embedding: number[], title = path): SemanticChunk => ({ path, title, text: `text of ${path}`, embedding });
 
@@ -18,6 +19,7 @@ const mkDeps = (over: Partial<CrossSemanticSweepDeps> = {}): CrossSemanticSweepD
 	vaultChunks: vi.fn(async () => [vaultChunk("Projects/alpha.md", [1, 0, 0])]),
 	mailChunks: vi.fn(async () => [{ id: "m1", subject: "Re: alpha kickoff", from: "a@b.com", receivedAt: "2024-01-01", text: "x", embedding: [1, 0, 0] } as MailSemanticChunk]),
 	filesChunks: vi.fn(async () => []),
+	contactsChunks: vi.fn(async () => [] as ContactSemanticChunk[]),
 	...over,
 });
 
@@ -42,6 +44,14 @@ describe("mailToCrossItems / filesToCrossItems", () => {
 	it("pools files chunks with path doubling as both key and label", () => {
 		const chunks: FilesSemanticChunk[] = [{ path: "notes/a.md", text: "x", embedding: [0, 1] }];
 		expect(filesToCrossItems(chunks)).toEqual([{ domain: "files", key: "notes/a.md", label: "notes/a.md", embedding: [0, 1] }]);
+	});
+
+	it("pools contacts chunks with the ContactCard id as key and name as label", () => {
+		const chunks: ContactSemanticChunk[] = [
+			{ id: "c1", name: "Dr. Chen", company: "St. Luke's Clinic", emails: ["chen@clinic.com"], phones: [], embedding: [0, 0, 1] },
+			{ id: "c2", name: "empty", company: "", emails: [], phones: [], embedding: [] },
+		];
+		expect(contactsToCrossItems(chunks)).toEqual([{ domain: "contacts", key: "c1", label: "Dr. Chen", embedding: [0, 0, 1] }]);
 	});
 });
 

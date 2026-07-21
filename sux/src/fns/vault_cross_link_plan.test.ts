@@ -87,7 +87,7 @@ describe("vault_cross_link_plan", () => {
 		const res = await vault_cross_link_plan.run({ CROSS_SEMANTIC_ENABLED: "1", VAULT_REPO: "me/vault", AI: {}, OAUTH_KV: fakeKV } as any, {});
 		expect(res.isError).toBeUndefined();
 		const body = JSON.parse(res.content[0].text);
-		expect(body).toEqual({ candidates: 0, note: "no mail or files semantic index is configured — nothing to cross-link against" });
+		expect(body).toEqual({ candidates: 0, note: "no mail, files, or contacts semantic index is configured — nothing to cross-link against" });
 		expect(runVerb).not.toHaveBeenCalled();
 	});
 
@@ -156,5 +156,35 @@ describe("vault_cross_link_plan", () => {
 		expect(runVerb).toHaveBeenCalledTimes(1);
 		expect(runVerb.mock.calls[0][0].input).toEqual([{ vaultPath: "Projects/alpha.md", domain: "mail", key: "m1", label: "closematch subject", score: 0.6 }]);
 		expect(JSON.parse(aboveLoweredThreshold.content[0].text)).toMatchObject({ candidates: 1, instanceId: "low1" });
+	});
+
+	it("ranks the vault semantic index against contacts too, and starts a durable run when a match clears the threshold", async () => {
+		obsidianRun.mockImplementation(async (_env: any, a: any) => {
+			if (a.action === "list") return { content: [{ type: "text", text: JSON.stringify({ notes: ["Projects/alpha.md"] }) }] };
+			if (a.action === "read") return { content: [{ type: "text", text: "alpha project body" }] };
+			throw new Error(`unexpected action ${a.action}`);
+		});
+		jmapRun.mockImplementation(async (_env: any, args: any) => {
+			const calls = args.calls as [string, any, string][];
+			const methodResponses = calls.map(([method, , callId]) => {
+				if (method === "ContactCard/query") return ["ContactCard/query", { ids: ["c1"], total: 1 }, callId];
+				if (method === "ContactCard/get") return ["ContactCard/get", { state: "s1", list: [{ id: "c1", name: { full: "alpha contact" }, organizations: {}, emails: {}, phones: {} }] }, callId];
+				if (method === "Email/query") return ["Email/query", { ids: [], total: 0 }, callId];
+				if (method === "Email/get") return ["Email/get", { state: "s0", list: [] }, callId];
+				return ["error", { type: "unknownMethod" }, callId];
+			});
+			return { content: [{ type: "text", text: JSON.stringify({ methodResponses }) }] };
+		});
+		runVerb.mockResolvedValueOnce({ instanceId: "contact1" });
+
+		const { vault_cross_link_plan } = await import("./vault_cross_link_plan");
+		const res = await vault_cross_link_plan.run({ CROSS_SEMANTIC_ENABLED: "1", VAULT_REPO: "me/vault", AI: {}, FASTMAIL_TOKEN: "tok", OAUTH_KV: fakeKV } as any, {});
+
+		expect(runVerb).toHaveBeenCalledTimes(1);
+		const call = runVerb.mock.calls[0][0];
+		expect(call.input).toEqual([{ vaultPath: "Projects/alpha.md", domain: "contacts", key: "c1", label: "alpha contact", score: 1 }]);
+		expect(res.isError).toBeUndefined();
+		const body = JSON.parse(res.content[0].text);
+		expect(body).toMatchObject({ candidates: 1, instanceId: "contact1" });
 	});
 });

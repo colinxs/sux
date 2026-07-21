@@ -85,7 +85,7 @@ function answer([method, args]: any): any {
 	if (method === "VacationResponse/set") return [method, { updated: args?.update ? Object.fromEntries(Object.keys(args.update).map((k) => [k, null])) : undefined }, "x"];
 	if (method === "Quota/get") return [method, { list: [{ id: "q1", name: "Mail", used: 100, limit: 1000, scope: "account", resourceType: "octets" }] }, "x"];
 	if (method === "ContactCard/query") return [method, { ids: ["c1"] }, "x"];
-	if (method === "ContactCard/get") return [method, { list: [{ id: "c1", name: { full: "Ada Lovelace" }, emails: { e1: { address: "ada@x.com" } }, phones: {} }] }, "x"];
+	if (method === "ContactCard/get") return [method, { state: "cs1", list: [{ id: "c1", name: { full: "Ada Lovelace" }, emails: { e1: { address: "ada@x.com" } }, phones: {} }] }, "x"];
 	if (method === "ContactCard/set") return [method, { created: args?.create ? { c: { id: "c2" } } : undefined, updated: args?.update ? Object.fromEntries(Object.keys(args.update).map((k) => [k, null])) : undefined, destroyed: args?.destroy ?? undefined }, "x"];
 	return [method, {}, "x"];
 }
@@ -287,6 +287,26 @@ describe("mail_* ergonomic tools", () => {
 		const noAi = await tool("mail_semantic").run(env(), { q: "hello there" });
 		expect(noAi.isError).toBe(true);
 		expect(noAi.content[0].text).toMatch(/Workers AI/);
+	});
+
+	it("contact_semantic embeds+ranks the address book by meaning (KV-cached, state-keyed) and requires `q` + the Workers-AI binding + contacts scope", async () => {
+		installFetch(SESSION_SCOPED);
+		const aiEnv = () => ({ ...env(), AI: { run: vi.fn(async (_m: string, inputs: any) => ({ data: inputs.text.map(() => [1, 0, 0]) })) } });
+		const r = parse(await tool("contact_semantic").run(aiEnv(), { q: "who do I know" }));
+		expect(r.hits[0]).toMatchObject({ id: "c1", name: "Ada Lovelace" });
+		expect(r.scanned).toBe(1);
+
+		const missingQ = await tool("contact_semantic").run(aiEnv(), {});
+		expect(missingQ.isError).toBe(true);
+
+		const noAi = await tool("contact_semantic").run(env(), { q: "who do I know" });
+		expect(noAi.isError).toBe(true);
+		expect(noAi.content[0].text).toMatch(/Workers AI/);
+
+		installFetch(); // unscoped token — the contacts capability gate fires before the AI check
+		const noScope = await tool("contact_semantic").run(aiEnv(), { q: "who do I know" });
+		expect(noScope.isError).toBe(true);
+		expect(noScope.content[0].text).toMatch(/capability|re-mint|scope/i);
 	});
 
 	it("mail_draft creates a draft and returns the id", async () => {
@@ -816,7 +836,7 @@ describe("mail_* ergonomic tools", () => {
 
 	it("P2 verbs are gated not_configured when the token lacks the scope (§2)", async () => {
 		installFetch(); // default token grants no contacts/vacation/quota
-		for (const [name, args] of [["mail_vacation", {}], ["mail_quota", {}], ["contact_search", { text: "x" }]] as const) {
+		for (const [name, args] of [["mail_vacation", {}], ["mail_quota", {}], ["contact_search", { text: "x" }], ["contact_semantic", { q: "x" }]] as const) {
 			const r = await tool(name).run(env(), args);
 			expect(r.isError).toBe(true);
 			expect(r.content[0].text).toMatch(/capability|re-mint|scope/i); // clear, flip-on-ready message

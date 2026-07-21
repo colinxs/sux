@@ -1,10 +1,11 @@
 import { type Fn, failWith, ok } from "../registry";
 import { runVerb } from "./run";
-import { hasCrossSemantic, crossDomainLinks, filesToCrossItems, mailToCrossItems, type CrossDomainItem } from "./_cross_semantic";
+import { contactsToCrossItems, hasCrossSemantic, crossDomainLinks, filesToCrossItems, mailToCrossItems, type CrossDomainItem } from "./_cross_semantic";
 import { vaultCfg } from "./obsidian";
 import { vaultSemanticIndex } from "./_vault_semantic";
 import { mailSemanticIndex } from "./_mail_semantic";
 import { filesSemanticIndex } from "./_files_semantic";
+import { contactSemanticIndex } from "./_contact_semantic";
 import { errMsg, oj } from "./_util";
 
 // vault_cross_link_plan — the entrypoint for the DURABLE, human-approved action-half of #785:
@@ -25,7 +26,7 @@ export const vault_cross_link_plan: Fn = {
 	surface: "leaf",
 	annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
 	description:
-		"Durable cross-domain-linking-with-approval: cosine-ranks the vault's semantic index against the pooled mail + Dropbox (Mode B) semantic indices for close matches (a vault note whose nearest neighbors are specific emails/files), then starts a durable run (op:'cross-semantic-plan') that PAUSES for one human 'add these related links?' approval before appending anything. Reversible and non-destructive: each matched note only gets an APPEND-ONLY 'Related' block, never a content overwrite or delete. Returns {instanceId}: poll with `run {action:'status', instanceId}`; approve with `run {action:'answer', instanceId, prompt:\"add these related links?\", payload:{approved:true}}`, or veto with {approved:false}. An unanswered gate applies nothing after 24h (fails closed). Needs CROSS_SEMANTIC_ENABLED, a configured vault, and Workers-AI; mail/files legs are each skipped (not fatal) when JMAP/Dropbox Mode B aren't configured.",
+		"Durable cross-domain-linking-with-approval: cosine-ranks the vault's semantic index against the pooled mail + Dropbox (Mode B) + contacts semantic indices for close matches (a vault note whose nearest neighbors are specific emails/files/contacts), then starts a durable run (op:'cross-semantic-plan') that PAUSES for one human 'add these related links?' approval before appending anything. Reversible and non-destructive: each matched note only gets an APPEND-ONLY 'Related' block, never a content overwrite or delete. Returns {instanceId}: poll with `run {action:'status', instanceId}`; approve with `run {action:'answer', instanceId, prompt:\"add these related links?\", payload:{approved:true}}`, or veto with {approved:false}. An unanswered gate applies nothing after 24h (fails closed). Needs CROSS_SEMANTIC_ENABLED, a configured vault, and Workers-AI; mail/files/contacts legs are each skipped (not fatal) when JMAP/Dropbox Mode B aren't configured.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -44,10 +45,14 @@ export const vault_cross_link_plan: Fn = {
 		try {
 			const vaultIndex = await vaultSemanticIndex(env, cfg);
 			if (!vaultIndex) return failWith("not_configured", "vault_cross_link_plan needs Workers-AI (env.AI) to rank the vault's semantic index.");
-			const [mailIndex, filesIndex] = await Promise.all([mailSemanticIndex(env), filesSemanticIndex(env)]);
-			const targets: CrossDomainItem[] = [...(mailIndex ? mailToCrossItems(mailIndex.chunks) : []), ...(filesIndex ? filesToCrossItems(filesIndex.chunks) : [])];
+			const [mailIndex, filesIndex, contactsIndex] = await Promise.all([mailSemanticIndex(env), filesSemanticIndex(env), contactSemanticIndex(env)]);
+			const targets: CrossDomainItem[] = [
+				...(mailIndex ? mailToCrossItems(mailIndex.chunks) : []),
+				...(filesIndex ? filesToCrossItems(filesIndex.chunks) : []),
+				...(contactsIndex ? contactsToCrossItems(contactsIndex.chunks) : []),
+			];
 			if (!targets.length) {
-				return ok(oj({ candidates: 0, note: "no mail or files semantic index is configured — nothing to cross-link against" }));
+				return ok(oj({ candidates: 0, note: "no mail, files, or contacts semantic index is configured — nothing to cross-link against" }));
 			}
 			const minScore = typeof a?.minScore === "number" ? Math.min(1, Math.max(0, a.minScore)) : undefined;
 			const maxPerNote = a?.maxPerNote !== undefined ? numClamp(a.maxPerNote, 1, 20, 3) : undefined;

@@ -7,6 +7,7 @@ import { sweepWindow } from "./_consolidate";
 import type { SemanticChunk } from "./_vault_semantic";
 import type { MailSemanticChunk } from "./_mail_semantic";
 import type { FilesSemanticChunk } from "./_files_semantic";
+import type { ContactSemanticChunk } from "./_contact_semantic";
 
 // _cross_semantic — the standing cross-domain half of #785: vault_semantic/mail_semantic/
 // files_semantic (_vault_semantic.ts/_mail_semantic.ts/_files_semantic.ts) each already embed
@@ -46,8 +47,8 @@ const MAX_PER_NOTE = 3;
 const MAX_TOTAL = 50;
 
 // Cost is O(vaultChunks × targets) cosine calls with no cap of its own — each domain's OWN
-// index already self-caps (vault 5000/mail 1000/files 3000), so a full-size vault can still
-// drive ~5000×4000=20M cosine calls in one invocation, worst case. That was tolerable when this
+// index already self-caps (vault 5000/mail 1000/files 3000/contacts 2000), so a full-size vault
+// can still drive ~5000×6000=30M cosine calls in one invocation, worst case. That was tolerable when this
 // only ran on an explicit human-triggered vault_cross_link_plan call; #948's unattended weekly
 // cron sweep has no human watching, and a mid-computation CPU-time kill isn't a catchable JS
 // exception, so the sweep's ledger key never gets marked and it silently retries the same
@@ -57,8 +58,8 @@ const MAX_TOTAL = 50;
 // already the smaller, self-capped pooled set.
 const MAX_PAIRS = 2_000_000;
 
-export type CrossDomainItem = { domain: "mail" | "files"; key: string; label: string; embedding: number[] };
-export type CrossLink = { vaultPath: string; domain: "mail" | "files"; key: string; label: string; score: number };
+export type CrossDomainItem = { domain: "mail" | "files" | "contacts"; key: string; label: string; embedding: number[] };
+export type CrossLink = { vaultPath: string; domain: "mail" | "files" | "contacts"; key: string; label: string; score: number };
 
 /** Pool mail_semantic's chunks into the domain-tagged shape crossDomainLinks ranks against —
  *  `key` is the message id (a durable JMAP identity), `label` the subject (what a human reads
@@ -72,6 +73,12 @@ export function mailToCrossItems(chunks: MailSemanticChunk[]): CrossDomainItem[]
  *  have no separate title the way a vault note or an email subject does). */
 export function filesToCrossItems(chunks: FilesSemanticChunk[]): CrossDomainItem[] {
 	return chunks.filter((c) => Array.isArray(c.embedding) && c.embedding.length > 0).map((c) => ({ domain: "files" as const, key: c.path, label: c.path, embedding: c.embedding }));
+}
+
+/** Pool contact_semantic's chunks the same way — `key` is the ContactCard id (a durable JMAP
+ *  identity), `label` the contact's name (what a human reads in the proposed "Related" block). */
+export function contactsToCrossItems(chunks: ContactSemanticChunk[]): CrossDomainItem[] {
+	return chunks.filter((c) => Array.isArray(c.embedding) && c.embedding.length > 0).map((c) => ({ domain: "contacts" as const, key: c.id, label: c.name, embedding: c.embedding }));
 }
 
 /** For each vault note (aggregated across its chunks), find the best-scoring mail/files items
@@ -161,6 +168,7 @@ export type CrossSemanticSweepDeps = {
 	vaultChunks: (env: RtEnv) => Promise<SemanticChunk[] | null>;
 	mailChunks: (env: RtEnv) => Promise<MailSemanticChunk[]>;
 	filesChunks: (env: RtEnv) => Promise<FilesSemanticChunk[]>;
+	contactsChunks: (env: RtEnv) => Promise<ContactSemanticChunk[]>;
 };
 
 export type CrossSemanticSweepReport = {
@@ -200,8 +208,8 @@ export async function runCrossSemanticSweep(env: RtEnv, opts: { week?: string; f
 	}
 	if (!vaultChunks) return { week, skipped: true, note: "vault semantic index not configured (needs Workers-AI + a configured vault) — nothing to rank" };
 
-	const [mailChunks, filesChunks] = await Promise.all([deps.mailChunks(env).catch(() => []), deps.filesChunks(env).catch(() => [])]);
-	const targets: CrossDomainItem[] = [...mailToCrossItems(mailChunks), ...filesToCrossItems(filesChunks)];
+	const [mailChunks, filesChunks, contactsChunks] = await Promise.all([deps.mailChunks(env).catch(() => []), deps.filesChunks(env).catch(() => []), deps.contactsChunks(env).catch(() => [])]);
+	const targets: CrossDomainItem[] = [...mailToCrossItems(mailChunks), ...filesToCrossItems(filesChunks), ...contactsToCrossItems(contactsChunks)];
 
 	// Rotate which vaultChunks slice gets scanned each sweep, same shape as
 	// _consolidate.ts's sweepWindow cursor — otherwise crossDomainLinks' own MAX_PAIRS cap
@@ -232,6 +240,7 @@ export async function defaultDeps(): Promise<CrossSemanticSweepDeps> {
 	const { vaultSemanticIndex } = await import("./_vault_semantic");
 	const { mailSemanticIndex } = await import("./_mail_semantic");
 	const { filesSemanticIndex } = await import("./_files_semantic");
+	const { contactSemanticIndex } = await import("./_contact_semantic");
 	return {
 		vaultChunks: async (env) => {
 			const cfg = vaultCfg(env);
@@ -245,6 +254,10 @@ export async function defaultDeps(): Promise<CrossSemanticSweepDeps> {
 		},
 		filesChunks: async (env) => {
 			const idx = await filesSemanticIndex(env);
+			return idx ? idx.chunks : [];
+		},
+		contactsChunks: async (env) => {
+			const idx = await contactSemanticIndex(env);
 			return idx ? idx.chunks : [];
 		},
 	};
