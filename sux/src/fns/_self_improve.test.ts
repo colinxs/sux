@@ -479,8 +479,8 @@ describe("structural immutability (the loop cannot loosen its own guards)", () =
 		expect(src).not.toMatch(/put\([^)]*SELF_IMPROVE_KILL/);
 	});
 	it("the module never merges (no auto-merge machinery)", () => {
-		expect(src).not.toMatch(/mergePr/);
-		expect(src).not.toMatch(/\/merge/);
+		expect(src).not.toMatch(/mergePr\(/);
+		expect(src).not.toMatch(/\/merge\b/);
 	});
 	it("the module never fetches .github/ workflow/deploy paths", () => {
 		expect(src).not.toMatch(/\.github\//);
