@@ -148,9 +148,14 @@ export type RtEnv = Env &
 		//                         the first N would-fire cycles per cluster log to an audit trail
 		//                         instead of the Daily note (default 3); only after N does that
 		//                         cluster's writes go live.
+		//   INFER_NUDGE_ANOMALY_MIN_Z  — z-score floor for the scalar-anomaly recipe path
+		//                         (#1144, fns/_infer_anomaly.ts), same belt-and-suspenders
+		//                         re-check as INFER_NUDGE_MIN_CONFIDENCE (default 2, matching
+		//                         _infer_anomaly.ts's own default threshold).
 		INFER_NUDGE_MIN_CONFIDENCE?: string;
 		INFER_NUDGE_COOLDOWN_DAYS?: string;
 		INFER_NUDGE_WARMUP_CYCLES?: string;
+		INFER_NUDGE_ANOMALY_MIN_Z?: string;
 
 		// IANA tz for the vault owner's "today" (daily-note tools). Default Pacific.
 		VAULT_TZ?: string;
