@@ -4,7 +4,7 @@ import { isAllowedLogin } from "./utils";
 import { type CacheMeta, cacheKey, deferCacheWrite, type JsonRpc, parseJsonRpc, sseResponse } from "./mcp-util";
 import { unpackFromCache } from "./cache-codec";
 import { failWith, findFn, frontToolList, type RtEnv, type ToolResult, unwrapFnCall, validateInputSchema } from "./registry";
-import { MCP_UI_MIME } from "./fns/_ui";
+import { MCP_UI_MIME, recordClientUiSupport } from "./fns/_ui";
 import { buildManifest, CONNECTOR_PATHS } from "./connectors";
 import { singleFlight } from "./single-flight";
 import { weightedRateLimit } from "./rate-limit";
@@ -149,9 +149,20 @@ export function checkArgs(args: unknown, maxBytes: number, maxDepth: number): st
 export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc | undefined): Promise<Response> {
 	const method = rpc?.method;
 	const id = rpc?.id ?? null;
+	// The OAuth-authenticated login, cast the same way rtServer.fetch's own gate check
+	// does — the runtime object always carries `.props` (set by OAuthProvider before
+	// calling fetch); handleRpc's narrower ExecutionContext param type just doesn't say
+	// so, since most of its callers (incl. tests) don't need it. See fns/_ui.ts's
+	// client-capability negotiation for why this is threaded through.
+	const login = (ctx as ExecutionContext & { props?: Props }).props?.login;
 
 	if (!method) return new Response(null, { status: 202 });
 	if (method === "initialize") {
+		// Best-effort, fire-and-forget: record whether this client declared the UI
+		// extensions capability, keyed by login (see fns/_ui.ts). Never blocks or fails
+		// the initialize response — a write failure here just leaves the capability
+		// "unknown," which clientDeclaredUiSupport treats as attach-by-default.
+		ctx.waitUntil(recordClientUiSupport(env, login, rpc?.params?.capabilities));
 		return sseResponse({
 			jsonrpc: "2.0",
 			id,
@@ -170,13 +181,11 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 					// CLIENT/host announces it can render `ui://` resources; sux mirrors
 					// the same shape server-side as an explicit "I can emit these"
 					// signal, since a server has no other standard place to advertise it.
-					// sux does not yet read the CLIENT's own declared `extensions`
-					// capability before attaching a UI resource (see `fns/_ui.ts` and the
-					// product_search pilot) — every caller gets the extra content block
-					// regardless of whether their host understands it. Harmless (an
-					// unrecognized content part is ignored) but real capability
-					// negotiation is left for a follow-up once more than one fn adopts
-					// this. See https://modelcontextprotocol.io/extensions/apps/overview.
+					// #1143: the CLIENT's own declared `extensions` capability (below, this
+					// same request's params.capabilities) is captured via
+					// recordClientUiSupport and read back by fns/_ui.ts's
+					// clientDeclaredUiSupport before a UI resource is attached (the
+					// product_search pilot). See https://modelcontextprotocol.io/extensions/apps/overview.
 					extensions: { "io.modelcontextprotocol/ui": { mimeTypes: [MCP_UI_MIME] } },
 				},
 				serverInfo: { name: "research-tools", version: "0.1.0" },
@@ -283,7 +292,7 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 			const args = fn.raw ? rawArgs : normalizeArgs(rawArgs);
 			const schemaErr = validateInputSchema(fn.inputSchema, args);
 			if (schemaErr) return sseResponse({ jsonrpc: "2.0", id, result: failWith("bad_input", schemaErr) });
-			const rtEnv: RtEnv = { ...env, _egress: { ctx, reqId: crypto.randomUUID().slice(0, 8) } };
+			const rtEnv: RtEnv = { ...env, _egress: { ctx, reqId: crypto.randomUUID().slice(0, 8), login } };
 			const taskField = rpc.params.task as { ttl?: unknown } | null;
 			const rec = createTask(env, ctx, name, taskField && typeof taskField === "object" ? taskField.ttl : undefined, async () => {
 				const ran = await withDeadline(name, FN_DEADLINE_MS, fn.run(rtEnv, args));
@@ -369,7 +378,7 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 		// same isolate can't clobber each other's reqId or call ctx.waitUntil on the
 		// other's (possibly completed) context, the bug of parking it on the shared
 		// env. Inert unless Grafana is configured (shipEgress no-ops otherwise).
-		const rtEnv: RtEnv = { ...env, _egress: { ctx, reqId: crypto.randomUUID().slice(0, 8) } };
+		const rtEnv: RtEnv = { ...env, _egress: { ctx, reqId: crypto.randomUUID().slice(0, 8), login } };
 		const key = fn.cacheable ? await cacheKey(summarize ? `${name}::summarize` : name, args) : null;
 		// The close path for one successful run: normalize the text output, optionally
 		// summarize it, then schedule the (single) cache write and return the cleaned
@@ -895,10 +904,19 @@ async function lifeWikiTick(env: RtEnv): Promise<void> {
 // (dormant) unless INFER_ARM_VAULT/INFER_ARM_MAIL is set and INFER_KILL isn't — no
 // separate `has*` gate needed here, unlike watchSweepTick/lifeWikiTick. Dynamically
 // imported so the cron path pulls in the drift-detection surface only when armed (#960).
+// Also runs the scalar-anomaly recipe path (#1144) — same fail-closed contract, dormant
+// unless a recipe domain (e.g. INFER_ARM_PURCHASES) is armed. Aggregated into one report
+// so runSubJob's single heartbeat covers both nudge-recipe types; subJobError only reads
+// a top-level `error` string, so either path's failure is surfaced there explicitly
+// rather than relying on the nested per-path report shape.
 async function inferNudgeTick(env: RtEnv): Promise<unknown> {
 	const mod = await import("./fns/_infer_nudge");
 	const deps = await mod.defaultDeps();
-	return mod.runInferNudge(env, {}, deps);
+	const drift = await mod.runInferNudge(env, {}, deps);
+	const anomalyDeps = await mod.defaultAnomalyDeps();
+	const anomaly = await mod.runInferAnomalyNudge(env, {}, anomalyDeps);
+	const error = drift.error ?? anomaly.results?.find((r) => r.error)?.error;
+	return { drift, anomaly, ...(error ? { error } : {}) };
 }
 
 async function maintenanceTick(env: RtEnv, ctx: ExecutionContext): Promise<void> {

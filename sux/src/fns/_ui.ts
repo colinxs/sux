@@ -1,4 +1,4 @@
-import type { ToolResult } from "../registry";
+import type { RtEnv, ToolResult } from "../registry";
 
 // MCP Apps (SEP-1865, ratified 2026-01-26) — the official MCP extension for
 // returning interactive UI (dashboards/forms/charts) inline in a tool result
@@ -23,12 +23,57 @@ import type { ToolResult } from "../registry";
 //     deprecated by the spec text).
 //
 // Deliberately minimal: one MIME constant, one uri builder, one escape
-// helper, one "attach a UI resource to an existing ToolResult" function. No
-// template engine, no client-capability gating (sux's stateless dispatch has
-// no per-connection session to key that off — see the PR description for
-// what's left to generalize before other fns adopt this).
+// helper, one "attach a UI resource to an existing ToolResult" function, plus
+// (#1143) a best-effort client-capability negotiation pair
+// (recordClientUiSupport/clientDeclaredUiSupport) — no template engine beyond that.
 
 export const MCP_UI_MIME = "text/html;profile=mcp-app";
+export const MCP_UI_EXTENSION = "io.modelcontextprotocol/ui";
+
+const CLIENT_UI_KV_PREFIX = "sux:client-ui:";
+// Refreshed on every `initialize` — a client that upgrades away from support ages
+// out within a month rather than sticking to a stale "supports UI" record forever.
+const CLIENT_UI_TTL_SECONDS = 60 * 60 * 24 * 30;
+
+/** Record whether the connecting MCP client declared the `io.modelcontextprotocol/ui`
+ *  extensions capability at `initialize` (index.ts's one call site). Keyed by the
+ *  OAuth `login` — the only identity signal present on EVERY request in sux's
+ *  stateless-per-request server (no Mcp-Session-Id / Durable Object session a
+ *  stateful MCP transport would have, and `tools/call` never resends `clientInfo`),
+ *  so login is the one thing `initialize` and a later `tools/call` share. Imprecise
+ *  if one login drives two different client apps concurrently (the last initialize
+ *  wins for both) — the best signal this architecture offers, refreshed on every
+ *  initialize. Best-effort: a KV write failure here must never fail initialize. */
+export async function recordClientUiSupport(env: { OAUTH_KV?: KVNamespace }, login: string | undefined, capabilities: unknown): Promise<void> {
+	const key = String(login ?? "").trim();
+	if (!key) return;
+	const caps = (capabilities && typeof capabilities === "object" ? capabilities : {}) as Record<string, unknown>;
+	const ext = caps.extensions && typeof caps.extensions === "object" ? (caps.extensions as Record<string, unknown>) : {};
+	const supports = MCP_UI_EXTENSION in ext;
+	try {
+		await env.OAUTH_KV?.put(`${CLIENT_UI_KV_PREFIX}${key}`, supports ? "1" : "0", { expirationTtl: CLIENT_UI_TTL_SECONDS });
+	} catch {
+		// best-effort — see doc comment above.
+	}
+}
+
+/** Whether the connected client is known to support the UI extension. Defaults to
+ *  true (attach) whenever there's no POSITIVE record that it doesn't: no record yet
+ *  (a race against the initialize write, or a call outside the tools/call path with
+ *  no login) is treated as "unknown," not "unsupported" — an extra, unrecognized
+ *  content part is harmless (see withUiResource's doc comment above), and a false
+ *  negative would silently regress every existing UI pilot. Only an EXPLICIT
+ *  initialize that omitted the capability suppresses attachment. */
+export async function clientDeclaredUiSupport(env: RtEnv): Promise<boolean> {
+	const login = env._egress?.login;
+	if (!login) return true;
+	try {
+		const v = await env.OAUTH_KV?.get(`${CLIENT_UI_KV_PREFIX}${login}`);
+		return v !== "0";
+	} catch {
+		return true;
+	}
+}
 
 /** Build a `ui://` resource URI for a sux-hosted UI template. */
 export function uiResourceUri(template: string): string {

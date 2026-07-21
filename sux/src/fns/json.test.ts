@@ -25,11 +25,21 @@ describe("json (to JSON, dispatched on source)", () => {
 		expect((await json.run({} as any, { data: "  " })).isError).toBe(true);
 	});
 
-	it("errors instead of silently returning {} when auto-detect swallows plain prose", async () => {
-		// Prose has no structure; auto-detect falls through to YAML, which parses it
-		// to an empty map. Returning "{}" would silently discard the input, so an
-		// empty auto-detected YAML parse of non-empty input must surface as an error.
-		const res = await json.run({} as any, { data: "Just some prose without any structure at all" });
+	it("auto-detects unstructured prose as a bare YAML scalar instead of an empty map", async () => {
+		// Prose has no ':'/'- ' marker, so auto-detect falls through to YAML, whose
+		// parser treats an unmarked root-level line as a plain scalar (the whole
+		// line, as a string) rather than an empty map -- nothing is discarded.
+		expect(await jrun({ data: "Just some prose without any structure at all" })).toBe(
+			'"Just some prose without any structure at all"',
+		);
+	});
+
+	it("errors instead of silently returning {} when the proto-pollution guard strips every key", async () => {
+		// A lone `__proto__: x` (or `constructor: x`) document auto-detects as YAML
+		// (it has a ':' marker) but the parser's prototype-pollution guard strips
+		// that key, so it parses to an empty map. Returning "{}" would silently
+		// discard the input, so that mis-detection must surface as an error instead.
+		const res = await json.run({} as any, { data: "__proto__: evil" });
 		expect(res.isError).toBe(true);
 	});
 
