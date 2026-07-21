@@ -61,7 +61,12 @@ async function processUrl(env: any, rawUrl: unknown, opts: Opts, budget: ByteBud
 		const applied: string[] = [];
 
 		if (opts.pdf) {
-			const pr = await pdfFn.run(env, { sources: [{ data: toB64(bytes), kind: pdfKind(contentType) }] });
+			// Explicit as:"base64" — this is an internal reuse of the pdf fn to grab its
+			// raw output bytes for further gzip/store below, not the final delivery, so it
+			// must stay exempt from deliverBytes' size-based auto-ref (else a >150KB
+			// converted PDF would come back as a ref with no `base64` key and break the
+			// fromB64 below).
+			const pr = await pdfFn.run(env, { sources: [{ data: toB64(bytes), kind: pdfKind(contentType) }], as: "base64" });
 			if (pr.isError) return { url, status: got.status, src_bytes: srcBytes, error: `pdf convert failed: ${pr.content?.[0]?.text ?? "unknown"}` };
 			bytes = fromB64(JSON.parse(pr.content[0].text).base64);
 			contentType = "application/pdf";

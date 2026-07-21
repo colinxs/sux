@@ -21,6 +21,7 @@ const { renderRun } = vi.hoisted(() => ({ renderRun: vi.fn() }));
 vi.mock("./index", () => ({ FUNCTIONS: [{ name: "render", run: renderRun }] }));
 
 import {
+	AUTO_REF_THRESHOLD_BYTES,
 	byteBudget,
 	clamp,
 	clearFetchCache,
@@ -98,6 +99,30 @@ describe("putBlob / deliverBytes (shared CAS store)", () => {
 		const r = await deliverBytes({ OAUTH_KV: { put: async () => {} } } as any, new Uint8Array([1]), "image/png", "url", () => ({ content: [{ type: "text" as const, text: "x" }] }));
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toMatch(/R2/);
+	});
+
+	it("deliverBytes auto-promotes to a ref above the size threshold even with `as` unset", async () => {
+		const env = blobEnv();
+		const inline = () => ({ content: [{ type: "text" as const, text: "INLINE" }] });
+		const big = new Uint8Array(AUTO_REF_THRESHOLD_BYTES + 1);
+		const r = await deliverBytes(env, big, "application/octet-stream", undefined, inline);
+		const parsed = JSON.parse(r.content[0].text);
+		expect(parsed.url).toMatch(/\/s\/[0-9a-f-]{36}$/);
+		expect(parsed.size).toBe(big.length);
+	});
+
+	it("deliverBytes keeps a payload at the size threshold inline with `as` unset", async () => {
+		const env = blobEnv();
+		const inline = () => ({ content: [{ type: "text" as const, text: "INLINE" }] });
+		const atThreshold = new Uint8Array(AUTO_REF_THRESHOLD_BYTES);
+		expect((await deliverBytes(env, atThreshold, "application/octet-stream", undefined, inline)).content[0].text).toBe("INLINE");
+	});
+
+	it('deliverBytes as:"base64" always inlines even above the size threshold (the internal-reuse escape hatch get/put/dropbox-full rely on)', async () => {
+		const env = blobEnv();
+		const inline = () => ({ content: [{ type: "text" as const, text: "INLINE" }] });
+		const big = new Uint8Array(AUTO_REF_THRESHOLD_BYTES + 1);
+		expect((await deliverBytes(env, big, "application/octet-stream", "base64", inline)).content[0].text).toBe("INLINE");
 	});
 });
 

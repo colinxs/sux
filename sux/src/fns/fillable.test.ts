@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("../proxy", () => ({ smartFetch: vi.fn() }));
 
 import { fillable } from "./fillable";
+import { pdf } from "./pdf";
 import { smartFetch } from "../proxy";
 
 // Build a blank one-page PDF and return it as base64.
@@ -121,6 +122,31 @@ describe("fillable", () => {
 		expect(j.mime).toBe("application/pdf");
 		expect(j.size).toBeGreaterThan(0);
 		expect(typeof j.base64).toBe("string");
+	});
+
+	// Real (not smoke) test of deliverBytes' size-based auto-promotion, driven through
+	// the actual fillable fn: a >150KB output must come back as a ref even with NO `as`
+	// arg, and a small one must still inline.
+	it("auto-promotes to a ref when output exceeds the size threshold, even with no `as` arg", async () => {
+		const env = { R2: { put: async () => {} }, OAUTH_KV: { put: async () => {} } } as any;
+		// Build a >150KB source PDF the same way pdf.test.ts does, via the pdf fn's own
+		// text-wrapping — cheaper and more realistic than a hand-rolled giant page count.
+		const bigText = Array.from({ length: 50_000 }, (_, i) => `word${i % 1000}`).join(" ");
+		const bigPdf = await pdf.run(env, { text: bigText, as: "base64" });
+		const bigPdfB64 = JSON.parse(bigPdf.content[0].text).base64 as string;
+		const r = await fillable.run(env, { pdf: bigPdfB64, fields: [{ name: "f1", x: 10, y: 10 }] });
+		expect(r.isError).toBeFalsy();
+		const parsed = JSON.parse(r.content[0].text);
+		expect(parsed.url).toMatch(/\/s\/[0-9a-f-]{36}$/);
+		expect(parsed.base64).toBeUndefined();
+	});
+
+	it("keeps small output inlined when `as` is omitted (below the size threshold)", async () => {
+		const r = await run({ pdf: await blankPdfB64(), fields: [{ name: "f", x: 1, y: 1 }] });
+		expect(r.isError).toBeFalsy();
+		const parsed = JSON.parse(r.content[0].text);
+		expect(typeof parsed.base64).toBe("string");
+		expect(parsed.url).toBeUndefined();
 	});
 
 	it("is marked raw so its base64 output is not normalized", () => {

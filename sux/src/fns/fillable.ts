@@ -19,7 +19,7 @@ export const fillable: Fn = {
 	name: "fillable",
 	description:
 		"Make a PDF fillable by adding interactive AcroForm fields. Give `pdf` (base64) or a `url`, plus `fields[]` — each { name, type: text|checkbox, page (0-indexed), x, y, width, height, value?, fontSize?, multiline? } positioned in PDF points. " +
-		"Origin is bottom-left by default; set `origin: 'top'` to measure y from the top of the page. `flatten: true` bakes the values in and makes the form non-editable. Returns JSON { mime, size, base64 } (or a compact ref with `as: \"url\"`). " +
+		"Origin is bottom-left by default; set `origin: 'top'` to measure y from the top of the page. `flatten: true` bakes the values in and makes the form non-editable. Prefer `as: \"url\"` — a compact ref (~100 tokens, chainable as any other fn's `url` input) — over inline base64; output over ~150KB auto-promotes to a ref even when `as` is unset. Returns { url, sha256, size, content_type } as a ref, or { mime, size, base64 } inline. " +
 		"(Positions are explicit — auto-detecting blank lines/underscores needs the WASM text-layout parser, see PLAN P5.)",
 	inputSchema: {
 		type: "object",
@@ -30,7 +30,12 @@ export const fillable: Fn = {
 			url: { type: "string", description: "URL of the source PDF (fetched via the residential proxy)." },
 			origin: { type: "string", enum: ["bottom", "top"], description: "Y-axis origin for field coordinates. Default 'bottom' (PDF-native).", default: "bottom" },
 			flatten: { type: "boolean", description: "Bake field values into the page and make them non-editable.", default: false },
-			as: { type: "string", enum: ["base64", "url"], default: "base64", description: "Delivery: inline base64 (default) or a content-addressed /s/<uuid> URL (~100 tokens)." },
+			as: {
+				type: "string",
+				enum: ["base64", "url"],
+				default: "base64",
+				description: "Delivery: prefer \"url\" — a content-addressed /s/<uuid> ref (~100 tokens) — over inline base64. Output over ~150KB auto-promotes to a ref even when unset.",
+			},
 			fields: {
 				type: "array",
 				description: "Fields to add.",

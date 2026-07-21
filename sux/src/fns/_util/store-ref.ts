@@ -109,9 +109,25 @@ export async function putBlob(env: RtEnv, bytes: Uint8Array, contentType: string
 }
 
 /**
- * Deliver binary output either inline (base64, the default — token-expensive but
- * self-contained) or `as: "url"` via the content-addressed store (~100 tokens,
- * consumable as any other fn's `url` input). Callers pass their own inline shape.
+ * Above this size, deliverBytes auto-promotes to the R2 ref even when the caller
+ * didn't ask for `as:"url"` — an inlined base64 payload this big both bloats the
+ * MCP response (~33% larger than the raw bytes) and risks the model's context/
+ * tool-result limits, where it can be truncated or otherwise corrupted in transit.
+ * 150KB keeps ordinary small outputs (a filled one-page form, a short doc) inlining
+ * as before; only genuinely large binaries get redirected to a ref.
+ */
+export const AUTO_REF_THRESHOLD_BYTES = 150 * 1024;
+
+/**
+ * Deliver binary output either inline (base64, self-contained but token-expensive)
+ * or `as: "url"` via the content-addressed store (~100 tokens, consumable as any
+ * other fn's `url` input). When the caller expresses no preference (`as` unset),
+ * the choice is size-based: small payloads inline (today's default), oversize ones
+ * auto-promote to a ref (AUTO_REF_THRESHOLD_BYTES). `as:"base64"` is an explicit
+ * escape hatch that always inlines regardless of size — relied on by internal
+ * fn-to-fn reuse (get/put/dropbox-full pull a fn's raw bytes back to post-process
+ * before deciding their OWN delivery one level up), so it must never get silently
+ * redirected to a ref out from under them. Callers pass their own inline shape.
  */
 export async function deliverBytes(
 	env: RtEnv,
@@ -120,12 +136,13 @@ export async function deliverBytes(
 	as: string | undefined,
 	inline: () => { content: Array<{ type: "text"; text: string }> },
 ): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
-	if (as === "url") {
+	const wantsRef = as === "url" || (as !== "base64" && bytes.length > AUTO_REF_THRESHOLD_BYTES);
+	if (wantsRef) {
 		try {
 			const ref = await putBlob(env, bytes, contentType, { ttlSeconds: FANOUT_STORE_TTL_S });
 			return { content: [{ type: "text", text: oj({ url: ref.url, sha256: ref.sha256, size: ref.size, content_type: contentType }) }] };
 		} catch (e) {
-			return { content: [{ type: "text", text: `as:"url" needs the R2 store: ${errMsg(e)}` }], isError: true };
+			return { content: [{ type: "text", text: `binary delivery (ref) needs the R2 store: ${errMsg(e)}` }], isError: true };
 		}
 	}
 	return inline();
