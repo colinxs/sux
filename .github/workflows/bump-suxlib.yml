@@ -1,0 +1,91 @@
+# Deliberately advances the pinned suxlib ref (.suxlib-ref, see ci.yml/deploy.yml/
+# e2e-mcp.yml's clone steps) instead of leaving it to drift silently. #1149: cloning
+# suxlib's mutable main unpinned on every CI run made the exact same sux commit's
+# required "Type-check & build" check nondeterministic — suxlib main moving between
+# two runs could redden or green the SAME sux commit. Resolves suxlib main's current
+# tip and opens a PR bumping the pin only when it has actually moved, so a suxlib
+# upgrade lands as one reviewable, reproducible commit instead of invisible drift.
+
+name: Bump suxlib pin
+
+on:
+  schedule:
+    - cron: "0 10 * * 1" # weekly, Monday 10:00 UTC
+  workflow_dispatch: # allow an on-demand bump from the Actions tab
+
+permissions:
+  contents: read # the write path goes through the suxbot App token minted below, not github.token
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      # Author the branch/PR as the allow-listed suxbot[bot] App identity (the same one
+      # issue-build/fixer use) rather than github.token's github-actions[bot], which is
+      # NOT allow-listed and would let a github-actions-authored PR slip past the
+      # trusted-author checks. Scoped to just this repo with the minimum write perms.
+      - name: Mint app token for sux (author the bump PR as suxbot[bot])
+        id: sux-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.SUX_BOT_APP_ID }}
+          private-key: ${{ secrets.SUX_BOT_PRIVATE_KEY }}
+          owner: SuxOS
+          repositories: sux
+          permission-contents: write
+          permission-pull-requests: write
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          token: ${{ steps.sux-token.outputs.token }}
+
+      # Same read-only, suxlib-scoped App identity ci.yml/deploy.yml/e2e-mcp.yml use
+      # to clone suxlib — here only to resolve main's current tip SHA.
+      - name: Mint app token for suxlib (private sibling dependency)
+        id: suxlib-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.SUX_BOT_APP_ID }}
+          private-key: ${{ secrets.SUX_BOT_PRIVATE_KEY }}
+          owner: SuxOS
+          repositories: suxlib
+          permission-contents: read
+
+      - name: Resolve current suxlib main SHA
+        id: resolve
+        env:
+          SUXLIB_TOKEN: ${{ steps.suxlib-token.outputs.token }}
+        run: |
+          SHA="$(git ls-remote "https://x-access-token:${SUXLIB_TOKEN}@github.com/SuxOS/suxlib.git" refs/heads/main | cut -f1)"
+          if [ -z "$SHA" ]; then
+            echo "::error::failed to resolve suxlib main's tip SHA" && exit 1
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      # Opens the bump PR under the suxbot App token AND applies `hold` at creation, so it
+      # never auto-merges on CI-green alone: a suxlib bump needs a human to review suxlib's
+      # own changes since the previous pin first. (See CLAUDE.md: any PR-opening automation
+      # that isn't meant to auto-merge yet must apply `hold` itself, #1116.)
+      - name: Open bump PR if the pin is stale
+        env:
+          GH_TOKEN: ${{ steps.sux-token.outputs.token }}
+          NEW_SHA: ${{ steps.resolve.outputs.sha }}
+        run: |
+          CURRENT="$(cat .suxlib-ref)"
+          if [ "$CURRENT" = "$NEW_SHA" ]; then
+            echo "suxlib pin already up to date ($NEW_SHA)"
+            exit 0
+          fi
+
+          BRANCH="chore/bump-suxlib-${NEW_SHA:0:12}"
+          git config user.name "suxbot[bot]"
+          git config user.email "suxbot[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          echo "$NEW_SHA" > .suxlib-ref
+          git add .suxlib-ref
+          git commit -m "chore(ci): bump pinned suxlib ref to ${NEW_SHA:0:12}"
+          git push origin "$BRANCH"
+          gh pr create --title "chore: bump suxlib pin to ${NEW_SHA:0:12}" \
+            --body "Advances the pinned suxlib ref (#1149) from \`$CURRENT\` to \`$NEW_SHA\`. Review suxlib's changes since the previous pin before merging — this PR's own CI run type-checks/tests sux against the new pin." \
+            --base main --head "$BRANCH" \
+            --label hold

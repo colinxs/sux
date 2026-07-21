@@ -449,6 +449,17 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   (#1148) scoped its first cut to images only for exactly this reason — PDF ingestion is a
   distinct follow-up, not an oversight.
 
+- **A bot-build sandbox's `gh api repos/SuxOS/suxlib` / a fresh `git clone`/`git ls-remote`
+  against suxlib 404s ("Repository not found") — the sandbox's `gh`/`GH_TOKEN` has zero
+  visibility into suxlib, same as the `SuxOS/.github` gotcha above — but the sandbox's
+  PRE-CLONED `../suxlib` checkout (used for `npm ci`/type-check/test) carries its OWN
+  embedded `x-access-token` remote with real read access: `git -C ../suxlib fetch origin
+  main && git rev-parse origin/main` resolves suxlib's actual current tip SHA even though
+  `gh api`/a fresh clone can't. This is how #1149's suxlib pin (`.suxlib-ref`, read by
+  `ci.yml`/`deploy.yml`/`e2e-mcp.yml`'s clone steps) got seeded with a real SHA instead of
+  a `main` sentinel — check `../suxlib`'s own remote before assuming a suxlib ref is
+  unresolvable from inside a sandbox.
+
 ## House style
 
 - No trailing/inline comments explaining the obvious; comment *why*, not *what*.

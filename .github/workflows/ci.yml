@@ -49,11 +49,20 @@ jobs:
 
       # $GITHUB_WORKSPACE is .../work/sux/sux, so ../suxlib lands at .../work/sux/suxlib
       # — exactly where npm's file:../suxlib resolution looks.
+      #
+      # Pinned to .suxlib-ref (#1149) instead of always tracking suxlib's mutable
+      # main — an unpinned clone made the exact same sux commit's CI result
+      # nondeterministic (suxlib main drifting between runs could redden or green
+      # the SAME sux commit). Advance the pin deliberately via bump-suxlib.yml
+      # (scheduled, or `gh workflow run bump-suxlib.yml`) rather than editing this
+      # step.
       - name: Clone suxlib (private sibling dependency)
         env:
           SUXLIB_TOKEN: ${{ steps.suxlib-token.outputs.token }}
         run: |
-          git clone --depth 1 --branch main "https://x-access-token:${SUXLIB_TOKEN}@github.com/SuxOS/suxlib.git" ../suxlib
+          SUXLIB_REF="$(cat .suxlib-ref)"
+          git clone "https://x-access-token:${SUXLIB_TOKEN}@github.com/SuxOS/suxlib.git" ../suxlib
+          git -C ../suxlib checkout "$SUXLIB_REF"
           npm --prefix ../suxlib ci --omit=dev   # install suxlib's own deps (fflate) so sux's tsc can resolve them through the file: dep
 
       - name: Install dependencies
