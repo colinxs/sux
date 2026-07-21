@@ -148,9 +148,14 @@ export type RtEnv = Env &
 		//                         the first N would-fire cycles per cluster log to an audit trail
 		//                         instead of the Daily note (default 3); only after N does that
 		//                         cluster's writes go live.
+		//   INFER_NUDGE_ANOMALY_MIN_Z  — z-score floor for the scalar-anomaly recipe path
+		//                         (#1144, fns/_infer_anomaly.ts), same belt-and-suspenders
+		//                         re-check as INFER_NUDGE_MIN_CONFIDENCE (default 2, matching
+		//                         _infer_anomaly.ts's own default threshold).
 		INFER_NUDGE_MIN_CONFIDENCE?: string;
 		INFER_NUDGE_COOLDOWN_DAYS?: string;
 		INFER_NUDGE_WARMUP_CYCLES?: string;
+		INFER_NUDGE_ANOMALY_MIN_Z?: string;
 
 		// IANA tz for the vault owner's "today" (daily-note tools). Default Pacific.
 		VAULT_TZ?: string;
@@ -433,6 +438,18 @@ export type RtEnv = Env &
 		LEARNING_FOLDER_ENABLED?: string;
 		LEARNING_FOLDER_PATH?: string;
 		LEARNING_FOLDER_TOPIC?: string;
+
+		// Document-expiry radar (fns/_document_radar.ts + _agenda.ts's detectDocumentExpiryDrops,
+		// #1148) — sweeps a Dropbox app-folder subfolder for new scanned photos of personal legal/
+		// ID documents (passport, driver's license, insurance card, warranty, registration), OCRs
+		// them, and tracks each as a vault note (type + expiry). Same fail-closed gate as
+		// LEARNING_FOLDER_*: unset DOCUMENT_RADAR_ENABLED ⇒ the ingestion sweep is a total no-op
+		// (also requires hasDropbox); the agenda DETECTOR only needs the flag, since it reads
+		// tracked-document notes back regardless of whether this sweep or a human wrote them. Path/
+		// vault-folder default to /documents and "Documents" when unset.
+		DOCUMENT_RADAR_ENABLED?: string;
+		DOCUMENT_RADAR_PATH?: string;
+		DOCUMENT_RADAR_VAULT_FOLDER?: string;
 
 		// Manual ops trigger for the daily cron ticks (POST /admin/tick?job=…), bearer-gated
 		// by this token. Unset ⇒ the endpoint 404s (feature off). Lets an operator run a

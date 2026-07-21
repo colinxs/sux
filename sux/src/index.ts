@@ -904,10 +904,19 @@ async function lifeWikiTick(env: RtEnv): Promise<void> {
 // (dormant) unless INFER_ARM_VAULT/INFER_ARM_MAIL is set and INFER_KILL isn't — no
 // separate `has*` gate needed here, unlike watchSweepTick/lifeWikiTick. Dynamically
 // imported so the cron path pulls in the drift-detection surface only when armed (#960).
+// Also runs the scalar-anomaly recipe path (#1144) — same fail-closed contract, dormant
+// unless a recipe domain (e.g. INFER_ARM_PURCHASES) is armed. Aggregated into one report
+// so runSubJob's single heartbeat covers both nudge-recipe types; subJobError only reads
+// a top-level `error` string, so either path's failure is surfaced there explicitly
+// rather than relying on the nested per-path report shape.
 async function inferNudgeTick(env: RtEnv): Promise<unknown> {
 	const mod = await import("./fns/_infer_nudge");
 	const deps = await mod.defaultDeps();
-	return mod.runInferNudge(env, {}, deps);
+	const drift = await mod.runInferNudge(env, {}, deps);
+	const anomalyDeps = await mod.defaultAnomalyDeps();
+	const anomaly = await mod.runInferAnomalyNudge(env, {}, anomalyDeps);
+	const error = drift.error ?? anomaly.results?.find((r) => r.error)?.error;
+	return { drift, anomaly, ...(error ? { error } : {}) };
 }
 
 async function maintenanceTick(env: RtEnv, ctx: ExecutionContext): Promise<void> {

@@ -429,6 +429,13 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   actually landed (#1116). Any future PR-opening automation must explicitly apply `hold`
   itself if the PR isn't meant to auto-merge yet.
 
+- **`ocr.ts`'s `ocr` fn only accepts an image (`url`/`image` → Workers-AI vision) — it has no PDF
+  path.** A feature ingesting scanned personal documents (passport, license, a PDF scan) can't
+  just point everything at `ocr`; a PDF needs `study.ts`'s `extractDocText` (or a Mode-A shared-
+  link + `study` pdf-kind path, per the Dropbox-Mode-A/B gotcha above) instead. `_document_radar.ts`
+  (#1148) scoped its first cut to images only for exactly this reason — PDF ingestion is a
+  distinct follow-up, not an oversight.
+
 ## House style
 
 - No trailing/inline comments explaining the obvious; comment *why*, not *what*.
@@ -463,3 +470,12 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   cast at a new call site. Known imprecision: two different client apps authenticated under
   the same GitHub login collide (last `initialize` wins for both) — accepted as the best
   signal this architecture offers, not a bug to "fix" without adding real session infra.
+
+- **An `effort:large` issue previously dropped under the "#920 precedent" (needs a dedicated
+  session, not a batch slot) deserves a fresh look when it's the ONLY issue in the current
+  batch** — that precedent is about an `effort:large` issue losing to sibling issues competing
+  for the same turn/time budget, not about the work being inherently unbuildable in one
+  session. #1144 (scalar trend/anomaly detector, dispatched solo after an earlier batched
+  attempt dropped it for exactly that reason) built clean well under budget once it had the
+  whole session to itself — a new sibling module, a second nudge-recipe path, cron wiring, and
+  tests. Re-check the batch's actual issue count before reflexively re-dropping.

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { composeDigest, type AgendaDeps, type Drop, detectCrossSemanticDrops, detectDrops, detectKnowledgeDrops, detectMonarchDrops, detectMyChartDrops, detectMychartAllergyGapDrops, detectMychartConflictDrops, detectPortfolioDrops, detectRelationshipDrops, detectSavingsRateDrop, detectStudyReviewDrops, detectTextDrops, detectWatchDrops, computeSavingsRate, type EventRef, mailRelationshipThreads, type MailRef, type RelationshipBaseline, type TextThreadRef, rankDropsLearned, runAgenda } from "./_agenda";
+import { composeDigest, type AgendaDeps, type Drop, detectCrossSemanticDrops, detectDocumentExpiryDrops, detectDrops, detectKnowledgeDrops, detectMonarchDrops, detectMyChartDrops, detectMychartAllergyGapDrops, detectMychartConflictDrops, detectPortfolioDrops, detectRelationshipDrops, detectSavingsRateDrop, detectStudyReviewDrops, detectTextDrops, detectWatchDrops, computeSavingsRate, type EventRef, mailRelationshipThreads, type MailRef, type RelationshipBaseline, type TextThreadRef, rankDropsLearned, runAgenda } from "./_agenda";
 import { listProposals } from "../proposals";
 import { recordOutcome } from "./_learning";
 import { readInferSignals } from "./_infer";
@@ -41,6 +41,7 @@ const deps = (over: Partial<AgendaDeps> = {}): AgendaDeps => ({
 	mychartSummary: vi.fn(async () => null),
 	mychartConflicts: vi.fn(async () => []),
 	mychartAllergyGaps: vi.fn(async () => []),
+	trackedDocuments: vi.fn(async () => []),
 	...over,
 });
 
@@ -466,6 +467,43 @@ describe("agenda — MyChart one-sided allergy-gap detector (#1009)", () => {
 
 	it("no drops when there are no gaps", () => {
 		expect(detectMychartAllergyGapDrops([])).toHaveLength(0);
+	});
+});
+
+describe("agenda — document-expiry radar detector (#1148)", () => {
+	it("flags a document expiring within the default 30-day window as urgency 'soon'", () => {
+		const drops = detectDocumentExpiryDrops("2026-07-01", [{ path: "Documents/passport.md", docType: "passport", expiryDate: "2026-07-20" }]);
+		expect(drops).toHaveLength(1);
+		expect(drops[0].kind).toBe("document_expiry");
+		expect(drops[0].urgency).toBe("soon");
+		expect(drops[0].title).toContain("passport");
+		expect(drops[0].action.fn).toBe("todoist");
+	});
+
+	it("flags a document expiring within 7 days as urgency 'today'", () => {
+		const drops = detectDocumentExpiryDrops("2026-07-01", [{ path: "Documents/license.md", docType: "drivers_license", expiryDate: "2026-07-05" }]);
+		expect(drops[0].urgency).toBe("today");
+	});
+
+	it("flags an already-expired document", () => {
+		const drops = detectDocumentExpiryDrops("2026-07-10", [{ path: "Documents/warranty.md", docType: "warranty", expiryDate: "2026-07-01" }]);
+		expect(drops).toHaveLength(1);
+		expect(drops[0].title).toContain("expired");
+		expect(drops[0].evidence).toMatchObject({ daysLeft: -9 });
+	});
+
+	it("ignores a document with no expiry date, and one expiring well outside the window", () => {
+		const drops = detectDocumentExpiryDrops("2026-07-01", [
+			{ path: "Documents/a.md", docType: "insurance" },
+			{ path: "Documents/b.md", docType: "registration", expiryDate: "2027-01-01" },
+		]);
+		expect(drops).toHaveLength(0);
+	});
+
+	it("dedupe includes the expiry date — a renewed document (new expiry_date) proposes again", () => {
+		const first = detectDocumentExpiryDrops("2026-07-01", [{ path: "Documents/passport.md", expiryDate: "2026-07-20" }]);
+		const renewedButStillDueSoon = detectDocumentExpiryDrops("2026-07-01", [{ path: "Documents/passport.md", expiryDate: "2026-07-25" }]);
+		expect(first[0].dedupe).not.toBe(renewedButStillDueSoon[0].dedupe);
 	});
 });
 
