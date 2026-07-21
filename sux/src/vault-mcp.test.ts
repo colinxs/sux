@@ -342,6 +342,13 @@ describe("vault MCP tools", () => {
 		expect(gone.content[0].text).toMatch(/^\[not_found\]/); // patch a note that isn't there
 	});
 
+	it("vault_query({query}) self-corrects toward vault_search_body/vault_semantic instead of a bare bad_input (#1121)", async () => {
+		const bad = await tool("vault_query").run(ENV, { query: "some text" });
+		expect(bad.isError).toBe(true);
+		expect(bad.content[0].text).toMatch(/vault_search_body/);
+		expect(bad.content[0].text).toMatch(/vault_semantic/);
+	});
+
 	it("vault_daily_append targets today's daily note", async () => {
 		let putPath = "";
 		routes.handler = (url, init) => {

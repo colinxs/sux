@@ -151,18 +151,26 @@ describe("learn", () => {
 		expect(run).not.toHaveBeenCalled(); // list is a pure KV read
 	});
 
-	it("reset requires confirm, then clears the whole learned set", async () => {
+	it("reset stages a preview by default, then clears the whole learned set on commit", async () => {
 		const { env } = makeEnv();
 		await learn.run(env, { action: "learn", input: "a cat", label: "A" });
 		await learn.run(env, { action: "learn", input: "an invoice", label: "C" });
-		// without confirm: guarded, nothing cleared
-		const guarded = await learn.run(env, { action: "reset" });
-		expect(guarded.isError).toBe(true);
-		expect(guarded.content[0].text).toMatch(/confirm/i);
+		// no stage/commit_token/force: auto-stages (learn_reset is irreversible), nothing cleared
+		const staged = parse(await learn.run(env, { action: "reset" }));
+		expect(staged.staged).toBe(true);
+		expect(staged.commit_token).toBeTruthy();
 		expect(parse(await learn.run(env, { action: "list" })).count).toBe(2);
-		// with confirm: clears
-		const j = parse(await learn.run(env, { action: "reset", confirm: true }));
+		// commit with the returned token: clears
+		const j = parse(await learn.run(env, { action: "reset", commit_token: staged.commit_token }));
 		expect(j.deleted).toBe(2);
+		expect(parse(await learn.run(env, { action: "list" })).count).toBe(0);
+	});
+
+	it("reset force:true skips staging and clears in one shot", async () => {
+		const { env } = makeEnv();
+		await learn.run(env, { action: "learn", input: "a cat", label: "A" });
+		const j = parse(await learn.run(env, { action: "reset", force: true }));
+		expect(j.deleted).toBe(1);
 		expect(parse(await learn.run(env, { action: "list" })).count).toBe(0);
 	});
 

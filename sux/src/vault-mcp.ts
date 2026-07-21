@@ -378,12 +378,15 @@ const TOOLS: VaultTool[] = [
 	{
 		name: "vault_query",
 		description:
-			"Find notes by FRONTMATTER — the note-database query folders can't do (structured, git-backed; NOT full-text search). Two forms: simple `field` (+ optional `value`: omit=presence, array field=membership, else equality), or a `filter` JsonLogic object for boolean/comparison composition — {and:[…]} {or:[…]} {not:…}, {\"==\":[field,val]}, {\"!=\"/\">\"/\"<\"/\">=\"/\"<=\":[field,val]} (numeric else string), {\"in\":[field,val]}. Optional `folder` scopes the scan. Returns matching {path, frontmatter}.",
-		inputSchema: { type: "object", additionalProperties: false, properties: { field: { type: "string", description: "Frontmatter key for the simple form, e.g. status or type." }, value: { description: "Match value for the simple form; omit to test presence of `field`." }, filter: { type: "object", description: "JsonLogic-lite filter (and/or/not, ==,!=,>,<,>=,<=, in) — use instead of field/value for boolean composition." }, folder: { type: "string", description: "Restrict to a folder." }, cap: { type: "integer", minimum: 1, maximum: 2000 } } },
+			"Find notes by FRONTMATTER — the note-database query folders can't do (structured, git-backed; NOT full-text search — for a plain-text query use vault_search_body or vault_semantic instead). Two forms: simple `field` (+ optional `value`: omit=presence, array field=membership, else equality), or a `filter` JsonLogic object for boolean/comparison composition — {and:[…]} {or:[…]} {not:…}, {\"==\":[field,val]}, {\"!=\"/\">\"/\"<\"/\">=\"/\"<=\":[field,val]} (numeric else string), {\"in\":[field,val]}. Optional `folder` scopes the scan. Returns matching {path, frontmatter}. Example: vault_query({field:\"status\", value:\"active\"}).",
+		inputSchema: { type: "object", additionalProperties: false, properties: { field: { type: "string", description: "Frontmatter key for the simple form, e.g. status or type." }, value: { description: "Match value for the simple form; omit to test presence of `field`." }, filter: { type: "object", description: "JsonLogic-lite filter (and/or/not, ==,!=,>,<,>=,<=, in) — use instead of field/value for boolean composition." }, folder: { type: "string", description: "Restrict to a folder." }, cap: { type: "integer", minimum: 1, maximum: 2000 }, query: { type: "string", description: "NOT a valid param — accepted only so this error is actionable: vault_query is frontmatter-only. Use vault_search_body({q}) for substring search or vault_semantic({q}) for meaning search instead." } } },
 		run: async (env, a) => {
 			const filter = a?.filter as Filter | undefined;
 			const field = typeof a?.field === "string" ? a.field : undefined;
-			if (!filter && !field) return failWith("bad_input", "vault_query needs either `field` (simple form) or `filter` (JsonLogic).");
+			if (!filter && !field) {
+				if (typeof a?.query === "string") return failWith("bad_input", "vault_query is a FRONTMATTER filter, not full-text search — it has no `query` param. For plain-text search use vault_search_body({q:\"...\"}) (substring) or vault_semantic({q:\"...\"}) (meaning). For frontmatter, pass field/value, e.g. vault_query({field:\"status\", value:\"active\"}).");
+				return failWith("bad_input", "vault_query needs either `field` (simple form) or `filter` (JsonLogic). Example: vault_query({field:\"status\", value:\"active\"}). For plain-text search use vault_search_body({q}) or vault_semantic({q}) instead.");
+			}
 			let matches: (fm: Record<string, unknown>) => boolean;
 			try {
 				matches = filter ? (fm) => evalFilter(fm, filter) : (fm) => frontmatterMatches(fm, field!, a?.value);

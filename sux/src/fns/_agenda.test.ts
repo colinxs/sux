@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { composeDigest, type AgendaDeps, type Drop, detectCrossSemanticDrops, detectDrops, detectKnowledgeDrops, detectMonarchDrops, detectMyChartDrops, detectMychartAllergyGapDrops, detectMychartConflictDrops, detectPortfolioDrops, detectRelationshipDrops, detectSavingsRateDrop, detectStudyReviewDrops, detectTextDrops, detectWatchDrops, computeSavingsRate, type EventRef, mailRelationshipThreads, type MailRef, type RelationshipBaseline, type TextThreadRef, rankDropsLearned, runAgenda } from "./_agenda";
+import { composeDigest, type AgendaDeps, type Drop, detectCrossSemanticDrops, detectDocumentExpiryDrops, detectDrops, detectKnowledgeDrops, detectMonarchDrops, detectMyChartDrops, detectMychartAllergyGapDrops, detectMychartConflictDrops, detectPortfolioDrops, detectRelationshipDrops, detectSavingsRateDrop, detectStudyReviewDrops, detectTextDrops, detectWatchDrops, computeSavingsRate, type EventRef, mailRelationshipThreads, type MailRef, type RelationshipBaseline, type TextThreadRef, rankDropsLearned, runAgenda } from "./_agenda";
 import { listProposals } from "../proposals";
 import { recordOutcome } from "./_learning";
 import { readInferSignals } from "./_infer";
@@ -23,6 +23,7 @@ const EVENTS: EventRef[] = [{ summary: "Intake appointment w/ Dr. Enoch", start:
 
 const deps = (over: Partial<AgendaDeps> = {}): AgendaDeps => ({
 	mailSearch: vi.fn(async () => MAIL),
+	mailRelationshipSearch: vi.fn(async () => []),
 	calEvents: vi.fn(async () => EVENTS),
 	digestAppend: vi.fn(async () => {}),
 	sendDigest: vi.fn(async () => {}),
@@ -40,6 +41,7 @@ const deps = (over: Partial<AgendaDeps> = {}): AgendaDeps => ({
 	mychartSummary: vi.fn(async () => null),
 	mychartConflicts: vi.fn(async () => []),
 	mychartAllergyGaps: vi.fn(async () => []),
+	trackedDocuments: vi.fn(async () => []),
 	...over,
 });
 
@@ -468,6 +470,43 @@ describe("agenda — MyChart one-sided allergy-gap detector (#1009)", () => {
 	});
 });
 
+describe("agenda — document-expiry radar detector (#1148)", () => {
+	it("flags a document expiring within the default 30-day window as urgency 'soon'", () => {
+		const drops = detectDocumentExpiryDrops("2026-07-01", [{ path: "Documents/passport.md", docType: "passport", expiryDate: "2026-07-20" }]);
+		expect(drops).toHaveLength(1);
+		expect(drops[0].kind).toBe("document_expiry");
+		expect(drops[0].urgency).toBe("soon");
+		expect(drops[0].title).toContain("passport");
+		expect(drops[0].action.fn).toBe("todoist");
+	});
+
+	it("flags a document expiring within 7 days as urgency 'today'", () => {
+		const drops = detectDocumentExpiryDrops("2026-07-01", [{ path: "Documents/license.md", docType: "drivers_license", expiryDate: "2026-07-05" }]);
+		expect(drops[0].urgency).toBe("today");
+	});
+
+	it("flags an already-expired document", () => {
+		const drops = detectDocumentExpiryDrops("2026-07-10", [{ path: "Documents/warranty.md", docType: "warranty", expiryDate: "2026-07-01" }]);
+		expect(drops).toHaveLength(1);
+		expect(drops[0].title).toContain("expired");
+		expect(drops[0].evidence).toMatchObject({ daysLeft: -9 });
+	});
+
+	it("ignores a document with no expiry date, and one expiring well outside the window", () => {
+		const drops = detectDocumentExpiryDrops("2026-07-01", [
+			{ path: "Documents/a.md", docType: "insurance" },
+			{ path: "Documents/b.md", docType: "registration", expiryDate: "2027-01-01" },
+		]);
+		expect(drops).toHaveLength(0);
+	});
+
+	it("dedupe includes the expiry date — a renewed document (new expiry_date) proposes again", () => {
+		const first = detectDocumentExpiryDrops("2026-07-01", [{ path: "Documents/passport.md", expiryDate: "2026-07-20" }]);
+		const renewedButStillDueSoon = detectDocumentExpiryDrops("2026-07-01", [{ path: "Documents/passport.md", expiryDate: "2026-07-25" }]);
+		expect(first[0].dedupe).not.toBe(renewedButStillDueSoon[0].dedupe);
+	});
+});
+
 describe("agenda — relationship-decay detector (Relationship Radar, #930)", () => {
 	it("a thread tracked for the first time just seeds a baseline — no drop, no established cadence yet", () => {
 		const threads: TextThreadRef[] = [{ id: "t1", contact: "+1555", name: "Mom", lastAt: "2026-06-01T00:00:00Z" }];
@@ -735,6 +774,19 @@ describe("agenda — loop", () => {
 		// Cycle 3 — 20 days of silence since, way past the ~3d baseline: fires.
 		const r3 = await runAgenda(e, { date: "2026-06-24" }, deps({ textThreads: vi.fn(async () => [{ id: "t1", contact: "+15551234", name: "Mom", lastFromMe: true, lastAt: "2026-06-04T12:00:00Z" }]) }));
 		expect(r3.proposals?.map((p) => p.kind)).toContain("relationship_drop");
+	});
+
+	it("keeps tracking a mail contact's cadence via mailRelationshipSearch even once their message is read, not the unread-only mailSearch stream (#1133)", async () => {
+		const e = env();
+		// mailSearch (unread inbox) is empty — as if the contact's message has already been read —
+		// while mailRelationshipSearch (recent-window, not unread-gated) still sees it.
+		const jeanne = { id: "m1", from: "Jeanne <jeanne@gmail.com>", subject: "Hey!", preview: "how's it going", date: "2026-06-01T12:00:00Z" };
+		await runAgenda(e, { date: "2026-06-01" }, deps({ mailSearch: vi.fn(async () => []), mailRelationshipSearch: vi.fn(async () => [jeanne]) }));
+		expect(e.OAUTH_KV.map.get("sux:ledger:agenda_relationship:mail:jeanne@gmail.com")).toContain("\"sampleCount\":0");
+		// Next cycle: still unread-empty via mailSearch, but mailRelationshipSearch sees a fresh message
+		// from the same contact — the baseline refines instead of freezing.
+		await runAgenda(e, { date: "2026-06-04" }, deps({ mailSearch: vi.fn(async () => []), mailRelationshipSearch: vi.fn(async () => [{ ...jeanne, date: "2026-06-04T12:00:00Z" }]) }));
+		expect(e.OAUTH_KV.map.get("sux:ledger:agenda_relationship:mail:jeanne@gmail.com")).toContain("\"sampleCount\":1");
 	});
 
 	it("dry_run never persists the relationship baseline", async () => {
@@ -1026,5 +1078,29 @@ describe("agenda — pending-delivery queue survives a failed digest write (#996
 		await runAgenda(e, { date: "2026-07-11" }, d3);
 		expect(d3.digestAppend).not.toHaveBeenCalled();
 		expect(d3.sendDigest).not.toHaveBeenCalled();
+	});
+
+	it("a pending-queue KV write failure never crashes the cycle (#1134)", async () => {
+		const e = env();
+		e.OAUTH_KV.put = vi.fn(async (k: string, v: string) => {
+			if (k.includes("agenda_pending")) throw new Error("KV put failed (value too large)");
+			e.OAUTH_KV.map.set(k, v);
+		});
+		const d = deps({ mailSearch: vi.fn(async () => [RX_MAIL]), calEvents: vi.fn(async () => []), digestAppend: vi.fn(async () => { throw new Error("vault down"); }) });
+		await expect(runAgenda(e, { date: "2026-07-10" }, d)).resolves.toMatchObject({ digest_written: false });
+	});
+
+	it("caps the pending queue's serialized size so a sustained outage can't grow it past KV's put limit (#1134)", async () => {
+		const e = env();
+		const bigDrop = (i: number): unknown => ({
+			proposalId: `carried-${i}`,
+			drop: { kind: "bill_due", urgency: "fyi", dedupe: `carried::${i}`, title: `old bill ${i}`, emoji: "🧾", action: { fn: "todoist", args: { action: "add", content: `old ${i}` } }, evidence: { note: "x".repeat(50_000) } },
+		});
+		e.OAUTH_KV.map.set("sux:ledger:agenda_pending:queue", JSON.stringify(Array.from({ length: 40 }, (_, i) => bigDrop(i))));
+		const d = deps({ mailSearch: vi.fn(async () => []), calEvents: vi.fn(async () => []), digestAppend: vi.fn(async () => { throw new Error("vault down"); }) });
+		await runAgenda(e, { date: "2026-07-10" }, d);
+		const persisted = e.OAUTH_KV.map.get("sux:ledger:agenda_pending:queue");
+		expect(persisted).toBeDefined();
+		expect(new TextEncoder().encode(persisted as string).length).toBeLessThan(1024 * 1024);
 	});
 });

@@ -117,6 +117,42 @@ describe("dropbox (app-folder blob store)", () => {
 		expect(JSON.parse(r.content[0].text).url).toBe("https://www.dropbox.com/s/old/a.txt");
 	});
 
+	it("put feeds the infer signal log for the 'files' domain when INFER_ARM_FILES is set", async () => {
+		const { readInferSignals } = await import("./_infer");
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (u: string | URL) => {
+				const url = String(u);
+				if (url.endsWith("/files/upload")) return new Response(JSON.stringify({ path_display: "/notes/a.txt", size: 2 }), { status: 200 });
+				return new Response(JSON.stringify({ url: "https://www.dropbox.com/s/x/a.txt" }), { status: 200 });
+			}),
+		);
+		const embedRun = vi.fn(async () => ({ data: [[0.1, 0.2, 0.3]] }));
+		const env = { ...ENV, INFER_ARM_FILES: "1", AI: { run: embedRun }, OAUTH_KV: fakeKV() } as any;
+		await dropbox.run(env, { op: "put", path: "notes/a.txt", data: "hi there" });
+		expect(embedRun).toHaveBeenCalled();
+		const signals = await readInferSignals(env, "files");
+		expect(signals).toHaveLength(1);
+		expect(signals[0].source_tag).toBe("files:/notes/a.txt");
+	});
+
+	it("put does NOT feed the infer signal log when INFER_ARM_FILES is unset", async () => {
+		const { readInferSignals } = await import("./_infer");
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (u: string | URL) => {
+				const url = String(u);
+				if (url.endsWith("/files/upload")) return new Response(JSON.stringify({ path_display: "/notes/a.txt", size: 2 }), { status: 200 });
+				return new Response(JSON.stringify({ url: "https://www.dropbox.com/s/x/a.txt" }), { status: 200 });
+			}),
+		);
+		const embedRun = vi.fn(async () => ({ data: [[0.1, 0.2, 0.3]] }));
+		const env = { ...ENV, AI: { run: embedRun }, OAUTH_KV: fakeKV() } as any;
+		await dropbox.run(env, { op: "put", path: "notes/a.txt", data: "hi there" });
+		expect(embedRun).not.toHaveBeenCalled();
+		expect(await readInferSignals(env, "files")).toHaveLength(0);
+	});
+
 	it("get checks metadata first, then returns text for textual extensions", async () => {
 		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
 			const url = String(u);

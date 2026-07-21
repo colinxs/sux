@@ -82,7 +82,7 @@ export const autonomy_status: Fn = {
 				armed: selfOn,
 				mode: selfKilled ? "killed" : !selfOn ? "dormant" : !selfPr ? "suggest-only (review, no PR)" : selfAutoMerge ? "may open PRs + arm auto-merge on HIGH-confidence fix/refactor/cleanup" : "may open PRs (auto-author off, never arms)",
 				reversible: true,
-				consequence: "reads the feedback queue and routes by confidence: LOW → a `self-improve` tracking issue, MEDIUM → a stub `self-improve` PR (not auto-merge-eligible), HIGH → the same PR plus the `automerge` label ONLY when the auto-merge flag is armed. Never authors, never merges — native auto-merge does, gated on CI + security review.",
+				consequence: "reads the feedback queue and routes by confidence: LOW → a `self-improve` tracking issue, MEDIUM → a stub `self-improve` PR held with `hold` (blocks auto-merge until a human clears it), HIGH → the same PR plus the `automerge` label INSTEAD of `hold`, ONLY when the auto-merge flag is armed. Never authors, never merges — native auto-merge does, gated on CI + security review.",
 			},
 			{
 				surface: "cron_trigger",

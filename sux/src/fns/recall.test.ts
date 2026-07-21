@@ -279,6 +279,18 @@ describe("recall", () => {
 		expect(out.sources.vault).toBe("1 hit(s)");
 	});
 
+	it("falls back to the local semantic index when the REMOTE backend is configured but errors at runtime (#1121)", async () => {
+		obs.mockImplementation(async (_e: any, a: any) => {
+			if (a.backend === "remote") throw new Error("HTTP 502"); // sleeping/offline Tailscale Funnel
+			if (a.action === "list") return okR(JSON.stringify({ notes: ["Areas/Health.md"] }));
+			return okR("Dr. Chen is my oncologist.");
+		});
+		const remoteEnv = { ...env(), OBSIDIAN_REMOTE_URL: "https://vault.ts.net", OBSIDIAN_REMOTE_KEY: "k" } as any;
+		const out = parse(await recall.run(remoteEnv, { question: "oncologist?", sources: ["vault"] }));
+		expect(out.sources.vault).toBe("1 hit(s)"); // recovered via fromVaultSemantic, not "unavailable"
+		expect(out.citations).toContain("vault:Areas/Health.md");
+	});
+
 	it("uses vault_semantic's cosine kNN (not lexical search) for the git-backend vault leg — GitHub code-search can't see a private repo", async () => {
 		obs.mockImplementation(async (_e: any, a: any) => {
 			if (a.action === "search") throw new Error("git backend must not lexically search — code-search returns nothing on a private repo");
@@ -410,6 +422,24 @@ describe("recall", () => {
 			expect(system).toContain("SOURCE PRECEDENCE");
 			expect(system).toContain("[whitelisted:*]");
 			expect(system).toMatch(/OUTRANKS your own general knowledge/);
+		});
+
+		it("doesn't drag a non-whitelisted oracle topic bundled with a whitelisted one ahead of more relevant vault material (#1135)", async () => {
+			const e = env();
+			await e.OAUTH_KV.put("sux:oracle:dbt", JSON.stringify({ distilled: "DBT-FACT: opposite action for unjustified emotions.", chunks: ["c"], sources: ["book.pdf"], updated_at: 1, whitelist: { source: "book.pdf", kind: "pdf", via: "study", learned_at: 1 } }));
+			await e.OAUTH_KV.put("sux:oracle:trivia", JSON.stringify({ distilled: "TRIVIA-FACT: unrelated plain oracle note.", chunks: ["c"], sources: ["x"], updated_at: 1 }));
+			const out = await gatherRecall(e, "who is my oncologist?", ["vault", "oracle"]);
+			const dbtIdx = out.materials.findIndex((m) => m.includes("[whitelisted:dbt]"));
+			const vaultIdx = out.materials.findIndex((m) => m.includes("[vault:"));
+			const triviaIdx = out.materials.findIndex((m) => m.includes("[oracle:trivia]"));
+			expect(dbtIdx).toBeGreaterThanOrEqual(0);
+			expect(vaultIdx).toBeGreaterThanOrEqual(0);
+			expect(triviaIdx).toBeGreaterThanOrEqual(0);
+			// Whitelisted still leads everything...
+			expect(dbtIdx).toBeLessThan(vaultIdx);
+			// ...but the unrelated plain topic bundled with it in the same fromOracle call no longer
+			// rides ahead of the more relevant vault material just because they share one call.
+			expect(vaultIdx).toBeLessThan(triviaIdx);
 		});
 	});
 });

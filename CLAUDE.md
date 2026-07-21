@@ -429,6 +429,26 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   check each claim's current file:line first, since a lot of drive-by self-improve reports
   get overtaken by unrelated feature work before anyone re-audits them.
 
+- **`automerge.yml`'s real eligibility rule (since its 2026-07-15 rewrite) is just "not draft &&
+  not labelled `hold`"** — the older safe-type-title/eligible-label taxonomy some in-repo
+  comments still describe is gone from the actual reusable workflow (verify against the local
+  hub checkout, `/home/runner/work/_actions/SuxOS/.github/main/.github/workflows/automerge.yml`,
+  not stale comments). Any code that opens a PR in this repo and assumes WITHHOLDING an
+  "eligible" label (e.g. `automerge`) is enough to keep it from merging is wrong — only the
+  `hold` label actually blocks native auto-merge; everything else auto-merges the instant
+  required checks go green. This bit `_self_improve.ts`'s stub PRs hard: their initial commit
+  is tree-identical to `main`, so CI passes trivially and instantly, and 8/8 checked
+  self-improve merges on `main` turned out to be empty no-ops — the described fix never
+  actually landed (#1116). Any future PR-opening automation must explicitly apply `hold`
+  itself if the PR isn't meant to auto-merge yet.
+
+- **`ocr.ts`'s `ocr` fn only accepts an image (`url`/`image` → Workers-AI vision) — it has no PDF
+  path.** A feature ingesting scanned personal documents (passport, license, a PDF scan) can't
+  just point everything at `ocr`; a PDF needs `study.ts`'s `extractDocText` (or a Mode-A shared-
+  link + `study` pdf-kind path, per the Dropbox-Mode-A/B gotcha above) instead. `_document_radar.ts`
+  (#1148) scoped its first cut to images only for exactly this reason — PDF ingestion is a
+  distinct follow-up, not an oversight.
+
 ## House style
 
 - No trailing/inline comments explaining the obvious; comment *why*, not *what*.
@@ -446,3 +466,29 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   "fns never throw" invariant applies here same as anywhere else.
 - `ok()` (from `registry.ts`) takes a STRING, not an object — a converted fn returning
   `staged()`'s `StageResult` must `ok(oj(stageResult))`, not `ok(stageResult)` directly.
+
+## sux's `/mcp` transport is fully stateless — no session, only OAuth `login`
+
+- `index.ts`'s `handleRpc` implements NO `Mcp-Session-Id` / Durable-Object session — every
+  request (`initialize`, `tools/call`, ...) is handled independently with zero correlation
+  between them. The ONE identity signal present on every single request is the OAuth-
+  authenticated `login` (`ctx.props?.login`, set by `OAuthProvider` before `rtServer.fetch`
+  runs). A feature that needs to remember something about "this connection" across requests
+  (client capabilities, a multi-step flow, per-client rate limiting, ...) has to key off
+  `login` — there is no session id, and `tools/call` never resends `initialize`'s params
+  (`clientInfo`, `capabilities`), so those are only ever visible at the one `initialize` call
+  site. `login` is threaded onto `RtEnv._egress.login` (`proxy.ts`'s `EgressContext`) for this
+  purpose (#1143's client-UI-capability negotiation in `fns/_ui.ts` is the first consumer) —
+  reuse that field rather than re-deriving the `ctx as ExecutionContext & {props?: Props}`
+  cast at a new call site. Known imprecision: two different client apps authenticated under
+  the same GitHub login collide (last `initialize` wins for both) — accepted as the best
+  signal this architecture offers, not a bug to "fix" without adding real session infra.
+
+- **An `effort:large` issue previously dropped under the "#920 precedent" (needs a dedicated
+  session, not a batch slot) deserves a fresh look when it's the ONLY issue in the current
+  batch** — that precedent is about an `effort:large` issue losing to sibling issues competing
+  for the same turn/time budget, not about the work being inherently unbuildable in one
+  session. #1144 (scalar trend/anomaly detector, dispatched solo after an earlier batched
+  attempt dropped it for exactly that reason) built clean well under budget once it had the
+  whole session to itself — a new sibling module, a second nudge-recipe path, cron wiring, and
+  tests. Re-check the batch's actual issue count before reflexively re-dropping.

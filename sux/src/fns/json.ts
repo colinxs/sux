@@ -45,9 +45,12 @@ export const json: Fn = {
 		if (!SUPPORTED.includes(src)) return fail(`Unsupported source '${src}' — supported: ${SUPPORTED.join(", ")}.`);
 		try {
 			const value = parseSource(data, src, { delimiter: args?.delimiter });
-			// Auto-detect falls through to YAML for unstructured input (e.g. plain
-			// prose), which parses to an empty map. Returning "{}" would silently
-			// discard the input, so surface the mis-detection as an error instead.
+			// A bare unstructured line (no ':'/'- ' marker) auto-detects as YAML but
+			// parses as a plain scalar, not an empty map, so it's handled fine below.
+			// The empty-map case still happens when every top-level key is stripped by
+			// the parser's prototype-pollution guard (e.g. a lone `__proto__: x` or
+			// `constructor: x` document) -- that silently discards the input's only
+			// content, so surface the mis-detection as an error instead of a misleading "{}".
 			if (from === "auto" && src === "yaml" && value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 0) {
 				return fail("Could not detect the source format (parsed to empty). Pass an explicit `from` (json/yaml/csv/xml).");
 			}

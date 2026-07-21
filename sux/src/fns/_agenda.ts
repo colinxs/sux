@@ -40,6 +40,7 @@ import { redactPII } from "./redact";
 import type { WatchFindings } from "./_watch_sweep";
 import type { WeeklyRecallFindings } from "./_weekly_recall";
 import { dueForReview, hasStudyReview, reviewIntervalDays, studyReviewCandidates, type DueReview, type StudiedTopicRef } from "./_study_review";
+import { documentRadarArmed, listTrackedDocuments, type TrackedDocumentRef } from "./_document_radar";
 
 // ── Gates ────────────────────────────────────────────────────────────────────
 const flagOn = (v: string | undefined): boolean => {
@@ -465,6 +466,16 @@ const UNUSUAL_CHARGE_WINDOW_DAYS = 3;
 // Recent-threads window scanned for the unanswered_text detector — imessage.ts's `threads` has
 // no unread concept (unlike mailSearch's `unread:true`), so recency is the only cheap bound.
 const TEXT_LOOKBACK_DAYS = 3;
+// Recent-mail window scanned for the mail half of Relationship Radar (#1133) — deliberately NOT
+// unread-gated (unlike detectDrops/mailSearch's inbox scan), so a contact's cadence keeps updating
+// after their message is read instead of freezing the moment it's marked read. A bounded window is
+// still a membership test, not a true "ever contacted" scan — too narrow and a slow-cadence contact
+// falls out of it before detectRelationshipDrops' own silenceDays threshold ever fires, same freeze
+// bug one step removed. 90d (matching AGENDA_RELATIONSHIP_MIN_SILENCE_DAYS' own max) comfortably
+// covers the default-config drop threshold (baselineDays*2) up to a ~45d cadence; widening costs
+// nothing extra server-side (mail_search's `after` filter is cheap — the `limit:50` cap below is
+// what actually bounds cost, not the window width).
+const RELATIONSHIP_MAIL_LOOKBACK_DAYS = 90;
 // Trailing window (NOT calendar-month-to-date) for the cashflow-derived savings-rate detector —
 // a fixed calendar-month window reads sharply negative for the first few days of a month before
 // income posts (a biweekly/monthly paycheck lags the 1st), a pure timing artifact rather than a
@@ -882,6 +893,41 @@ export function detectMychartAllergyGapDrops(gaps: MyChartAllergyGapRef[]): Drop
 	);
 }
 
+const DOC_RADAR_DAY_MS = 24 * 60 * 60 * 1000;
+const DOCUMENT_RADAR_WARN_DAYS = 30;
+
+/** Silently-expiring personal legal/ID documents (passport, driver's license, insurance card,
+ *  warranty, registration — #1148), the same "drop about to happen" shape as MyChart's Rx
+ *  refills and Monarch's bills, but sourced from _document_radar.ts's tracked-document vault
+ *  notes (written by that sweep, or by hand) instead of a live API. Dedupe includes the expiry
+ *  date itself so a renewed document (new expiry_date in its note) proposes again, same as
+ *  every other date-keyed dedupe in this file. */
+export function detectDocumentExpiryDrops(today: string, docs: TrackedDocumentRef[], opts?: { warnDays?: number }): Drop[] {
+	const warnDays = opts?.warnDays ?? DOCUMENT_RADAR_WARN_DAYS;
+	const todayMs = Date.parse(`${today}T00:00:00Z`);
+	const drops: Drop[] = [];
+	for (const doc of docs) {
+		if (!doc.expiryDate) continue;
+		const expiryMs = Date.parse(`${doc.expiryDate}T00:00:00Z`);
+		if (!Number.isFinite(expiryMs)) continue;
+		const daysLeft = Math.round((expiryMs - todayMs) / DOC_RADAR_DAY_MS);
+		if (daysLeft > warnDays) continue;
+		const label = doc.label || doc.docType || "document";
+		const urgency: Urgency = daysLeft <= 7 ? "today" : "soon";
+		const title = daysLeft < 0 ? `${label} expired ${-daysLeft}d ago — renew it` : `${label} expires in ${daysLeft}d (${doc.expiryDate}) — renew it`;
+		drops.push({
+			kind: "document_expiry",
+			urgency,
+			dedupe: `document_radar::expiry::${doc.path}::${doc.expiryDate}`,
+			title,
+			emoji: "🪪",
+			action: task(`Renew ${label}`, doc.expiryDate),
+			evidence: { path: doc.path, docType: doc.docType, expiryDate: doc.expiryDate, daysLeft },
+		});
+	}
+	return sortByUrgency(drops);
+}
+
 /** Load each tracked thread's cached cadence baseline — one KV key per thread id, unlike
  *  Monarch's single combined snapshot, since there's no fixed shape to bound one key's size
  *  against. A missing or unparseable entry is simply absent, same as lastMonarchSnapshot
@@ -948,6 +994,10 @@ function buildDigestBlock(date: string, cycle: string, emailed: boolean, d: { su
 // ── Deps (injectable side-effect surface) ────────────────────────────────────────
 export type AgendaDeps = {
 	mailSearch: (env: RtEnv, opts: { limit: number }) => Promise<MailRef[]>;
+	/** Mail feeding mailRelationshipThreads' per-contact cadence (#1133) — a recent-window scan
+	 *  regardless of read state, NOT `mailSearch`'s unread-only inbox scan, so a contact's cadence
+	 *  keeps updating after their message is read instead of freezing forever the moment it is. */
+	mailRelationshipSearch: (env: RtEnv, opts: { since: string }) => Promise<MailRef[]>;
 	calEvents: (env: RtEnv, opts: { start: string; end: string }) => Promise<EventRef[]>;
 	digestAppend: (env: RtEnv, path: string, content: string) => Promise<void>;
 	/** Send the digest to Colin's own primary address (the one send this loop can do), and
@@ -994,6 +1044,9 @@ export type AgendaDeps = {
 	/** Cross-org one-sided allergy gaps (#1009) — only called when hasMychartReconcile(env)
 	 *  && mychartConfigured(env). [] when fewer than 2 orgs have ever pulled. */
 	mychartAllergyGaps: (env: RtEnv) => Promise<MyChartAllergyGapRef[]>;
+	/** Tracked-document vault notes (passport/license/insurance/warranty/registration, #1148) —
+	 *  a vault scan, never a live API. Only called when documentRadarArmed(env). */
+	trackedDocuments: (env: RtEnv) => Promise<TrackedDocumentRef[]>;
 };
 
 export type AgendaOpts = { date?: string; max_mail?: number; horizon_days?: number; dry_run?: boolean; cycle_id?: string };
@@ -1053,6 +1106,7 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 	// Gather (read-only, degrade-independently).
 	const status: Record<string, string> = {};
 	let mail: MailRef[] = [];
+	let relationshipMail: MailRef[] = [];
 	let events: EventRef[] = [];
 	let consolidateFindings: ConsolidateFindings | null = null;
 	let weeklyRecallFindings: WeeklyRecallFindings | null = null;
@@ -1072,12 +1126,19 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 	let mychartNewDocuments: MyChartEntryRef[] = [];
 	let mychartConflicts: MyChartConflictRef[] = [];
 	let mychartAllergyGaps: MyChartAllergyGapRef[] = [];
+	let trackedDocuments: TrackedDocumentRef[] = [];
 	await Promise.all([
 		(async () => {
 			mail = await deps.mailSearch(env, { limit: maxMail });
 			status.mail = `${mail.length} scanned`;
 		})().catch((e) => {
 			status.mail = `unavailable (${errMsg(e).slice(0, 90)})`;
+		}),
+		(async () => {
+			relationshipMail = await deps.mailRelationshipSearch(env, { since: addDays(date, -RELATIONSHIP_MAIL_LOOKBACK_DAYS) });
+			status.relationship_mail = `${relationshipMail.length} scanned`;
+		})().catch((e) => {
+			status.relationship_mail = `unavailable (${errMsg(e).slice(0, 90)})`;
 		}),
 		(async () => {
 			events = await deps.calEvents(env, { start: `${date}T00:00:00`, end: `${addDays(date, horizon)}T23:59:59` });
@@ -1181,6 +1242,16 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		})().catch((e) => {
 			status.mychart_reconcile = `unavailable (${errMsg(e).slice(0, 90)})`;
 		}),
+		(async () => {
+			if (!documentRadarArmed(env)) {
+				status.document_radar = "disabled";
+				return;
+			}
+			trackedDocuments = await deps.trackedDocuments(env);
+			status.document_radar = `${trackedDocuments.length} tracked document(s)`;
+		})().catch((e) => {
+			status.document_radar = `unavailable (${errMsg(e).slice(0, 90)})`;
+		}),
 	]);
 
 	const lowBalanceThreshold = numClamp(env.MONARCH_LOW_BALANCE_THRESHOLD, 0, 1_000_000, 100);
@@ -1192,7 +1263,7 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 	const currentSavingsRate = computeSavingsRate(monarchCashflow);
 	const relationshipSilenceMultiplier = floatClamp(env.AGENDA_RELATIONSHIP_SILENCE_MULTIPLIER, 1, 20, RELATIONSHIP_SILENCE_MULTIPLIER);
 	const relationshipMinSilenceDays = numClamp(env.AGENDA_RELATIONSHIP_MIN_SILENCE_DAYS, 1, 90, RELATIONSHIP_MIN_SILENCE_DAYS);
-	const relationshipThreads = [...textThreads, ...mailRelationshipThreads(mail)];
+	const relationshipThreads = [...textThreads, ...mailRelationshipThreads(relationshipMail)];
 	const priorRelationshipBaselines = relationshipThreads.length ? await loadRelationshipBaselines(env, relationshipThreads.map((t) => t.id)) : {};
 	const relationshipResult = detectRelationshipDrops(Date.parse(`${date}T00:00:00Z`), relationshipThreads, priorRelationshipBaselines, {
 		silenceMultiplier: relationshipSilenceMultiplier,
@@ -1213,6 +1284,7 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		...detectMyChartDrops(mychartLabFlags, mychartRefillsDue, mychartNewConditions, mychartNewDocuments),
 		...detectMychartConflictDrops(mychartConflicts),
 		...detectMychartAllergyGapDrops(mychartAllergyGaps),
+		...detectDocumentExpiryDrops(date, trackedDocuments),
 	]);
 
 	// Advance the "since last check" baseline every successful Monarch fetch, regardless of
@@ -1266,7 +1338,23 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 			}
 		}
 	}
+	// Guard against unbounded growth across a sustained mail+vault outage (#1134) — KV values cap
+	// at 25MB and a growing `evidence` payload (Monarch/MyChart drops aren't small) could otherwise
+	// push a `put` over that limit. Stay well under it, mirroring _capped_kv_log.ts's byte cap.
+	// Trims `carried` (the OLDEST, already-carried-over entries) FIRST, on its own, so this
+	// cycle's fresh `proposed` entries are never touched while carried still has slack to shed.
+	// Only once carried is fully exhausted and the combined set STILL doesn't fit does the loop
+	// fall through to trimming `toDeliver` itself (now proposed-only) — logged separately since
+	// that genuinely means this cycle's own proposals alone blew the budget (#1140), the opposite
+	// of dropping already-carried leftovers.
+	const MAX_PENDING_BYTES = 1024 * 1024;
+	const byteLen = (arr: ProposedDrop[]) => new TextEncoder().encode(JSON.stringify(arr)).length;
+	while (carried.length && byteLen([...carried, ...proposed]) > MAX_PENDING_BYTES) carried.shift();
 	const toDeliver = [...carried, ...proposed];
+	if (byteLen(toDeliver) > MAX_PENDING_BYTES) {
+		console.warn(`agenda: pending digest still over ${MAX_PENDING_BYTES} bytes after dropping every carried-over entry — trimming this cycle's own fresh proposals`);
+		while (toDeliver.length > 1 && byteLen(toDeliver) > MAX_PENDING_BYTES) toDeliver.shift();
+	}
 
 	const digest = composeDigest(date, toDeliver);
 
@@ -1307,7 +1395,13 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		// Clear once EITHER channel actually delivers (this call, or an earlier call this same
 		// cycle already delivered it); otherwise re-queue everything still undelivered —
 		// including this cycle's own new proposals — for the next attempt (#1041, #1058).
-		await pending.mark(PENDING_KEY, digestWritten || emailed || alreadyDelivered ? "[]" : JSON.stringify(toDeliver));
+		try {
+			await pending.mark(PENDING_KEY, digestWritten || emailed || alreadyDelivered ? "[]" : JSON.stringify(toDeliver));
+		} catch {
+			/* a pending-queue write failure must never fail the cycle (#1134) — the proposals are
+			 * already recorded; worst case this cycle's undelivered drops aren't re-queued for the
+			 * next attempt, same as a corrupt-entry read above. */
+		}
 	}
 
 	return {
@@ -1343,6 +1437,18 @@ export async function defaultDeps(): Promise<AgendaDeps> {
 			const t = tool("mail_search");
 			if (!t) throw new Error("mail_search tool not found");
 			const r = await t.run(env, { mailbox: "inbox", unread: true, limit: o.limit });
+			if (r.isError) throw new Error(r.content?.[0]?.text ?? "mail_search failed");
+			const parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
+			return (parsed.emails ?? []).map((e: any) => ({ id: String(e?.id ?? ""), from: e?.from, subject: e?.subject, preview: e?.preview, date: e?.receivedAt }));
+		},
+		mailRelationshipSearch: async (env, o) => {
+			// Deliberately NOT `unread: true` (#1133) — mailSearch's inbox scan above drops a
+			// contact the moment their message is read, freezing detectRelationshipDrops' cadence
+			// baseline forever. This scans the same inbox by recency instead, so a read message
+			// still keeps the contact's cadence updating.
+			const t = tool("mail_search");
+			if (!t) throw new Error("mail_search tool not found");
+			const r = await t.run(env, { mailbox: "inbox", after: o.since, limit: 50 });
 			if (r.isError) throw new Error(r.content?.[0]?.text ?? "mail_search failed");
 			const parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
 			return (parsed.emails ?? []).map((e: any) => ({ id: String(e?.id ?? ""), from: e?.from, subject: e?.subject, preview: e?.preview, date: e?.receivedAt }));
@@ -1481,5 +1587,6 @@ export async function defaultDeps(): Promise<AgendaDeps> {
 		mychartSummary: async (env, o) => summarizeMyChart(env, { now: o.now, refillWindowDays: o.refillWindowDays }),
 		mychartConflicts: async (env) => crossOrgMedicationAllergyConflicts(env),
 		mychartAllergyGaps: async (env) => crossOrgAllergyGaps(env),
+		trackedDocuments: async (env) => listTrackedDocuments(env),
 	};
 }

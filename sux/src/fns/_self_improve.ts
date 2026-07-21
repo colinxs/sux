@@ -19,18 +19,28 @@
 //
 // The loop NEVER authors code and NEVER merges. Its outward actions, by confidence:
 //   LOW    → open (or dedupe onto) a `self-improve` tracking issue — no branch, no CI.
-//   MEDIUM → open a stub PR, label it `self-improve` (deliberately NOT an auto-merge-eligible
-//            label — see automerge.yml — and the `self-improve(...)` title matches no safe-type
-//            regex either, so a human always merges these), and, for the auto-fixable lanes
+//   MEDIUM → open a stub PR — its initial commit carries NO code change (see openPr) — label it
+//            `self-improve` PLUS `hold` (see below), and, for the auto-fixable lanes
 //            (fix/refactor/cleanup), post an "@claude fix this" comment so the EXISTING,
 //            already-bounded claude-autofix/mention loop authors the actual fix onto the branch.
-//   HIGH   → the MEDIUM path PLUS the `automerge` label, but ONLY for an auto-fixable lane and
-//            ONLY when SELF_IMPROVE_AUTOMERGE is on (default OFF); otherwise it fails safe to the
-//            plain MEDIUM path. Even then the loop never merges — native auto-merge does, and
-//            only after CI + the security gates pass. Security/feature lanes are capped at MEDIUM
-//            (suggest-only, never armed). So the worst an enabled+PR loop can do is file a bounded
-//            number of clearly-labeled, gated PRs/issues; arming a merge additionally needs Colin's
-//            flag AND the arming prerequisites (security-review + automerge author-gate) in place.
+//            A human removes `hold` (and merges) once a real fix has actually landed on it.
+//   HIGH   → the MEDIUM path PLUS the `automerge` label INSTEAD OF `hold`, but ONLY for an
+//            auto-fixable lane and ONLY when SELF_IMPROVE_AUTOMERGE is on (default OFF);
+//            otherwise it fails safe to the plain MEDIUM (`hold`ed) path. Even then the loop
+//            never merges — native auto-merge does, and only after CI + the security gates pass.
+//            Security/feature lanes are capped at MEDIUM (suggest-only, never armed). So the
+//            worst an enabled+PR loop can do is file a bounded number of clearly-labeled, gated
+//            PRs/issues; arming a merge additionally needs Colin's flag AND the arming
+//            prerequisites (security-review + automerge author-gate) in place.
+//
+// `hold` IS LOAD-BEARING, NOT DECORATIVE (#1116): automerge.yml's real eligibility rule (as of
+// its 2026-07-15 rewrite) is just "not draft && not labelled `hold`" — the old safe-type-title/
+// eligible-label taxonomy this file's comments used to describe is gone from that workflow.
+// Since a stub PR's initial commit is tree-identical to the base branch, CI passes on it
+// trivially and instantly — so omitting an auto-merge-eligible label is NO LONGER enough to
+// keep a MEDIUM-path stub PR unmerged; without an explicit `hold` it auto-merges empty within
+// minutes, before any real fix (or, for security/feature, ANY fix at all — those lanes never
+// get the @claude hand-off) ever lands. Every non-armed PR this module opens MUST carry `hold`.
 //
 // INJECTION: feedback text originates off-Worker (a tool's issue()/suggest() call, whose
 // argument may be attacker-influenced web content). It is treated as INERT DATA
@@ -110,6 +120,10 @@ const SELF_IMPROVE_LABEL = "self-improve";
 // The one auto-merge-eligible label (matches automerge.yml's eligible set). Attached ONLY on
 // the HIGH + canAutoMerge path; every other route deliberately withholds it.
 const AUTOMERGE_LABEL = "automerge";
+// automerge.yml's ONE write-gate (see the SAFETY MODEL note above): attached to every
+// non-armed stub PR so it can't auto-merge its empty initial commit out from under a pending
+// (or, for security/feature, never-coming) fix. A human clears it once a real fix has landed.
+const HOLD_LABEL = "hold";
 const BRANCH_PREFIX = "self-improve/";
 
 // ── Lane classifier ──────────────────────────────────────────────────────────
@@ -348,7 +362,7 @@ function prBody(f: Finding): string {
 		``,
 		fenceUntrusted(f.text),
 		``,
-		`This branch has no code change yet — the \`@claude\` autofix/mention loop (or a maintainer) authors the fix on it. This PR is labeled \`self-improve\`; a human merges it unless the \`automerge\` label is present (HIGH-confidence fix/refactor/cleanup only, and only while the arming prerequisites are in place).`,
+		`This branch has no code change yet — the \`@claude\` autofix/mention loop (or a maintainer) authors the fix on it. This PR carries \`hold\` (blocks auto-merge) unless the \`automerge\` label is present instead (HIGH-confidence fix/refactor/cleanup only, and only while the arming prerequisites are in place) — remove \`hold\` only once a real fix has actually landed on this branch.`,
 	].filter(Boolean).join("\n");
 }
 
@@ -503,10 +517,12 @@ async function routeFinding(env: RtEnv, finding: Finding, github: GithubClient, 
 	budget.openSlots--;
 
 	// Arm ONLY on HIGH + an auto-fixable lane + the (default-off) flag. Every other route
-	// withholds the `automerge` label. classifyConfidence already caps security/feature at
-	// medium, so the lane check here is belt-and-suspenders.
+	// withholds the `automerge` label and instead applies `hold` — automerge.yml's real
+	// eligibility gate (see the SAFETY MODEL note above) — so a non-armed stub PR can't
+	// auto-merge its empty initial commit. classifyConfidence already caps security/feature
+	// at medium, so the lane check here is belt-and-suspenders.
 	const arm = finding.confidence === "high" && AUTOFIX_LANES.has(finding.lane) && canAutoMerge(env);
-	const labels = arm ? [SELF_IMPROVE_LABEL, AUTOMERGE_LABEL] : [SELF_IMPROVE_LABEL];
+	const labels = arm ? [SELF_IMPROVE_LABEL, AUTOMERGE_LABEL] : [SELF_IMPROVE_LABEL, HOLD_LABEL];
 	await github.labelPr(pr.number, labels);
 	if (arm) result.armed++;
 
