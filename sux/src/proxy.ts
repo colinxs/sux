@@ -16,7 +16,10 @@ import { errMsg } from "./prim";
 // per outbound fetch decision. Per-request (not parked on the shared isolate env)
 // so concurrent tools/call requests don't clobber each other's reqId/ctx. Absent
 // outside a tools/call (or when Grafana is unconfigured) → no-op.
-export type EgressContext = { ctx: { waitUntil(p: Promise<unknown>): void }; reqId: string };
+// `login` (the OAuth-authenticated GitHub identity) rides along too — the only
+// per-request identity signal available in this stateless-per-request server (see
+// fns/_ui.ts's client-capability negotiation, which keys off it).
+export type EgressContext = { ctx: { waitUntil(p: Promise<unknown>): void }; reqId: string; login?: string };
 
 export type TailscaleEnv = {
 	// Public Funnel URL of the proxy node, e.g. https://box.tailnet-name.ts.net

@@ -3,6 +3,9 @@ import { type Fn, fail, ok, type RtEnv } from "../registry";
 import { maybeDecompress } from "./_gzip";
 import { fromB64, toB64, oj } from "./_util";
 import { staged } from "../stage";
+import { embedOne } from "./_embed";
+import { appendInferSignal, hasInferArm } from "./_infer";
+import { redactPII } from "./redact";
 
 // Dropbox as the human-facing blob store (R2 `store` is the machine-facing
 // twin). The token belongs to an App-folder-scoped app: it structurally cannot
@@ -85,6 +88,29 @@ export async function dropboxPut(env: RtEnv, path: string, bytes: Uint8Array, op
 	return { path: stored, size: json?.size ?? bytes.length, url: await sharedLink(env, stored) };
 }
 
+const FILES_SIGNAL_SNIPPET_MAX = 1000;
+
+/** Best-effort feed into the infer signal log (#864's substrate) — a no-op unless
+ *  INFER_ARM_FILES is set, checked first so a dormant domain costs zero embed calls
+ *  (#1142: arming INFER_ARM_FILES previously had zero observable effect, since nothing
+ *  ever called appendInferSignal for this domain — "files" here means the Dropbox
+ *  app-folder namespace, per ingest.ts's logVaultSignal comment on the vault/files
+ *  domain split, #1004). Never throws into the caller: a failed embed/append must not
+ *  affect an upload that already landed in Dropbox. Only fires for textual `data`
+ *  uploads (mirrors ingest.ts's logVaultSignal, which only ever embeds text) — a
+ *  `base64` binary upload has no meaningful text to embed. */
+async function logFilesSignal(env: RtEnv, path: string, text: string): Promise<void> {
+	if (!hasInferArm(env, "files")) return;
+	try {
+		const { redacted } = redactPII(text);
+		const snippet = redacted.slice(0, FILES_SIGNAL_SNIPPET_MAX);
+		const vec = await embedOne(env, snippet);
+		await appendInferSignal(env, "files", { ts: Date.now(), vec, redacted_snippet: snippet, source_tag: `files:${path}` });
+	} catch (e) {
+		console.warn(`infer: files signal log failed for ${path} — ${(e as Error)?.message ?? e}`);
+	}
+}
+
 export const dropbox: Fn = {
 	name: "dropbox",
 	cost: 2,
@@ -118,11 +144,15 @@ export const dropbox: Fn = {
 			if (op === "put") {
 				if (!path) return fail("op=put requires a `path`.");
 				let bytes: Uint8Array;
+				let text: string | undefined;
 				if (typeof args?.base64 === "string" && args.base64) bytes = fromB64(args.base64);
-				else if (typeof args?.data === "string") bytes = new TextEncoder().encode(args.data); // "" is a valid empty upload
-				else return fail("op=put requires `data` (utf-8) or `base64` (binary).");
+				else if (typeof args?.data === "string") {
+					bytes = new TextEncoder().encode(args.data); // "" is a valid empty upload
+					text = args.data;
+				} else return fail("op=put requires `data` (utf-8) or `base64` (binary).");
 				const r = await dropboxPut(env, path, bytes);
 				if ("error" in r) return fail(r.error);
+				if (text) await logFilesSignal(env, r.path, text);
 				return ok(oj({ ok: true, ...r, ...(r.url ? {} : { warning: "uploaded, but no shared link minted — check the token's sharing scope" }) }));
 			}
 			if (op === "get") {

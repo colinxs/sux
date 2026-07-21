@@ -64,6 +64,10 @@ export const STAGE_KINDS: Record<string, StageKind> = {
 	put_batch: { irreversible: true },
 	// kv_delete — KV has no git history or trash, so a delete is genuinely irreversible.
 	kv_delete: { irreversible: true },
+	// learn(action=reset) — clears the WHOLE learned-example KV set and is not
+	// batch-undoable (unlike action=undo, which is scoped to one batch), same
+	// irreversible shape as kv_delete above.
+	learn_reset: { irreversible: true },
 	// dropbox app-folder (Mode A) delete — Dropbox's own recoverable-trash doesn't exempt it,
 	// same as mail_masked_delete above (recoverable-but-still-gated is already the precedent).
 	dropbox_delete: { irreversible: true },
