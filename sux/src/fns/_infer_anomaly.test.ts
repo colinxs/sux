@@ -78,4 +78,25 @@ describe("detectScalarAnomaly — arithmetic", () => {
 		for (let d = 1; d <= 14; d++) await seed(env, NOW - d * DAY_MS);
 		expect(await detectScalarAnomaly(env, RECIPE, { now: NOW, threshold: 50 })).toBeNull();
 	});
+
+	it("block-binning tiles the FULL baseline window — a signal 15-18 days old (the tail a fixed recentDays-wide span would drop) still counts (#1151)", async () => {
+		const env = baseEnv({ INFER_ARM_PURCHASES: "1" });
+		// One signal per day for all 60 baseline days (14..74 days ago inclusive of the 15-18 tail
+		// nearest the recent window) — a perfectly uniform baseline rate.
+		for (let d = 15; d <= 74; d++) await seed(env, NOW - d * DAY_MS);
+		// Recent window: two signals a day — a clear spike over the uniform 1/day baseline.
+		for (let d = 1; d <= 14; d++) {
+			await seed(env, NOW - d * DAY_MS);
+			await seed(env, NOW - d * DAY_MS + 1);
+		}
+
+		const candidate = await detectScalarAnomaly(env, RECIPE, { now: NOW });
+
+		expect(candidate).not.toBeNull();
+		// 60 baseline signals evenly tiled across 4 blocks of 15 days ⇒ mean 15, stddev 0 (each
+		// block has exactly 15). The old fixed-14d-wide binning would drop the 15-18-day-old tail,
+		// undercounting to 56 signals / mean 14 with the same recent count.
+		expect(candidate!.baselineMean).toBe(15);
+		expect(candidate!.baselineStd).toBe(0);
+	});
 });

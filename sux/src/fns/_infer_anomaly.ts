@@ -88,7 +88,11 @@ export async function detectScalarAnomaly(env: RtEnv, recipe: AnomalyRecipe, opt
 	// near-empty baseline can't tell "anomaly" from "this domain just started".
 	if (!recent.length || baseline.length < 2) return null;
 
-	const blockSpanMs = recentDays * DAY_MS;
+	// Evenly tile the FULL baseline window (not a fixed recentDays-wide span) — baselineDays isn't
+	// always an exact multiple of recentDays (e.g. shipped defaults 60/14 ⇒ 4 blocks of 14d only
+	// cover 56 of the 60 baseline days), and a fixed-width span silently drops the remainder — the
+	// slice of baseline nearest the recent window, and the most relevant for trend detection (#1151).
+	const blockSpanMs = (baselineDays * DAY_MS) / numBlocks;
 	const blockCounts = new Array(numBlocks).fill(0);
 	for (const s of baseline) {
 		const blockIndex = Math.floor((s.ts - baselineCutoff) / blockSpanMs);

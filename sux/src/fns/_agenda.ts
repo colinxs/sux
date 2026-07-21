@@ -40,6 +40,7 @@ import { redactPII } from "./redact";
 import type { WatchFindings } from "./_watch_sweep";
 import type { WeeklyRecallFindings } from "./_weekly_recall";
 import { dueForReview, hasStudyReview, reviewIntervalDays, studyReviewCandidates, type DueReview, type StudiedTopicRef } from "./_study_review";
+import { documentRadarArmed, listTrackedDocuments, type TrackedDocumentRef } from "./_document_radar";
 
 // ── Gates ────────────────────────────────────────────────────────────────────
 const flagOn = (v: string | undefined): boolean => {
@@ -892,6 +893,41 @@ export function detectMychartAllergyGapDrops(gaps: MyChartAllergyGapRef[]): Drop
 	);
 }
 
+const DOC_RADAR_DAY_MS = 24 * 60 * 60 * 1000;
+const DOCUMENT_RADAR_WARN_DAYS = 30;
+
+/** Silently-expiring personal legal/ID documents (passport, driver's license, insurance card,
+ *  warranty, registration — #1148), the same "drop about to happen" shape as MyChart's Rx
+ *  refills and Monarch's bills, but sourced from _document_radar.ts's tracked-document vault
+ *  notes (written by that sweep, or by hand) instead of a live API. Dedupe includes the expiry
+ *  date itself so a renewed document (new expiry_date in its note) proposes again, same as
+ *  every other date-keyed dedupe in this file. */
+export function detectDocumentExpiryDrops(today: string, docs: TrackedDocumentRef[], opts?: { warnDays?: number }): Drop[] {
+	const warnDays = opts?.warnDays ?? DOCUMENT_RADAR_WARN_DAYS;
+	const todayMs = Date.parse(`${today}T00:00:00Z`);
+	const drops: Drop[] = [];
+	for (const doc of docs) {
+		if (!doc.expiryDate) continue;
+		const expiryMs = Date.parse(`${doc.expiryDate}T00:00:00Z`);
+		if (!Number.isFinite(expiryMs)) continue;
+		const daysLeft = Math.round((expiryMs - todayMs) / DOC_RADAR_DAY_MS);
+		if (daysLeft > warnDays) continue;
+		const label = doc.label || doc.docType || "document";
+		const urgency: Urgency = daysLeft <= 7 ? "today" : "soon";
+		const title = daysLeft < 0 ? `${label} expired ${-daysLeft}d ago — renew it` : `${label} expires in ${daysLeft}d (${doc.expiryDate}) — renew it`;
+		drops.push({
+			kind: "document_expiry",
+			urgency,
+			dedupe: `document_radar::expiry::${doc.path}::${doc.expiryDate}`,
+			title,
+			emoji: "🪪",
+			action: task(`Renew ${label}`, doc.expiryDate),
+			evidence: { path: doc.path, docType: doc.docType, expiryDate: doc.expiryDate, daysLeft },
+		});
+	}
+	return sortByUrgency(drops);
+}
+
 /** Load each tracked thread's cached cadence baseline — one KV key per thread id, unlike
  *  Monarch's single combined snapshot, since there's no fixed shape to bound one key's size
  *  against. A missing or unparseable entry is simply absent, same as lastMonarchSnapshot
@@ -1008,6 +1044,9 @@ export type AgendaDeps = {
 	/** Cross-org one-sided allergy gaps (#1009) — only called when hasMychartReconcile(env)
 	 *  && mychartConfigured(env). [] when fewer than 2 orgs have ever pulled. */
 	mychartAllergyGaps: (env: RtEnv) => Promise<MyChartAllergyGapRef[]>;
+	/** Tracked-document vault notes (passport/license/insurance/warranty/registration, #1148) —
+	 *  a vault scan, never a live API. Only called when documentRadarArmed(env). */
+	trackedDocuments: (env: RtEnv) => Promise<TrackedDocumentRef[]>;
 };
 
 export type AgendaOpts = { date?: string; max_mail?: number; horizon_days?: number; dry_run?: boolean; cycle_id?: string };
@@ -1087,6 +1126,7 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 	let mychartNewDocuments: MyChartEntryRef[] = [];
 	let mychartConflicts: MyChartConflictRef[] = [];
 	let mychartAllergyGaps: MyChartAllergyGapRef[] = [];
+	let trackedDocuments: TrackedDocumentRef[] = [];
 	await Promise.all([
 		(async () => {
 			mail = await deps.mailSearch(env, { limit: maxMail });
@@ -1202,6 +1242,16 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		})().catch((e) => {
 			status.mychart_reconcile = `unavailable (${errMsg(e).slice(0, 90)})`;
 		}),
+		(async () => {
+			if (!documentRadarArmed(env)) {
+				status.document_radar = "disabled";
+				return;
+			}
+			trackedDocuments = await deps.trackedDocuments(env);
+			status.document_radar = `${trackedDocuments.length} tracked document(s)`;
+		})().catch((e) => {
+			status.document_radar = `unavailable (${errMsg(e).slice(0, 90)})`;
+		}),
 	]);
 
 	const lowBalanceThreshold = numClamp(env.MONARCH_LOW_BALANCE_THRESHOLD, 0, 1_000_000, 100);
@@ -1234,6 +1284,7 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		...detectMyChartDrops(mychartLabFlags, mychartRefillsDue, mychartNewConditions, mychartNewDocuments),
 		...detectMychartConflictDrops(mychartConflicts),
 		...detectMychartAllergyGapDrops(mychartAllergyGaps),
+		...detectDocumentExpiryDrops(date, trackedDocuments),
 	]);
 
 	// Advance the "since last check" baseline every successful Monarch fetch, regardless of
@@ -1536,5 +1587,6 @@ export async function defaultDeps(): Promise<AgendaDeps> {
 		mychartSummary: async (env, o) => summarizeMyChart(env, { now: o.now, refillWindowDays: o.refillWindowDays }),
 		mychartConflicts: async (env) => crossOrgMedicationAllergyConflicts(env),
 		mychartAllergyGaps: async (env) => crossOrgAllergyGaps(env),
+		trackedDocuments: async (env) => listTrackedDocuments(env),
 	};
 }

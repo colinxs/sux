@@ -439,6 +439,18 @@ export type RtEnv = Env &
 		LEARNING_FOLDER_PATH?: string;
 		LEARNING_FOLDER_TOPIC?: string;
 
+		// Document-expiry radar (fns/_document_radar.ts + _agenda.ts's detectDocumentExpiryDrops,
+		// #1148) — sweeps a Dropbox app-folder subfolder for new scanned photos of personal legal/
+		// ID documents (passport, driver's license, insurance card, warranty, registration), OCRs
+		// them, and tracks each as a vault note (type + expiry). Same fail-closed gate as
+		// LEARNING_FOLDER_*: unset DOCUMENT_RADAR_ENABLED ⇒ the ingestion sweep is a total no-op
+		// (also requires hasDropbox); the agenda DETECTOR only needs the flag, since it reads
+		// tracked-document notes back regardless of whether this sweep or a human wrote them. Path/
+		// vault-folder default to /documents and "Documents" when unset.
+		DOCUMENT_RADAR_ENABLED?: string;
+		DOCUMENT_RADAR_PATH?: string;
+		DOCUMENT_RADAR_VAULT_FOLDER?: string;
+
 		// Manual ops trigger for the daily cron ticks (POST /admin/tick?job=…), bearer-gated
 		// by this token. Unset ⇒ the endpoint 404s (feature off). Lets an operator run a
 		// mail-triage / self-improve / maintenance cycle on demand instead of waiting for cron.
