@@ -134,4 +134,15 @@ describe("product_search", () => {
 		const resourcePart = r.content[1] as unknown as { resource: { text: string } };
 		expect(resourcePart.resource.text).toContain("No priced results to chart.");
 	});
+
+	it("with ui:true but a client known NOT to support the UI extension, falls back to plain content (#1143)", async () => {
+		const { recordClientUiSupport } = await import("./_ui");
+		const kv = new Map<string, string>();
+		const OAUTH_KV = { get: async (k: string) => kv.get(k) ?? null, put: async (k: string, v: string) => void kv.set(k, v) } as any;
+		await recordClientUiSupport({ OAUTH_KV }, "no-ui-client", { extensions: {} }); // declared init WITHOUT the UI extension
+		const env = { OAUTH_KV, _egress: { ctx: { waitUntil() {} }, reqId: "r", login: "no-ui-client" } } as any;
+		const r = await product_search.run(env, { term: "milk", retailers: ["kroger", "walmart"], ui: true });
+		expect(r.content).toHaveLength(1);
+		expect(r.content[0].type).toBe("text");
+	});
 });

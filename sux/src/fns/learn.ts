@@ -1,5 +1,6 @@
 import { hasAI } from "../ai";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
+import { staged } from "../stage";
 import { embedOne } from "./_embed";
 import { appendOnLearn } from "./_kb";
 import { classifyKnn, clearExamples, deleteBatch, type Example, listExamples, newId, putExample } from "./_examples";
@@ -37,7 +38,7 @@ export const learn: Fn = {
 		"`action`: learn (default) | classify | list | undo | reset. " +
 		"learn: embed `input` and store it under `label` (`source` optional); mirrors a line into the vault KB (git-versioned) and returns {id, batch, undo_hint} — every teach is undoable. Pass `batch` to group several teaches under one undo handle. " +
 		"classify: embed `input`, k-nearest over the stored set (k default 3), return the voted `label` + `confidence` (cosine of the nearest) + the `neighbors`; an empty store returns label:null (not an error). " +
-		"list: enumerate stored examples (no AI). undo: delete exactly the records tagged `batch`. reset: clear the whole learned set. " +
+		"list: enumerate stored examples (no AI). undo: delete exactly the records tagged `batch`. reset: clear the WHOLE learned set — not batch-undoable, so it STAGES A PREVIEW BY DEFAULT (re-call with the returned commit_token, or pass force:true, to apply in one shot). " +
 		"Complements `classify` (zero-shot LLM): this one LEARNS from your corrections and needs no model call at classify time beyond one embed. `recall` reads this store back. Needs the Workers-AI binding for learn/classify. Stateful — never cached.",
 	inputSchema: {
 		type: "object",
@@ -49,7 +50,9 @@ export const learn: Fn = {
 			source: { type: "string", description: "learn: optional provenance tag (e.g. where the example came from)." },
 			batch: { type: "string", description: "learn: group this teach under a named undo handle. undo: the batch to delete." },
 			k: { type: "integer", minimum: 1, maximum: 25, default: 3, description: "classify: how many nearest neighbors to vote over." },
-			confirm: { type: "boolean", description: "reset: required — clears the ENTIRE learned set (not batch-undoable)." },
+			stage: { type: "boolean", description: "reset: preview only — returns {preview, commit_token}, clears nothing." },
+			commit_token: { type: "string", description: "reset: commit a previously staged reset." },
+			force: { type: "boolean", description: "reset: skip staging and clear in one shot (the ! override). By default reset stages a preview first." },
 		},
 	},
 	raw: true,
@@ -71,12 +74,18 @@ export const learn: Fn = {
 			}
 
 			if (action === "reset") {
-				// reset clears the WHOLE set and is not batch-undoable — self-guard with an
-				// explicit confirm (the tool-level annotation is non-destructive for the common
-				// learn/classify path, so the annotation-driven smart guard doesn't cover this).
-				if (args?.confirm !== true) return failWith("bad_input", "action=reset clears the ENTIRE learned set and can't be batch-undone — pass confirm:true to proceed.");
-				const deleted = await clearExamples(env);
-				return ok(oj({ action, deleted, note: `cleared the learned set (${deleted} record(s))` }));
+				// reset clears the WHOLE set and is not batch-undoable — same irreversible
+				// shape as kv_delete/vault_delete, so it's routed through the shared
+				// stage()/STAGE_KINDS guard (learn_reset, irreversible:true) instead of a bare
+				// confirm:true check (#1141): stages a preview by default, applies on a
+				// matching commit_token or force:true.
+				const preview = { action: "learn reset", note: "clears the ENTIRE learned set — not batch-undoable." };
+				const gateArgs = { stage: args?.stage === true, commit_token: args?.commit_token ? String(args.commit_token) : undefined, force: args?.force === true };
+				const out = await staged(env, "learn_reset", gateArgs, {}, preview, async () => {
+					const deleted = await clearExamples(env);
+					return { deleted, note: `cleared the learned set (${deleted} record(s))` };
+				});
+				return "stageResult" in out ? ok(oj(out.stageResult)) : ok(oj({ action, ...out.result }));
 			}
 
 			if (action === "classify") {

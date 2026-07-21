@@ -446,3 +446,20 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   "fns never throw" invariant applies here same as anywhere else.
 - `ok()` (from `registry.ts`) takes a STRING, not an object — a converted fn returning
   `staged()`'s `StageResult` must `ok(oj(stageResult))`, not `ok(stageResult)` directly.
+
+## sux's `/mcp` transport is fully stateless — no session, only OAuth `login`
+
+- `index.ts`'s `handleRpc` implements NO `Mcp-Session-Id` / Durable-Object session — every
+  request (`initialize`, `tools/call`, ...) is handled independently with zero correlation
+  between them. The ONE identity signal present on every single request is the OAuth-
+  authenticated `login` (`ctx.props?.login`, set by `OAuthProvider` before `rtServer.fetch`
+  runs). A feature that needs to remember something about "this connection" across requests
+  (client capabilities, a multi-step flow, per-client rate limiting, ...) has to key off
+  `login` — there is no session id, and `tools/call` never resends `initialize`'s params
+  (`clientInfo`, `capabilities`), so those are only ever visible at the one `initialize` call
+  site. `login` is threaded onto `RtEnv._egress.login` (`proxy.ts`'s `EgressContext`) for this
+  purpose (#1143's client-UI-capability negotiation in `fns/_ui.ts` is the first consumer) —
+  reuse that field rather than re-deriving the `ctx as ExecutionContext & {props?: Props}`
+  cast at a new call site. Known imprecision: two different client apps authenticated under
+  the same GitHub login collide (last `initialize` wins for both) — accepted as the best
+  signal this architecture offers, not a bug to "fix" without adding real session infra.
