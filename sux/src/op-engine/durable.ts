@@ -25,7 +25,7 @@
 // engine lifetimes"); only `Promise.race`/`Promise.any` need wrapping. `map` stays
 // bounded by the op's own limiter (`node.concurrency`), matching `runInline`.
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep, type WorkflowStepConfig, type WorkflowTimeoutDuration } from "cloudflare:workers";
-import { runReconcile, type Caps, type LeafOpts, type Op, type SinkOpts } from "@suxos/lib";
+import { runReconcile, type Caps, type CondPredicate, type LeafOpts, type Op, type SinkOpts } from "@suxos/lib";
 import type { RtEnv } from "../registry.js";
 
 // Above this, the fan-out would blow through the per-instance step ceiling (25k) —
@@ -44,6 +44,19 @@ export type OpParams = { opId: string; input: any };
 function stepConfig(opts: LeafOpts | SinkOpts | undefined): WorkflowStepConfig | undefined {
 	if (!opts?.retries) return undefined;
 	return { retries: { limit: opts.retries, delay: "10 seconds", backoff: "exponential" } };
+}
+
+// Mirrors suxlib's own runInline (src/runtime/inline.ts) cond-predicate resolution —
+// not exported from @suxos/lib, so re-derived here rather than widening that package's
+// exports for a read-only-in-sandbox dependency.
+function resolveCondField(input: any, field: string | undefined): unknown {
+	if (!field) return input;
+	return typeof input === "object" && input !== null ? (input as Record<string, unknown>)[field] : undefined;
+}
+
+function evalCondPredicate(p: CondPredicate, input: any): boolean {
+	const v = resolveCondField(input, p.field);
+	return "equals" in p ? v === p.equals : p.in.includes(v as any);
 }
 
 /** Thrown when a human answers an `ask` gate with `{approved: false}` — a graceful
@@ -149,6 +162,15 @@ export async function interpretDurable(node: Op, input: any, step: WorkflowStep,
 				return await interpretDurable(node.catch, input, step, caps, `${path}.catch`);
 			}
 		}
+		case "cond": {
+			for (let i = 0; i < node.cases.length; i++) {
+				if (evalCondPredicate(node.cases[i].when, input)) return interpretDurable(node.cases[i].then, input, step, caps, `${path}.${i}`);
+			}
+			if (node.default) return interpretDurable(node.default, input, step, caps, `${path}.default`);
+			throw new Error("cond: no case matched and no default branch was supplied");
+		}
+		case "parallel":
+			return Promise.all(node.ops.map((op, i) => interpretDurable(op, input, step, caps, `${path}.${i}`)));
 		case "ask": {
 			// A human pause: block on an external event whose `type` an approver sends
 			// back (instance.sendEvent). `Op.timeout` is a looser `string` than the
