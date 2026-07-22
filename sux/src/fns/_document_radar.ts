@@ -16,7 +16,7 @@
 // _learning_folder.ts uses) — #1153.
 import { type RtEnv } from "../registry";
 import { hasDropbox, sharedLink } from "./dropbox";
-import { dropboxRawUrl, errMsg } from "./_util";
+import { dropboxRawUrl, errMsg, putBlob } from "./_util";
 import { ledger } from "../ledger";
 import { ocr } from "./ocr";
 import { obsidian } from "./obsidian";
@@ -110,7 +110,7 @@ export function classifyDocType(text: string): string {
 const slugify = (name: string): string =>
 	name.replace(/\.[^.]+$/, "").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase() || "document";
 
-function renderNote(opts: { sourcePath: string; name: string; docType: string; expiryDate: string | null }): string {
+function renderNote(opts: { sourcePath: string; name: string; docType: string; expiryDate: string | null; originalUrl?: string; text?: string }): string {
 	const fm = [
 		"---",
 		"type: document_radar",
@@ -118,9 +118,15 @@ function renderNote(opts: { sourcePath: string; name: string; docType: string; e
 		`document_type: ${opts.docType}`,
 		opts.expiryDate ? `expiry_date: ${opts.expiryDate}` : "expiry_date:",
 		`source_path: ${opts.sourcePath}`,
+		opts.originalUrl ? `original_ref: ${opts.originalUrl}` : "",
 		"---",
-	].join("\n");
-	const body = `# ${opts.name}\n\nTracked by the document-expiry radar. ${opts.expiryDate ? `Expires ${opts.expiryDate}.` : "No expiry date could be read from the scan — edit this note's \`expiry_date\` frontmatter by hand."}\n`;
+	]
+		.filter(Boolean)
+		.join("\n");
+	const body =
+		`# ${opts.name}\n\nTracked by the document-expiry radar. ${opts.expiryDate ? `Expires ${opts.expiryDate}.` : "No expiry date could be read from the scan — edit this note's \`expiry_date\` frontmatter by hand."}\n` +
+		(opts.originalUrl ? `\nOriginal scan: ${opts.originalUrl}\n` : "") +
+		(opts.text ? `\n## Extracted text\n\n${opts.text}\n` : "");
 	return `${fm}\n\n${body}`;
 }
 
@@ -135,6 +141,10 @@ export type DocumentRadarDeps = {
 	/** Read a previously-written note's body (undefined if it doesn't exist) — used to preserve a
 	 *  hand-entered expiry_date across a re-process rather than overwrite it blank (#1154). */
 	readNote: (env: RtEnv, path: string) => Promise<string | undefined>;
+	/** Archive the original scan bytes to R2 (#1200) so the vault note can link back to the
+	 *  source image even after it leaves the watched Dropbox folder — undefined (not thrown) on
+	 *  any fetch/store failure, since a missing archive link must never block the note itself. */
+	storeOriginal?: (env: RtEnv, url: string, contentType: string) => Promise<string | undefined>;
 };
 
 async function defaultListFolder(env: RtEnv): Promise<DocumentRadarEntry[]> {
@@ -180,6 +190,22 @@ async function defaultReadNote(env: RtEnv, path: string): Promise<string | undef
 	return r.content?.[0]?.text;
 }
 
+const CONTENT_TYPE_BY_EXT: Record<string, string> = {
+	jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", heic: "image/heic", heif: "image/heif",
+};
+
+async function defaultStoreOriginal(env: RtEnv, url: string, contentType: string): Promise<string | undefined> {
+	try {
+		const res = await fetch(url);
+		if (!res.ok) return undefined;
+		const bytes = new Uint8Array(await res.arrayBuffer());
+		const ref = await putBlob(env, bytes, contentType);
+		return ref.url;
+	} catch {
+		return undefined;
+	}
+}
+
 export function defaultDeps(): DocumentRadarDeps {
 	return {
 		listFolder: defaultListFolder,
@@ -188,6 +214,7 @@ export function defaultDeps(): DocumentRadarDeps {
 		extractPdfText: defaultExtractPdfText,
 		writeNote: defaultWriteNote,
 		readNote: defaultReadNote,
+		storeOriginal: defaultStoreOriginal,
 	};
 }
 
@@ -220,6 +247,7 @@ export async function runDocumentRadarSync(env: RtEnv, deps: DocumentRadarDeps =
 		try {
 			const isPdf = PDF_RE.test(entry.name);
 			let text: string | undefined;
+			let originalUrl: string | undefined;
 			if (isPdf) {
 				text = await deps.extractPdfText(env, entry.path);
 			} else {
@@ -228,7 +256,11 @@ export async function runDocumentRadarSync(env: RtEnv, deps: DocumentRadarDeps =
 					errors.push(`${entry.path}: could not mint a shared link`);
 					continue;
 				}
-				text = await deps.ocrImage(env, dropboxRawUrl(url));
+				const rawUrl = dropboxRawUrl(url);
+				text = await deps.ocrImage(env, rawUrl);
+				// Archive the original scan bytes to R2 (#1200) — best-effort, never blocks the note.
+				const ext = entry.name.split(".").pop()?.toLowerCase() ?? "";
+				originalUrl = await deps.storeOriginal?.(env, rawUrl, CONTENT_TYPE_BY_EXT[ext] ?? "application/octet-stream");
 			}
 			if (!text) {
 				errors.push(`${entry.path}: ${isPdf ? "PDF extraction" : "OCR"} returned no text`);
@@ -244,7 +276,7 @@ export async function runDocumentRadarSync(env: RtEnv, deps: DocumentRadarDeps =
 				const existingExpiry = existing ? parseFrontmatter(existing).expiry_date : undefined;
 				if (typeof existingExpiry === "string" && existingExpiry) expiryDate = existingExpiry;
 			}
-			const w = await deps.writeNote(env, notePath, renderNote({ sourcePath: entry.path, name: entry.name, docType, expiryDate }));
+			const w = await deps.writeNote(env, notePath, renderNote({ sourcePath: entry.path, name: entry.name, docType, expiryDate, originalUrl, text }));
 			if (!w.ok) {
 				errors.push(`${entry.path}: ${w.error ?? "vault write failed"}`);
 				continue;

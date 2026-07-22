@@ -466,6 +466,13 @@ export type RtEnv = Env &
 		// so the token IS the containment.
 		SUX_UPLOAD_TOKEN?: string;
 
+		// Grafana alert webhook (POST /hooks/grafana), bearer-gated by this shared secret
+		// (Authorization header or ?t= query param — Grafana's webhook contact point supports
+		// custom headers, but not every notifier setup can attach one). Unset ⇒ 404 (feature
+		// off). Lands firing/resolved alerts into Meta/Alerts.md + a push notification instead
+		// of the placeholder email contact point the platform audit (.github#636 A1) found.
+		GRAFANA_WEBHOOK_TOKEN?: string;
+
 		// Recovery dead-drop (src/recovery.ts) — the out-of-band control channel the home
 		// router (owl-tegu) phones home to when it's unreachable inbound. All fail-closed,
 		// default OFF, set via `wrangler secret` (NOT declared in wrangler.jsonc — like

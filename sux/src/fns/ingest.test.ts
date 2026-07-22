@@ -370,4 +370,38 @@ describe("ingest (capture → vault)", () => {
 		expect(signals[0].redacted_snippet).not.toContain("colin@example.com");
 		expect(signals[0].redacted_snippet).toMatch(/\[REDACTED:email\]/);
 	});
+
+	it("content-fingerprint dedup: a repeat capture of identical text returns the existing note instead of a -1 twin (#1175)", async () => {
+		const gh = ghMock();
+		let putCount = 0;
+		routes.handler = (url: string, init?: any) => {
+			if (init?.method === "PUT") putCount++;
+			return gh.handler(url, init);
+		};
+		const store = new Map<string, string>();
+		const OAUTH_KV = { get: async (k: string) => store.get(k) ?? null, put: async (k: string, v: string) => void store.set(k, v) };
+		const env = { ...ENV, OAUTH_KV };
+		const r1 = await ingest.run(env, { text: "Duplicate-prone content." });
+		const out1 = JSON.parse(r1.content[0].text);
+		expect(out1.duplicate).toBeUndefined();
+		expect(putCount).toBe(1);
+
+		const r2 = await ingest.run(env, { text: "Duplicate-prone content." });
+		const out2 = JSON.parse(r2.content[0].text);
+		expect(out2).toMatchObject({ ok: true, note: out1.note, duplicate: true });
+		expect(putCount).toBe(1); // no second write happened
+
+		// Distinct content under the SAME title still lands its own capture (dedup is keyed on
+		// resolved content, not the title/source) — a real write happens, not a dedup short-circuit.
+		const r3 = await ingest.run(env, { text: "Different content entirely.", title: "Duplicate-prone content." });
+		const out3 = JSON.parse(r3.content[0].text);
+		expect(out3.duplicate).toBeUndefined();
+		expect(putCount).toBe(2);
+
+		// force:true bypasses the dedup even for identical content.
+		const r4 = await ingest.run(env, { text: "Duplicate-prone content.", force: true });
+		const out4 = JSON.parse(r4.content[0].text);
+		expect(out4.duplicate).toBeUndefined();
+		expect(putCount).toBe(3);
+	});
 });

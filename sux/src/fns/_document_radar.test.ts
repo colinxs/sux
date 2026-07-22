@@ -131,6 +131,42 @@ describe("runDocumentRadarSync", () => {
 		expect(readNote).toHaveBeenCalledWith(e, "Documents/passport.md");
 		expect(writeNote.mock.calls[0]?.[2]).toContain("expiry_date: 2031-04-12");
 	});
+
+	it("archives the original scan to R2 and includes the extracted text in the note (#1200)", async () => {
+		const e = env({ DOCUMENT_RADAR_ENABLED: "1", DROPBOX_TOKEN: "t", DROPBOX_APP_FOLDER: "f" });
+		const writeNote = vi.fn(async (_env: unknown, _path: string, _content: string) => ({ ok: true }));
+		const storeOriginal = vi.fn(async () => "https://suxos.net/s/abc123");
+		const r = await runDocumentRadarSync(e, {
+			listFolder: vi.fn(async () => [{ path: "/documents/note.jpg", name: "note.jpg" }]),
+			shareUrl: vi.fn(async () => "https://dropbox.example/s/abc"),
+			ocrImage: vi.fn(async () => "Buy milk on the way home."),
+			extractPdfText: vi.fn(async () => undefined),
+			writeNote,
+			readNote: vi.fn(async () => undefined),
+			storeOriginal,
+		});
+		expect(r.processed).toEqual(["/documents/note.jpg"]);
+		expect(storeOriginal).toHaveBeenCalledWith(e, expect.stringContaining("dropbox.example"), "image/jpeg");
+		expect(writeNote.mock.calls[0]?.[2]).toContain("original_ref: https://suxos.net/s/abc123");
+		expect(writeNote.mock.calls[0]?.[2]).toContain("## Extracted text");
+		expect(writeNote.mock.calls[0]?.[2]).toContain("Buy milk on the way home.");
+	});
+
+	it("still writes a note when storeOriginal is absent or fails (#1200 best-effort)", async () => {
+		const e = env({ DOCUMENT_RADAR_ENABLED: "1", DROPBOX_TOKEN: "t", DROPBOX_APP_FOLDER: "f" });
+		const writeNote = vi.fn(async (_env: unknown, _path: string, _content: string) => ({ ok: true }));
+		const r = await runDocumentRadarSync(e, {
+			listFolder: vi.fn(async () => [{ path: "/documents/note.jpg", name: "note.jpg" }]),
+			shareUrl: vi.fn(async () => "https://dropbox.example/s/abc"),
+			ocrImage: vi.fn(async () => "Buy milk on the way home."),
+			extractPdfText: vi.fn(async () => undefined),
+			writeNote,
+			readNote: vi.fn(async () => undefined),
+		});
+		expect(r.processed).toEqual(["/documents/note.jpg"]);
+		expect(writeNote.mock.calls[0]?.[2]).not.toContain("original_ref:");
+		expect(writeNote.mock.calls[0]?.[2]).toContain("Buy milk on the way home.");
+	});
 });
 
 describe("listTrackedDocuments", () => {

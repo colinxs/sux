@@ -6,6 +6,7 @@ import { embedOne } from "./_embed";
 import { appendInferSignal, hasInferArm } from "./_infer";
 import { type VaultCfg, vaultCfg, vaultPut } from "./obsidian";
 import { redactPII } from "./redact";
+import { fingerprint, ledger } from "../ledger";
 
 // Capture — the intake half of the knowledge core (docs/proposals/domains.md §3).
 // Exactly one source in (url | text | query), one provenance-stamped markdown
@@ -17,6 +18,12 @@ import { redactPII } from "./redact";
 // Notes are cheap intake, never polished — triage promotes them later.
 const BLOB_VAULT_MAX = 1_048_576;
 const BODY_MAX = 150_000;
+
+// Content-fingerprint dedup (#1175): a repeat capture of the same resolved text lands the
+// existing note's ref instead of a fresh Inbox/-N twin. Namespaced separately from other
+// ledgers; 180d covers the realistic "did I already capture this" recall window without
+// pinning it forever.
+const DEDUP_TTL_SECONDS = 180 * 24 * 3600;
 
 const slugify = (s: string) =>
 	s
@@ -106,7 +113,7 @@ export const ingest: Fn = {
 	name: "ingest",
 	cost: 3,
 	description:
-		"Capture into the Obsidian vault (git-backed = the undo; the KV cache is warmed). Exactly one source: url (HTML → markdown; text files verbatim; binary files become attachments; fetch cap 32MB) | text (verbatim body) | query (web-search results). A non-HTML/text URL (e.g. a PDF) is stored as an opaque blob here — never text-extracted or distilled. To actually extract and learn a PDF/book's content (native PDF + OCR, distilled into a whitelisted oracle topic), use `study` instead. Writes a provenance-stamped note (frontmatter type/created/source/tags) to Inbox/<date> <slug>.md — never overwriting (collisions get a time suffix) — or to an explicit `path` (overwrites). Bodies over 150k chars are truncated with a marker. Optional passes (skipped for binary captures, degrade to verbatim when AI is unavailable): summarize:true prepends an AI summary section; compress:true stores only the distilled summary — for url sources the original stays re-fetchable via provenance; for text/query the original is not retained. Blob routing: ≤1MB commits into the vault repo (![[Attachments/…]]); larger — or blobs:'dropbox' — uploads to the Dropbox app folder and the note links the shared URL (PUBLIC anyone-with-the-link; R2 fallback when Dropbox isn't configured — either DROPBOX_TOKEN or the DROPBOX_REFRESH_TOKEN+APP_KEY durable flow). Returns { note, created, commit, source, pass?, blob? }.",
+		"Capture into the Obsidian vault (git-backed = the undo; the KV cache is warmed). Exactly one source: url (HTML → markdown; text files verbatim; binary files become attachments; fetch cap 32MB) | text (verbatim body) | query (web-search results). A non-HTML/text URL (e.g. a PDF) is stored as an opaque blob here — never text-extracted or distilled. To actually extract and learn a PDF/book's content (native PDF + OCR, distilled into a whitelisted oracle topic), use `study` instead. Writes a provenance-stamped note (frontmatter type/created/source/tags) to Inbox/<date> <slug>.md — never overwriting (collisions get a time suffix) — or to an explicit `path` (overwrites). Bodies over 150k chars are truncated with a marker. Optional passes (skipped for binary captures, degrade to verbatim when AI is unavailable): summarize:true prepends an AI summary section; compress:true stores only the distilled summary — for url sources the original stays re-fetchable via provenance; for text/query the original is not retained. Blob routing: ≤1MB commits into the vault repo (![[Attachments/…]]); larger — or blobs:'dropbox' — uploads to the Dropbox app folder and the note links the shared URL (PUBLIC anyone-with-the-link; R2 fallback when Dropbox isn't configured — either DROPBOX_TOKEN or the DROPBOX_REFRESH_TOKEN+APP_KEY durable flow). A repeat capture whose resolved content exactly matches an earlier one returns that note's ref instead of minting a new one (content-fingerprint dedup, not a URL/path match) — pass force:true to capture again anyway. Returns { note, created, commit, source, pass?, blob?, duplicate? }.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -120,6 +127,7 @@ export const ingest: Fn = {
 			blobs: { type: "string", enum: ["auto", "dropbox"], default: "auto", description: "Blob routing: auto = ≤1MB into the vault repo, larger to Dropbox; dropbox = always Dropbox." },
 			summarize: { type: "boolean", default: false, description: "Prepend an AI summary section above the captured body." },
 			compress: { type: "boolean", default: false, description: "Store only the distilled summary instead of the full body (url sources stay re-fetchable via provenance; text/query originals are not retained)." },
+			force: { type: "boolean", default: false, description: "Mint a new note even if identical content was already captured (bypasses content-fingerprint dedup)." },
 		},
 	},
 	cacheable: false,
@@ -208,6 +216,20 @@ export const ingest: Fn = {
 				}
 			}
 
+			// Content-fingerprint dedup (#1175): a repeat capture of the same resolved text
+			// returns the existing note's ref instead of minting a fresh Inbox/-N twin. Fingerprinted
+			// over the resolved `body` (not the source url/query), so the same URL genuinely
+			// changing content still lands a new note. Only applies to the default Inbox path (an
+			// explicit `path` already means "write exactly here") and skips blob captures (those
+			// dedupe differently, via R2/Dropbox content-addressing on the bytes themselves).
+			const explicit = String(args?.path ?? "").trim();
+			let dedupFp: string | undefined;
+			if (!blob && !explicit && args?.force !== true) {
+				dedupFp = await fingerprint(body);
+				const existing = await ledger(env, "ingest_dedup", DEDUP_TTL_SECONDS).get(dedupFp);
+				if (existing) return ok(oj({ ok: true, note: existing, created: false, duplicate: true, source }));
+			}
+
 			// Optional distillation passes (never on blob stubs). Degrade, don't fail:
 			// a capture that lands verbatim beats one that bounces because AI was down.
 			let pass: string | undefined;
@@ -230,7 +252,6 @@ export const ingest: Fn = {
 			}
 
 			title = title.replace(/\s+/g, " ").trim() || "capture";
-			const explicit = String(args?.path ?? "").trim();
 			const md = buildNote(title, source, clampBytes(body, BODY_MAX), tags);
 			// An explicit `path` overwrites intentionally. A default Inbox path never
 			// clobbers: same-slug same-day captures disambiguate (-1, -2, …) so no
@@ -246,6 +267,7 @@ export const ingest: Fn = {
 				w = nc;
 			}
 			if (!w.ok) return fail(w.error);
+			if (dedupFp) await ledger(env, "ingest_dedup", DEDUP_TTL_SECONDS).mark(dedupFp, notePath);
 			await logVaultSignal(env, notePath, title, body);
 			return ok(oj({ ok: true, note: notePath, created: w.created, commit: w.commit, source, ...(pass ? { pass } : {}), ...(blob ? { blob } : {}) }));
 		} catch (e) {

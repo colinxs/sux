@@ -24,6 +24,7 @@ import { handleDashboardRoutes } from "./dashboard";
 import { handleRecovery } from "./recovery";
 import { handleAppleHealth, handleMychartRoutes, refreshMychartToken } from "./mychart";
 import { handlePortalRoutes } from "./portal";
+import { handleGrafanaWebhook } from "./fns/_grafana_hook";
 import { normalizeArgs, normalizeText } from "./normalize";
 import { cancelTask, createTask, getTask, isTerminal, listTasks, toPublicTask, toTaskResult, waitForTerminal } from "./tasks";
 import { timingSafeEqual } from "./crypto-util";
@@ -1076,6 +1077,12 @@ export default {
 		// src/portal.ts.
 		const portal = await handlePortalRoutes(new URL(request.url), request, env);
 		if (portal) return portal;
+
+		// Grafana alert webhook (POST /hooks/grafana) — same pre-OAuth reason as the routes
+		// above; Grafana authenticates with its own shared-secret bearer, not GitHub OAuth.
+		// Fail-closed on GRAFANA_WEBHOOK_TOKEN. See src/fns/_grafana_hook.ts.
+		const grafanaHook = await handleGrafanaWebhook(new URL(request.url), request, env);
+		if (grafanaHook) return grafanaHook;
 
 		// Raw-bytes upload door — POST /s/up, bearer-gated by SUX_UPLOAD_TOKEN (unset ⇒ 404).
 		// The write-twin of the public GET /s/<uuid> read route (observability.ts): a local
