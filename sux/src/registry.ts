@@ -215,6 +215,14 @@ export type RtEnv = Env &
 		//   CROSS_SEMANTIC_ENABLED — master enable (toggle); unset/"0"/"false"/"off" ⇒ inert.
 		CROSS_SEMANTIC_ENABLED?: string;
 
+		// Assimilation spine (fns/_assimilate.ts, v5 W2 #1283): the single internal path every
+		// ingested document flows through — extract → distill → optimize-original → index under
+		// `assim:*`/`phi:medical` domains. Fail-closed like CROSS_SEMANTIC_ENABLED (the bar the
+		// arc doc names): unset ⇒ the spine is a no-op that reports disabled, never half-runs.
+		// The flag flip is Colin-only (arc doc §7 OPEN #5) — the pipeline never auto-enables it.
+		//   ASSIMILATE_ENABLED — master enable (toggle); unset/"0"/"false"/"off" ⇒ inert.
+		ASSIMILATE_ENABLED?: string;
+
 		// Contact address-book deduplication (fns/_contact_consolidate.ts +
 		// fns/contact_consolidate_plan.ts, #965): fuzzy-matches contact_search's page of
 		// ContactCards by shared email/phone/name into duplicate CANDIDATE clusters, then starts

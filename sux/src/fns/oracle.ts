@@ -57,8 +57,10 @@ const DISTILL_INPUT_CAP = 24_000;
 /** How many chars we let the consolidated KB grow to (~8KB / ~1200 words). */
 const KB_CAP = 8_000;
 
-/** Distill a single body of material into concise notes (trusted system role). */
-const DISTILL_SYSTEM =
+/** Distill a single body of material into concise notes (trusted system role). Exported for the
+ *  assimilation spine (_assimilate.ts, #1283), which reuses this exact distill instruction rather
+ *  than reinventing it — the two paths' distillates stay stylistically interchangeable. */
+export const DISTILL_SYSTEM =
 	"Extract and condense the KEY KNOWLEDGE (facts, definitions, concepts, relationships, procedures, rules) from the material into concise, self-contained notes that can answer future questions on this topic. Omit fluff, examples-for-flavor, and boilerplate. Output only the notes, <= ~500 words.";
 
 /** Consolidate all distilled chunks into one coherent knowledge base (trusted system role). */

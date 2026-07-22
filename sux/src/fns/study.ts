@@ -70,11 +70,12 @@ function segments(text: string): string[] {
 	return out;
 }
 
-/** Resolve a pdf/document source to text. An http(s) url or a Dropbox file path (Mode B) is read
- *  to bytes, then Workers-AI `toMarkdown` transcribes the document (native PDF text + image OCR).
- *  A textual Dropbox file is returned as-is. Throws (caller wraps) when the source can't be read or
- *  the toMarkdown binding is unavailable — the caller is told to pass the extracted `text` instead. */
-export async function extractDocText(env: RtEnv, source: string): Promise<{ text: string; name: string; bytes?: Uint8Array }> {
+/** The source-resolution half of `extractDocText` (#1283 hoist — the assimilation spine needs
+ *  bytes BEFORE deciding whether to transcribe inline or route a book-scale input durable): an
+ *  http(s) url or a Dropbox file path (Mode A shared link preferred, Mode B fallback) is read to
+ *  bytes; an already-textual Dropbox file short-circuits to `text`. Throws (caller wraps) when
+ *  the source can't be read. */
+export async function resolveDocSource(env: RtEnv, source: string): Promise<{ name: string; bytes?: Uint8Array; text?: string }> {
 	const s = source.trim();
 	let bytes: Uint8Array;
 	let name: string;
@@ -121,7 +122,14 @@ export async function extractDocText(env: RtEnv, source: string): Promise<{ text
 			}
 		}
 	}
+	return { name, bytes };
+}
 
+/** The transcription half of `extractDocText` (#1283 hoist — callers that already hold document
+ *  bytes, e.g. the assimilation spine fed by radar/mail, transcribe without re-deriving Mode A/B
+ *  source resolution). Throws (caller wraps) when the toMarkdown binding is unavailable or the
+ *  document yields no text. */
+export async function docBytesToMarkdown(env: RtEnv, name: string, bytes: Uint8Array): Promise<string> {
 	// Workers-AI document conversion (PDF/office/image → markdown, OCR included). Feature-detected:
 	// the older AI binding only declares run(), and vitest has no real binding — so a missing
 	// toMarkdown is a clean "extract it yourself" error, never a throw the caller can't act on.
@@ -134,10 +142,21 @@ export async function extractDocText(env: RtEnv, source: string): Promise<{ text
 	const md = (Array.isArray(res) ? res[0]?.data : (res as { data?: string })?.data) ?? "";
 	const text = String(md).trim();
 	if (!text) throw new Error(`Extracted no text from '${name}'. If it is a scanned image PDF, OCR it first and study the text as { kind: "text" }.`);
+	return text;
+}
+
+/** Resolve a pdf/document source to text. An http(s) url or a Dropbox file path (Mode B) is read
+ *  to bytes, then Workers-AI `toMarkdown` transcribes the document (native PDF text + image OCR).
+ *  A textual Dropbox file is returned as-is. Throws (caller wraps) when the source can't be read or
+ *  the toMarkdown binding is unavailable — the caller is told to pass the extracted `text` instead. */
+export async function extractDocText(env: RtEnv, source: string): Promise<{ text: string; name: string; bytes?: Uint8Array }> {
+	const resolved = await resolveDocSource(env, source);
+	if (typeof resolved.text === "string") return { text: resolved.text, name: resolved.name };
+	const text = await docBytesToMarkdown(env, resolved.name, resolved.bytes!);
 	// bytes are the ORIGINAL document bytes (pre-transcription) — archiveKnowledge's R2 leg for a
 	// Dropbox-path pdf (#1239) reuses these instead of re-deriving Mode A/B, since a Dropbox path
 	// has no directly re-fetchable URL of its own.
-	return { text, name, bytes };
+	return { text, name: resolved.name, bytes: resolved.bytes };
 }
 
 /** List every whitelisted oracle topic with its provenance — the audit view of what's been studied. */
