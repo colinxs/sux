@@ -489,6 +489,12 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   `Email/set`: add that mailbox's membership; also drop the Inbox mailbox to skip-inbox,
   `fileinto :copy` to keep it). This is the root cause of the keyword sieve/backfill appearing
   to "do nothing" (#1196) — any new labeling path must set mailbox membership, never a keyword.
+- **A front verb's unknown arg is silently DROPPED, degrading `mail({action:'search'})` to
+  match-all** — the dispatcher must be `additionalProperties:true` to pass per-action args
+  through, so a wrong key (`q:` — the real free-text key is `query`) filters nothing and
+  returns the whole mailbox with a plausible shape and no error (observed live 2026-07-22;
+  same match-all symptom as #1263/#1271's `label:"edu"`, different cause — hardening tracked
+  in #1312). Sanity-check `total` actually shrank before trusting any filtered search.
 
 ## House style
 
