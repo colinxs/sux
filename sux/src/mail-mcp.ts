@@ -537,6 +537,15 @@ const TOOLS: MailTool[] = [
 				const query = resultFor(resp, "Email/query");
 				const emails = (resultFor(resp, "Email/get")?.list ?? []).slice().sort(byReceived(ascending)); // match the query sort
 				const total = Number.isFinite(Number(query?.total)) ? Number(query.total) : emails.length;
+				// #1263: a hasKeyword filter that silently degrades server-side to match-all is the bad
+				// failure mode — verify the page we got back actually carries the keyword we filtered on,
+				// and refuse to return an unfiltered result set rather than pass one through quietly.
+				if (a?.label) {
+					const expected = keywordFor(String(a.label));
+					if (emails.some((e: any) => !e?.keywords?.[expected])) {
+						return fail(`mail_search: server returned message(s) without the '${expected}' keyword despite filtering by label:"${a.label}" — the hasKeyword filter appears to have silently degraded to match-all; refusing to return the unfiltered result set.`);
+					}
+				}
 				return ok({ count: emails.length, total, position, ascending, emails: emails.map((e: any) => shapeRef(e, boxNames)) });
 			} catch (e) {
 				return fail(errMsg(e));
