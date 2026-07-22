@@ -6,18 +6,37 @@ import { errMsg, fromB64, oj, toB64 } from "./_util";
 // mail_sieve_backfill — a ONE-TIME pass applying mail_sieve's coarse tags to mail that already
 // exists in the mailbox. Sieve only ever evaluates at delivery time; it can't retroactively touch
 // anything already sitting in a folder, so this fn is the backfill companion: same rule set
-// (matchCoarseCategories, shared with mail_sieve so the two can never drift), applied via a JMAP
-// keyword-add (`label:add`), exactly like _mail_triage's own reversible-tag ops. dry_run defaults
-// true: report what WOULD be tagged without mutating anything; pass dry_run:false to actually apply
-// the labels.
+// (matchCoarseCategories, shared with mail_sieve so the two can never drift). Fastmail does NOT
+// render a custom IMAP keyword as a visible Label — a Label is a real Mailbox — so this applies a
+// REAL, VISIBLE mailbox move instead of the invisible `keywords/*` patch the old version used (the
+// exact bug that made an addflag-based sieve look like it "did nothing"; #1196). Every category
+// `_mail_sieve.ts` defines today (junk/spam/mailing-list/service-notification/notification) is
+// noise-only — none of them is a "keep visible in Inbox" exception — so every match gets a
+// skip-inbox move: added to a dedicated per-flag mailbox AND removed from the scanned mailbox, via
+// one JMAP `Email/set` patch-path update per page (`mailboxIds/<from>: null`, `mailboxIds/<to>:
+// true` per matched flag — additive across flags, so a message matching e.g. both junk and
+// notification lands visibly in BOTH folders, same as the old multi-keyword behavior, just visible
+// now). dry_run defaults true: report what WOULD move without mutating anything; pass
+// dry_run:false to actually apply the moves. Fully reversible — `mail_move` back, or drag it back
+// in the Fastmail UI; nothing here ever discards/deletes.
 //
 // Scale: mail_search caps at 50/page and shapes heavy fields, so this scans the jmap engine directly
 // — Email/query (position-paged, oldest-first) + Email/get fetching only ["id","from","subject"] —
 // the same shape mail_domain_backfill uses. Each 55s-budgeted call sweeps a bounded page window,
-// tags it, and returns a resumable `cursor` + `done` flag; re-calling with the cursor advances the
+// moves it, and returns a resumable `cursor` + `done` flag; re-calling with the cursor advances the
 // sweep, so a large mailbox drains across a handful of invocations. `hasListUnsubscribe` is never
 // set here — the engine scan fetches only id/from/subject, not headers — so that one rule never
 // fires on backfill, same limitation as the prior mail_search-backed pass.
+//
+// Pagination + mutation: `Email/query`'s `position` indexes into the LIVE `{inMailbox}`-filtered
+// result set. Moving a matched message OUT of that mailbox removes it from the set the very next
+// page fetches from — advancing `position` by the FULL page size (as if nothing moved) would skip
+// every message that used to sit right after the ones just moved. Advance `position` only by the
+// count that's STILL in `inMailbox` after this page (`ids.length - movedThisPage`); moved messages
+// vanish from the live set for free, so the next query naturally continues where this one left off.
+// `total` (captured once, before any moves) goes stale under mutation, so the `position >= total`
+// fast-path is skipped once we're actually applying moves — `ids.length < limit` alone (a genuinely
+// short page from the live set) remains the correct, always-valid end-of-sweep signal.
 
 /** JMAP EmailAddress[] → the first sender address string (what matchCoarseCategories keys off). */
 function senderAddress(from: unknown): string | undefined {
@@ -38,6 +57,22 @@ function resolveMailbox(boxes: any[], mailbox: string): string | undefined {
 	if (byName) return byName.id;
 	return boxes.some((b) => b?.id === mailbox) ? mailbox : undefined;
 }
+
+// The visible Fastmail folder each coarse-tag flag moves into. Suffixed "(sux)" so a name never
+// collides with — and never gets resolved onto — a REAL system mailbox (e.g. plain "Junk" would
+// match `resolveMailbox`'s role lookup and start feeding Fastmail's own spam trainer/retention
+// policy, which these heuristic categories have nothing to do with).
+const FLAG_MAILBOX_NAMES: Record<string, string> = {
+	junk: "Junk (sux)",
+	spam: "Spam (sux)",
+	"mailing-list": "Mailing List (sux)",
+	notification: "Notifications (sux)",
+	gh: "GitHub (sux)",
+	gitlab: "GitLab (sux)",
+	vercel: "Vercel (sux)",
+	ci: "CI (sux)",
+};
+const mailboxNameForFlag = (flag: string): string => FLAG_MAILBOX_NAMES[flag] ?? `${flag} (sux)`;
 
 /** The first methodResponse for `method`; throws JmapError on a method-level JMAP error in the batch. */
 function resultFor(methodResponses: any[], method: string): any {
@@ -62,7 +97,7 @@ export const mail_sieve_backfill: Fn = {
 	surface: "leaf",
 	annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
 	description:
-		"One-time backfill: apply mail_sieve's coarse tags (junk / spam / mailing-list / gh,gitlab,vercel,ci / notification) to mail that ALREADY exists in a mailbox — a live Sieve script only tags NEW deliveries, so this fn covers the backlog once. Uses the SAME rule set as mail_sieve (from/subject cues; the List-Unsubscribe-header rule never fires here since the engine scan fetches no headers). Scans the jmap engine directly (Email/query + Email/get, past mail_search's 50-cap), oldest-first. Applies a reversible `label:add` via a JMAP keyword-add, same op class as mail_triage. dry_run:true (default) reports what WOULD be tagged without mutating anything; pass dry_run:false to actually label. Resumable: each 55s-budgeted call sweeps a page window and returns {cursor, done} — re-call with the cursor until done:true to drain a large mailbox.",
+		"One-time backfill: apply mail_sieve's coarse categories (junk / spam / mailing-list / gh,gitlab,vercel,ci / notification) to mail that ALREADY exists in a mailbox — a live Sieve script only tags NEW deliveries, so this fn covers the backlog once. Uses the SAME rule set as mail_sieve (from/subject cues; the List-Unsubscribe-header rule never fires here since the engine scan fetches no headers). Scans the jmap engine directly (Email/query + Email/get, past mail_search's 50-cap), oldest-first. Applies a REAL, VISIBLE mailbox move (skip-inbox — Fastmail doesn't render IMAP keywords as Labels, so a keyword-based tag is invisible) into a dedicated '<Category> (sux)' folder, auto-created on first use; a message matching multiple categories lands in all of them. Fully reversible (mail_move it back). dry_run:true (default) reports what WOULD move without mutating anything; pass dry_run:false to actually move. Resumable: each 55s-budgeted call sweeps a page window and returns {cursor, done} — re-call with the cursor until done:true to drain a large mailbox.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -74,7 +109,7 @@ export const mail_sieve_backfill: Fn = {
 				items: { type: "string", enum: [...ALL_SIEVE_CATEGORIES] },
 				description: `Which rule categories to apply (default: all). One of ${ALL_SIEVE_CATEGORIES.join(", ")}.`,
 			},
-			dry_run: { type: "boolean", default: true, description: "true (default): report matches only, mutate nothing. false: actually apply the label:add ops." },
+				dry_run: { type: "boolean", default: true, description: "true (default): report matches only, mutate nothing. false: actually apply the mailbox moves." },
 			cursor: { type: "string", description: "Opaque cursor from a prior call — resumes the sweep where it left off (must be the same mailbox). Omit to start fresh." },
 		},
 	},
@@ -106,12 +141,31 @@ export const mail_sieve_backfill: Fn = {
 				if (c?.inMailbox !== inMailbox) return failWith("bad_input", "cursor is for a different mailbox — omit it, or pass the mailbox it was issued for.");
 				position = Math.max(0, Math.floor(Number(c.position) || 0));
 			}
-			const mail = dryRun ? null : await import("../mail-mcp");
 			const filter = { inMailbox };
 			const matched: Array<{ id: string; flags: string[] }> = [];
 			// Accumulated ACROSS pages, but each entry only grows after that page's write
 			// succeeds — see the per-page apply below for why this can't be a plain byFlag Map.
 			const appliedByFlag = new Map<string, { count: number; error?: string }>();
+			// Target mailbox ids, resolved (and created if missing) lazily on first use — once per
+			// flag per run, never per message/page. `boxes` grows in place as new folders get
+			// created so a later resolveMailbox() in this same run sees them too.
+			const targetIdByFlag = new Map<string, string>();
+			async function ensureTargetMailbox(flag: string): Promise<string> {
+				const cached = targetIdByFlag.get(flag);
+				if (cached) return cached;
+				const name = mailboxNameForFlag(flag);
+				let id = resolveMailbox(boxes, name);
+				if (!id) {
+					const { response: createResp } = await runBatch(env, [["Mailbox/set", { create: { m: { name } } }, "c"]], { startedAt });
+					const setR = resultFor(createResp.methodResponses, "Mailbox/set");
+					const created = setR?.created?.m;
+					if (!created?.id) throw new Error(`could not create mailbox '${name}': ${JSON.stringify(setR?.notCreated ?? {})}`);
+					id = String(created.id);
+					boxes.push({ id, name, role: null });
+				}
+				targetIdByFlag.set(flag, id);
+				return id;
+			}
 			let scanned = 0;
 			let total: number | undefined;
 			let done = false;
@@ -132,7 +186,9 @@ export const mail_sieve_backfill: Fn = {
 				const byId = new Map<string, { from?: unknown; subject?: unknown }>();
 				for (const e of Array.isArray(get?.list) ? get.list : []) byId.set(String(e?.id), e);
 
-				// Group THIS page's ids by flag (a message can land in several, e.g. junk+notification).
+				// Group THIS page's ids by flag (a message can land in several, e.g. junk+notification —
+				// each flag it matches becomes one more mailbox it's ADDED to below, on top of the one
+				// `mailboxIds/<inMailbox>: null` removal).
 				const pageByFlag = new Map<string, string[]>();
 				for (const id of ids) {
 					const e = byId.get(id);
@@ -147,38 +203,62 @@ export const mail_sieve_backfill: Fn = {
 				}
 
 				// Apply (or, in dry-run, just tally via `matched` above) this page before advancing
-				// the checkpoint — mirrors mail_domain_backfill: a page (≤200 ids/flag) never
-				// approaches maxObjectsInSet, and the resume cursor only ever advances past a
-				// written page, so a mid-sweep budget stop or resume can't silently skip un-tagged
-				// mail the way a single end-of-scan Email/set over the whole window could.
+				// the checkpoint — mirrors mail_domain_backfill: a page (≤200 ids) never approaches
+				// maxObjectsInSet, and the resume cursor only ever advances past a written page, so a
+				// mid-sweep budget stop or resume can't silently skip un-moved mail the way a single
+				// end-of-scan Email/set over the whole window could. ONE Email/set update per page
+				// (not one per flag) — a message matching several flags gets every target mailbox
+				// added in the SAME patch, so a later flag's write can never clobber an earlier one's
+				// (a per-flag REPLACE would have left only the last-processed flag's folder).
 				let pageFailed = false;
-				if (!dryRun) {
-					for (const [flag, kwIds] of pageByFlag) {
-						const lr = await mail!.labelMessages(env, kwIds, flag, true);
+				let movedThisPage = 0;
+				if (!dryRun && pageByFlag.size) {
+					const update: Record<string, Record<string, unknown>> = {};
+					for (const [flag, flagIds] of pageByFlag) {
+						const targetId = await ensureTargetMailbox(flag);
+						for (const id of flagIds) {
+							const patch = update[id] ?? { [`mailboxIds/${inMailbox}`]: null };
+							patch[`mailboxIds/${targetId}`] = true;
+							update[id] = patch;
+						}
+					}
+					const { response: setResp } = await runBatch(env, [["Email/set", { update }, "s"]], { startedAt });
+					const setR = resultFor(setResp.methodResponses, "Email/set");
+					const updatedIds = new Set(Object.keys(setR?.updated ?? {}));
+					const notUpdated = setR?.notUpdated ?? {};
+					movedThisPage = updatedIds.size;
+					for (const [flag, flagIds] of pageByFlag) {
 						const prev = appliedByFlag.get(flag);
-						if (lr.isError) {
-							appliedByFlag.set(flag, { count: prev?.count ?? 0, error: lr.content?.[0]?.text ?? "label failed" });
-							pageFailed = true;
-						} else appliedByFlag.set(flag, { count: (prev?.count ?? 0) + kwIds.length });
+						const okCount = flagIds.filter((id) => updatedIds.has(id)).length;
+						const failCount = flagIds.length - okCount;
+						if (failCount) pageFailed = true;
+						appliedByFlag.set(flag, {
+							count: (prev?.count ?? 0) + okCount,
+							...(failCount ? { error: `${failCount} failed on this page: ${JSON.stringify(notUpdated).slice(0, 200)}` } : prev?.error ? { error: prev.error } : {}),
+						});
 					}
 				}
 
-				// A failed page's ids stay un-tagged, so don't advance scanned/position past it —
+				// A failed page's ids stay un-moved, so don't advance scanned/position past it —
 				// mirrors mail_domain_backfill's per-page isolation (see #703). The cursor still
-				// points at THIS page's start, so a resume rescans and retries it (label:add is
-				// idempotent, so re-applying flags that already succeeded on this page is harmless).
+				// points at THIS page's start, so a resume rescans and retries it (the mailboxIds
+				// patch is idempotent, so re-applying a move that already succeeded is harmless).
 				if (pageFailed) {
 					done = false;
 					break;
 				}
 
 				scanned += ids.length;
-				position += ids.length;
+				// Moved messages disappear from the LIVE {inMailbox} set the next Email/query sees —
+				// only advance `position` past the ones still sitting in `inMailbox` (see header note).
+				position += ids.length - movedThisPage;
 				if (ids.length < limit) {
 					done = true;
 					break;
 				}
-				if (total !== undefined && position >= total) {
+				// `total` was captured once, before any moves — stale the instant a move happens, so
+				// this fast-path only fires when nothing has been (or ever will be, this call) moved.
+				if (!movedThisPage && total !== undefined && position >= total) {
 					done = true;
 					break;
 				}
@@ -192,18 +272,18 @@ export const mail_sieve_backfill: Fn = {
 						dry_run: true,
 						mailbox,
 						scanned,
-						would_tag: matched.length,
+						would_move: matched.length,
 						matches: matched,
 						cursor,
 						done,
 						...(total !== undefined ? { total } : {}),
-						note: "Nothing mutated. Pass dry_run:false to apply these label:add ops; re-call with the returned cursor until done:true.",
+						note: "Nothing mutated. Pass dry_run:false to apply these mailbox moves; re-call with the returned cursor until done:true.",
 					}),
 				);
 			}
 
-			const applied: Array<{ flag: string; count: number; error?: string }> = [...appliedByFlag].map(([flag, v]) => ({ flag, ...v }));
-			return ok(oj({ dry_run: false, mailbox, scanned, tagged: matched.length, applied, cursor, done, ...(total !== undefined ? { total } : {}) }));
+			const applied: Array<{ flag: string; mailbox: string; count: number; error?: string }> = [...appliedByFlag].map(([flag, v]) => ({ flag, mailbox: mailboxNameForFlag(flag), ...v }));
+			return ok(oj({ dry_run: false, mailbox, scanned, moved: matched.length, applied, cursor, done, ...(total !== undefined ? { total } : {}) }));
 		} catch (e) {
 			if (e instanceof JmapError) return failWith(e.code, e.message);
 			return failWith("upstream_error", errMsg(e));
