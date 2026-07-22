@@ -23,7 +23,11 @@ import { smartFetch } from "./proxy";
 import { isGithubHost } from "./github-auth";
 
 const GH = "https://api.github.com";
-const TOKEN_KEY = "cache:suxbot:installation-token";
+// Cache-key PREFIX; the scoped repo name is appended (`${TOKEN_KEY}:${repo}`) so a
+// token minted for one repo — or a pre-scoping org-wide token cached under the
+// bare key — is never served for another. Bumped to :v2 to retire any broad token
+// already sitting under the old bare "cache:suxbot:installation-token" key.
+const TOKEN_KEY = "cache:suxbot:installation-token:v2";
 // Re-mint this far ahead of the real expiry so an in-flight vault write never
 // races the 1h boundary and lands with a token that expires mid-request.
 const EXPIRY_SKEW_MS = 120_000;
@@ -32,6 +36,10 @@ interface SuxbotEnv {
 	SUX_BOT_APP_ID?: string;
 	SUX_BOT_PRIVATE_KEY?: string;
 	SUX_BOT_INSTALLATION_ID?: string;
+	// "owner/repo" of the vault the token is scoped to (least-privilege). The token
+	// is minted for just this repo, so the write credential can't reach anything
+	// else the org App is installed on.
+	OBSIDIAN_VAULT_REPO?: string;
 	GITHUB_TOKEN?: string;
 	OAUTH_KV?: { get(k: string): Promise<string | null>; put(k: string, v: string, o?: unknown): Promise<void> };
 }
@@ -119,6 +127,15 @@ interface CachedToken {
 	exp: number;
 }
 
+/** Bare repo name of the scoped vault ("owner/repo" → "repo"), or null when
+ * OBSIDIAN_VAULT_REPO is unset/malformed. The `repositories` param of the
+ * access-tokens endpoint takes repo NAMES, not "owner/repo", so the owner prefix
+ * is stripped. Derived (not hardcoded "vault") so it tracks a vault retarget. */
+function vaultRepoName(env: SuxbotEnv): string | null {
+	const parts = String(env.OBSIDIAN_VAULT_REPO ?? "").split("/");
+	return parts.length === 2 && parts[1] ? parts[1] : null;
+}
+
 /**
  * A valid suxbot installation token, minting a fresh one when the KV-cached copy
  * is missing or within EXPIRY_SKEW_MS of expiry. Returns null (never throws) when
@@ -126,11 +143,23 @@ interface CachedToken {
  * GITHUB_TOKEN. KV has no compare-and-swap, so two concurrent misses may both mint;
  * harmless (each token is independently valid) — the same tradeoff obsidian's HEAD
  * cache already accepts for this single-user vault.
+ *
+ * Least-privilege: the ONLY consumer of this token is vault writes, so the mint
+ * scopes it to just the vault repo (`repositories: [<repo>]`) instead of letting
+ * it inherit the App's org-wide installation (an empty body → repository_selection:
+ * all). Without a parseable OBSIDIAN_VAULT_REPO there is nothing to scope to (and
+ * vault writes aren't configured), so it refuses to mint rather than fall back to a
+ * broad token, and vault traffic uses GITHUB_TOKEN instead.
  */
 export async function suxbotInstallationToken(env: SuxbotEnv): Promise<string | null> {
 	if (!hasSuxbotApp(env)) return null;
+	const repo = vaultRepoName(env);
+	if (!repo) return null;
+	// Scope is part of the cache identity — never serve a token minted for a
+	// different (or a pre-scoping org-wide) target for this repo.
+	const cacheKey = `${TOKEN_KEY}:${repo}`;
 	try {
-		const cachedRaw = await env.OAUTH_KV?.get(TOKEN_KEY).catch(() => null);
+		const cachedRaw = await env.OAUTH_KV?.get(cacheKey).catch(() => null);
 		if (cachedRaw) {
 			const cached = JSON.parse(cachedRaw) as CachedToken;
 			if (cached?.token && cached.exp - Date.now() > EXPIRY_SKEW_MS) return cached.token;
@@ -139,13 +168,13 @@ export async function suxbotInstallationToken(env: SuxbotEnv): Promise<string | 
 		const resp = await smartFetch(env, `${GH}/app/installations/${encodeURIComponent(String(env.SUX_BOT_INSTALLATION_ID))}/access_tokens`, {
 			method: "POST",
 			headers: { Authorization: `Bearer ${jwt}`, Accept: "application/vnd.github+json", "User-Agent": "sux-github-app", "X-GitHub-Api-Version": "2022-11-28" },
-			body: "{}",
+			body: JSON.stringify({ repositories: [repo] }),
 		});
 		if (resp.status !== 201) return null;
 		const json = (await resp.json().catch(() => null)) as { token?: string; expires_at?: string } | null;
 		if (!json?.token) return null;
 		const exp = json.expires_at ? Date.parse(json.expires_at) : Date.now() + 3_600_000;
-		await env.OAUTH_KV?.put(TOKEN_KEY, JSON.stringify({ token: json.token, exp } as CachedToken)).catch(() => {});
+		await env.OAUTH_KV?.put(cacheKey, JSON.stringify({ token: json.token, exp } as CachedToken)).catch(() => {});
 		return json.token;
 	} catch {
 		return null;
@@ -154,8 +183,9 @@ export async function suxbotInstallationToken(env: SuxbotEnv): Promise<string | 
 
 /**
  * Authorization header for a GitHub request against the vault repo. Prefers a
- * freshly-minted suxbot installation token (org App, contents:write) when the App
- * secrets are configured, else falls back to GITHUB_TOKEN — identical to the
+ * freshly-minted suxbot installation token (org App, contents:write, scoped to the
+ * single vault repo) when the App secrets are configured, else falls back to
+ * GITHUB_TOKEN — identical to the
  * ambient injection smartFetch already does, so the absent-App-secrets path is a
  * no-op change. Returns {} for non-GitHub hosts: the token is NEVER attached
  * off-GitHub, the same trust boundary githubAuthHeaders enforces. Because
