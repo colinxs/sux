@@ -67,4 +67,32 @@ describe("medical_timeline_plan", () => {
 		const body = JSON.parse(res.content[0].text);
 		expect(body.scanned).toBe(0);
 	});
+
+	it("gathers MyChart events only when myChart:true, forwarding myChartOrg (#1220)", async () => {
+		vi.doMock("../vault-mcp", () => ({ scanVault: async () => ({ records: [], total: 0, truncated: false }) }));
+		const gatherMedicalTimelineEvents = vi.fn(async () => [{ date: "2026-01-10", kind: "medication", title: "Lisinopril", source: "mychart:uwmedicine:MedicationRequest/m1" }]);
+		vi.doMock("../mychart", () => ({ gatherMedicalTimelineEvents }));
+		vi.resetModules();
+		const { medical_timeline_plan: freshFn } = await import("./medical_timeline_plan");
+		runVerb.mockResolvedValueOnce({ instanceId: "mc1" });
+
+		const res = await freshFn.run({ MEDICAL_TIMELINE_ENABLED: "1" } as any, { myChart: true, myChartOrg: "uwmedicine" });
+
+		expect(gatherMedicalTimelineEvents).toHaveBeenCalledWith(expect.anything(), { org: "uwmedicine" });
+		const call = runVerb.mock.calls[0][0];
+		expect(call.input).toEqual([{ date: "2026-01-10", kind: "medication", title: "Lisinopril", source: "mychart:uwmedicine:MedicationRequest/m1" }]);
+		expect(res.isError).toBeUndefined();
+	});
+
+	it("never calls mychart when myChart is omitted", async () => {
+		vi.doMock("../vault-mcp", () => ({ scanVault: async () => ({ records: [], total: 0, truncated: false }) }));
+		const gatherMedicalTimelineEvents = vi.fn();
+		vi.doMock("../mychart", () => ({ gatherMedicalTimelineEvents }));
+		vi.resetModules();
+		const { medical_timeline_plan: freshFn } = await import("./medical_timeline_plan");
+
+		await freshFn.run({ MEDICAL_TIMELINE_ENABLED: "1" } as any, { records: [{ date: "2026-02-01", kind: "result", title: "Lab panel", source: "note.md" }] });
+
+		expect(gatherMedicalTimelineEvents).not.toHaveBeenCalled();
+	});
 });

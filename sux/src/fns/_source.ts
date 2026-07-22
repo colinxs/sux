@@ -136,7 +136,11 @@ export async function listChunks(env: RtEnv, domain: string): Promise<SourceChun
 	return out;
 }
 
-/** Enumerate the domains that have any authoritative source stored (scans the chunk key space). */
+/** Enumerate the domains that have any authoritative source stored (scans the chunk key space).
+ *  Splits each key on its LAST colon, not its first: a namespaced domain like oracle.ts's
+ *  "oracle:<topic>" (#1242) contains a colon itself, and `chunkKey`'s trailing `:${id}` (a
+ *  colon-free UUID from `newId()`) is the only segment guaranteed not to contain one — splitting
+ *  on the first colon instead would truncate every such domain down to just "oracle". */
 export async function listDomains(env: RtEnv): Promise<string[]> {
 	const kv = env.OAUTH_KV;
 	if (!kv) return [];
@@ -146,7 +150,7 @@ export async function listDomains(env: RtEnv): Promise<string[]> {
 		const page = await kv.list({ prefix: CHUNK_PREFIX, cursor });
 		for (const k of page.keys) {
 			const rest = k.name.slice(CHUNK_PREFIX.length);
-			const i = rest.indexOf(":");
+			const i = rest.lastIndexOf(":");
 			if (i > 0) domains.add(rest.slice(0, i));
 		}
 		cursor = page.list_complete ? undefined : page.cursor;

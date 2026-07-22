@@ -318,6 +318,21 @@ describe("advise — profile / sources / forget", () => {
 		expect(run).not.toHaveBeenCalled();
 	});
 
+	it("sources excludes oracle/study topics namespaced as oracle:<topic> (#1246)", async () => {
+		const { env, kv } = makeEnv();
+		await advise.run(env, { action: "ingest", domain: "therapy", text: PROGRAM });
+		// Mirrors oracle.ts's learnTopic writing a chunk into _source.ts's shared keyspace
+		// under its "oracle:<topic>" namespace (#1242) — not a real advise domain.
+		kv.store.set(
+			"sux:source:chunk:oracle:cardiac-diet:c1",
+			JSON.stringify({ id: "c1", source_id: "s1", domain: "oracle:cardiac-diet", authority: "authoritative", title: "t", text: "x", ts: 1 }),
+		);
+		const r = await advise.run(env, { action: "sources", domain: "any" });
+		const j = JSON.parse(r.content[0].text);
+		expect(Object.keys(j.domains)).toEqual(["therapy"]);
+		expect(j.count).toBe(1);
+	});
+
 	it("forget deletes exactly one source's chunks and re-distills the Profile", async () => {
 		const { env, kv } = makeEnv();
 		const ing = JSON.parse((await advise.run(env, { action: "ingest", domain: "therapy", text: PROGRAM })).content[0].text);

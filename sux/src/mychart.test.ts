@@ -5,6 +5,7 @@ import {
 	connectedOrgs,
 	crossOrgAllergyGaps,
 	crossOrgMedicationAllergyConflicts,
+	gatherMedicalTimelineEvents,
 	handleAppleHealth,
 	handleMychartRoutes,
 	isUnderFhirBase,
@@ -584,6 +585,69 @@ describe("summarizeMyChart — redacted last-pull summary for the agenda detecto
 		await seedBundle(env, ORG2, "P2", "Condition", "2026-07-18T00-00-00-000Z", [{ resourceType: "Condition", id: "only-org-b" }]);
 		const summary = await summarizeMyChart(env, { org: ORG });
 		expect(summary?.newConditions).toEqual([{ id: "only-org-a" }]);
+	});
+});
+
+describe("gatherMedicalTimelineEvents — FHIR → medical_timeline_plan mapper (#1220)", () => {
+	async function seedGrant(env: ReturnType<typeof baseEnv>, org: string, patient: string) {
+		await env.OAUTH_KV.put(`sux:mychart:grant:${org}`, JSON.stringify({ refresh_token: "rt", patient, issued_at: Date.now() }));
+	}
+	async function seedBundle(env: ReturnType<typeof baseEnv>, org: string, patient: string, label: string, stamp: string, resources: any[]) {
+		const bundle = { resourceType: "Bundle", entry: resources.map((resource) => ({ resource })) };
+		await env.R2.put(`phi/mychart/${org}/${patient}/${label}/${stamp}-p1.json`, JSON.stringify(bundle), { httpMetadata: { contentType: "application/fhir+json" } });
+	}
+
+	it("returns [] when unconfigured, not connected, or never pulled", async () => {
+		expect(await gatherMedicalTimelineEvents({} as any)).toEqual([]);
+		const env = baseEnv();
+		expect(await gatherMedicalTimelineEvents(env)).toEqual([]); // configured, but no grant yet
+		await seedGrant(env, ORG, "P1");
+		expect(await gatherMedicalTimelineEvents(env)).toEqual([]); // grant exists, never pulled
+	});
+
+	it("maps Encounter/MedicationRequest/DiagnosticReport to appointment/medication/result, citing an opaque mychart:{org}:{type}/{id}", async () => {
+		const env = baseEnv();
+		await seedGrant(env, ORG, "P1");
+		await seedBundle(env, ORG, "P1", "Encounter", "2026-07-18T00-00-00-000Z", [{ resourceType: "Encounter", id: "enc1", period: { start: "2026-06-01T10:00:00Z" }, type: [{ text: "Office Visit" }] }]);
+		await seedBundle(env, ORG, "P1", "MedicationRequest", "2026-07-18T00-00-00-000Z", [{ resourceType: "MedicationRequest", id: "med1", authoredOn: "2026-05-15", medicationCodeableConcept: { text: "Atorvastatin" } }]);
+		await seedBundle(env, ORG, "P1", "DiagnosticReport", "2026-07-18T00-00-00-000Z", [{ resourceType: "DiagnosticReport", id: "rep1", effectiveDateTime: "2026-04-20", category: [{ text: "Laboratory" }], conclusion: "should never appear" }]);
+
+		const events = await gatherMedicalTimelineEvents(env);
+		const json = JSON.stringify(events);
+		expect(json).not.toContain("should never appear"); // conclusion/diagnosis text never leaves the mapper
+
+		expect(events.sort((a, b) => a.date.localeCompare(b.date))).toEqual([
+			{ date: "2026-04-20", kind: "result", title: "Laboratory report", source: `mychart:${ORG}:DiagnosticReport/rep1` },
+			{ date: "2026-05-15", kind: "medication", title: "Atorvastatin", source: `mychart:${ORG}:MedicationRequest/med1` },
+			{ date: "2026-06-01", kind: "appointment", title: "Office Visit", source: `mychart:${ORG}:Encounter/enc1` },
+		]);
+	});
+
+	it("drops a resource with no usable date instead of throwing", async () => {
+		const env = baseEnv();
+		await seedGrant(env, ORG, "P1");
+		await seedBundle(env, ORG, "P1", "Encounter", "2026-07-18T00-00-00-000Z", [{ resourceType: "Encounter", id: "enc-nodate" }]);
+		expect(await gatherMedicalTimelineEvents(env)).toEqual([]);
+	});
+
+	it("opts.org scopes to a single org even when others are connected", async () => {
+		const env = baseEnv();
+		await seedGrant(env, ORG, "P1");
+		await seedGrant(env, ORG2, "P2");
+		await seedBundle(env, ORG, "P1", "MedicationRequest", "2026-07-18T00-00-00-000Z", [{ resourceType: "MedicationRequest", id: "only-a", authoredOn: "2026-01-01", medicationCodeableConcept: { text: "A" } }]);
+		await seedBundle(env, ORG2, "P2", "MedicationRequest", "2026-07-18T00-00-00-000Z", [{ resourceType: "MedicationRequest", id: "only-b", authoredOn: "2026-01-01", medicationCodeableConcept: { text: "B" } }]);
+		const events = await gatherMedicalTimelineEvents(env, { org: ORG });
+		expect(events).toEqual([{ date: "2026-01-01", kind: "medication", title: "A", source: `mychart:${ORG}:MedicationRequest/only-a` }]);
+	});
+
+	it("fans across every connected org when opts.org is omitted", async () => {
+		const env = baseEnv();
+		await seedGrant(env, ORG, "P1");
+		await seedGrant(env, ORG2, "P2");
+		await seedBundle(env, ORG, "P1", "MedicationRequest", "2026-07-18T00-00-00-000Z", [{ resourceType: "MedicationRequest", id: "m-a", authoredOn: "2026-01-01", medicationCodeableConcept: { text: "A" } }]);
+		await seedBundle(env, ORG2, "P2", "MedicationRequest", "2026-07-18T00-00-00-000Z", [{ resourceType: "MedicationRequest", id: "m-b", authoredOn: "2026-01-02", medicationCodeableConcept: { text: "B" } }]);
+		const events = await gatherMedicalTimelineEvents(env);
+		expect(events.map((e) => e.source).sort()).toEqual([`mychart:${ORG2}:MedicationRequest/m-b`, `mychart:${ORG}:MedicationRequest/m-a`].sort());
 	});
 });
 

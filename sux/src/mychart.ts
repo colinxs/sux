@@ -15,6 +15,7 @@
 // and never enter the generic KV result cache (the mychart fn is cacheable:false).
 
 import { timingSafeEqual } from "./crypto-util";
+import type { MedicalEventInput } from "./op-engine/_medical_timeline_plan";
 import type { RtEnv } from "./registry";
 import { safeParseJson } from "./fns/_util";
 
@@ -651,6 +652,68 @@ export async function summarizeMyChart(env: RtEnv, opts?: { org?: string; refill
  * (defensive only — every caller here already validated the org). */
 export function orgLabel(org: string): string {
 	return MYCHART_ORGS[org]?.name ?? org;
+}
+
+// ---------------- medical-timeline mapping (#1220) ----------------
+
+// Only these three resource types feed the timeline (appointments/medications/results,
+// per #1220) — all three are pulled bare (not category-split like Observation), so their
+// `latestPulledResources` label equals the FHIR type name itself (see resourcePlan's
+// SIMPLE_TYPES loop above).
+const TIMELINE_RESOURCE_TYPES = ["Encounter", "MedicationRequest", "DiagnosticReport"] as const;
+type TimelineResourceType = (typeof TIMELINE_RESOURCE_TYPES)[number];
+
+function isoDateOf(v: unknown): string | undefined {
+	return typeof v === "string" && /^\d{4}-\d{2}-\d{2}/.test(v) ? v.slice(0, 10) : undefined;
+}
+
+/** One FHIR resource → one MedicalEventInput, redacted to the SAME level `summarizeMyChart`
+ * already uses for this data (medication NAME, encounter/report CATEGORY) — never a diagnosis,
+ * conclusion, or raw observation value — because unlike `pull`/`get` (server-side only), this
+ * feeds `medical_timeline_plan`, which can write these strings into a vault note. `source` cites
+ * `mychart:{org}:{type}/{id}`: an opaque FHIR id only, never patient-identifying text. */
+function timelineEventFromResource(type: TimelineResourceType, org: string, r: any): MedicalEventInput | null {
+	if (!r?.id) return null;
+	const source = `mychart:${org}:${type}/${r.id}`;
+	if (type === "Encounter") {
+		const date = isoDateOf(r?.period?.start) ?? isoDateOf(r?.period?.end);
+		if (!date) return null;
+		return { date, kind: "appointment", title: codeableConceptText(r?.type?.[0]) || codeableConceptText(r?.class) || "Encounter", source };
+	}
+	if (type === "MedicationRequest") {
+		const date = isoDateOf(r?.authoredOn);
+		if (!date) return null;
+		return { date, kind: "medication", title: codeableConceptText(r?.medicationCodeableConcept) || "Medication", source };
+	}
+	const date = isoDateOf(r?.effectiveDateTime) ?? isoDateOf(r?.issued);
+	if (!date) return null;
+	const category = codeableConceptText(r?.category?.[0]);
+	return { date, kind: "result", title: category ? `${category} report` : "Diagnostic report", source };
+}
+
+/** Map the last-`pull`ed FHIR snapshot into `medical_timeline_plan`'s MedicalEventInput shape —
+ * explicit opt-in (§O2 of docs/proposals/archive/mychart.md: auto-projecting MyChart into the
+ * vault multiplies PHI copies, default off), fanning across every CONNECTED org when `opts.org`
+ * is omitted (mirrors `summarizeMyChart`). [] when unconfigured, the org isn't connected, or it
+ * has never been pulled — never throws, so one caller's records don't sink the timeline gather. */
+export async function gatherMedicalTimelineEvents(env: RtEnv, opts?: { org?: string }): Promise<MedicalEventInput[]> {
+	if (!mychartConfigured(env)) return [];
+	const orgs = opts?.org ? (isKnownOrg(opts.org) ? [opts.org] : []) : await connectedOrgs(env);
+	if (!orgs.length) return [];
+	const out: MedicalEventInput[] = [];
+	for (const org of orgs) {
+		const grant = await readGrant(env, org);
+		if (!grant?.patient) continue;
+		if (!(await hasEverPulled(env, org, grant.patient))) continue;
+		for (const type of TIMELINE_RESOURCE_TYPES) {
+			const resources = await latestPulledResources(env, org, grant.patient, type);
+			for (const r of resources) {
+				const event = timelineEventFromResource(type, org, r);
+				if (event) out.push(event);
+			}
+		}
+	}
+	return out;
 }
 
 // ---------------- cross-org reconciliation (#1005) ----------------

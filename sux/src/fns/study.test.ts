@@ -199,10 +199,20 @@ describe("study — learn archive (#1209 three-sink ingestion)", () => {
 		return { env: { ...env, R2 }, R2, objects };
 	}
 
-	it("defaults to archive:false — no R2/vault-note side effects, no `archived` field noise beyond undefined", async () => {
-		const { env } = makeEnv();
+	it("defaults to archive:true (#1239) — a plain learn call still produces the three-sink shape", async () => {
+		const { env: base } = makeEnv();
+		const { env, R2 } = withR2(base);
 		const j = parse(await study.run(env, { source: "Opposite action.", kind: "text", topic: "dbt" }));
+		expect(j.archived).toMatchObject({ vault_note: "Knowledge/Distilled/dbt.md" });
+		expect(R2.put).toHaveBeenCalledTimes(1);
+	});
+
+	it("archive:false opts out — no R2/vault-note side effects, no `archived` field noise beyond undefined", async () => {
+		const { env: base } = makeEnv();
+		const { env, R2 } = withR2(base);
+		const j = parse(await study.run(env, { source: "Opposite action.", kind: "text", topic: "dbt", archive: false }));
 		expect(j.archived).toBeUndefined();
+		expect(R2.put).not.toHaveBeenCalled();
 	});
 
 	it("archive:true on a text source archives the material to R2 and writes a Knowledge/Distilled insight card", async () => {
@@ -222,6 +232,45 @@ describe("study — learn archive (#1209 three-sink ingestion)", () => {
 
 		const stored = await kbFor(kv, "dbt");
 		expect(JSON.stringify(stored)).not.toContain("Opposite action means acting opposite"); // still never a verbatim KB copy
+	});
+
+	it("archive:true structures the insight card into core-models/techniques/when-to-use/notable-passages (#1239)", async () => {
+		const { env: base, run } = makeEnv();
+		const { env } = withR2(base);
+		run.mockImplementation(async (_m: string, inputs: any) => {
+			if (Array.isArray(inputs?.text)) return { data: inputs.text.map(() => [0.1, 0.2, 0.3]) };
+			const system: string = inputs.messages.find((m: any) => m.role === "system").content;
+			if (/^Consolidate/.test(system)) return { response: "CONSOLIDATED-KB" };
+			if (/^Reorganize/.test(system)) return { response: "## Core models\n- opposite action\n\n## Techniques\n- practice\n\n## When to use\n- unjustified emotion\n\n## Notable passages\n> acting opposite to an unjustified emotion's urge" };
+			return { response: "DISTILLED-CHUNK" };
+		});
+
+		const j = parse(await study.run(env, { source: "Opposite action means acting opposite to an unjustified emotion's urge.", kind: "text", topic: "dbt", archive: true }));
+		const obsidian = (await import("./obsidian")).obsidian;
+		const writeCall = (obsidian.run as any).mock.calls.find((c: any[]) => c[1]?.action === "write");
+		expect(writeCall[1].content).toContain("## Core models");
+		expect(writeCall[1].content).toContain("## Techniques");
+		expect(writeCall[1].content).toContain("## When to use");
+		expect(writeCall[1].content).toContain("## Notable passages");
+		expect(j.archived.vault_note).toBeTruthy();
+	});
+
+	it("archive:true falls back to the raw distilled note when the structuring call returns nothing", async () => {
+		const { env: base, run } = makeEnv();
+		const { env } = withR2(base);
+		run.mockImplementation(async (_m: string, inputs: any) => {
+			if (Array.isArray(inputs?.text)) return { data: inputs.text.map(() => [0.1, 0.2, 0.3]) };
+			const system: string = inputs.messages.find((m: any) => m.role === "system").content;
+			if (/^Consolidate/.test(system)) return { response: "CONSOLIDATED-KB" };
+			if (/^Reorganize/.test(system)) return { response: "" }; // structuring hiccup — empty response
+			return { response: "DISTILLED-CHUNK" };
+		});
+
+		const j = parse(await study.run(env, { source: "Opposite action.", kind: "text", topic: "dbt", archive: true }));
+		const obsidian = (await import("./obsidian")).obsidian;
+		const writeCall = (obsidian.run as any).mock.calls.find((c: any[]) => c[1]?.action === "write");
+		expect(writeCall[1].content).toContain("DISTILLED-CHUNK"); // fell back to the raw distilled note
+		expect(j.archived.vault_note).toBeTruthy();
 	});
 
 	it("archive:true best-effort degrades cleanly when R2 isn't bound — learn still succeeds", async () => {

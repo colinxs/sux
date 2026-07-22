@@ -1,4 +1,4 @@
-import { hasAI } from "../ai";
+import { hasAI, llm } from "../ai";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { appendOnWhitelist } from "./_kb";
 import { hasDropboxFull, normFull, readFull } from "./_dropbox-full";
@@ -162,12 +162,32 @@ export async function listWhitelisted(env: RtEnv): Promise<Array<{ topic: string
 
 type ArchiveResult = { r2?: { url: string; sha256: string; size: number }; wayback?: string; vault_note?: string; skipped?: string };
 
+const INSIGHT_CARD_SYSTEM =
+	"Reorganize the following distilled knowledge notes into a per-book insight card using exactly these four markdown headings, in this order: \"## Core models\", \"## Techniques\", \"## When to use\", \"## Notable passages\". Bullet points under each heading, drawn ONLY from the material given — never invent anything not present in it. Under \"## Notable passages\", quote 2-4 short (<=30 words) excerpts verbatim from the material, each as a blockquote line starting with \"> \". If a heading has nothing to say from the material, write \"(none)\" under it rather than inventing content. Output ONLY the four headings and their content — no preamble, no closing remarks.";
+
+/** Reorganize a topic's rolling distilled note into the #1209/#1239 per-book insight-card shape
+ *  (core models · techniques · when-to-use · notable passages) instead of embedding the flat
+ *  distillation blob. Best-effort: falls back to the raw distilled text (today's shape) when AI
+ *  is unavailable or the call fails/returns empty — never blocks the archive it's part of. Quotes
+ *  are drawn from the already-distilled note (not the original material, never persisted), so
+ *  they aren't page-cited — the pipeline has no page-boundary tracking to cite truthfully. */
+async function structureInsightCard(env: RtEnv, distilled: string): Promise<string> {
+	if (!hasAI(env)) return distilled;
+	try {
+		const card = (await llm(env, INSIGHT_CARD_SYSTEM, distilled.slice(0, 6_000), 900, "structure insight card")).trim();
+		return card || distilled;
+	} catch {
+		return distilled;
+	}
+}
+
 /** The other two legs of the #1184 W4 three-sink ingestion pipeline (learnTopic's oracle chunk
  *  store is already the "full text into a messy model" leg — this only adds the two MISSING
  *  legs): archive the original bytes to R2 (a Dropbox-path pdf's bytes are supplied by the
  *  caller via `sourceBytes` — extractDocText already fetched them once for transcription, #1239
  *  — so this never re-derives Mode A/B credentials itself), fire a best-effort Wayback snapshot
- *  for a url source, and write a human-readable per-topic insight-card note. Every step is
+ *  for a url source, and write a per-book insight-card note (core models · techniques ·
+ *  when-to-use · notable passages, via `structureInsightCard`, #1239). Every step is
  *  independently best-effort: an archive-leg failure must never fail the underlying
  *  distill/whitelist the caller already got. */
 async function archiveKnowledge(
@@ -222,6 +242,7 @@ async function archiveKnowledge(
 	try {
 		const slug = (opts.title ?? opts.topic).trim().replace(/[\\/:*?"<>|]/g, "-").slice(0, 80) || opts.topic;
 		const path = `Knowledge/Distilled/${slug}.md`;
+		const card = await structureInsightCard(env, opts.distilled);
 		const body = [
 			"---",
 			"type: distilled-knowledge",
@@ -232,7 +253,7 @@ async function archiveKnowledge(
 			"",
 			`# ${opts.title ?? opts.topic}`,
 			"",
-			opts.distilled,
+			card,
 			"",
 			"## Provenance",
 			`- Source: ${opts.sourceLabel}`,
@@ -261,7 +282,7 @@ export const study: Fn = {
 		"`topic` (required) namespaces the knowledge base (it becomes a whitelisted `oracle` topic). `title` labels the provenance. It distills into an oracle topic KB and stamps a whitelist marker, so `oracle({problem,topic})` and `recall` both rank it above the model + [web]. " +
 		"`action`: learn (default) → distill + whitelist; list → the studied (whitelisted) topics + provenance (the copyright audit); forget → delete one topic's KB (reversible; the git-versioned vault mirror stays as history). " +
 		"COPYRIGHT-CLEAN: only the material you supply is distilled (it fetches exactly the one url/path — never crawls to find a work), and only the compressed index is stored, never a full-text clone. Additive + reversible. Query with oracle/recall. Needs the Workers-AI binding; pdf-from-file needs DROPBOX_FULL_*. Stateful — never cached. " +
-		"`archive` (default false): also fan out to the two other knowledge-ingestion sinks — the original source bytes (url/pdf-via-url/pdf-via-Dropbox-path/text) archived privately to R2, a best-effort Wayback snapshot for a url source, and a human-readable insight-card note written to Knowledge/Distilled/<topic>.md (summary + provenance links). Best-effort: an archive failure never fails the underlying distill/whitelist.",
+		"`archive` (default true, #1239): also fan out to the two other knowledge-ingestion sinks — the original source bytes (url/pdf-via-url/pdf-via-Dropbox-path/text) archived privately to R2, a best-effort Wayback snapshot for a url source, and a per-book insight-card note (core models · techniques · when-to-use · notable passages) written to Knowledge/Distilled/<topic>.md, with provenance links. Best-effort: an archive failure never fails the underlying distill/whitelist. Pass `archive:false` to skip it.",
 		inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -276,7 +297,7 @@ export const study: Fn = {
 					"Override the provenance `source` string that gets stamped/dedup-matched instead of inferring it from `source` (e.g. a caller resolving a Dropbox file to an http(s) URL to fetch its bytes, but wanting the KB to record `dropbox:<path>` for dedup).",
 			},
 			action: { type: "string", enum: ["learn", "list", "forget"], default: "learn", description: "learn (default) | list (audit the whitelisted topics) | forget (delete a topic's KB)." },
-				archive: { type: "boolean", default: false, description: "Also archive the source to R2 (+ Wayback for a url) and write a Knowledge/Distilled/<topic>.md insight-card note (the three-sink ingestion pipeline). Best-effort." },
+				archive: { type: "boolean", default: true, description: "Also archive the source to R2 (+ Wayback for a url) and write a Knowledge/Distilled/<topic>.md insight-card note (the three-sink ingestion pipeline). Best-effort. Default on (#1239) — pass false to skip." },
 		},
 	},
 	raw: true,
@@ -358,10 +379,10 @@ export const study: Fn = {
 			// Git-versioned provenance ledger — the auditable copyright story (provenance only, no text).
 			const provenance_logged = await appendOnWhitelist(env, topic, sourceLabel, resolved, provenance.title);
 
-			// The three-sink ingestion pipeline (#1184 W4) is opt-in via `archive` — the default
-			// `learn` call stays exactly as fast/cheap as it always was (one oracle distill pass).
+			// The three-sink ingestion pipeline (#1184 W4) is on by default (#1239) — pass
+			// `archive:false` to skip it and keep a `learn` call to one oracle distill pass.
 			const archived =
-				args?.archive === true
+				args?.archive !== false
 					? await archiveKnowledge(env, { topic, title: provenance.title, sourceLabel, resolvedKind: resolved, rawSource, material, distilled: last.distilled, sourceBytes })
 					: undefined;
 

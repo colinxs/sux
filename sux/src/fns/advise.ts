@@ -181,7 +181,10 @@ export const advise: Fn = {
 		try {
 			// ---- Management actions (no AI required — pure KV) ----
 			if (action === "sources") {
-				const domains = await listDomains(env);
+				// oracle/study topics share _source.ts's chunk keyspace under an "oracle:<topic>"
+				// namespace (#1242) — real advise domains never start with it, so this dashboard
+				// should never list one (#1246).
+				const domains = (await listDomains(env)).filter((d) => !d.startsWith("oracle:"));
 				const out: Record<string, { chunks: number; sources: string[] }> = {};
 				for (const d of domains) {
 					const chunks = await listChunks(env, d);
