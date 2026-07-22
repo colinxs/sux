@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { composeDigest, type AgendaDeps, type Drop, detectCrossSemanticDrops, detectDocumentExpiryDrops, detectDrops, detectKnowledgeDrops, detectMonarchDrops, detectMyChartDrops, detectMychartAllergyGapDrops, detectMychartConflictDrops, detectPortfolioDrops, detectRelationshipDrops, detectSavingsRateDrop, detectStudyReviewDrops, detectTextDrops, detectWatchDrops, computeSavingsRate, type EventRef, mailRelationshipThreads, type MailRef, type RelationshipBaseline, type TextThreadRef, rankDropsLearned, runAgenda } from "./_agenda";
+import { composeDigest, type AgendaDeps, type Drop, detectCrossSemanticDrops, detectDocumentExpiryDrops, detectDrops, detectKnowledgeDrops, detectMonarchDrops, detectMyChartDrops, detectMychartAllergyGapDrops, detectMychartConflictDrops, detectPortfolioDrops, detectRelationshipDrops, detectSavingsRateDrop, detectStudyReviewDrops, detectTaskDeadlineDrops, detectTextDrops, detectWatchDrops, computeSavingsRate, type EventRef, mailRelationshipThreads, type MailRef, type RelationshipBaseline, type TaskRef, type TextThreadRef, rankDropsLearned, runAgenda } from "./_agenda";
 import { listProposals } from "../proposals";
 import { recordOutcome } from "./_learning";
 import { readInferSignals } from "./_infer";
@@ -42,6 +42,7 @@ const deps = (over: Partial<AgendaDeps> = {}): AgendaDeps => ({
 	mychartConflicts: vi.fn(async () => []),
 	mychartAllergyGaps: vi.fn(async () => []),
 	trackedDocuments: vi.fn(async () => []),
+	taskList: vi.fn(async () => []),
 	...over,
 });
 
@@ -507,6 +508,47 @@ describe("agenda — document-expiry radar detector (#1148)", () => {
 	});
 });
 
+describe("agenda — task-deadline detector (split from #1203's 'deadline extraction')", () => {
+	it("flags a task due within the default 3-day window as urgency 'soon'", () => {
+		const drops = detectTaskDeadlineDrops("2026-07-01", [{ uid: "t1", summary: "Renew car tabs", due: "2026-07-03" }]);
+		expect(drops).toHaveLength(1);
+		expect(drops[0].kind).toBe("task_deadline");
+		expect(drops[0].urgency).toBe("soon");
+		expect(drops[0].title).toContain("Renew car tabs");
+		expect(drops[0].action.fn).toBe("todoist");
+	});
+
+	it("flags a task due today/tomorrow as urgency 'today'", () => {
+		const dueToday = detectTaskDeadlineDrops("2026-07-01", [{ uid: "t1", summary: "File taxes", due: "2026-07-01" }]);
+		expect(dueToday[0].urgency).toBe("today");
+		const dueTomorrow = detectTaskDeadlineDrops("2026-07-01", [{ uid: "t2", summary: "Call dentist", due: "2026-07-02" }]);
+		expect(dueTomorrow[0].urgency).toBe("today");
+	});
+
+	it("flags an already-overdue task", () => {
+		const drops = detectTaskDeadlineDrops("2026-07-10", [{ uid: "t1", summary: "Return library book", due: "2026-07-01" }]);
+		expect(drops).toHaveLength(1);
+		expect(drops[0].title).toContain("overdue");
+		expect(drops[0].evidence).toMatchObject({ daysLeft: -9 });
+	});
+
+	it("ignores a task with no due date, no uid, one expiring well outside the window, and a COMPLETED task", () => {
+		const drops = detectTaskDeadlineDrops("2026-07-01", [
+			{ uid: "t1", summary: "Someday task" },
+			{ summary: "No uid", due: "2026-07-02" },
+			{ uid: "t2", summary: "Far out", due: "2027-01-01" },
+			{ uid: "t3", summary: "Already done", due: "2026-07-02", status: "COMPLETED" },
+		]);
+		expect(drops).toHaveLength(0);
+	});
+
+	it("dedupe includes the due date — a rescheduled task (new due) proposes again", () => {
+		const first = detectTaskDeadlineDrops("2026-07-01", [{ uid: "t1", summary: "Renew car tabs", due: "2026-07-03" }]);
+		const rescheduled = detectTaskDeadlineDrops("2026-07-01", [{ uid: "t1", summary: "Renew car tabs", due: "2026-07-02" }]);
+		expect(first[0].dedupe).not.toBe(rescheduled[0].dedupe);
+	});
+});
+
 describe("agenda — relationship-decay detector (Relationship Radar, #930)", () => {
 	it("a thread tracked for the first time just seeds a baseline — no drop, no established cadence yet", () => {
 		const threads: TextThreadRef[] = [{ id: "t1", contact: "+1555", name: "Mom", lastAt: "2026-06-01T00:00:00Z" }];
@@ -761,6 +803,22 @@ describe("agenda — loop", () => {
 		const r = await runAgenda(e, {}, d);
 		expect(r.sources.imessage).toBe("not_configured");
 		expect(d.textThreads).not.toHaveBeenCalled();
+	});
+
+	it("wires task deadlines in only when CalDAV credentials are set", async () => {
+		const e = env({ FASTMAIL_CALDAV_USER: "me@fastmail.com", FASTMAIL_APP_PASSWORD: "app-pw" });
+		const d = deps({ taskList: vi.fn(async () => [{ uid: "t1", summary: "Renew car tabs", due: "2026-07-02" }]) });
+		const r = await runAgenda(e, { date: "2026-07-01" }, d);
+		expect(r.proposals?.map((p) => p.kind)).toEqual(expect.arrayContaining(["task_deadline"]));
+		expect(r.sources.tasks).toMatch(/1 task/);
+	});
+
+	it("skips tasks entirely (not_configured) when CalDAV credentials are unset", async () => {
+		const e = env();
+		const d = deps();
+		const r = await runAgenda(e, {}, d);
+		expect(r.sources.tasks).toBe("not_configured");
+		expect(d.taskList).not.toHaveBeenCalled();
 	});
 
 	it("wires relationship-decay signals in across cycles, once a thread's baseline is established (#930)", async () => {
