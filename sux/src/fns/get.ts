@@ -5,7 +5,7 @@ import { kagiTool } from "../kagi";
 import type { Route } from "../proxy";
 import { type Fn, fail, ok } from "../registry";
 import type { RtEnv, ToolResult } from "../registry";
-import { deliverBytes, fromB64, inlineB64, loadBytes, putBlob, toB64 } from "./_util";
+import { deliverBytes, fromB64, inlineB64, loadBytes, putBlob, storeRefUuid, toB64 } from "./_util";
 
 export type Kind = "pdf" | "document" | "ebook" | "code" | "docs" | "artifact" | "reference" | "any";
 
@@ -198,6 +198,12 @@ async function loadBytesFromUrl(env: RtEnv, url: string): Promise<{ bytes: Uint8
 }
 
 export async function acquireFromUrl(env: RtEnv, url: string, as: "pdf" | "archive"): Promise<{ bytes: Uint8Array; contentType: string }> {
+	// A sux `/s/<uuid>` CAS ref (what `put`/`store`/`get{store:"r2"}` themselves return) is
+	// already a finished file, not a webpage to print — handing it to render's headless-Chromium
+	// page.pdf() has nothing real to render and comes back a near-empty PDF husk (#1380). Read it
+	// straight from KV→R2 instead, same short-circuit loadBytes already gives every other caller.
+	if (storeRefUuid(url)) return loadBytesFromUrl(env, url);
+
 	if (as === "pdf") {
 		const renderFn = await findFn("render");
 		const r = await renderFn.run(env, { url, as: "pdf", delivery: "base64" });

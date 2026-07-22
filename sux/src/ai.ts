@@ -7,6 +7,8 @@ export type AiEnv = TailscaleEnv & {
 	// Cloudflare account and sets this (same convention as LUNCHMONEY_API_KEY etc.):
 	// unset means every Workers-AI call behaves exactly as it does today.
 	AI_GATEWAY_ID?: string;
+	// OpenAI fallback lane (#1369) — see hasOpenAiFallback below.
+	OPENAI_API_KEY?: string;
 };
 
 export const MODELS = {
@@ -15,8 +17,22 @@ export const MODELS = {
 	translate: "@cf/meta/m2m100-1.2b",
 } as const;
 
+/** The OpenAI fallback model — a small, cheap chat-completion model class. Deliberately NOT
+ *  an upgrade over the primary path's model: this lane exists to survive a Workers-AI OUTAGE
+ *  or rate-limit, not to improve answer quality on a healthy call. */
+export const OPENAI_FALLBACK_MODEL = "gpt-5-mini";
+
 export function hasAI(env: AiEnv): boolean {
 	return typeof env.AI?.run === "function";
+}
+
+/** OPENAI_API_KEY configured ⇒ llm() may retry via OpenAI when Workers AI hard-fails,
+ *  rate-limits, or isn't bound at all. Absent ⇒ llm() behaves EXACTLY as it did before this
+ *  lane existed — a Workers-AI failure (or missing binding) just throws, same as always. Colin
+ *  provisions the key via `wrangler secret put OPENAI_API_KEY`, same convention as every other
+ *  optional integration in this repo (lunchmoney/dropbox/mychart/…). */
+export function hasOpenAiFallback(env: AiEnv): boolean {
+	return Boolean(env.OPENAI_API_KEY);
 }
 
 /** Options for env.AI.run() that route the call through Cloudflare AI Gateway
@@ -70,26 +86,65 @@ export function wrapUntrusted(content: string): string {
 	return `${DATA_OPEN}\n${defuseMarkers(content)}\n${DATA_CLOSE}`;
 }
 
+type ChatMessage = { role: "system" | "user"; content: string };
+
+/** The guard rides in the system role (trusted) so the untrusted user content below can never
+ *  dislodge it; the user content is fenced as data. Built once so BOTH providers (Workers AI,
+ *  the OpenAI fallback) see the identical fenced shape — the untrusted-content guard applies
+ *  the same way no matter which one actually serves the call. */
+function buildMessages(system: string, user: string, task: string): ChatMessage[] {
+	return [
+		{ role: "system", content: `${system}\n\n${guardInstruction(task)}` },
+		{ role: "user", content: wrapUntrusted(user) },
+	];
+}
+
+/** One completion via OpenAI's chat completions API, same fenced `messages` shape llm() sends
+ *  Workers-AI. Throws on any non-2xx/network failure — the caller decides what to do with that
+ *  (llm() below always re-surfaces the ORIGINAL Workers-AI error, never this one, per the
+ *  issue's fail-open contract: a fallback failing must never look scarier than the outage it
+ *  was covering for). */
+async function openAiComplete(env: AiEnv, messages: ChatMessage[], maxTokens: number): Promise<string> {
+	const res = await fetch("https://api.openai.com/v1/chat/completions", {
+		method: "POST",
+		headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
+		body: JSON.stringify({ model: OPENAI_FALLBACK_MODEL, messages, max_tokens: maxTokens }),
+	});
+	if (!res.ok) throw new Error(`OpenAI fallback: HTTP ${res.status}`);
+	const data = (await res.json()) as { choices?: Array<{ message?: { content?: unknown } }> };
+	const content = data?.choices?.[0]?.message?.content;
+	if (content == null) return "";
+	return (typeof content === "string" ? content : JSON.stringify(content)).trim();
+}
+
 export async function llm(env: AiEnv, system: string, user: string, maxTokens = 1024, task = "this task"): Promise<string> {
-	if (!hasAI(env)) throw new Error("Workers AI binding not configured (add \"ai\": { \"binding\": \"AI\" } to wrangler).");
-	const r = await env.AI!.run(
-		MODELS.text,
-		{
-			messages: [
-				// The guard rides in the system role (trusted) so the untrusted user content
-				// below can never dislodge it; the user content is fenced as data.
-				{ role: "system", content: `${system}\n\n${guardInstruction(task)}` },
-				{ role: "user", content: wrapUntrusted(user) },
-			],
-			max_tokens: maxTokens,
-		},
-		aiGatewayOptions(env),
-	);
-	// Some Workers-AI models return `response` as an already-parsed object; String()
-	// would yield "[object Object]", so JSON-encode non-strings.
-	const resp = r?.response;
-	if (resp == null) return "";
-	return (typeof resp === "string" ? resp : JSON.stringify(resp)).trim();
+	const messages = buildMessages(system, user, task);
+
+	if (hasAI(env)) {
+		try {
+			const r = await env.AI!.run(MODELS.text, { messages, max_tokens: maxTokens }, aiGatewayOptions(env));
+			// Some Workers-AI models return `response` as an already-parsed object; String()
+			// would yield "[object Object]", so JSON-encode non-strings.
+			const resp = r?.response;
+			return resp == null ? "" : (typeof resp === "string" ? resp : JSON.stringify(resp)).trim();
+		} catch (e) {
+			if (!hasOpenAiFallback(env)) throw e;
+			try {
+				const out = await openAiComplete(env, messages, maxTokens);
+				console.log(`llm: Workers AI failed (${e instanceof Error ? e.message : String(e)}) — served by openai fallback`);
+				return out;
+			} catch {
+				throw e; // the fallback's own failure never outranks the original error
+			}
+		}
+	}
+
+	if (hasOpenAiFallback(env)) {
+		console.log("llm: no Workers AI binding — served by openai fallback");
+		return openAiComplete(env, messages, maxTokens);
+	}
+
+	throw new Error('Workers AI binding not configured (add "ai": { "binding": "AI" } to wrangler).');
 }
 
 export async function textFromUrlOr(env: TailscaleEnv, text: string, url?: string): Promise<string> {

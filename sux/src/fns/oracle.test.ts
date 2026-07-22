@@ -212,6 +212,28 @@ describe("oracle — learn", () => {
 		expect(JSON.parse(r.content[0].text).chunk_count).toBe(1);
 	});
 
+	it("a single large multi-section learn call doesn't evict a topic's entire prior history (#1378)", async () => {
+		const { env, kv, run } = makeEnv();
+		// 8 earlier, unrelated learns — each a single distinct chunk.
+		for (let i = 0; i < 8; i++) {
+			run.mockImplementationOnce(async () => ({ response: `chunk ${i}` }));
+			await oracle.run(env, { knowledge: `material ${i}`, topic: "crowd" });
+		}
+
+		// One large multi-section payload that would, if uncapped, produce more new pieces
+		// (one per section) than fit alongside the 8 prior chunks within MAX_CHUNKS=15 —
+		// wiping out the earlier, unrelated learns' history in a single call.
+		const section = (n: number) => `## Section ${n}\n${"x".repeat(700)}\nDetail about section ${n}.`;
+		const knowledge = [1, 2, 3, 4, 5, 6, 7, 8].map(section).join("\n\n");
+		await oracle.run(env, { knowledge, topic: "crowd" });
+
+		const stored = JSON.parse(await maybeDecompressString(kv.store.get("sux:oracle:crowd")!));
+		// All 8 prior chunks survive — the big call is capped at MAX_CHUNKS_PER_LEARN=5 new
+		// pieces (8 + 5 = 13 <= 15), so nothing needed to be evicted.
+		expect(stored.chunks.slice(0, 8)).toEqual([0, 1, 2, 3, 4, 5, 6, 7].map((i) => `chunk ${i}`));
+		expect(stored.chunks).toHaveLength(13);
+	});
+
 	it("learn-from-URL fetches the page, reduces HTML to prose, then distills", async () => {
 		const { env, run } = makeEnv();
 		fetchMock.mockImplementation(async () => new Response(ARTICLE_HTML, { status: 200, headers: { "content-type": "text/html" } }));

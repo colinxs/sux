@@ -54,6 +54,14 @@ const sourceDomain = (topic: string): string => `oracle:${topic}`;
 /** How many distilled chunks we keep — the rolling set the KB is re-distilled from. */
 const MAX_CHUNKS = 15;
 
+/** Cap on how many of a SINGLE learn() call's pieces may feed the rolling summary window
+ *  (#1378) — without this, one large multi-section payload (up to ~13 pieces from a 40KB
+ *  URL fetch, given PIECE_TARGET/PIECE_MAX below) could fill nearly the whole MAX_CHUNKS
+ *  budget by itself, evicting a topic's ENTIRE prior history (from unrelated earlier learns)
+ *  in one call. The retrievable detail tier (_source, unbounded) still gets every piece
+ *  regardless — only the bounded rolling SUMMARY sacrifices completeness here. */
+const MAX_CHUNKS_PER_LEARN = 5;
+
 /** Fetch cap for URL-sourced knowledge — enough for a long article, bounded for the model. */
 const FETCH_CAP = 40_000;
 
@@ -265,12 +273,17 @@ export async function learnTopic(
 	}
 	if (!newChunks.length) throw new Error("oracle distilled an empty knowledge chunk — retry.");
 
-	// 3. Append + cap the rolling set, then RE-DISTILL one coherent KB from the whole
+	// 3. Cap how many of THIS call's pieces feed the rolling summary window (#1378) — keep
+	// the lead pieces (a document's opening sections tend to carry the most overview-level
+	// material) when a single call produced more than MAX_CHUNKS_PER_LEARN.
+	const summaryChunks = newChunks.length > MAX_CHUNKS_PER_LEARN ? newChunks.slice(0, MAX_CHUNKS_PER_LEARN) : newChunks;
+
+	// 4. Append + cap the rolling set, then RE-DISTILL one coherent KB from the whole
 	// set (also fenced — the chunks derive from untrusted material). This keeps the KB
 	// bounded and self-consistent as it accumulates.
 	const prior = await loadKb(env, topic);
-	const chunks = [...(prior?.chunks ?? []), ...newChunks].slice(-MAX_CHUNKS);
-	const sources = [...(prior?.sources ?? []), ...newChunks.map(() => source)].slice(-MAX_CHUNKS);
+	const chunks = [...(prior?.chunks ?? []), ...summaryChunks].slice(-MAX_CHUNKS);
+	const sources = [...(prior?.sources ?? []), ...summaryChunks.map(() => source)].slice(-MAX_CHUNKS);
 	const combined = chunks.map((c, i) => `Note ${i + 1}:\n${c}`).join("\n\n");
 	// An empty consolidation is a transient model hiccup, not an empty KB — fall back to
 	// the raw notes rather than throwing away knowledge we just distilled.

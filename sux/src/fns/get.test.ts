@@ -235,6 +235,16 @@ describe("acquireFromUrl", () => {
 		expect(bytes.length).toBeGreaterThan(0);
 	});
 
+	it("a sux /s/<uuid> CAS ref short-circuits straight to loadBytes, never render (#1380)", async () => {
+		const ref = "https://suxos.net/s/11111111-2222-3333-4444-555555555555";
+		loadBytesMock.mockResolvedValueOnce({ bytes: new Uint8Array([1, 2, 3, 4, 5]), contentType: "application/pdf" });
+		const { bytes, contentType } = await acquireFromUrl({} as any, ref, "pdf");
+		expect(loadBytesMock).toHaveBeenCalledWith({}, { url: ref });
+		expect(renderRun).not.toHaveBeenCalled();
+		expect(contentType).toBe("application/pdf");
+		expect(bytes.length).toBe(5);
+	});
+
 	it("as:archive uses wayback's raw_url when a snapshot is available", async () => {
 		waybackRun.mockResolvedValueOnce({ content: [{ text: '{"available":true,"url":"https://web.archive.org/web/2020/https://a.com","raw_url":"https://web.archive.org/web/2020id_/https://a.com"}' }] });
 		loadBytesMock.mockResolvedValueOnce({ bytes: new TextEncoder().encode("<html>archived</html>"), contentType: "text/html" });
@@ -338,6 +348,20 @@ describe("get.run", () => {
 		const parsed = JSON.parse(r.content[0].text);
 		expect(parsed.editions).toBeUndefined();
 		expect(parsed.file.base64).toBe("JVBR");
+	});
+
+	it("url mode: a sux /s/<uuid> ref round-trips its full bytes without ever calling render (#1380)", async () => {
+		const ref = "https://suxos.net/s/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+		const pdfBytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 1, 2, 3, 4, 5]);
+		loadBytesMock.mockResolvedValueOnce({ bytes: pdfBytes, contentType: "application/pdf" });
+		pdfRun.mockResolvedValueOnce({ content: [{ text: `{"mime":"application/pdf","size":${pdfBytes.length},"base64":"${Buffer.from(pdfBytes).toString("base64")}"}` }] });
+
+		const r = await get.run({} as any, { input: ref });
+		expect(r.isError).toBeFalsy();
+		expect(renderRun).not.toHaveBeenCalled();
+		expect(loadBytesMock).toHaveBeenCalledWith({}, { url: ref });
+		const parsed = JSON.parse(r.content[0].text);
+		expect(parsed.file.size).toBe(pdfBytes.length);
 	});
 
 	it("stores the result when store is requested", async () => {
