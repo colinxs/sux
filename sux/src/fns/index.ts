@@ -126,6 +126,7 @@ import { contact_consolidate_plan } from "./contact_consolidate_plan";
 import { evidence_packet } from "./evidence_packet";
 import { files_consolidate_plan } from "./files_consolidate_plan";
 import { get } from "./get";
+import { graph_health } from "./graph_health";
 import { imessage } from "./imessage";
 import { mail_domain_backfill } from "./mail_domain_backfill";
 import { mail_sieve_hc } from "./mail_sieve_hc";
@@ -262,6 +263,7 @@ export const FUNCTIONS: Fn[] = [
 	evidence_packet,
 	files_consolidate_plan,
 	get,
+	graph_health,
 	imessage,
 	mail_domain_backfill,
 	mail_sieve_hc,

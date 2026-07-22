@@ -41,6 +41,7 @@ import type { WatchFindings } from "./_watch_sweep";
 import type { WeeklyRecallFindings } from "./_weekly_recall";
 import { dueForReview, hasStudyReview, reviewIntervalDays, studyReviewCandidates, type DueReview, type StudiedTopicRef } from "./_study_review";
 import { documentRadarArmed, listTrackedDocuments, type TrackedDocumentRef } from "./_document_radar";
+import { hasAI } from "../ai";
 import { hasCalDav } from "./_caldav";
 
 // ── Gates ────────────────────────────────────────────────────────────────────
@@ -225,6 +226,10 @@ const RELATIONSHIP_EWMA_ALPHA = 0.3;
 // contact's sub-1-day baseline from firing after a single ordinary quiet day.
 const RELATIONSHIP_SILENCE_MULTIPLIER = 2;
 const RELATIONSHIP_MIN_SILENCE_DAYS = 5;
+// Only the stalest few get a drafted opener (#1210, W6) — one AI call per relationship_drop
+// would scale with however many contacts have gone quiet this cycle; the detector already
+// sorts by urgency/silence (sortByUrgency), so top-N is "the ones that matter most" for free.
+const RELATIONSHIP_OPENER_TOP_N = 3;
 
 /** Per-thread cadence state: the last observed message time, the EWMA'd "typical days
  *  between contact" baseline, and how many real gaps have fed it — 0 means "no baseline
@@ -310,10 +315,54 @@ export function detectRelationshipDrops(
 			title: `Gone quiet on ${who} — ${Math.round(silenceDays)}d since last contact (usually ~${Math.round(prior.baselineDays)}d)`,
 			emoji: "🌙",
 			action: task(`Check in with ${who} — ${Math.round(silenceDays)}d quiet, unusual for you two`),
-			evidence: { id: t.id, contact: t.contact, silenceDays, baselineDays: prior.baselineDays },
+			evidence: { id: t.id, contact: t.contact, who, silenceDays, baselineDays: prior.baselineDays },
 		});
 	}
 	return { drops: sortByUrgency(drops), baselines };
+}
+
+/** Folds a drafted opener into the top-N stalest relationship_drop findings (#1210, W6) —
+ *  called from runAgenda AFTER detectRelationshipDrops, never from inside it: that detector
+ *  is pure/sync/deterministic by its own contract above, and an AI call is neither. Best-
+ *  effort per drop: `deps.voiceRestyle` failing (or returning null) just leaves that drop's
+ *  existing plain title/content untouched — this never throws and never blocks the rest of
+ *  the agenda tick. Re-proposing weekly (not daily) already falls out of detectRelationshipDrops'
+ *  own `relationship::<id>::<weekOfSilence>` dedupe bucketing, so drafting piggybacks on that
+ *  existing cadence instead of adding a second one here. */
+async function draftRelationshipOpeners(env: RtEnv, drops: Drop[], voiceRestyle: AgendaDeps["voiceRestyle"]): Promise<Drop[]> {
+	if (!hasAI(env)) return drops;
+	const relationshipDrops = drops.filter((d) => d.kind === "relationship_drop").slice(0, RELATIONSHIP_OPENER_TOP_N);
+	if (!relationshipDrops.length) return drops;
+
+	const openers = new Map<Drop, string>();
+	await Promise.all(
+		relationshipDrops.map(async (d) => {
+			const ev = d.evidence as { who?: string; contact?: string; silenceDays?: number } | undefined;
+			const who = ev?.who || ev?.contact || "them";
+			const days = Number.isFinite(ev?.silenceDays) ? Math.round(ev!.silenceDays!) : undefined;
+			const seed = `Hey ${who}, it's been a while${days ? ` (${days}d)` : ""} — thinking of you, how are you doing?`;
+			try {
+				const opener = await voiceRestyle(env, seed);
+				if (opener?.trim()) openers.set(d, opener.trim());
+			} catch {
+				// best-effort — leave this drop's plain content as-is
+			}
+		}),
+	);
+	if (!openers.size) return drops;
+
+	return drops.map((d) => {
+		const opener = openers.get(d);
+		if (!opener) return d;
+		const ev = d.evidence as { who?: string; contact?: string; silenceDays?: number } | undefined;
+		const who = ev?.who || ev?.contact || "them";
+		const days = Math.round(ev?.silenceDays ?? 0);
+		return {
+			...d,
+			action: { ...d.action, args: { ...d.action.args, content: `Check in with ${who} — ${days}d quiet. Drafted opener: "${opener}"` } },
+			evidence: { ...(d.evidence as object), opener },
+		};
+	});
 }
 
 // ── Follow-up detector (#1217, split from #1203 W1(b)) ──────────────────────────────
@@ -1132,6 +1181,11 @@ export type AgendaDeps = {
 	/** Tracked-document vault notes (passport/license/insurance/warranty/registration, #1148) —
 	 *  a vault scan, never a live API. Only called when documentRadarArmed(env). */
 	trackedDocuments: (env: RtEnv) => Promise<TrackedDocumentRef[]>;
+	/** Restyle a drafted-opener seed through the `voice` fn's default house voice (W6, #1210)
+	 *  — null on any failure (AI not configured, upstream error) so the caller degrades to
+	 *  the plain title/content it already had. Only ever called when hasAI(env); injected so
+	 *  tests can stub it without a real Workers AI binding. */
+	voiceRestyle: (env: RtEnv, text: string) => Promise<string | null>;
 	/** Sent-mail threads awaiting a reply (#1217, split from #1203 W1(b)) — always called, same
 	 *  as mailSearch/mailRelationshipSearch (mail is core, no feature flag gates it). */
 	followUpThreads: (env: RtEnv, opts: { since: string }) => Promise<FollowUpThreadRef[]>;
@@ -1379,10 +1433,15 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		silenceMultiplier: relationshipSilenceMultiplier,
 		minSilenceDays: relationshipMinSilenceDays,
 	});
+	// AI-gated, best-effort (#1210, W6) — runs OUTSIDE detectRelationshipDrops itself so that
+	// detector stays pure/sync; a no-op (returns relationshipResult.drops unchanged) when
+	// Workers AI isn't bound, so this never becomes a new required capability for the loop.
+	const relationshipDropsWithOpeners = await draftRelationshipOpeners(env, relationshipResult.drops, deps.voiceRestyle);
 	const studyReviewDue = hasStudyReview(env) ? dueForReview(studyTopics, Date.parse(`${date}T00:00:00Z`), reviewIntervalDays(env)) : [];
 	const drops = await rankDropsLearned(env, [
 		...detectDrops(mail, events),
 		...detectTextDrops(textThreads),
+		...relationshipDropsWithOpeners,
 		...detectFollowUpDrops(Date.parse(`${date}T00:00:00Z`), followUpThreads),
 		...relationshipResult.drops,
 		...detectKnowledgeDrops(consolidateFindings, weeklyRecallFindings),
@@ -1542,6 +1601,7 @@ export async function defaultDeps(): Promise<AgendaDeps> {
 	const { lastWeeklyRecallFindings } = await import("./_weekly_recall");
 	const { lastWatchFindings } = await import("./_watch_sweep");
 	const { lastCrossSemanticFindings } = await import("./_cross_semantic");
+	const { voice } = await import("./voice");
 	const tool = (name: string) => mail.MAIL_TOOLS.find((t) => t.name === name);
 
 	return {
@@ -1700,6 +1760,13 @@ export async function defaultDeps(): Promise<AgendaDeps> {
 		mychartConflicts: async (env) => crossOrgMedicationAllergyConflicts(env),
 		mychartAllergyGaps: async (env) => crossOrgAllergyGaps(env),
 		trackedDocuments: async (env) => listTrackedDocuments(env),
+		voiceRestyle: async (env, text) => {
+			// No style/framework (#1210) — deliberately the plain default house voice, since
+			// #1207's `framework` param may or may not have landed yet in this same batch.
+			const r = await voice.run(env, { text });
+			if (r.isError) return null;
+			return r.content?.[0]?.text ?? null;
+		},
 		followUpThreads: async (env, o) => {
 			const searchTool = tool("mail_search");
 			const threadTool = tool("mail_thread");

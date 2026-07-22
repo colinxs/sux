@@ -3,7 +3,9 @@ import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { appendOnWhitelist } from "./_kb";
 import { hasDropboxFull, normFull, readFull } from "./_dropbox-full";
 import { hasDropbox, sharedLink } from "./dropbox";
-import { dropboxRawUrl, errMsg, fromB64, isHttpUrl, isHttpUrlStr, loadBytes, oj } from "./_util";
+import { dropboxRawUrl, errMsg, fromB64, isHttpUrl, isHttpUrlStr, loadBytes, oj, putBlob } from "./_util";
+import { obsidian } from "./obsidian";
+import { wayback } from "./wayback";
 import { KV_PREFIX, loadKb, learnTopic, oracle, type Whitelist } from "./oracle";
 
 // study — the WHITELISTED-KNOWLEDGE verb. You hand sux material you OWN or have the right to
@@ -155,6 +157,83 @@ export async function listWhitelisted(env: RtEnv): Promise<Array<{ topic: string
 	return out;
 }
 
+type ArchiveResult = { r2?: { url: string; sha256: string; size: number }; wayback?: string; vault_note?: string; skipped?: string };
+
+/** The other two legs of the #1184 W4 three-sink ingestion pipeline (learnTopic's oracle chunk
+ *  store is already the "full text into a messy model" leg — this only adds the two MISSING
+ *  legs): archive the original bytes to R2 (best-effort — a Dropbox-path pdf has no directly
+ *  fetchable bytes here without re-deriving Mode A/B, so it's skipped and noted rather than
+ *  failing the whole learn), fire a best-effort Wayback snapshot for a url source, and write a
+ *  human-readable per-topic insight-card note. Every step is independently best-effort: an
+ *  archive-leg failure must never fail the underlying distill/whitelist the caller already got. */
+async function archiveKnowledge(
+	env: RtEnv,
+	opts: { topic: string; title?: string; sourceLabel: string; resolvedKind: "text" | "url" | "pdf"; rawSource: string; material: string; distilled: string },
+): Promise<ArchiveResult> {
+	const result: ArchiveResult = {};
+
+	try {
+		let bytes: Uint8Array | undefined;
+		let contentType = "text/plain; charset=utf-8";
+		if (opts.resolvedKind === "text") {
+			bytes = new TextEncoder().encode(opts.material);
+		} else if (isHttpUrlStr(opts.rawSource)) {
+			bytes = (await loadBytes(env, { url: opts.rawSource })).bytes;
+			contentType = opts.resolvedKind === "pdf" ? "application/pdf" : "text/html; charset=utf-8";
+		}
+		if (bytes) {
+			const ref = await putBlob(env, bytes, contentType);
+			result.r2 = { url: ref.url, sha256: ref.sha256, size: ref.size };
+		} else {
+			result.skipped = "source bytes were not directly fetchable here (e.g. a Dropbox-path pdf) — not archived to R2.";
+		}
+	} catch (e) {
+		result.skipped = `R2 archive failed: ${errMsg(e)}`;
+	}
+
+	if (opts.resolvedKind === "url" && isHttpUrlStr(opts.rawSource)) {
+		try {
+			const wb = await wayback.run(env, { url: opts.rawSource });
+			if (!wb.isError) {
+				const j = JSON.parse(wb.content?.[0]?.text ?? "{}");
+				if (j?.available && typeof j.url === "string") result.wayback = j.url;
+			}
+		} catch {
+			// Wayback is a nice-to-have snapshot, never load-bearing for the archive.
+		}
+	}
+
+	try {
+		const slug = (opts.title ?? opts.topic).trim().replace(/[\\/:*?"<>|]/g, "-").slice(0, 80) || opts.topic;
+		const path = `Knowledge/Distilled/${slug}.md`;
+		const body = [
+			"---",
+			"type: distilled-knowledge",
+			`topic: ${opts.topic}`,
+			`source: ${opts.sourceLabel}`,
+			`created: ${new Date().toISOString()}`,
+			"---",
+			"",
+			`# ${opts.title ?? opts.topic}`,
+			"",
+			opts.distilled,
+			"",
+			"## Provenance",
+			`- Source: ${opts.sourceLabel}`,
+			`- R2 archive: ${result.r2 ? result.r2.url : "(not archived)"}`,
+			...(result.wayback ? [`- Wayback: ${result.wayback}`] : []),
+			`- Query: oracle({ problem: "…", topic: "${opts.topic}" })`,
+			"",
+		].join("\n");
+		const r = await obsidian.run(env, { action: "write", path, content: body, backend: "git" });
+		if (!r.isError) result.vault_note = path;
+	} catch (e) {
+		result.skipped = result.skipped ? `${result.skipped}; insight card failed: ${errMsg(e)}` : `insight card failed: ${errMsg(e)}`;
+	}
+
+	return result;
+}
+
 export const study: Fn = {
 	name: "study",
 	cost: 4,
@@ -165,8 +244,9 @@ export const study: Fn = {
 		"`source` is the material; `kind`: text (verbatim body, e.g. a PDF you extracted) | url (http(s) article/page/.txt, fetched + distilled) | pdf (an http(s) URL to a PDF, or a Dropbox file path you uploaded — transcribed via Workers-AI toMarkdown) | auto (default — infers from `source`). " +
 		"`topic` (required) namespaces the knowledge base (it becomes a whitelisted `oracle` topic). `title` labels the provenance. It distills into an oracle topic KB and stamps a whitelist marker, so `oracle({problem,topic})` and `recall` both rank it above the model + [web]. " +
 		"`action`: learn (default) → distill + whitelist; list → the studied (whitelisted) topics + provenance (the copyright audit); forget → delete one topic's KB (reversible; the git-versioned vault mirror stays as history). " +
-		"COPYRIGHT-CLEAN: only the material you supply is distilled (it fetches exactly the one url/path — never crawls to find a work), and only the compressed index is stored, never a full-text clone. Additive + reversible. Query with oracle/recall. Needs the Workers-AI binding; pdf-from-file needs DROPBOX_FULL_*. Stateful — never cached.",
-	inputSchema: {
+		"COPYRIGHT-CLEAN: only the material you supply is distilled (it fetches exactly the one url/path — never crawls to find a work), and only the compressed index is stored, never a full-text clone. Additive + reversible. Query with oracle/recall. Needs the Workers-AI binding; pdf-from-file needs DROPBOX_FULL_*. Stateful — never cached. " +
+		"`archive` (default false): also fan out to the two other knowledge-ingestion sinks — the original source bytes (url/pdf-via-url/text; a Dropbox-path pdf is skipped, noted in the result) archived privately to R2, a best-effort Wayback snapshot for a url source, and a human-readable insight-card note written to Knowledge/Distilled/<topic>.md (summary + provenance links). Best-effort: an archive failure never fails the underlying distill/whitelist.",
+		inputSchema: {
 		type: "object",
 		additionalProperties: false,
 		properties: {
@@ -180,6 +260,7 @@ export const study: Fn = {
 					"Override the provenance `source` string that gets stamped/dedup-matched instead of inferring it from `source` (e.g. a caller resolving a Dropbox file to an http(s) URL to fetch its bytes, but wanting the KB to record `dropbox:<path>` for dedup).",
 			},
 			action: { type: "string", enum: ["learn", "list", "forget"], default: "learn", description: "learn (default) | list (audit the whitelisted topics) | forget (delete a topic's KB)." },
+				archive: { type: "boolean", default: false, description: "Also archive the source to R2 (+ Wayback for a url) and write a Knowledge/Distilled/<topic>.md insight-card note (the three-sink ingestion pipeline). Best-effort." },
 		},
 	},
 	raw: true,
@@ -259,6 +340,10 @@ export const study: Fn = {
 			// Git-versioned provenance ledger — the auditable copyright story (provenance only, no text).
 			const provenance_logged = await appendOnWhitelist(env, topic, sourceLabel, resolved, provenance.title);
 
+			// The three-sink ingestion pipeline (#1184 W4) is opt-in via `archive` — the default
+			// `learn` call stays exactly as fast/cheap as it always was (one oracle distill pass).
+			const archived = args?.archive === true ? await archiveKnowledge(env, { topic, title: provenance.title, sourceLabel, resolvedKind: resolved, rawSource, material, distilled: last.distilled }) : undefined;
+
 			return ok(
 				oj({
 					action,
@@ -271,6 +356,7 @@ export const study: Fn = {
 					chunk_count: last.chunk_count,
 					distilled_preview: last.distilled.slice(0, 400),
 					provenance_logged,
+					archived,
 					summary: `Learned '${provenance.title ?? sourceLabel}' into the whitelisted topic '${topic}' — distilled into ${last.chunk_count} note(s); the full text was not stored.`,
 					query_hint: `Ask it with oracle({ problem: "…", topic: "${topic}" }) or recall({ question: "…" }) — this whitelisted KB is weighted above the model's own knowledge and web research.`,
 					undo_hint: `study({ action: "forget", topic: "${topic}" })`,

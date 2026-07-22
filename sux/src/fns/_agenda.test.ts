@@ -42,6 +42,7 @@ const deps = (over: Partial<AgendaDeps> = {}): AgendaDeps => ({
 	mychartConflicts: vi.fn(async () => []),
 	mychartAllergyGaps: vi.fn(async () => []),
 	trackedDocuments: vi.fn(async () => []),
+	voiceRestyle: vi.fn(async () => null),
 	followUpThreads: vi.fn(async () => []),
 	taskList: vi.fn(async () => []),
 	...over,
@@ -880,6 +881,65 @@ describe("agenda — loop", () => {
 		// This cycle would refine the baseline to ~3d, but it's a dry run — must not persist.
 		await runAgenda(e, { date: "2026-06-04", dry_run: true }, deps({ textThreads: vi.fn(async () => [{ id: "t1", contact: "+15551234", lastFromMe: true, lastAt: "2026-06-04T12:00:00Z" }]) }));
 		expect(e.OAUTH_KV.map.get("sux:ledger:agenda_relationship:t1")).toContain("\"sampleCount\":0");
+	});
+
+	describe("drafted-opener attachment (W6, #1210)", () => {
+		// A staleness helper: seed a baseline on cycle 1, refine it on cycle 2 (3d gap), then let
+		// silence run to `silentDate` on cycle 3 — the same three-cycle shape #930's own test above
+		// uses to get a real relationship_drop out of detectRelationshipDrops.
+		async function goStale(e: any, id: string, contact: string) {
+			await runAgenda(e, { date: "2026-06-01" }, deps({ textThreads: vi.fn(async () => [{ id, contact, name: contact, lastFromMe: true, lastAt: "2026-06-01T12:00:00Z" }]) }));
+			await runAgenda(e, { date: "2026-06-04" }, deps({ textThreads: vi.fn(async () => [{ id, contact, name: contact, lastFromMe: true, lastAt: "2026-06-04T12:00:00Z" }]) }));
+			return runAgenda(e, { date: "2026-06-24" }, deps({ textThreads: vi.fn(async () => [{ id, contact, name: contact, lastFromMe: true, lastAt: "2026-06-04T12:00:00Z" }]), voiceRestyle: vi.fn(async () => 'Hey! Been thinking of you — how are you?') }));
+		}
+
+		it("folds a voice-drafted opener into the proposal content when Workers AI is bound", async () => {
+			const e = env({ IMESSAGE_URL: "https://mac.ts.net", IMESSAGE_SECRET: "s".repeat(20), AI: { run: vi.fn() } });
+			const r = await goStale(e, "t1", "Mom");
+			const p = r.proposals?.find((p) => p.kind === "relationship_drop");
+			expect(p).toBeTruthy();
+			const proposals = await listProposals(e, {});
+			const stored = proposals.find((x: any) => x.id === p!.id) as any;
+			expect(stored.payload.args.content).toContain("Drafted opener:");
+			expect(stored.payload.args.content).toContain("Hey! Been thinking of you — how are you?");
+			expect(stored.evidence.opener).toBe("Hey! Been thinking of you — how are you?");
+		});
+
+		it("degrades to the plain content, with no voiceRestyle call at all, when Workers AI isn't bound", async () => {
+			const e = env({ IMESSAGE_URL: "https://mac.ts.net", IMESSAGE_SECRET: "s".repeat(20) }); // no AI binding
+			const voiceRestyle = vi.fn(async () => "should never be called");
+			await runAgenda(e, { date: "2026-06-01" }, deps({ textThreads: vi.fn(async () => [{ id: "t1", contact: "Mom", name: "Mom", lastFromMe: true, lastAt: "2026-06-01T12:00:00Z" }]), voiceRestyle }));
+			await runAgenda(e, { date: "2026-06-04" }, deps({ textThreads: vi.fn(async () => [{ id: "t1", contact: "Mom", name: "Mom", lastFromMe: true, lastAt: "2026-06-04T12:00:00Z" }]), voiceRestyle }));
+			const r = await runAgenda(e, { date: "2026-06-24" }, deps({ textThreads: vi.fn(async () => [{ id: "t1", contact: "Mom", name: "Mom", lastFromMe: true, lastAt: "2026-06-04T12:00:00Z" }]), voiceRestyle }));
+			const p = r.proposals?.find((p) => p.kind === "relationship_drop");
+			expect(p).toBeTruthy();
+			expect(voiceRestyle).not.toHaveBeenCalled();
+			const proposals = await listProposals(e, {});
+			const stored = proposals.find((x: any) => x.id === p!.id) as any;
+			expect(stored.payload.args.content).not.toContain("Drafted opener:");
+			expect(stored.evidence.opener).toBeUndefined();
+		});
+
+		it("degrades to the plain content when voiceRestyle itself throws — never blocks the proposal", async () => {
+			const e = env({ IMESSAGE_URL: "https://mac.ts.net", IMESSAGE_SECRET: "s".repeat(20), AI: { run: vi.fn() } });
+			await runAgenda(e, { date: "2026-06-01" }, deps({ textThreads: vi.fn(async () => [{ id: "t1", contact: "Mom", name: "Mom", lastFromMe: true, lastAt: "2026-06-01T12:00:00Z" }]) }));
+			await runAgenda(e, { date: "2026-06-04" }, deps({ textThreads: vi.fn(async () => [{ id: "t1", contact: "Mom", name: "Mom", lastFromMe: true, lastAt: "2026-06-04T12:00:00Z" }]) }));
+			const r = await runAgenda(
+				e,
+				{ date: "2026-06-24" },
+				deps({
+					textThreads: vi.fn(async () => [{ id: "t1", contact: "Mom", name: "Mom", lastFromMe: true, lastAt: "2026-06-04T12:00:00Z" }]),
+					voiceRestyle: vi.fn(async () => {
+						throw new Error("upstream_error");
+					}),
+				}),
+			);
+			const p = r.proposals?.find((p) => p.kind === "relationship_drop");
+			expect(p).toBeTruthy();
+			const proposals = await listProposals(e, {});
+			const stored = proposals.find((x: any) => x.id === p!.id) as any;
+			expect(stored.payload.args.content).not.toContain("Drafted opener:");
+		});
 	});
 
 	it("wires Monarch portfolio + savings-rate signals (W7.1, #803) in only when MONARCH_TOKEN is set", async () => {

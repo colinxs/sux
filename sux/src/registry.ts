@@ -67,6 +67,11 @@ export type RtEnv = Env &
 		// root instead of needing the /portal path prefix. Defaults to
 		// "portal.suxos.net" when unset; see portal.ts's hostToPortalPath.
 		PORTAL_HOST?: string;
+		// Secret gating the /portal `?as=<profile>` admin-preview override (#1229
+		// security-review critical: a bare query param must never grant an audience on
+		// a public surface). Unset → previews are OFF (fail-closed); set → previews
+		// need `?preview_token=<this>` too. See portal.ts's resolveAudience.
+		PORTAL_PREVIEW_TOKEN?: string;
 		// Dropbox app-folder blob store (dropbox fn + ingest blob routing), all
 		// App-folder-scoped (can only see /Apps/<app>/). Durable path: a long-lived
 		// REFRESH token + app key/secret → short-lived access tokens minted &

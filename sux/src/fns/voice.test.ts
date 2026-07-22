@@ -107,6 +107,35 @@ describe("voice", () => {
 		expect(r.content[0].text).toBe("The restyled output.");
 	});
 
+	it("folds a single framework lens into the system prompt", async () => {
+		const { env, run } = makeEnv();
+		const r = await voice.run(env, { text: "we need to talk about the deadline", framework: "nvc" });
+		expect(r.isError).toBeFalsy();
+		const { system } = messages(run);
+		expect(system).toMatch(/Apply this lens \(nvc v1\)/);
+		expect(system).toMatch(/Nonviolent Communication/);
+	});
+
+	it("folds multiple framework lenses, in order, alongside style and profile guidance", async () => {
+		const { env, run } = makeEnv();
+		const r = await voice.run(env, { text: "let's negotiate the contract", style: "professional", framework: ["principled-negotiation", "cialdini"] });
+		expect(r.isError).toBeFalsy();
+		const { system } = messages(run);
+		expect(system).toContain("Target style: professional.");
+		const negIdx = system.indexOf("principled-negotiation");
+		const cialdiniIdx = system.indexOf("cialdini");
+		expect(negIdx).toBeGreaterThan(-1);
+		expect(cialdiniIdx).toBeGreaterThan(negIdx);
+	});
+
+	it("skips an unknown framework name without throwing", async () => {
+		const { env, run } = makeEnv();
+		const r = await voice.run(env, { text: "hello", framework: "not-a-real-lens" });
+		expect(r.isError).toBeFalsy();
+		const { system } = messages(run);
+		expect(system).toMatch(/Framework "not-a-real-lens" was not found/);
+	});
+
 	it("fails when the model returns an empty result", async () => {
 		const { env, run } = makeEnv();
 		run.mockResolvedValueOnce({ response: "   " });

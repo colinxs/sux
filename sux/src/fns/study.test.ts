@@ -192,6 +192,49 @@ describe("study — learn (url / pdf)", () => {
 	});
 });
 
+describe("study — learn archive (#1209 three-sink ingestion)", () => {
+	function withR2(env: any) {
+		const objects = new Map<string, unknown>();
+		const R2 = { put: vi.fn(async (key: string, body: unknown) => void objects.set(key, body)) };
+		return { env: { ...env, R2 }, R2, objects };
+	}
+
+	it("defaults to archive:false — no R2/vault-note side effects, no `archived` field noise beyond undefined", async () => {
+		const { env } = makeEnv();
+		const j = parse(await study.run(env, { source: "Opposite action.", kind: "text", topic: "dbt" }));
+		expect(j.archived).toBeUndefined();
+	});
+
+	it("archive:true on a text source archives the material to R2 and writes a Knowledge/Distilled insight card", async () => {
+		const { env: base, kv } = makeEnv();
+		const { env, R2 } = withR2(base);
+
+		const j = parse(await study.run(env, { source: "Opposite action means acting opposite to an unjustified emotion's urge.", kind: "text", topic: "dbt", title: "DBT Skills Manual", archive: true }));
+		expect(j.archived).toMatchObject({ vault_note: "Knowledge/Distilled/DBT Skills Manual.md" });
+		expect(j.archived.r2).toMatchObject({ sha256: expect.any(String), size: expect.any(Number) });
+		expect(R2.put).toHaveBeenCalledTimes(1);
+
+		const obsidian = (await import("./obsidian")).obsidian;
+		const writeCall = (obsidian.run as any).mock.calls.find((c: any[]) => c[1]?.action === "write");
+		expect(writeCall[1].path).toBe("Knowledge/Distilled/DBT Skills Manual.md");
+		expect(writeCall[1].content).toContain("DISTILLED-CHUNK");
+		expect(writeCall[1].content).toContain(j.archived.r2.url);
+
+		const stored = await kbFor(kv, "dbt");
+		expect(JSON.stringify(stored)).not.toContain("Opposite action means acting opposite"); // still never a verbatim KB copy
+	});
+
+	it("archive:true best-effort degrades cleanly when R2 isn't bound — learn still succeeds", async () => {
+		const { env } = makeEnv(); // no R2
+		const r = await study.run(env, { source: "text material", kind: "text", topic: "t", archive: true });
+		expect(r.isError).toBeFalsy();
+		const j = parse(r);
+		expect(j.whitelisted).toBe(true);
+		expect(j.archived.r2).toBeUndefined();
+		expect(j.archived.skipped).toBeTruthy();
+	});
+});
+
 describe("study — list / forget (the copyright audit + reversibility)", () => {
 	it("list surfaces only the whitelisted topics with provenance", async () => {
 		const { env, kv } = makeEnv();

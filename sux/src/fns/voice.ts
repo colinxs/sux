@@ -1,5 +1,6 @@
 import { hasAI, llm } from "../ai";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
+import { FRAMEWORKS } from "./_frameworks";
 import { readProfile, type VoiceExample } from "./preferences";
 
 // AI text-restyler. Rewrites `text` into a target `style` and/or a learned
@@ -65,6 +66,27 @@ const DEFAULT_VOICE_SPEC = [
 	"- Do not overstate, and do not hedge into mush. Say it plainly, once.",
 ].join("\n");
 
+/** Normalize `framework` (a single name or an array of names) into a de-duped list. */
+function frameworkNames(raw: unknown): string[] {
+	const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
+	return [...new Set(list.map((f) => String(f).trim()).filter(Boolean))];
+}
+
+/**
+ * Fold each named communication/persuasion lens's trusted spec (see _frameworks.ts)
+ * into system guidance lines. Unknown names are silently skipped — one line notes
+ * the miss, mirroring how an absent voice `profile` degrades gracefully above.
+ */
+function frameworkGuidance(names: string[]): string[] {
+	const lines: string[] = [];
+	for (const name of names) {
+		const lens = FRAMEWORKS[name];
+		if (lens) lines.push(`Apply this lens (${name} v${lens.version}):\n${lens.spec}`);
+		else lines.push(`(Framework "${name}" was not found.)`);
+	}
+	return lines;
+}
+
 export const voice: Fn = {
 	name: "voice",
 	cost: 2,
@@ -72,7 +94,7 @@ export const voice: Fn = {
 		"AI text-restyler. Rewrites `text` into a target `style` and/or a learned preference `profile`, preserving meaning, names, facts, numbers, and links — returns only the rewritten text, no preamble. " +
 		"`style`: free-form — any descriptor works (common ones: professional, non-violent, brief, casual, academic, friendly, formal, plain, warm). " +
 		"`profile`: name of a learned voice profile (see the `preferences` fn) whose distilled spec + example samples are folded in from KV; skipped gracefully if absent. " +
-		"With NO `style` and no usable `profile`, `voice(text)` rewrites in the default house voice — concise, active, concrete English distilled from the principles of Strunk's Elements of Style (omit needless words, active voice, positive form, specific/definite language). `strength`: light (a gentle touch, keep most original phrasing) | strong (fully recast; default). `instructions`: optional extra guidance.",
+		"With NO `style` and no usable `profile`, `voice(text)` rewrites in the default house voice — concise, active, concrete English distilled from the principles of Strunk's Elements of Style (omit needless words, active voice, positive form, specific/definite language). `strength`: light (a gentle touch, keep most original phrasing) | strong (fully recast; default). `framework`: one or more communication/persuasion lens names layered on top of style/profile — nvc (Nonviolent Communication), principled-negotiation (Getting to Yes), tactical-empathy (Never Split the Difference), carnegie (How to Win Friends), cialdini (Influence); unknown names are skipped gracefully. `instructions`: optional extra guidance.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -82,6 +104,11 @@ export const voice: Fn = {
 			style: { type: "string", description: "Target style — free-form (e.g. professional, non-violent, brief, casual, academic, friendly)." },
 			profile: { type: "string", description: "Name of a learned voice profile to apply (see the `preferences` fn)." },
 			strength: { type: "string", enum: ["light", "strong"], default: "strong", description: "light = gentle touch; strong = fully recast (default)." },
+			framework: {
+				type: ["string", "array"],
+				items: { type: "string" },
+				description: "One or more communication/persuasion lens names to layer in: nvc, principled-negotiation, tactical-empathy, carnegie, cialdini. Unknown names are skipped gracefully.",
+			},
 			instructions: { type: "string", description: "Optional extra guidance for the rewrite." },
 		},
 	},
@@ -94,6 +121,7 @@ export const voice: Fn = {
 		const style = String(args?.style ?? "").trim();
 		const profile = String(args?.profile ?? "").trim();
 		const strength = args?.strength === "light" ? "light" : "strong";
+		const frameworks = frameworkNames(args?.framework);
 		const instructions = String(args?.instructions ?? "").trim();
 
 		if (!text.trim()) return failWith("bad_input", "Provide `text` to restyle.");
@@ -106,6 +134,8 @@ export const voice: Fn = {
 			const guidance: string[] = [];
 			if (style) guidance.push(`Target style: ${style}.`);
 			guidance.push(...profileLines);
+			const frameworkLines = frameworkGuidance(frameworks);
+			guidance.push(...frameworkLines);
 			if (instructions) guidance.push(`Additional guidance: ${instructions}`);
 			// A profile named but not found leaves only a placeholder line so the model
 			// still restyles on whatever style was given (or, if none, does a faithful copy).
