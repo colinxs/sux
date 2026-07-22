@@ -360,3 +360,97 @@ test("interpretDurable's race rejects once the quorum is mathematically unreacha
 	]);
 	await expect(interpretDurable(tree, 1, fakeStep({ events: [] }), caps, "op25")).rejects.toThrow();
 });
+
+// A fake WorkflowStep that PERSISTS `do` results by step name ACROSS repeated calls to
+// the same step object — the property a real Workflow gives for free (a resumed instance
+// replays a step's memoized value instead of re-invoking its callback) but that `fakeStep`
+// above deliberately doesn't model (it re-runs the callback every single call, so it can't
+// catch a bug in what gets memoized vs. re-decided on replay). Two `interpretDurable` calls
+// sharing one `replayStep` instance simulate an isolate eviction + replay of the SAME
+// workflow instance: a step name already seen on a prior pass returns that pass's result
+// without re-running its callback, exactly like a resumed instance would.
+const replayStep = (): any => {
+	const persisted = new Map<string, unknown>();
+	return {
+		do: async (name: string, a: any, b?: any) => {
+			if (persisted.has(name)) return persisted.get(name);
+			const fn = typeof a === "function" ? a : b;
+			const result = await fn();
+			persisted.set(name, result);
+			return result;
+		},
+		waitForEvent: async (_name: string, _opts: { type: string }) => ({ payload: {} }),
+		sleep: async () => {},
+	};
+};
+
+test("interpretDurable's race decision survives replay: the original winner still wins even once every branch resolves instantly from memo", async () => {
+	const caps = { store: new MemoryStore(), llm: {}, clock: { now: () => 0 }, sinks: {} } as unknown as Caps;
+	const step = replayStep();
+
+	// "slow" genuinely settles after "fast" on the FIRST pass — a real settle-order
+	// difference the (pre-#1350) unwrapped decision logic would have observed directly.
+	const slow = op(
+		"slow",
+		async () => {
+			await new Promise((r) => setTimeout(r, 20));
+			return "SLOW";
+		},
+		{ kind: "pure" },
+	);
+	const fast = op("fast", async () => "FAST", { kind: "pure" });
+	const tree = race([slow, fast]);
+
+	const first = await interpretDurable(tree, undefined, step, caps, "op26");
+	expect(first).toBe("FAST");
+
+	// Let the losing "slow" branch actually finish and get memoized too — a durable step
+	// already in flight when the winner is decided still runs to completion (this file's
+	// own race comment), and replay depends on THAT having already happened, not just on
+	// the winner's step being memoized.
+	await new Promise((r) => setTimeout(r, 40));
+
+	// Second pass over the SAME step (same persisted memo): every branch's step.do now
+	// resolves near-instantly from memo, so without the #1350 fix the decision would be
+	// re-derived from THIS pass's settle order — which collapses to scheduling order
+	// (branch 0, "slow", attaches its `.then` first) and would crown "SLOW" the winner,
+	// silently flipping the race's result on replay. With the fix, the winner DECISION
+	// itself is memoized, so replay hands back the original winner unconditionally.
+	const second = await interpretDurable(tree, undefined, step, caps, "op26");
+	expect(second).toBe("FAST");
+});
+
+test("interpretDurable's race with need:2 replays the same quorum composition and settle order, not scheduling order", async () => {
+	const caps = { store: new MemoryStore(), llm: {}, clock: { now: () => 0 }, sinks: {} } as unknown as Caps;
+	const step = replayStep();
+
+	// First pass settle order (by real delay): "a" (5ms) then "c" (15ms) — "b" (30ms) is
+	// still the slowest and loses the need:2 quorum to those two.
+	const b = op("b", async () => {
+		await new Promise((r) => setTimeout(r, 30));
+		return "B";
+	}, { kind: "pure" });
+	const a = op("a", async () => {
+		await new Promise((r) => setTimeout(r, 5));
+		return "A";
+	}, { kind: "pure" });
+	const c = op("c", async () => {
+		await new Promise((r) => setTimeout(r, 15));
+		return "C";
+	}, { kind: "pure" });
+	const tree = race([b, a, c], { need: 2 });
+
+	const first = await interpretDurable(tree, undefined, step, caps, "op27");
+	expect(first).toEqual(["A", "C"]);
+
+	// Let the loser ("b") finish and get memoized too, so every branch resolves from
+	// memo on the next pass.
+	await new Promise((r) => setTimeout(r, 40));
+
+	// Without the #1350 fix, re-deciding from THIS pass's (now all-instant) settle order
+	// would pick the first two by SCHEDULING order — indices 0 and 1 ("b" then "a") —
+	// producing ["B", "A"] instead. The memoized decision must reproduce the original
+	// quorum composition AND order.
+	const second = await interpretDurable(tree, undefined, step, caps, "op27");
+	expect(second).toEqual(["A", "C"]);
+});
