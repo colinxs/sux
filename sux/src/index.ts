@@ -690,6 +690,18 @@ async function mailTriagePlanTick(env: RtEnv): Promise<unknown> {
 	return JSON.parse(res.content?.[0]?.text ?? "{}");
 }
 
+// One Dropbox app-folder ingest sweep, riding the SAME frequent (~5min) cron as mail-triage
+// (#1355) — the poll only ever touches NEW files (a processed file is moved out of the watched
+// subtree, which is the idempotency mechanism), so a frequent cheap cadence beats a once-daily
+// one for "drop a file, see the note soon after." FAIL-CLOSED: no-op unless
+// DROPBOX_INGEST_ENABLED. Dynamically imported so the cron path pulls in the Dropbox/ingest
+// surface only when armed.
+async function dropboxIngestTickJob(env: RtEnv): Promise<unknown> {
+	const mod = await import("./fns/_dropbox_ingest");
+	if (!mod.hasDropboxIngest(env)) return { dormant: true };
+	return mod.dropboxIngestTick(env);
+}
+
 // One weekly recall-digest cycle, riding the SAME daily cron. FAIL-CLOSED: no-ops entirely
 // unless WEEKLY_RECALL_ENABLED is set, and a once-per-ISO-week ledger gate means it does real
 // work (recall fan-out + vault append) at most once every seven days — the other six daily
@@ -1065,6 +1077,7 @@ export default {
 			ctx.waitUntil(runSubJob(env, "agenda_ask", () => agendaAskTick(env)));
 			ctx.waitUntil(runSubJob(env, "imessage_reply", () => imessageReplyTick(env)));
 			ctx.waitUntil(runSubJob(env, "vectorize_backfill", () => vectorizeBackfillTick(env)));
+			ctx.waitUntil(runSubJob(env, "dropbox_ingest", () => dropboxIngestTickJob(env)));
 			return;
 		}
 		ctx.waitUntil(maintenanceTick(env, ctx));

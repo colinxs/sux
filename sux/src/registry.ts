@@ -535,6 +535,13 @@ export type RtEnv = Env &
 		// flag only controls whether the feature runs at all, never bypasses those checks.
 		EMAIL_INGEST_ENABLED?: string;
 
+		// Dropbox app-folder ingest watcher (fns/_dropbox_ingest.ts, #1355) — sweeps the app
+		// folder's ingest/ subtree on the frequent (~5min) cron, routing each file through the
+		// shared _ingest_route.ts layer and moving it to ingest/processed/<date>/ (or
+		// ingest/failed/ on error) so the poll stays cheap and idempotent. Same fail-closed
+		// convention as every other sweep here: unset ⇒ total no-op (also requires hasDropbox).
+		DROPBOX_INGEST_ENABLED?: string;
+
 		// Manual ops trigger for the daily cron ticks (POST /admin/tick?job=…), bearer-gated
 		// by this token. Unset ⇒ the endpoint 404s (feature off). Lets an operator run a
 		// mail-triage / self-improve / maintenance cycle on demand instead of waiting for cron.
