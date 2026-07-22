@@ -15,7 +15,7 @@ const FNS = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "fns");
 const CATEGORIES = [
 	["Net / transport", ["proxy", "scrape", "render", "redirects", "robots", "crawl", "watch", "watch_pipeline"]],
 	["Extract / parse", ["extract", "readability", "tables", "metadata", "feed", "sitemap", "extract_contacts", "select", "grep", "subtitles"]],
-	["Convert", ["markdown", "html", "csv", "json", "xml", "yaml", "image_convert", "pdf", "fillable"]],
+	["Convert", ["markdown", "html", "csv", "json", "xml", "yaml", "image_convert", "pdf", "fillable", "evidence_packet"]],
 	["Compress / encode / data", ["compress", "encode", "hash", "archive"]],
 	["Token optimization", ["pack", "declutter"]],
 	["Text / AI", ["summarize", "translate", "classify", "ocr", "entities", "redact", "voice", "fontcase"]],
@@ -31,7 +31,7 @@ const CATEGORIES = [
 	["Personal namespaces (one /mcp)", ["vault", "mail", "files", "calendar", "contact", "contact_consolidate_plan", "files_consolidate_plan", "imessage"]],
 	["Agent / autonomy", ["proposals", "webpush"]],
 	["Personal finance", ["monarch"]],
-	["Personal health", ["mychart", "mychart_reconcile_plan"]],
+	["Personal health", ["mychart", "mychart_reconcile_plan", "medical_timeline_plan"]],
 	["Feedback / meta", ["issue", "suggest"]],
 	["Infra / meta", ["selftest", "autonomy_status", "controld", "tailscale", "sux", "fn", "todoist", "audit_log"]],
 ];
