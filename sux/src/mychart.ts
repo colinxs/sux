@@ -21,10 +21,11 @@ import { safeParseJson } from "./fns/_util";
 export const PHI_PREFIX = "phi/";
 
 // The multi-org registry (design §1/§2.1) — a code constant, not runtime config: the
-// org set changes rarely and a constant stays unit-testable/reviewable. One client
-// credential (EPIC_CLIENT_ID/SECRET) authenticates against all three via Epic's
-// Automatic Client-ID Distribution, so adding an org is a one-line PR, never a new
-// Epic app registration. Base URLs are public directory data, never secrets.
+// org set changes rarely and a constant stays unit-testable/reviewable. One client_id
+// (EPIC_CLIENT_ID) authenticates against all three via Epic's Automatic Client-ID
+// Distribution, so adding an org is a one-line PR, never a new Epic app registration.
+// The client SECRET is per-org, not shared (see tokenAuthHeaders below). Base URLs are
+// public directory data, never secrets.
 export const MYCHART_ORGS: Record<string, { name: string; fhirBase: string }> = {
 	uwmedicine: { name: "UW Medicine (WA)", fhirBase: "https://fhir.epic.medical.washington.edu/FHIR-Proxy/UWM/api/FHIR/R4" },
 	swedish: { name: "Providence Swedish (WA)", fhirBase: "https://haikuwa.providence.org/fhirproxy/api/FHIR/R4" },
@@ -151,20 +152,32 @@ export async function readGrant(env: RtEnv, org: string): Promise<MychartGrant |
 }
 
 // Confidential client → the token endpoint is authed with HTTP Basic client_id:secret.
-// Shared across every org (§1 — one client_id/secret via Automatic Client-ID Distribution).
-function tokenAuthHeaders(env: RtEnv): Record<string, string> {
+// The client_id IS shared across every org (§1 — Automatic Client-ID Distribution), but
+// the SECRET is not: Epic's own guidance is "Each public key or client secret should be
+// different for each customer and for each environment." Resolve a per-org secret from
+// EPIC_CLIENT_SECRET_<ORG> (org id upper-cased, non A-Z0-9_ chars squashed to `_` — see
+// epicClientSecretVar), falling back to the single global EPIC_CLIENT_SECRET so an
+// existing single-org deployment keeps working unchanged (UW today runs on the global
+// fallback; splitting out a per-org secret is a `wrangler secret put` away, no code change).
+function epicClientSecretVar(org: string): string {
+	return `EPIC_CLIENT_SECRET_${org.toUpperCase().replace(/[^A-Z0-9_]/g, "_")}`;
+}
+
+function tokenAuthHeaders(env: RtEnv, org: string): Record<string, string> {
+	const perOrg = (env as unknown as Record<string, string | undefined>)[epicClientSecretVar(org)];
+	const secret = perOrg || env.EPIC_CLIENT_SECRET;
 	return {
 		"Content-Type": "application/x-www-form-urlencoded",
 		Accept: "application/json",
-		Authorization: `Basic ${btoa(`${env.EPIC_CLIENT_ID}:${env.EPIC_CLIENT_SECRET}`)}`,
+		Authorization: `Basic ${btoa(`${env.EPIC_CLIENT_ID}:${secret}`)}`,
 	};
 }
 
 /** POST the token endpoint with a URL-encoded body; returns the parsed JSON + status. */
-async function tokenPost(env: RtEnv, cfg: SmartConfig, body: Record<string, string>): Promise<{ status: number; json: any }> {
+async function tokenPost(env: RtEnv, org: string, cfg: SmartConfig, body: Record<string, string>): Promise<{ status: number; json: any }> {
 	const resp = await fetch(cfg.token_endpoint, {
 		method: "POST",
-		headers: tokenAuthHeaders(env),
+		headers: tokenAuthHeaders(env, org),
 		body: new URLSearchParams(body).toString(),
 		signal: AbortSignal.timeout(20_000),
 	});
@@ -187,7 +200,7 @@ export async function mintAccessToken(env: RtEnv, org: string): Promise<string> 
 	const grant = await readGrant(env, org);
 	if (!grant?.refresh_token) throw new Error(`MyChart not connected for org '${org}' — no grant in KV. Open /mychart/connect?org=${org} once to link the account.`);
 	const cfg = await smartConfig(env, org);
-	const { status, json } = await tokenPost(env, cfg, {
+	const { status, json } = await tokenPost(env, org, cfg, {
 		grant_type: "refresh_token",
 		refresh_token: grant.refresh_token,
 		client_id: String(env.EPIC_CLIENT_ID),
@@ -974,7 +987,7 @@ export async function handleMychartRoutes(url: URL, request: Request, env: RtEnv
 		if (!verifier || !org || !isKnownOrg(org)) return new Response("Corrupt PKCE state.", { status: 400, headers: PAGE_HEADERS });
 		try {
 			const cfg = await smartConfig(env, org);
-			const { status, json } = await tokenPost(env, cfg, {
+			const { status, json } = await tokenPost(env, org, cfg, {
 				grant_type: "authorization_code",
 				code,
 				redirect_uri: redirectUri(env),
