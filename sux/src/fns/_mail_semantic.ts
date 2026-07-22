@@ -211,6 +211,19 @@ export async function mailSemanticIndex(env: RtEnv): Promise<MailSemanticIndex |
 	return fresh;
 }
 
+/** Read-ONLY sibling of mailSemanticIndex: return the CACHED index if a valid warm blob is
+ *  present, else null — it NEVER runs applyChanges (JMAP round-trips) or a full rebuild. Same
+ *  reason as _vault_semantic.ts's vaultSemanticIndexCached (#1298): the `oracle ask` query path
+ *  must do no network/embed work, or it blows its per-domain budget on every call. A warm cache
+ *  answers (bounded-stale — no incremental catch-up here); a cold cache degrades that domain
+ *  fast. The real substrate fix is the Vectorize index (#1290). */
+export async function mailSemanticIndexCached(env: RtEnv): Promise<MailSemanticIndex | null> {
+	if (!(env as { FASTMAIL_TOKEN?: string }).FASTMAIL_TOKEN) return null;
+	const storedCached = await readBlob(env);
+	if (isStoredMailSemanticIndex(storedCached) && storedCached.version === VERSION) return fromStored(storedCached);
+	return null;
+}
+
 export type MailSemanticHit = { id: string; subject: string; from: string; receivedAt: string; text: string; score: number };
 
 /** Brute-force kNN: cosine-rank the mail chunks against `queryVec`, take the top-k. Mirrors

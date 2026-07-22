@@ -4,24 +4,27 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 // index builders (their own suites cover building); the topK rankers and everything else
 // stay real, so these tests exercise the real floor/citation/log plumbing end-to-end
 // through the oracle fn's `ask`/`feedback` actions.
-vi.mock("./_vault_semantic", async (importOriginal) => ({ ...(await importOriginal<object>()), vaultSemanticIndex: vi.fn(async () => null) }));
-vi.mock("./_mail_semantic", async (importOriginal) => ({ ...(await importOriginal<object>()), mailSemanticIndex: vi.fn(async () => null) }));
-vi.mock("./_files_semantic", async (importOriginal) => ({ ...(await importOriginal<object>()), filesSemanticIndex: vi.fn(async () => null) }));
+// ask reads the semantic indices CACHED-ONLY (never rebuilds on the query path, #1298) — mock
+// the *Cached readers (their own suites cover the build/cache logic). The topK rankers and the
+// oracle-KB tier stay real, so the floor/citation/log/summary-tier plumbing runs end-to-end.
+vi.mock("./_vault_semantic", async (importOriginal) => ({ ...(await importOriginal<object>()), vaultSemanticIndexCached: vi.fn(async () => null) }));
+vi.mock("./_mail_semantic", async (importOriginal) => ({ ...(await importOriginal<object>()), mailSemanticIndexCached: vi.fn(async () => null) }));
+vi.mock("./_files_semantic", async (importOriginal) => ({ ...(await importOriginal<object>()), filesSemanticIndexCached: vi.fn(async () => null) }));
 vi.mock("./_contact_semantic", async (importOriginal) => ({ ...(await importOriginal<object>()), contactSemanticIndex: vi.fn(async () => null) }));
 
 import { DATA_CLOSE, DATA_OPEN } from "../ai";
 import { ASK_FLOOR, type AskLogEntry } from "./_answer";
 import { contactSemanticIndex } from "./_contact_semantic";
-import { filesSemanticIndex } from "./_files_semantic";
-import { maybeDecompressString } from "./_gzip";
-import { mailSemanticIndex } from "./_mail_semantic";
+import { filesSemanticIndexCached } from "./_files_semantic";
+import { maybeCompressString, maybeDecompressString } from "./_gzip";
+import { mailSemanticIndexCached } from "./_mail_semantic";
 import { putChunk } from "./_source";
-import { vaultSemanticIndex } from "./_vault_semantic";
+import { vaultSemanticIndexCached } from "./_vault_semantic";
 import { oracle } from "./oracle";
 
-const vaultIdx = vaultSemanticIndex as unknown as ReturnType<typeof vi.fn>;
-const mailIdx = mailSemanticIndex as unknown as ReturnType<typeof vi.fn>;
-const filesIdx = filesSemanticIndex as unknown as ReturnType<typeof vi.fn>;
+const vaultIdx = vaultSemanticIndexCached as unknown as ReturnType<typeof vi.fn>;
+const mailIdx = mailSemanticIndexCached as unknown as ReturnType<typeof vi.fn>;
+const filesIdx = filesSemanticIndexCached as unknown as ReturnType<typeof vi.fn>;
 const contactIdx = contactSemanticIndex as unknown as ReturnType<typeof vi.fn>;
 
 const ASK_LOG_KEY = "sux:oracle:ask:log";
@@ -156,6 +159,79 @@ describe("oracle ask — answered path", () => {
 	});
 });
 
+// Finding 1 (#1298): the large-corpus domains rebuild their index synchronously on the query
+// path and can never finish within a request, so every ask burned the full 8s per-domain budget
+// and degraded. ask now reads cached-only — a cold index skips FAST (the cheap-correct degrade
+// until the Vectorize substrate #1290 lands), never triggering a doomed rebuild.
+describe("oracle ask — cold semantic index degrades fast, not by burning the budget (#1298/#1290)", () => {
+	it("a configured-but-uncached vault index is a fast SKIP with a Vectorize handoff note, not a timeout", async () => {
+		const { env } = makeEnv();
+		(env as any).OBSIDIAN_VAULT_REPO = "me/vault"; // configured…
+		vaultIdx.mockResolvedValueOnce(null); // …but no warm cache — a real rebuild would time out
+		await seedKbChunk(env); // so the ask still answers from the oracle KB
+
+		const r = await oracle.run(env, { action: "ask", problem: "anything" });
+		const j = JSON.parse(r.content[0].text);
+		expect(j.domains.vault.status).toBe("skipped"); // NOT "degraded" (the old 8s-timeout outcome)
+		expect(j.domains.vault.detail).toMatch(/1290/);
+		expect(vaultIdx).toHaveBeenCalledTimes(1); // the cached reader — never the building variant
+	});
+});
+
+// Finding 2 (#1298): every oracle topic in prod predates the per-topic detail-chunk tier (#1235),
+// so a detail-only read reported "no oracle knowledge bases" while `status`/`recall` saw all of
+// them. ask now also reads the SUMMARY tier (the store status enumerates), embedding a summary at
+// query time when it has no detail chunks — so ask sees exactly the topics status shows.
+describe("oracle ask — oracle domain reads the summary KBs status enumerates (#1298)", () => {
+	async function seedSummaryKb(env: any, topic: string, over: Record<string, unknown> = {}) {
+		const kb = { distilled: "Small habits compound; make it obvious, attractive, easy, satisfying.", chunks: ["x"], sources: ["inline text"], updated_at: 1700000000000, ...over };
+		env.OAUTH_KV.put(`sux:oracle:${topic}`, await maybeCompressString(JSON.stringify(kb)));
+	}
+
+	it("a topic with a summary but NO detail chunks is retrieved and cited (the live no_match cause)", async () => {
+		const { env } = makeEnv({ queryVec: [1, 0, 0] }); // summary chunk embeds to the query vec → cosine 1
+		await seedSummaryKb(env, "atomic_habits");
+
+		const r = await oracle.run(env, { action: "ask", problem: "atomic habits key lessons" });
+		const j = JSON.parse(r.content[0].text);
+		expect(j.domains.oracle.status).toBe("ok");
+		expect(j.domains.oracle.hits).toBeGreaterThan(0);
+		expect(j.status).toBe("answered");
+		expect(j.citations).toContain("oracle:atomic_habits");
+		expect(j.domains.oracle.indexed_at).toBe(1700000000000);
+	});
+
+	it("a study-whitelisted summary cites as [whitelisted:topic]; the ask-log key is never a phantom topic", async () => {
+		const { env, kv } = makeEnv({ queryVec: [1, 0, 0] });
+		await seedSummaryKb(env, "dbt-diary-card-template", { whitelist: { source: "s", kind: "text", learned_at: 1, via: "study" } });
+		// Pre-seed an ask log under the SAME sux:oracle: prefix — it must not become a passage/topic.
+		kv.store.set(ASK_LOG_KEY, JSON.stringify([{ id: "x", ts: 1, question: "q", status: "no_match", floor: 0.68, kept_scores: [], citations: [], domains: {} }]));
+
+		const r = await oracle.run(env, { action: "ask", problem: "dbt diary card" });
+		const j = JSON.parse(r.content[0].text);
+		expect(j.citations).toContain("whitelisted:dbt-diary-card-template");
+		expect(j.citations.some((c: string) => c.includes("ask:log"))).toBe(false);
+	});
+
+	it("detail chunks take precedence for a topic; a same-topic summary isn't stacked on top", async () => {
+		const { env, run } = makeEnv({ queryVec: [1, 0, 0] });
+		// A detail chunk for oracle:health (pre-embedded) AND a summary blob for the SAME topic.
+		await seedKbChunk(env, { id: "d1", domain: "oracle:health", text: "Detail-tier passage.", embedding: [1, 0, 0] });
+		await seedSummaryKb(env, "health", { distilled: "Summary-tier note." });
+
+		const r = await oracle.run(env, { action: "ask", problem: "health" });
+		const j = JSON.parse(r.content[0].text);
+		expect(j.domains.oracle.status).toBe("ok");
+		expect(j.citations).toContain("oracle:health");
+		// The detail chunk carries the passage; the same-topic summary is excluded (detailTopics),
+		// so the synthesis material shows the detail text, not the summary note.
+		const [[, inputs]] = textCalls(run);
+		const user = (inputs as any).messages.find((m: any) => m.role === "user").content;
+		expect(user).toContain("Detail-tier passage.");
+		expect(user).not.toContain("Summary-tier note.");
+	});
+});
+
 describe("oracle ask — forged authority tags are defused", () => {
 	const ZWSP = "​";
 
@@ -239,6 +315,7 @@ describe("oracle ask — no_match path", () => {
 describe("oracle ask — degraded-domain path", () => {
 	it("a failing index degrades THAT domain and the rest still answer", async () => {
 		const { env } = makeEnv();
+		(env as any).FASTMAIL_TOKEN = "t"; // reach the (mocked) cached read past the config guard
 		await seedKbChunk(env);
 		mailIdx.mockRejectedValueOnce(new Error("jmap melted"));
 

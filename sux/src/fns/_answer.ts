@@ -2,12 +2,14 @@ import { defuseCitationTag, llm } from "../ai";
 import type { RtEnv } from "../registry";
 import { cappedKvLog } from "./_capped_kv_log";
 import { contactSemanticIndex, topKContactByCosine } from "./_contact_semantic";
-import { cosine, embedOne } from "./_embed";
-import { filesSemanticIndex, topKFilesByCosine } from "./_files_semantic";
-import { mailSemanticIndex, topKMailByCosine } from "./_mail_semantic";
-import { listChunks, newId } from "./_source";
+import { hasDropboxFull } from "./_dropbox-full";
+import { cosine, embed, embedOne } from "./_embed";
+import { filesSemanticIndexCached, topKFilesByCosine } from "./_files_semantic";
+import { maybeDecompressString } from "./_gzip";
+import { mailSemanticIndexCached, topKMailByCosine } from "./_mail_semantic";
+import { chunkText, listChunks, newId } from "./_source";
 import { errMsg } from "./_util";
-import { topKByCosine, vaultSemanticIndex } from "./_vault_semantic";
+import { topKByCosine, vaultSemanticIndexCached } from "./_vault_semantic";
 import { vaultCfg } from "./obsidian";
 
 // _answer — the engine behind `oracle ask` (v5 W1): topic-free, citation-constrained
@@ -48,7 +50,16 @@ const DOMAIN_TIMEOUT_MS = 8_000;
 /** Synthesis input cap — the recall.ts convention. */
 const MATERIAL_CAP = 14_000;
 
-const ASK_LOG_KEY = "sux:oracle:ask:log";
+/** The ask score-log's KV key. Exported so `oracle`'s status/list enumeration can exclude it —
+ *  it rides UNDER the same `sux:oracle:` prefix the KB blobs use, but is a capped log array,
+ *  not a StoredKb, so it must never be listed as a phantom topic (#1298). */
+export const ASK_LOG_KEY = "sux:oracle:ask:log";
+/** The KV prefix every oracle KB blob shares — the summary tier `status`/`recall` read. */
+const ORACLE_KV_PREFIX = "sux:oracle:";
+/** The per-domain skip note when a large-corpus semantic index has no warm cache: `oracle ask`
+ *  reads cached-only (never rebuilds on the query path, #1298), so a cold index degrades that
+ *  domain in milliseconds. The warm-index substrate is the Vectorize index (#1290). */
+const COLD_INDEX_NOTE = "index not warm — cached-only read; Vectorize retrieval pending (#1290)";
 const ASK_LOG_CAP = 400;
 /** Bound the logged question so one pasted essay can't dominate the log blob. */
 const LOG_QUESTION_CAP = 300;
@@ -118,8 +129,10 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
 async function fromVaultIndex(env: RtEnv, vec: number[]): Promise<DomainGather> {
 	const cfg = vaultCfg(env);
 	if ("error" in cfg) return { passages: [], indexed_at: null, skipped: "vault not configured" };
-	const idx = await vaultSemanticIndex(env, cfg);
-	if (!idx) return { passages: [], indexed_at: null, skipped: "vault index unavailable" };
+	// Cached-only: never rebuild the vault index on the ask query path (a full rebuild exceeds a
+	// request's lifetime and blows the per-domain budget — #1298). A cold cache degrades fast.
+	const idx = await vaultSemanticIndexCached(env, cfg);
+	if (!idx) return { passages: [], indexed_at: null, skipped: COLD_INDEX_NOTE };
 	return {
 		passages: topKByCosine(vec, idx.chunks, PER_DOMAIN_K).map((h) => ({ pointer: `vault:${h.path}`, text: h.text, score: h.score })),
 		indexed_at: idx.at,
@@ -127,8 +140,9 @@ async function fromVaultIndex(env: RtEnv, vec: number[]): Promise<DomainGather> 
 }
 
 async function fromMailIndex(env: RtEnv, vec: number[]): Promise<DomainGather> {
-	const idx = await mailSemanticIndex(env);
-	if (!idx) return { passages: [], indexed_at: null, skipped: "mail not configured" };
+	if (!(env as { FASTMAIL_TOKEN?: string }).FASTMAIL_TOKEN) return { passages: [], indexed_at: null, skipped: "mail not configured" };
+	const idx = await mailSemanticIndexCached(env);
+	if (!idx) return { passages: [], indexed_at: null, skipped: COLD_INDEX_NOTE };
 	return {
 		passages: topKMailByCosine(vec, idx.chunks, PER_DOMAIN_K).map((h) => ({
 			// The pointer is the JMAP id (a durable handle a caller can resolve); the header keeps
@@ -142,8 +156,9 @@ async function fromMailIndex(env: RtEnv, vec: number[]): Promise<DomainGather> {
 }
 
 async function fromFilesIndex(env: RtEnv, vec: number[]): Promise<DomainGather> {
-	const idx = await filesSemanticIndex(env);
-	if (!idx) return { passages: [], indexed_at: null, skipped: "files not configured" };
+	if (!hasDropboxFull(env)) return { passages: [], indexed_at: null, skipped: "files not configured" };
+	const idx = await filesSemanticIndexCached(env);
+	if (!idx) return { passages: [], indexed_at: null, skipped: COLD_INDEX_NOTE };
 	return {
 		passages: topKFilesByCosine(vec, idx.chunks, PER_DOMAIN_K).map((h) => ({ pointer: `files:${h.path}`, text: h.text, score: h.score })),
 		indexed_at: idx.at,
@@ -163,26 +178,88 @@ async function fromContactsIndex(env: RtEnv, vec: number[]): Promise<DomainGathe
 	};
 }
 
-/** Every oracle/study KB's retrievable-detail chunks, ranked in one pass. listChunks("oracle")
- *  lists the "sux:source:chunk:oracle:" prefix — the umbrella every "oracle:<topic>" domain
- *  (#1242's namespacing) shares — so one KV walk covers all topics; the domain filter guards
- *  against a hypothetical bare advise domain literally named "oracle". A chunk's `authority`
- *  is "authoritative" exactly when its topic was learned with provenance (the `study` verb's
- *  whitelist), so the whitelist signal rides the chunk itself — no per-topic KB loads. */
+type OracleSummary = { topic: string; distilled: string; whitelisted: boolean; updated_at: number };
+
+/** The oracle's SUMMARY tier — every distilled KB blob at `sux:oracle:<topic>`, the store both
+ *  `oracle status` and `recall`'s oracle leg read. Enumerated exactly as status does, minus the
+ *  ask log (which shares the prefix but is a capped array, not a KB). Empty distillates and the
+ *  log key are skipped, so a phantom "ask:log" never becomes a passage. */
+async function loadOracleSummaries(env: RtEnv, max = 25): Promise<OracleSummary[]> {
+	const kv = env.OAUTH_KV;
+	if (!kv) return [];
+	const keys: string[] = [];
+	let cursor: string | undefined;
+	do {
+		const page = await kv.list({ prefix: ORACLE_KV_PREFIX, cursor });
+		for (const k of page.keys) if (k.name !== ASK_LOG_KEY) keys.push(k.name);
+		cursor = page.list_complete ? undefined : page.cursor;
+	} while (cursor && keys.length < max);
+	const out: OracleSummary[] = [];
+	await Promise.all(
+		keys.slice(0, max).map(async (key) => {
+			try {
+				const raw = await kv.get(key);
+				if (!raw) return;
+				const kb = JSON.parse(await maybeDecompressString(raw)) as { distilled?: unknown; whitelist?: unknown; updated_at?: unknown };
+				const distilled = String(kb?.distilled ?? "").trim();
+				if (!distilled) return;
+				out.push({ topic: key.slice(ORACLE_KV_PREFIX.length), distilled, whitelisted: Boolean(kb?.whitelist), updated_at: Number(kb?.updated_at) || 0 });
+			} catch {
+				/* skip an unreadable / unparseable KB */
+			}
+		}),
+	);
+	return out;
+}
+
+/** Every oracle/study KB ranked in one pass — across BOTH storage tiers so `oracle ask` sees
+ *  exactly the topics `oracle status` shows (the finding-2 fix, #1298).
+ *
+ *  DETAIL tier: listChunks("oracle") lists the "sux:source:chunk:oracle:" prefix — the umbrella
+ *  every "oracle:<topic>" domain (#1242's namespacing) shares, one KV walk over all topics; the
+ *  domain filter guards a hypothetical bare advise domain literally named "oracle". These chunks
+ *  are already embedded (the learn path's #1235 step-2b store), so they cost no query-time embed.
+ *
+ *  SUMMARY tier: every KB learned BEFORE that detail tier shipped (#1235) has a distilled summary
+ *  but NO chunks — a detail-only read reported "no oracle knowledge bases" for all of them even
+ *  though status/recall saw them fine (the live #1298 defect). Backfill the gap at query time:
+ *  for each summary topic that has no detail chunks, chunk its distilled KB and embed it here —
+ *  cheap (a handful of topics, one batched embed) and self-contained, so ask no longer depends on
+ *  whether the detail-tier backfill has run. Detail chunks, when present, take precedence for a
+ *  topic (they're richer and pre-embedded); only summaries with no detail chunks are embedded.
+ *
+ *  A chunk's `authority` is "authoritative" exactly when its topic was learned with provenance
+ *  (the `study` whitelist), and a summary's `whitelist` marker carries the same signal — so the
+ *  whitelisted/oracle pointer rides the stored data either way. */
 async function fromOracleKbs(env: RtEnv, vec: number[]): Promise<DomainGather> {
-	const chunks = (await listChunks(env, "oracle")).filter((c) => c.domain.startsWith("oracle:"));
-	if (!chunks.length) return { passages: [], indexed_at: null, skipped: "no oracle knowledge bases" };
-	const indexed_at = chunks.reduce((m, c) => Math.max(m, c.ts || 0), 0) || null;
-	const passages = chunks
+	const detailChunks = (await listChunks(env, "oracle")).filter((c) => c.domain.startsWith("oracle:"));
+	const detailTopics = new Set(detailChunks.map((c) => c.domain.slice("oracle:".length)));
+	const passages: AskPassage[] = detailChunks
 		.filter((c) => Array.isArray(c.embedding) && c.embedding.length > 0)
 		.map((c) => {
 			const topic = c.domain.slice("oracle:".length);
 			const whitelisted = c.authority === "authoritative";
 			return { pointer: `${whitelisted ? "whitelisted" : "oracle"}:${topic}`, text: c.text, score: cosine(vec, c.embedding!), whitelisted };
-		})
-		.sort((a, b) => b.score - a.score)
-		.slice(0, PER_DOMAIN_K);
-	return { passages, indexed_at };
+		});
+	let indexed_at = detailChunks.reduce((m, c) => Math.max(m, c.ts || 0), 0) || null;
+
+	const summaries = (await loadOracleSummaries(env)).filter((s) => !detailTopics.has(s.topic));
+	if (summaries.length) {
+		const units = summaries.flatMap((s) => chunkText(s.distilled).map((text) => ({ topic: s.topic, whitelisted: s.whitelisted, text })));
+		for (const s of summaries) indexed_at = Math.max(indexed_at ?? 0, s.updated_at) || indexed_at;
+		if (units.length) {
+			const vecs = await embed(env, units.map((u) => u.text));
+			units.forEach((u, i) => {
+				const emb = vecs[i];
+				if (!Array.isArray(emb) || !emb.length) return;
+				passages.push({ pointer: `${u.whitelisted ? "whitelisted" : "oracle"}:${u.topic}`, text: u.text, score: cosine(vec, emb), whitelisted: u.whitelisted });
+			});
+		}
+	}
+
+	if (!passages.length) return { passages: [], indexed_at: null, skipped: "no oracle knowledge bases" };
+	passages.sort((a, b) => b.score - a.score);
+	return { passages: passages.slice(0, PER_DOMAIN_K), indexed_at };
 }
 
 const ASK_DOMAINS: Record<string, (env: RtEnv, vec: number[]) => Promise<DomainGather>> = {

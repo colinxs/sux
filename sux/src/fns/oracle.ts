@@ -1,6 +1,6 @@
 import { hasAI, llm } from "../ai";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
-import { type AskVerdict, recordAskFeedback, runAsk } from "./_answer";
+import { ASK_LOG_KEY, type AskVerdict, recordAskFeedback, runAsk } from "./_answer";
 import { embed, embedOne } from "./_embed";
 import { maybeCompressString, maybeDecompressString } from "./_gzip";
 import { appendOnOracle } from "./_kb";
@@ -260,7 +260,7 @@ export const oracle: Fn = {
 				let cursor: string | undefined;
 				do {
 					const page = await env.OAUTH_KV.list({ prefix: KV_PREFIX, cursor });
-					for (const k of page.keys) topics.push(k.name.slice(KV_PREFIX.length));
+					for (const k of page.keys) if (k.name !== ASK_LOG_KEY) topics.push(k.name.slice(KV_PREFIX.length));
 					cursor = page.list_complete ? undefined : page.cursor;
 				} while (cursor);
 				topics.sort();
@@ -275,7 +275,9 @@ export const oracle: Fn = {
 				let cursor: string | undefined;
 				do {
 					const page = await env.OAUTH_KV.list({ prefix: KV_PREFIX, cursor });
-					for (const k of page.keys) names.push(k.name.slice(KV_PREFIX.length));
+					// The ask log rides under KV_PREFIX (sux:oracle:ask:log) but is a capped array,
+					// not a KB — exclude it so it never shows as a phantom topic (#1298).
+					for (const k of page.keys) if (k.name !== ASK_LOG_KEY) names.push(k.name.slice(KV_PREFIX.length));
 					cursor = page.list_complete ? undefined : page.cursor;
 				} while (cursor);
 				names.sort();

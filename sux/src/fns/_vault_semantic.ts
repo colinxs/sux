@@ -97,6 +97,21 @@ export async function vaultSemanticIndex(env: RtEnv, cfg: VaultCfg): Promise<Sem
 	return fresh;
 }
 
+/** Read-ONLY sibling of vaultSemanticIndex: return the CACHED index if a valid warm blob is
+ *  present, else null — it NEVER builds. A full vault (re)build lists + reads + embeds every
+ *  note, which exceeds a single request's lifetime; its KV write then never lands, so a
+ *  query-path caller of the building variant re-embeds the whole vault on every call and blows
+ *  its per-domain budget every time (#1298). `oracle ask` uses THIS instead: a warm cache still
+ *  answers (bounded-stale — a HEAD drift is accepted here rather than triggering a rebuild),
+ *  and a cold cache degrades that domain in milliseconds instead of burning the full budget. The
+ *  real warm-index substrate — an out-of-band-built ANN index — is Vectorize (#1290). */
+export async function vaultSemanticIndexCached(env: RtEnv, cfg: VaultCfg): Promise<SemanticIndex | null> {
+	if (!env.OAUTH_KV) return null;
+	const storedCached = (await readVaultSemanticBlob(env, cfg)) as StoredSemanticIndex | null;
+	if (storedCached?.version === VERSION && isStoredSemanticIndex(storedCached)) return fromStored(storedCached);
+	return null;
+}
+
 export type SemanticHit = { path: string; title: string; text: string; score: number };
 
 /** Brute-force kNN: cosine-rank a domain's chunks against `queryVec`, take the top-k. Chunks

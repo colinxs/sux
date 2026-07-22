@@ -243,6 +243,18 @@ export async function filesSemanticIndex(env: RtEnv): Promise<FilesSemanticIndex
 	return fresh;
 }
 
+/** Read-ONLY sibling of filesSemanticIndex: return the CACHED index if a valid warm blob is
+ *  present, else null — it NEVER runs applyChanges (Dropbox list round-trips) or a full rebuild.
+ *  Same reason as the vault/mail cached siblings (#1298): keep the `oracle ask` query path off
+ *  network/embed work so it can't blow its per-domain budget every call. Warm answers
+ *  bounded-stale; cold degrades fast. The real substrate fix is the Vectorize index (#1290). */
+export async function filesSemanticIndexCached(env: RtEnv): Promise<FilesSemanticIndex | null> {
+	if (!hasDropboxFull(env)) return null;
+	const storedCached = await readBlob(env);
+	if (isStoredFilesSemanticIndex(storedCached) && storedCached.version === VERSION) return fromStored(storedCached);
+	return null;
+}
+
 export type FilesSemanticHit = { path: string; text: string; score: number };
 
 /** Brute-force kNN: cosine-rank the files chunks against `queryVec`, take the top-k. Mirrors
