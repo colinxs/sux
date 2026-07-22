@@ -33,6 +33,12 @@ export type RtEnv = Env &
 		STACKEXCHANGE_KEY?: string;
 
 		COINGECKO_API_KEY?: string;
+
+		// Zotero Web API v3 (fns/zotero.ts, #1296) — Colin's personal curated research library,
+		// not a public database like arxiv/pubmed/openalex. Both required together; either unset
+		// makes the fn not_configured.
+		ZOTERO_API_KEY?: string;
+		ZOTERO_USER_ID?: string;
 		R2?: R2Bucket;
 		// Transit inbox for the general ingest pipe (docs/design/scan-to-vault-pipeline.md,
 		// suxrouter): R2 event notifications on sux-ingest feed the `ingest` queue, consumed
@@ -747,7 +753,7 @@ export const TOOL_ANNOTATIONS: Record<string, ToolAnnotations> = {
 		[
 			"search", "web_search", "tavily", "scrape", "render", "proxy", "batch_fetch", "crawl",
 			"wayback", "redirects", "robots", "sitemap", "feed", "subtitles",
-			"consensus", "arxiv", "pubmed", "openalex", "crossref", "semantic_scholar", "clinical_trials", "stackexchange", "reddit", "citation", "find_similar",
+			"consensus", "arxiv", "pubmed", "openalex", "crossref", "semantic_scholar", "clinical_trials", "stackexchange", "reddit", "citation", "find_similar", "zotero",
 			"shop", "product_search", "amazon", "walmart", "costco", "homedepot", "lowes", "kroger", "bestbuy", "ebay", "ace", "weekly_ad",
 			"places", "people", "people_finder", "coingecko", "youtube", "watch", "linkedin", "facebook",
 			"recall", "oracle",

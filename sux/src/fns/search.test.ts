@@ -8,6 +8,11 @@ const { kagiTool } = vi.hoisted(() => ({
 }));
 vi.mock("../kagi", () => ({ kagiTool }));
 
+const { webSearchRun } = vi.hoisted(() => ({
+	webSearchRun: vi.fn(async (_env: any, args: any) => ({ content: [{ text: `consensus results for ${args.query} engine=${args.engine} limit=${args.limit}` }] })),
+}));
+vi.mock("./web_search", () => ({ webSearch: { run: webSearchRun } }));
+
 import { search } from "./search";
 
 describe("search", () => {
@@ -46,5 +51,25 @@ describe("search", () => {
 	it("rejects lens_id combined with include_domains", async () => {
 		const r = await search.run({} as any, { query: "cats", lens_id: "2", include_domains: ["archive.org"] });
 		expect(r.isError).toBe(true);
+	});
+
+	describe("consensus mode (#1294)", () => {
+		it("fans out via web_search's engine:'all' + merge core instead of calling Kagi alone", async () => {
+			const kagiCallsBefore = kagiTool.mock.calls.length;
+			const r = await search.run({} as any, { query: "cats", consensus: true, limit: 15 });
+			expect(kagiTool.mock.calls.length).toBe(kagiCallsBefore); // consensus mode never touches kagiTool directly
+			expect(webSearchRun).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ query: "cats", engine: "all", limit: 15 }));
+			expect(r.content[0].text).toContain("consensus results for cats");
+		});
+
+		it("carries include_domains/exclude_domains/file_type scope over to web_search", async () => {
+			await search.run({} as any, { query: "cats", consensus: true, include_domains: ["a.com"], exclude_domains: ["b.com"], file_type: "pdf" });
+			expect(webSearchRun).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ include_domains: ["a.com"], exclude_domains: ["b.com"], file_type: "pdf" }));
+		});
+
+		it("routes through the proxy when proxy:true", async () => {
+			await search.run({} as any, { query: "cats", consensus: true, proxy: true });
+			expect(webSearchRun).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ proxy: true }));
+		});
 	});
 });

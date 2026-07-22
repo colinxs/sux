@@ -140,6 +140,7 @@ import { run } from "./run";
 import { vault_consolidate_plan } from "./vault_consolidate_plan";
 import { vault_cross_link_plan } from "./vault_cross_link_plan";
 import { webpush } from "./webpush";
+import { zotero } from "./zotero";
 
 export const FUNCTIONS: Fn[] = [
 	consensus,
@@ -278,4 +279,5 @@ export const FUNCTIONS: Fn[] = [
 	vault_consolidate_plan,
 	vault_cross_link_plan,
 	webpush,
+	zotero,
 ];

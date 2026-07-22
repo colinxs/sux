@@ -1,6 +1,7 @@
 import { type Fn, fail, ok } from "../registry";
 import { kagiTool } from "../kagi";
 import { appendOnSearch } from "./_kb";
+import { webSearch } from "./web_search";
 
 const SCOPE_ARGS = ["include_domains", "exclude_domains", "time_relative", "after", "before", "file_type"] as const;
 
@@ -8,7 +9,8 @@ export const search: Fn = {
 	name: "search",
 	cost: 3,
 	description:
-		"Web search via Kagi. Returns numbered results with titles, URLs, and snippets — cite by number. workflow: search (default) | news | videos | podcasts | images. Scope with include_domains / exclude_domains / time_relative (day|week|month) / after / before / file_type — OR lens_id (built-in: Academic=2, Forums=1, Programming=15, News360=29, Recipes=120, Small Web=107, PDFs=3, Usenet/Archive=5648; custom: Document Hosts=31362, Code Search=31363, Tech Docs=31364, Artifacts=31365, Wikis/Notes=31366; or any numeric ID from kagi.com/settings/lenses); Kagi's API rejects combining lens_id with any of the other scope args, so pick one or the other. extract_count (0-10) fetches full page content inline as markdown for that many top results. Set proxy: true to route the query through the Tailscale residential proxy (falls back to a direct fetch if the tailnet node is down); default egresses direct.",
+		"Web search via Kagi. Returns numbered results with titles, URLs, and snippets — cite by number. workflow: search (default) | news | videos | podcasts | images. Scope with include_domains / exclude_domains / time_relative (day|week|month) / after / before / file_type — OR lens_id (built-in: Academic=2, Forums=1, Programming=15, News360=29, Recipes=120, Small Web=107, PDFs=3, Usenet/Archive=5648; custom: Document Hosts=31362, Code Search=31363, Tech Docs=31364, Artifacts=31365, Wikis/Notes=31366; or any numeric ID from kagi.com/settings/lenses); Kagi's API rejects combining lens_id with any of the other scope args, so pick one or the other. extract_count (0-10) fetches full page content inline as markdown for that many top results. Set proxy: true to route the query through the Tailscale residential proxy (falls back to a direct fetch if the tailnet node is down); default egresses direct. " +
+		"Set consensus:true to fan out across every currently-configured web-search engine (Kagi, DuckDuckGo, Google, Exa, Brave — same pool as web_search's engine:'all') instead of Kagi alone, merge results by URL, and rank by cross-engine agreement — each result notes how many engines agreed. Only include_domains/exclude_domains/file_type carry over as scope in this mode; workflow/extract_count/lens_id/time_relative/after/before are Kagi-only and are ignored.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -27,6 +29,7 @@ export const search: Fn = {
 			lens_id: { type: "string", description: "Numeric lens ID (or a custom lens's numeric ID/shareable URL from kagi.com/settings/lenses). Mutually exclusive with include_domains/exclude_domains/time_relative/file_type." },
 			proxy: { type: "boolean", description: "Route the query through the Tailscale residential proxy (direct fallback if the node is down).", default: false },
 			remember: { type: "boolean", description: "Save-on-search: fire-and-forget mirror this query + a result snippet into the vault KB (git-versioned). Best-effort and no-op if the vault is unconfigured. Default false.", default: false },
+			consensus: { type: "boolean", default: false, description: "Fan out across every configured web-search engine and rank by cross-engine agreement instead of Kagi alone (phase 1 of the unified-search proposal). See the tool description for what carries over." },
 		},
 	},
 	cacheable: true,
@@ -34,6 +37,23 @@ export const search: Fn = {
 	run: async (env, args) => {
 		const query = String(args?.query ?? "").trim();
 		if (!query) return fail("query is required.");
+
+		if (args?.consensus === true) {
+			const r = await webSearch.run(env, {
+				query,
+				limit: args?.limit,
+				engine: "all",
+				proxy: args?.proxy === true,
+				file_type: args?.file_type,
+				include_domains: args?.include_domains,
+				exclude_domains: args?.exclude_domains,
+			});
+			const text = r.content?.[0]?.text ?? "";
+			if (!r.isError && args?.remember === true && text && text !== "(no results)") {
+				void appendOnSearch(env, query, text).catch(() => {});
+			}
+			return r;
+		}
 
 		const hasScope = SCOPE_ARGS.some((k) => args?.[k] != null);
 		if (args?.lens_id != null && hasScope) {

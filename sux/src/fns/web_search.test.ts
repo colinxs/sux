@@ -235,6 +235,15 @@ describe("web_search", () => {
 		expect(text.indexOf("example.com/a")).toBeLessThan(text.indexOf("example.org/b"));
 	});
 
+	it("annotates a merged hit with how many engines agreed on it, but not a single-engine hit (#1294)", async () => {
+		renderRun.mockResolvedValueOnce({ content: [{ text: serp([{ url: "https://example.com/a", title: "Shared" }]) }] });
+		smartFetch.mockResolvedValueOnce(new Response("<html></html>", { status: 200 }));
+		const r = await webSearch.run({ KAGI_API_KEY: "k" } as any, { query: "hello", engine: "all" });
+		const text = r.content[0].text;
+		expect(text).toContain("Kagi Result (agreed by 2 engines)"); // kagi + google both returned example.com/a
+		expect(text).not.toContain("Second Result (agreed"); // example.org/b only came from kagi
+	});
+
 	it("surfaces a single engine's error instead of masking it as 'no results'", async () => {
 		const kagi = await import("../kagi");
 		(kagi.kagiTool as any).mockRejectedValueOnce(new Error("HTTP 401"));

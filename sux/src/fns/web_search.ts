@@ -4,10 +4,15 @@ import { kagiTool } from "../kagi";
 import { type Route, smartFetch } from "../proxy";
 import { renderHtml, stripHtml } from "./_util";
 
-export type Hit = { title: string; url: string; snippet?: string };
+// `consensus` is only ever set by merge() below (how many engines agreed on this URL) —
+// a single-engine result has no consensus field at all, not consensus:1, so fmt() only
+// annotates results that actually crossed multiple engines.
+export type Hit = { title: string; url: string; snippet?: string; consensus?: number };
 
 const fmt = (hits: Hit[]): string =>
-	hits.length ? hits.map((h, i) => `${i + 1}. ${h.title}\n   ${h.url}${h.snippet ? `\n   ${h.snippet}` : ""}`).join("\n\n") : "(no results)";
+	hits.length
+		? hits.map((h, i) => `${i + 1}. ${h.title}${h.consensus && h.consensus > 1 ? ` (agreed by ${h.consensus} engines)` : ""}\n   ${h.url}${h.snippet ? `\n   ${h.snippet}` : ""}`).join("\n\n")
+		: "(no results)";
 
 /** Real destination from a Google result anchor (direct link or /url?q= redirect). */
 function unwrapGoogleUrl(href: string): string | null {
@@ -250,8 +255,11 @@ const normUrl = (u: string): string =>
 		.replace(/[/?#]+$/, "");
 
 /** Merge hits from several engines: dedupe by URL, rank by how many engines
- * returned each (consensus) then earliest position. */
-function merge(lists: Hit[][], limit: number): Hit[] {
+ * returned each (consensus) then earliest position. Every returned hit carries
+ * that count as `consensus` (#1294) so callers/other reusers of this fold (e.g.
+ * the `search` verb's consensus mode) can see cross-engine agreement, not just
+ * infer it from rank order. */
+export function merge(lists: Hit[][], limit: number): Hit[] {
 	const seen = new Map<string, { hit: Hit; count: number; order: number }>();
 	let order = 0;
 	for (const list of lists) {
@@ -267,7 +275,10 @@ function merge(lists: Hit[][], limit: number): Hit[] {
 			}
 		}
 	}
-	return [...seen.values()].sort((a, b) => b.count - a.count || a.order - b.order).slice(0, limit).map((v) => v.hit);
+	return [...seen.values()]
+		.sort((a, b) => b.count - a.count || a.order - b.order)
+		.slice(0, limit)
+		.map((v) => ({ ...v.hit, consensus: v.count }));
 }
 
 export const webSearch: Fn = {

@@ -16,6 +16,13 @@ export type Dispatch = string | { tool: string; inject?: Record<string, unknown>
 // completeness guard (every namespace tool must be reachable through some verb).
 export const reachedTools = (actions: Record<string, Dispatch>): Set<string> => new Set(Object.values(actions).map((d) => (typeof d === "string" ? d : d.tool)));
 
+// The target tool's own declared arg names — the front door validates against THIS, not its
+// own additionalProperties:true schema (which exists only to let per-action args ride through
+// at all). Without this, a caller's typo'd/wrong key (e.g. `q` where the tool wants `query`)
+// silently vanishes instead of erroring, and a filter arg that vanishes degrades a search to
+// match-all with no sign anything went wrong (#1312).
+const knownArgs = (inputSchema: unknown): Set<string> => new Set(Object.keys((inputSchema as { properties?: Record<string, unknown> } | undefined)?.properties ?? {}));
+
 /**
  * Build a front-door verb that dispatches `{action, ...args}` into an existing
  * namespace tool array (VAULT_TOOLS/MAIL_TOOLS/FILES_TOOLS) — the SAME handlers the
@@ -61,6 +68,9 @@ export function namespaceFn(o: { name: string; description: string; tools: () =>
 			const tool = o.tools().find((t) => t.name === toolName);
 			if (!tool) return failWith("not_configured", `${o.name}: target tool ${toolName} not registered.`);
 			const { action: _drop, ...rest } = (args ?? {}) as Record<string, unknown>;
+			const known = knownArgs(tool.inputSchema);
+			const badKeys = Object.keys(rest).filter((k) => !known.has(k));
+			if (badKeys.length) return failWith("bad_input", `${o.name}: unknown arg(s) ${badKeys.join(", ")} for action "${action}" — ${toolName} accepts: ${[...known].join(", ") || "(no args)"}.`);
 			return tool.run(env, { ...rest, ...inject }); // inject re-adds the inner action for masked/vacation/operate
 		},
 	};
