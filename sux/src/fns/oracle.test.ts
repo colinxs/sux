@@ -171,6 +171,47 @@ describe("oracle — learn", () => {
 		expect(stored.sources).toHaveLength(15);
 	});
 
+	it("a multi-section payload with clean `## ` headings splits into one chunk per section (#1373)", async () => {
+		const { env, kv, run } = makeEnv();
+		const section = (n: number) => `## Section ${n}\n${"x".repeat(700)}\nDetail about section ${n}.`;
+		const knowledge = [1, 2, 3, 4, 5].map(section).join("\n\n");
+
+		const r = await oracle.run(env, { knowledge, topic: "book" });
+		expect(r.isError).toBeFalsy();
+		const j = JSON.parse(r.content[0].text);
+		expect(j.chunk_count).toBe(5);
+
+		// Five independent distill passes (one per section) plus one redistill across the set.
+		expect(textCallCount(run)).toBe(6);
+		for (let i = 0; i < 5; i++) {
+			const { user } = messages(run, i);
+			expect(user).toContain(`Section ${i + 1}`);
+		}
+
+		const stored = JSON.parse(await maybeDecompressString(kv.store.get("sux:oracle:book")!));
+		expect(stored.chunks).toHaveLength(5);
+
+		// Each section's distilled note landed in the per-topic retrieval store.
+		const chunks = await listChunks(env, "oracle:book");
+		expect(chunks).toHaveLength(5);
+	});
+
+	it("a long, heading-free payload also splits on size — one call isn't one chunk regardless of length (#1373)", async () => {
+		const { env } = makeEnv();
+		const para = (n: number) => `Paragraph ${n} covers distinct material. `.repeat(80);
+		const knowledge = [1, 2, 3].map(para).join("\n\n");
+
+		const r = await oracle.run(env, { knowledge, topic: "longbook" });
+		const j = JSON.parse(r.content[0].text);
+		expect(j.chunk_count).toBeGreaterThan(1);
+	});
+
+	it("a short, unstructured payload stays exactly one chunk (unchanged contract)", async () => {
+		const { env } = makeEnv();
+		const r = await oracle.run(env, { knowledge: "A single short paragraph with no structure at all.", topic: "short" });
+		expect(JSON.parse(r.content[0].text).chunk_count).toBe(1);
+	});
+
 	it("learn-from-URL fetches the page, reduces HTML to prose, then distills", async () => {
 		const { env, run } = makeEnv();
 		fetchMock.mockImplementation(async () => new Response(ARTICLE_HTML, { status: 200, headers: { "content-type": "text/html" } }));
