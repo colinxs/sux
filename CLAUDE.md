@@ -575,6 +575,17 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   but they're still independently live work (both #1204 and #1275 are actively `building` as
   of this date), not stale/closeable.
 
+- **A feature-request issue's "reuses X" premise can be flatly false — verify before designing
+  around it.** #1323 (NSLDS student-loan parser) said "reuses the LUNCHMONEY_API_KEY / lunchmoney
+  fn" and referenced an already-shipped "liability-sign fix" for it; `grep -rni "lunchmoney" sux/
+  CLAUDE.md` and `git log --all` turned up nothing — no such fn, secret, or fix has ever existed
+  in this repo (the only finance integration is `monarch.ts`, deliberately read-only). Building
+  the parts that DO check out (the parser itself) while dropping the parts resting on a
+  nonexistent integration into a follow-up issue (#1326) beat either blindly implementing a
+  fictional "reuse" or stalling the whole issue on it. A quick `grep`/`git log --all` for a named
+  fn/secret/fix an issue claims already exists is cheap insurance against building on a false
+  premise.
+
 ## Version coherence (#1238)
 
 Bump `package.json`'s `version` and `plugins/sux/.claude-plugin/plugin.json`'s

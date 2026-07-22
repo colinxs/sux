@@ -404,6 +404,64 @@ describe("ingest (capture → vault)", () => {
 		expect(out4.duplicate).toBeUndefined();
 		expect(putCount).toBe(3);
 	});
+
+	it("auto-detects a pasted NSLDS MyStudentData.txt and writes a structured student-loan note (#1323)", async () => {
+		const gh = ghMock();
+		routes.handler = gh.handler;
+		const fixture = [
+			"NSLDS Aggregate Data",
+			"Recipient Name: Jane Doe",
+			"Guaranty Agency: US Dept of Ed",
+			"Loan Type: Direct Subsidized",
+			"Loan Status: Repayment",
+			"Servicer: MOHELA",
+			"Outstanding Principal Balance: $5,000.00",
+			"Interest Rate: 4.53%",
+			"Loan PSLF Cumulative Matched Months: 24",
+			"Loan Type: Direct Unsubsidized",
+			"Loan Status: Deferment",
+			"Servicer: Aidvantage",
+			"Outstanding Principal Balance: $3,000.00",
+			"Interest Rate: 5.28%",
+			"Loan PSLF Cumulative Matched Months: 10",
+		].join("\n");
+		const r = await ingest.run(ENV, { text: fixture });
+		const out = JSON.parse(r.content[0].text);
+		expect(out.ok).toBe(true);
+		expect(out.pass).toBe(undefined);
+		const note = gh.puts[out.note];
+		expect(note).toContain("kind: \"student-loan-aggregate\"");
+		expect(note).toContain("loan_count: 2");
+		expect(note).toContain("total_outstanding_principal: 8000");
+		expect(note).toContain("tags: [capture, student-loan, nslds]");
+		expect(note).toContain("### Loan 1: Direct Subsidized");
+		expect(note).toContain("**Servicer:** MOHELA");
+	});
+
+	it("does not treat NSLDS detection/summarize as mutually exclusive silently — reports skipped instead", async () => {
+		const gh = ghMock();
+		routes.handler = gh.handler;
+		const fixture = [
+			"NSLDS Aggregate Data",
+			"Recipient Name: Jane Doe",
+			"Guaranty Agency: US Dept of Ed",
+			"Loan Type: Direct Subsidized",
+			"Loan Status: Repayment",
+			"Servicer: MOHELA",
+			"Outstanding Principal Balance: $5,000.00",
+			"Interest Rate: 4.53%",
+			"Loan PSLF Cumulative Matched Months: 24",
+			"Loan Type: Direct Unsubsidized",
+			"Loan Status: Deferment",
+			"Servicer: Aidvantage",
+			"Outstanding Principal Balance: $3,000.00",
+			"Interest Rate: 5.28%",
+			"Loan PSLF Cumulative Matched Months: 10",
+		].join("\n");
+		const r = await ingest.run(ENV, { text: fixture, summarize: true });
+		const out = JSON.parse(r.content[0].text);
+		expect(out.pass).toBe("skipped (structured student-loan capture)");
+	});
 });
 
 // The WRITE half of the toss-path core loop (#1287): a tossed note is handed to the

@@ -9,6 +9,7 @@ import { appendInferSignal, hasInferArm } from "./_infer";
 import { type VaultCfg, vaultCfg, vaultPut } from "./obsidian";
 import { redactPII } from "./redact";
 import { fingerprint, ledger } from "../ledger";
+import { tryRenderNsldsNote } from "./_nslds";
 
 // Capture — the intake half of the knowledge core (docs/proposals/domains.md §3), and the
 // UNIVERSAL TOSS-PATH INBOX: the one verb for "toss me information you want remembered."
@@ -50,12 +51,13 @@ const urlName = (u: string): string => {
 	}
 };
 
-function buildNote(title: string, source: string, body: string, tags: string[]): string {
+function buildNote(title: string, source: string, body: string, tags: string[], extra?: Record<string, string | number>): string {
 	// JSON.stringify yields a valid YAML double-quoted scalar (escapes quotes,
 	// backslashes, newlines) — raw interpolation would let a hostile page title
 	// or query inject frontmatter keys. Tags are clamped to the Obsidian charset.
 	const tagLine = ["capture", ...tags.map((t) => String(t).replace(/[^\w/-]+/g, "-").replace(/^-+|-+$/g, "")).filter(Boolean)].join(", ");
-	return `---\ntype: capture\ncreated: ${new Date().toISOString()}\nsource: ${JSON.stringify(source)}\ntags: [${tagLine}]\n---\n\n# ${title}\n\n${body}\n`;
+	const extraLines = extra ? `${Object.entries(extra).map(([k, v]) => `${k}: ${typeof v === "number" ? v : JSON.stringify(v)}`).join("\n")}\n` : "";
+	return `---\ntype: capture\ncreated: ${new Date().toISOString()}\nsource: ${JSON.stringify(source)}\n${extraLines}tags: [${tagLine}]\n---\n\n# ${title}\n\n${body}\n`;
 }
 
 const SIGNAL_SNIPPET_MAX = 1000;
@@ -142,7 +144,7 @@ export const ingest: Fn = {
 	name: "ingest",
 	cost: 3,
 	description:
-		"The universal toss-path inbox — \"toss me information\" for anything you want remembered: capture it into the Obsidian vault (git-backed = the undo; the KV cache is warmed) AND, when the assimilation spine is enabled, learn it — the note is distilled and indexed so `oracle ask` can later retrieve it with a citation back to this note. Exactly one source: url (HTML → markdown; text files verbatim; binary files become attachments; fetch cap 32MB) | text (verbatim body) | query (web-search results). A non-HTML/text URL (e.g. a PDF) is stored as an opaque blob here — never text-extracted or distilled. To actually extract and learn a PDF/book's content (native PDF + OCR, distilled into a whitelisted oracle topic), use `study` instead. Writes a provenance-stamped note (frontmatter type/created/source/tags) to Inbox/<date> <slug>.md — never overwriting (collisions get a time suffix) — or to an explicit `path` (overwrites). Bodies over 150k chars are truncated with a marker. Optional passes (skipped for binary captures, degrade to verbatim when AI is unavailable): summarize:true prepends an AI summary section; compress:true stores only the distilled summary — for url sources the original stays re-fetchable via provenance; for text/query the original is not retained. Blob routing: ≤1MB commits into the vault repo (![[Attachments/…]]); larger — or blobs:'dropbox' — uploads to the Dropbox app folder and the note links the shared URL (PUBLIC anyone-with-the-link; R2 fallback when Dropbox isn't configured — either DROPBOX_TOKEN or the DROPBOX_REFRESH_TOKEN+APP_KEY durable flow). A repeat capture whose resolved content exactly matches an earlier one returns that note's ref instead of minting a new one (content-fingerprint dedup, not a URL/path match) — pass force:true to capture again anyway. Returns { note, created, commit, source, pass?, blob?, duplicate? }.",
+		"The universal toss-path inbox — \"toss me information\" for anything you want remembered: capture it into the Obsidian vault (git-backed = the undo; the KV cache is warmed) AND, when the assimilation spine is enabled, learn it — the note is distilled and indexed so `oracle ask` can later retrieve it with a citation back to this note. Exactly one source: url (HTML → markdown; text files verbatim; binary files become attachments; fetch cap 32MB) | text (verbatim body) | query (web-search results). A non-HTML/text URL (e.g. a PDF) is stored as an opaque blob here — never text-extracted or distilled. To actually extract and learn a PDF/book's content (native PDF + OCR, distilled into a whitelisted oracle topic), use `study` instead. Writes a provenance-stamped note (frontmatter type/created/source/tags) to Inbox/<date> <slug>.md — never overwriting (collisions get a time suffix) — or to an explicit `path` (overwrites). Bodies over 150k chars are truncated with a marker. Optional passes (skipped for binary captures, degrade to verbatim when AI is unavailable): summarize:true prepends an AI summary section; compress:true stores only the distilled summary — for url sources the original stays re-fetchable via provenance; for text/query the original is not retained. Blob routing: ≤1MB commits into the vault repo (![[Attachments/…]]); larger — or blobs:'dropbox' — uploads to the Dropbox app folder and the note links the shared URL (PUBLIC anyone-with-the-link; R2 fallback when Dropbox isn't configured — either DROPBOX_TOKEN or the DROPBOX_REFRESH_TOKEN+APP_KEY durable flow). A repeat capture whose resolved content exactly matches an earlier one returns that note's ref instead of minting a new one (content-fingerprint dedup, not a URL/path match) — pass force:true to capture again anyway. A pasted/uploaded NSLDS `MyStudentData.txt` (federal student-loan aggregate download) auto-detects and parses into a structured per-loan note (servicer/status/rate/PSLF months) instead of landing as raw text. Returns { note, created, commit, source, pass?, blob?, duplicate? }.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -245,6 +247,20 @@ export const ingest: Fn = {
 				}
 			}
 
+			// NSLDS `MyStudentData.txt` auto-detect (#1323): a federal student-loan aggregate
+			// export tossed in as text (paste or a text/plain url/upload) gets parsed into a
+			// structured per-loan note instead of landing as a wall of raw colon-delimited text.
+			// Never runs on blobs/html — those bodies can't shape-match a flat key:value dump.
+			let nslds: ReturnType<typeof tryRenderNsldsNote> = null;
+			if (!blob) {
+				nslds = tryRenderNsldsNote(body, date);
+				if (nslds) {
+					title ||= nslds.title;
+					body = nslds.body;
+					tags.push(...nslds.tags);
+				}
+			}
+
 			// Content-fingerprint dedup (#1175): a repeat capture of the same resolved text
 			// returns the existing note's ref instead of minting a fresh Inbox/-N twin. Fingerprinted
 			// over the resolved `body` (not the source url/query), so the same URL genuinely
@@ -264,6 +280,7 @@ export const ingest: Fn = {
 			let pass: string | undefined;
 			if (args?.summarize === true || args?.compress === true) {
 				if (blob) pass = "skipped (binary capture)";
+				else if (nslds) pass = "skipped (structured student-loan capture)";
 				else {
 					const sum = await fnByName("summarize");
 					const r = sum ? await sum.run(env, { text: body, style: args?.compress === true ? "bullets" : "paragraph" }) : undefined;
@@ -281,7 +298,7 @@ export const ingest: Fn = {
 			}
 
 			title = title.replace(/\s+/g, " ").trim() || "capture";
-			const md = buildNote(title, source, clampBytes(body, BODY_MAX), tags);
+			const md = buildNote(title, source, clampBytes(body, BODY_MAX), tags, nslds?.frontmatter);
 			// An explicit `path` overwrites intentionally. A default Inbox path never
 			// clobbers: same-slug same-day captures disambiguate (-1, -2, …) so no
 			// earlier note is lost, even for two captures in the same second.
