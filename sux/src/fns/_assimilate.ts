@@ -5,6 +5,7 @@ import { makeCaps } from "../op-engine/caps";
 import type { RtEnv } from "../registry";
 import { embed } from "./_embed";
 import { chunkText, distillProfile, newId, putChunk, type SourceChunk } from "./_source";
+import { shrinkPdfImages } from "./_pdf_shrink";
 import { errMsg, putBlob, sha256Hex, toB64 } from "./_util";
 import { ocr } from "./ocr";
 import { DISTILL_SYSTEM } from "./oracle";
@@ -170,17 +171,29 @@ async function archiveLeg(
 ): Promise<{ r2_key?: string; sha256?: string; size?: number; skipped?: string }> {
 	if (!opts.bytes?.length) return { skipped: "no original bytes (text input)" };
 	try {
-		// W4 seam (#1276): when the pdf shrink leg lands, recompress opts.bytes here
-		// (best-effort — a shrink failure archives the original, never skips the archive).
+		// W4 optimize-original (#1276): store the OPTIMIZED original — recompress a PDF's
+		// embedded raster images before the CAS write so the archive tier stays cheap
+		// (arc doc G4). Best-effort by construction: shrinkPdfImages returns the ORIGINAL
+		// bytes unchanged on any no-gain/failure, so the archive never breaks and the
+		// document is never lost. Applies to PHI too (still through putPhi below). The
+		// human-home copy (Dropbox) is untouched — this is the machine archive tier only.
+		let bytes = opts.bytes;
+		if (opts.contentType === "application/pdf") {
+			const shr = await shrinkPdfImages(env, bytes);
+			if (shr.shrunk) {
+				bytes = shr.bytes;
+				console.log(`assimilate: pdf image-shrink ${shr.inputBytes}→${shr.outputBytes} bytes (${shr.imagesRecompressed} image(s))`);
+			}
+		}
 		if (opts.phi) {
 			// Content-addressed under phi/ (sha-prefixed key) so a re-assimilated document is
 			// idempotent, mirroring the CAS layout — but through putPhi, which never mints the
 			// public /s/ handle putBlob does (#613's fence is exactly that difference).
-			const sha256 = await sha256Hex(opts.bytes);
-			const key = await putPhi(env, `assimilate/${sha256}-${opts.name}`, opts.bytes, opts.contentType);
-			return { r2_key: key, sha256, size: opts.bytes.length };
+			const sha256 = await sha256Hex(bytes);
+			const key = await putPhi(env, `assimilate/${sha256}-${opts.name}`, bytes, opts.contentType);
+			return { r2_key: key, sha256, size: bytes.length };
 		}
-		const ref = await putBlob(env, opts.bytes, opts.contentType);
+		const ref = await putBlob(env, bytes, opts.contentType);
 		return { r2_key: ref.key, sha256: ref.sha256, size: ref.size };
 	} catch (e) {
 		const skipped = `archive skipped: ${errMsg(e)}`;
