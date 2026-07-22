@@ -115,7 +115,7 @@ export const PROFILES: Record<string, Set<string>> = {
 export function resolveAudience(request: Request, env: RtEnv): Set<string> {
 	const url = new URL(request.url);
 	const as = url.searchParams.get("as");
-	if (as && PROFILES[as]) {
+	if (as && Object.prototype.hasOwnProperty.call(PROFILES, as)) {
 		const secret = env.PORTAL_PREVIEW_TOKEN?.trim();
 		const presented = url.searchParams.get("preview_token") ?? "";
 		if (secret && presented && timingSafeEqual(secret, presented)) return PROFILES[as];

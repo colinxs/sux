@@ -251,7 +251,16 @@ export async function runDocumentRadarSync(env: RtEnv, deps: DocumentRadarDeps =
 			let originalUrl: string | undefined;
 			// Archive the original scan bytes to R2 (#1200, extended to PDFs by #1216) — best-effort,
 			// never blocks the note, and shares the same Mode-A shared-link mint for both branches.
-			const shareUrl = await deps.shareUrl(env, entry.path);
+			// The mint can THROW (token-refresh HTTP failure, network error/timeout), not just return
+			// undefined on a non-200 — isolate it like study.ts's own Mode-A attempt does, so a
+			// transient failure here degrades to originalUrl:undefined instead of landing the whole
+			// entry in `errors` and skipping the PDF note (#1268).
+			let shareUrl: string | undefined;
+			try {
+				shareUrl = await deps.shareUrl(env, entry.path);
+			} catch {
+				shareUrl = undefined;
+			}
 			const rawUrl = shareUrl ? dropboxRawUrl(shareUrl) : undefined;
 			if (rawUrl) {
 				const ext = entry.name.split(".").pop()?.toLowerCase() ?? "";

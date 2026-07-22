@@ -39,23 +39,30 @@ async function handleOne(env: RtEnv, ev: R2Event): Promise<boolean> {
 	const bytes = new Uint8Array(await obj.arrayBuffer());
 	const name = key.split("/").pop() ?? "scan.pdf";
 
-	// 1. Dropbox app folder — the human-facing durable home. overwrite:true (the
-	// default) is what makes redelivery idempotent (same key → same path → same
-	// bytes).
+	// 1. Dropbox app folder — the human-facing durable home. overwrite:false so a
+	// recycled R2 key (e.g. the producer's scanner reusing a basename within the
+	// same calendar month, #1267) autorenames instead of clobbering an earlier
+	// scan's only durable copy; `put.path` reflects whatever name actually landed.
+	// Redelivery of the SAME object is still idempotent because a true redelivery
+	// only reaches this put when the earlier attempt failed before the note write
+	// below (step 2) — the worst case of a genuine redelivery hitting `add` mode is
+	// a harmless orphan duplicate, never data loss.
 	if (!hasDropbox(env)) {
 		console.warn("ingest-queue: Dropbox not configured — retrying");
 		return false;
 	}
 	const dbxPath = `/Scans/${key.slice("scan/".length)}`;
-	const put = await dropboxPut(env, dbxPath, bytes);
+	const put = await dropboxPut(env, dbxPath, bytes, { overwrite: false });
 	if ("error" in put) {
 		console.warn(`ingest-queue: dropbox put failed: ${put.error}`);
 		return false;
 	}
 
-	// 2. Vault note — deterministic path keyed on the object name, so a
-	// re-delivered message that already wrote the note sees exists:true and
-	// treats it as success (idempotent), never a -1 duplicate.
+	// 2. Vault note — path keyed on the object name PLUS a content discriminator
+	// (the R2 event's own eTag) so two distinct same-day/same-stem scans (the
+	// filename-reuse case above) each get their own note instead of the second
+	// silently no-op'ing on `exists:true`. Redelivery of the *same* object carries
+	// the same eTag → same path → still idempotent.
 	const cfg = vaultCfg(env);
 	if ("error" in cfg) {
 		console.warn(`ingest-queue: vault not configured: ${cfg.error} — retrying`);
@@ -63,7 +70,8 @@ async function handleOne(env: RtEnv, ev: R2Event): Promise<boolean> {
 	}
 	const day = (ev.eventTime ?? new Date().toISOString()).slice(0, 10);
 	const stem = name.replace(/\.[^.]+$/, "").replace(/[^\w.-]+/g, "_");
-	const notePath = `Inbox/scan-${day} ${stem}.md`;
+	const etag = (ev.object?.eTag ?? "").replace(/[^a-f0-9]/gi, "").slice(0, 8);
+	const notePath = `Inbox/scan-${day} ${stem}${etag ? `-${etag}` : ""}.md`;
 	const note = [
 		"---",
 		"type: capture",
