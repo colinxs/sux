@@ -123,12 +123,14 @@ import { fontcase } from "./fontcase";
 import { recall } from "./recall";
 import { audit_log } from "./audit_log";
 import { contact_consolidate_plan } from "./contact_consolidate_plan";
+import { evidence_packet } from "./evidence_packet";
 import { files_consolidate_plan } from "./files_consolidate_plan";
 import { get } from "./get";
 import { imessage } from "./imessage";
 import { mail_domain_backfill } from "./mail_domain_backfill";
 import { mail_sieve_hc } from "./mail_sieve_hc";
 import { mail_triage_plan } from "./mail_triage_plan";
+import { medical_timeline_plan } from "./medical_timeline_plan";
 import { mychart_reconcile_plan } from "./mychart_reconcile_plan";
 import { uw } from "./uw";
 import { onboard } from "./onboard";
@@ -257,12 +259,14 @@ export const FUNCTIONS: Fn[] = [
 	recall,
 	audit_log,
 	contact_consolidate_plan,
+	evidence_packet,
 	files_consolidate_plan,
 	get,
 	imessage,
 	mail_domain_backfill,
 	mail_sieve_hc,
 	mail_triage_plan,
+	medical_timeline_plan,
 	mychart_reconcile_plan,
 	uw,
 	onboard,

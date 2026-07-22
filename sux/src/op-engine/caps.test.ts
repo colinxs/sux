@@ -352,6 +352,37 @@ test("files-duplicates sink moveFulls each archive into /Archive/Duplicates — 
 	expect(out).toEqual({ moved: 1, groups: 1 });
 });
 
+test("medical-timeline sink regenerates Timeline/Medical.md as one full overwrite, chronologically, citing each source", async () => {
+	obsidianRun.mockReset();
+	obsidianRun.mockResolvedValue({ content: [{ type: "text", text: "{}" }] });
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	const items = [
+		{ date: "2026-01-01", kind: "result", title: "Lab panel", source: "Health/lab.md" },
+		{ date: "2026-03-05", kind: "appointment", title: "Cardiology", detail: "BP check", source: "Health/cardio.md" },
+	];
+	const out = await sinks["medical-timeline"].write(items, {} as Caps);
+	expect(out).toEqual({ written: 2 });
+	expect(obsidianRun).toHaveBeenCalledTimes(1);
+	const [, args] = obsidianRun.mock.calls[0] as [unknown, { action: string; path: string; backend: string; content: string }];
+	expect(args).toMatchObject({ action: "write", path: "Timeline/Medical.md", backend: "git" });
+	expect(args.content.indexOf("Lab panel")).toBeLessThan(args.content.indexOf("Cardiology"));
+	expect(args.content).toContain("_source: Health/cardio.md_");
+	expect(args.content).toContain("BP check");
+});
+
+test("medical-timeline sink is a no-op on an empty batch (never an error)", async () => {
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	const out = await sinks["medical-timeline"].write([], {} as Caps);
+	expect(out).toEqual({ written: 0 });
+});
+
+test("medical-timeline sink throws loudly when the vault write fails", async () => {
+	obsidianRun.mockReset();
+	obsidianRun.mockResolvedValueOnce({ isError: true, content: [{ type: "text", text: "git write failed" }] });
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	await expect(sinks["medical-timeline"].write([{ date: "2026-01-01", kind: "event", title: "x", source: "y" }], {} as Caps)).rejects.toThrow(/failed to write Timeline\/Medical\.md/);
+});
+
 test("files-duplicates sink is a no-op on an empty batch (never an error)", async () => {
 	hasDropboxFullWrite.mockClear();
 	const { sinks } = makeCaps({} as unknown as RtEnv);

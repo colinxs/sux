@@ -69,9 +69,15 @@
 	// BRIEFING_ENABLED is deliberately NOT set here — pending H1 (untrusted mail through the llm()
 	// fence); arm it once that fix lands.
 	//
-	// LIFE_WIKI_ENABLED gates the life-learning living wiki (fns/_life_wiki.ts). Ships "0" = OFF:
-	// the daily cron tick is a total no-op until flipped to "1". Safe to arm — writes ONLY into the
+	// LIFE_WIKI_ENABLED gates the life-learning living wiki (fns/_life_wiki.ts). Armed ("1"):
+	// the daily cron tick fans recall across vault/mail/files/learned and writes regenerable
+	// people/health/projects/timeline profile notes. Safe to arm — writes ONLY into the
 	// sandboxed vault subdir (sux/wiki/), never the user's own notes; that subdir is deletable.
+	//
+	// LEARNING_FOLDER_ENABLED gates the Dropbox learning-folder sync (fns/_learning_folder.ts,
+	// #433): armed ("1"), the cron reconciles a watched Dropbox folder (default /learning) as a
+	// drop-box ingest point. Also requires hasDropbox(env) (DROPBOX_TOKEN secret) — absent that,
+	// this flag alone still leaves the sync dormant.
 	//
 	// MyChart (Epic SMART-on-FHIR) + Apple Health ingest are configured entirely by
 	// out-of-band secrets, NOT declared here (like MONARCH_TOKEN / KROGER_* / the
@@ -80,7 +86,7 @@
 	// HEALTH_INGEST_TOKEN arms POST /apple-health. All absent ⇒ inert (not_configured),
 	// the routes 404. The durable Epic REFRESH token is NOT a secret — it's minted at
 	// /mychart/callback and held in OAUTH_KV (sux:mychart:grant). See src/mychart.ts.
-	"vars": { "DEBUG_MCP": "0", "MAIL_TRIAGE_ENABLED": "1", "WEEKLY_RECALL_ENABLED": "1", "SELF_IMPROVE_ENABLE": "1", "LIFE_WIKI_ENABLED": "0" },
+	"vars": { "DEBUG_MCP": "0", "MAIL_TRIAGE_ENABLED": "1", "WEEKLY_RECALL_ENABLED": "1", "SELF_IMPROVE_ENABLE": "1", "LIFE_WIKI_ENABLED": "1", "LEARNING_FOLDER_ENABLED": "1" },
 	// Per-user rate limit (same as core).
 	"unsafe": {
 		"bindings": [
