@@ -9,7 +9,7 @@ on:
   schedule:
     # Deep tier of the 3-cadence proposer (see fixer-bugs.yml 15m / fixer-hourly.yml 30m):
     # bugs + feature ideas + an explicit push for at least one ambitious/large idea per pass.
-    - cron: "23 * * * *"
+    - cron: "23 6 * * *" # Fixer Cadence v2: hot-tier daily ambitious-idea sweep
   workflow_dispatch:
 
 jobs:

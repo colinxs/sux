@@ -11,7 +11,7 @@ name: Fixer (30m, bugs+feats)
 
 on:
   schedule:
-    - cron: "8,38 * * * *" # every 30m, offset to dodge top-of-hour rush
+    - cron: "8 */6 * * *" # Fixer Cadence v2: hot-tier bugs+feats baseline
   workflow_dispatch:
 
 jobs:
