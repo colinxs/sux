@@ -25,17 +25,22 @@ import { vaultCfg } from "./obsidian";
 // DAY-ONE INSTRUMENTATION: every ask appends its retrieval scores + per-domain coverage
 // to a capped KV log, and `oracle feedback` stamps a thumbs verdict onto that same entry.
 // This telemetry is what answers the v5 arc's disputed question — is bge-base-en-v1.5 +
-// the 0.68 floor good enough for medical/legal QA? — before any at-scale embedding
+// the similarity-floor choice good enough for medical/legal QA? — before any at-scale embedding
 // lock-in (the arc's §9 riskiest assumption), so it ships with the verb, not after it.
 //
 // All retrieved material is UNTRUSTED (an email/note can embed "ignore your
 // instructions…") — it rides the guarded llm() <<<DATA>>> fence, and the system prompt
 // says to treat it strictly as data.
 
-/** The similarity floor a passage must clear to ground an answer — harvested from the
- *  suxos-net PR #34 bge-base-en-v1.5 calibration (on-topic chunks 0.65–0.75, off-topic
- *  <0.6; precision-favoring, the right bias for sensitive QA). */
-export const ASK_FLOOR = 0.68;
+/** The similarity floor a passage must clear to ground an answer. The original 0.68
+ *  (suxos-net PR #34's bge-base-en-v1.5 calibration: on-topic 0.65–0.75, off-topic <0.6)
+ *  turned out to sit BELOW the model's own embedding-anisotropy noise floor: live probes
+ *  (#1346, the 1.0-cut audit) found two deliberately-orthogonal junk queries scoring
+ *  0.708/0.751 against the vault index — over the floor, so the no_match branch never
+ *  fired and both burned a full LLM synthesis call. Recalibrated from that same audit's
+ *  observed distribution (junk 0.70–0.75, genuine hits ~0.81) — high enough to reject the
+ *  observed junk band, comfortably below observed real hits. */
+export const ASK_FLOOR = 0.78;
 
 /** Top-k candidates taken per domain before the floor is applied. */
 const PER_DOMAIN_K = 8;
@@ -108,6 +113,13 @@ export type AskLogEntry = {
 const askLog = (env: RtEnv) => cappedKvLog<AskLogEntry>(env, ASK_LOG_KEY, ASK_LOG_CAP);
 
 const round3 = (n: number): number => Math.round(n * 1000) / 1000;
+
+/** A short, non-reversible fingerprint of the question for the structured ask log line
+ *  (#1346) — observability without echoing free-text personal-question content into logs. */
+async function hashQuery(question: string): Promise<string> {
+	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(question));
+	return [...new Uint8Array(digest)].slice(0, 6).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
 
 /** recall's withSourceTimeout with the timer cleared on settle, so a fast leg doesn't
  *  leave an 8s timer pending. */
@@ -413,7 +425,16 @@ export async function runAsk(env: RtEnv, question: string): Promise<AskOutcome> 
 		console.log(`oracle ask: score log write skipped: ${errMsg(e)}`);
 	}
 
-	console.log(`oracle: ask status=${status} kept=${chosen.length} domains=${names.map((n) => `${n}:${domains[n].status}`).join(",")}`);
+	// Structured per-ask log line (#1346): no_match/llm_called plus per-domain top_score
+	// were previously unobservable — a probe of Workers Observability found only
+	// request-level `GET /mcp` events, nothing that let the floor's real-world behavior be
+	// judged from logs alone. query_hash lets the SAME question be correlated across asks
+	// without echoing its free-text content.
+	console.log(
+		`oracle: ask query_hash=${await hashQuery(question)} status=${status} no_match=${status === "no_match"} llm_called=${chosen.length > 0} kept=${chosen.length} domains=${names
+			.map((n) => `${n}:${domains[n].status}:top=${domains[n].top_score ?? "-"}`)
+			.join(",")}`,
+	);
 	return {
 		answer_id,
 		status,

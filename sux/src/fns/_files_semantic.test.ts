@@ -188,6 +188,78 @@ describe("_files_semantic", () => {
 		expect(idx?.chunks.map((c) => c.path)).toEqual(["/notes/c.md"]);
 	});
 
+	// #1347: unpacked-archive/package-manager junk (node_modules, .yarn/cache, .git, an
+	// /Auto/Unpack/ staging tree) must never be indexed, even when it otherwise passes the
+	// size/extension gate.
+	it("never embeds node_modules/.yarn/cache/.git/Auto-Unpack junk, even when it passes the size/extension gate", async () => {
+		dbxHas.mockReturnValue(true);
+		listChanges.mockResolvedValue({
+			entries: [
+				{ kind: "file", path: "/Auto/Unpack/plex-6.4.2/.yarn/cache/queue-microtask-npm-1.2/node_modules/queue-microtask/package.json", size: 200 },
+				{ kind: "file", path: "/repo/.git/config", size: 50 },
+				{ kind: "file", path: "/notes/real.md", size: 50 },
+			],
+			deleted: [],
+			has_more: false,
+			cursor: "cur-1",
+		});
+		read.mockResolvedValue({ text: "real note text" });
+		const idx = await filesSemanticIndex(aiEnv());
+		expect(idx?.chunks.map((c) => c.path)).toEqual(["/notes/real.md"]);
+		expect(read).toHaveBeenCalledTimes(1);
+	});
+
+	it("purges already-indexed junk chunks from a cache built before the exclusion existed, and is idempotent on a re-run", async () => {
+		dbxHas.mockReturnValue(true);
+		const env = aiEnv();
+		env.OAUTH_KV.store.set(
+			"sux:files:semantic",
+			JSON.stringify({
+				cursor: "cur-1",
+				version: 1,
+				at: 0,
+				total: 2,
+				truncated: false,
+				chunks: [
+					{ path: "/Auto/Unpack/plex-6.4.2/.yarn/cache/iconv-lite-npm-0.4/node_modules/iconv-lite/encodings/tables/shiftjis.json", text: "junk", embedding: encodeEmbedding([1, 0, 0]) },
+					{ path: "/notes/keep.md", text: "keep me", embedding: encodeEmbedding([1, 0, 0]) },
+				],
+			}),
+		);
+		listChanges.mockResolvedValue({ entries: [], deleted: [], has_more: false, cursor: "cur-1" }); // no-op incremental pass
+		const idx = await filesSemanticIndex(env);
+		expect(idx?.chunks.map((c) => c.path)).toEqual(["/notes/keep.md"]);
+
+		// A second pass over the now-clean cache purges nothing further (idempotent).
+		listChanges.mockResolvedValue({ entries: [], deleted: [], has_more: false, cursor: "cur-1" });
+		const idx2 = await filesSemanticIndex(env);
+		expect(idx2?.chunks.map((c) => c.path)).toEqual(["/notes/keep.md"]);
+	});
+
+	it("filesSemanticIndexCached filters junk out in-memory too, without writing back to KV", async () => {
+		dbxHas.mockReturnValue(true);
+		const env = aiEnv();
+		const putCallsBefore = env.OAUTH_KV.put.mock.calls.length;
+		env.OAUTH_KV.store.set(
+			"sux:files:semantic",
+			JSON.stringify({
+				cursor: "cur-1",
+				version: 1,
+				at: 0,
+				total: 2,
+				truncated: false,
+				chunks: [
+					{ path: "/repo/.git/HEAD", text: "junk", embedding: encodeEmbedding([1, 0, 0]) },
+					{ path: "/notes/keep.md", text: "keep me", embedding: encodeEmbedding([1, 0, 0]) },
+				],
+			}),
+		);
+		const { filesSemanticIndexCached } = await import("./_files_semantic");
+		const idx = await filesSemanticIndexCached(env);
+		expect(idx?.chunks.map((c) => c.path)).toEqual(["/notes/keep.md"]);
+		expect(env.OAUTH_KV.put.mock.calls.length).toBe(putCallsBefore); // read-only sibling never writes
+	});
+
 	it("topKFilesByCosine ranks by cosine similarity and skips chunks with no embedding", () => {
 		const chunks = [
 			{ path: "/a.md", text: "t", embedding: [1, 0, 0] },

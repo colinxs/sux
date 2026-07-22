@@ -3,6 +3,7 @@ import { cosine, decodeEmbedding, embed, encodeEmbedding } from "./_embed";
 import { chunkText } from "./_source";
 import { obsidian } from "./obsidian";
 import { type VaultCfg, readVaultSemanticBlob, vaultHead, writeVaultSemanticBlob } from "./obsidian";
+import { deleteCorpusIds, vectorId } from "./_vectorize";
 
 // The vault_semantic substrate: brute-force KV cosine kNN over the vault's own notes —
 // same deliberate KISS choice _source.ts:16 documents (no Vectorize; a few hundred
@@ -110,6 +111,48 @@ export async function vaultSemanticIndexCached(env: RtEnv, cfg: VaultCfg): Promi
 	const storedCached = (await readVaultSemanticBlob(env, cfg)) as StoredSemanticIndex | null;
 	if (storedCached?.version === VERSION && isStoredSemanticIndex(storedCached)) return fromStored(storedCached);
 	return null;
+}
+
+/** Prune the cached KV cosine core of chunks whose path no longer exists in the vault's
+ *  current note listing (#1347) — a moved/deleted note (e.g. the Meta/→_meta/ migration)
+ *  otherwise lingers forever: the HEAD-sha rebuild only OVERWRITES the whole core when HEAD
+ *  moves and something calls the BUILDING variant, and the Vectorize backfill is purely
+ *  additive (upserts, never deletes) — neither path ever removes a since-vanished path on
+ *  its own. Deletes the matching Vectorize vectors too (deterministic id from domain "vault"
+ *  + path + within-path sub index, the same scheme `_reindex.ts`'s enumerateVault upserts
+ *  under), so a purged path stops being served from either store. Best-effort: a listing
+ *  failure — or a suspiciously EMPTY listing, more likely a transient hiccup than a truly
+ *  emptied vault — skips the purge for this pass rather than risk mass-deleting a healthy
+ *  core against a bad read. */
+export async function purgeStaleVaultChunks(env: RtEnv, cfg: VaultCfg): Promise<{ purgedPaths: string[] }> {
+	const storedCached = (await readVaultSemanticBlob(env, cfg)) as StoredSemanticIndex | null;
+	if (!storedCached || !isStoredSemanticIndex(storedCached) || !storedCached.chunks.length) return { purgedPaths: [] };
+	let current: Set<string>;
+	try {
+		const listRes = await obsidian.run(env, { action: "list", backend: "git" });
+		if (listRes.isError) return { purgedPaths: [] };
+		const listing = JSON.parse(listRes.content[0].text) as { notes?: string[] };
+		current = new Set(Array.isArray(listing.notes) ? listing.notes : []);
+	} catch {
+		return { purgedPaths: [] };
+	}
+	if (!current.size) return { purgedPaths: [] };
+
+	const cached = fromStored(storedCached);
+	const byPath = new Map<string, SemanticChunk[]>();
+	for (const c of cached.chunks) (byPath.get(c.path) ?? byPath.set(c.path, []).get(c.path)!).push(c);
+	const purgedPaths = [...byPath.keys()].filter((p) => !current.has(p));
+	if (!purgedPaths.length) return { purgedPaths: [] };
+
+	const staleIds = await Promise.all(purgedPaths.flatMap((path) => byPath.get(path)!.map((_, sub) => vectorId("vault", path, sub))));
+	await deleteCorpusIds(env, staleIds);
+
+	const stale = new Set(purgedPaths);
+	const chunks = cached.chunks.filter((c) => !stale.has(c.path));
+	const updated: SemanticIndex = { ...cached, chunks, total: new Set(chunks.map((c) => c.path)).size };
+	const wrote = await writeVaultSemanticBlob(env, cfg, toStored(updated));
+	if (!wrote) console.log(`vault_semantic: purge write for ${cfg.repo} was dropped (over KV's 25MiB cap or a codec error) — next pass retries`);
+	return { purgedPaths };
 }
 
 export type SemanticHit = { path: string; title: string; text: string; score: number };

@@ -5,7 +5,7 @@ import { mailSemanticIndex } from "./_mail_semantic";
 import { listChunks, listDomains } from "./_source";
 import { errMsg } from "./_util";
 import { coarseDomain, CORPUS_INDEX, hasVectorize, type IndexUnit, pointerForSourceChunk, upsertIndexUnits } from "./_vectorize";
-import { vaultSemanticIndex, vaultSemanticIndexCached } from "./_vault_semantic";
+import { purgeStaleVaultChunks, vaultSemanticIndex, vaultSemanticIndexCached } from "./_vault_semantic";
 import { vaultCfg } from "./obsidian";
 
 // _reindex — the backfill/repopulate path for the unified Vectorize index (#1290). The index
@@ -63,6 +63,13 @@ function groupBy<T>(items: T[], key: (t: T) => string): Map<string, T[]> {
 async function enumerateVault(env: RtEnv, cached: boolean): Promise<EnumerateResult> {
 	const cfg = vaultCfg(env);
 	if ("error" in cfg) return { items: [], ready: true, note: "vault not configured" };
+	// Self-heal stale/moved paths (#1347) on the cached (durable backfill) path only — the
+	// building path already gets a correct, freshly-listed core from buildVaultSemanticIndex,
+	// so there's nothing there to purge. One cheap list call per tick, no re-embed.
+	if (cached) {
+		const { purgedPaths } = await purgeStaleVaultChunks(env, cfg);
+		if (purgedPaths.length) console.log(`reindex: vault purge dropped ${purgedPaths.length} stale path(s): ${purgedPaths.slice(0, 5).join(", ")}${purgedPaths.length > 5 ? "…" : ""}`);
+	}
 	const idx = cached ? await vaultSemanticIndexCached(env, cfg) : await vaultSemanticIndex(env, cfg);
 	if (!idx) return { items: [], ready: false, note: cached ? "vault index not warm yet — will resume once built" : "vault index unavailable (no KV or HEAD unresolved)" };
 	const items: IndexUnit[] = [];

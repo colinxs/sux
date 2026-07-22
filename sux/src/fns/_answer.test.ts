@@ -400,6 +400,24 @@ describe("oracle ask — no_match path", () => {
 		const log = await readAskLog(kv);
 		expect(log[0]).toMatchObject({ status: "no_match", kept_scores: [] });
 	});
+
+	// #1346: the pre-fix 0.68 floor sat BELOW real-world embedding-anisotropy noise —
+	// live probes found junk queries scoring 0.70–0.75 against unrelated content, so the
+	// no_match branch never fired. Regression-guard the recalibrated floor against exactly
+	// that band: a query vector engineered to cosine ~0.72 against the seeded chunk (well
+	// within the audit's observed junk range) must still take the no_match branch.
+	it("a query scoring in the audit's observed junk band (~0.72) still takes no_match, not answered (#1346)", async () => {
+		const { env, run } = makeEnv({ queryVec: [0.72, 0.6939, 0] }); // cosine([1,0,0], this) ≈ 0.72
+		await seedKbChunk(env);
+
+		const r = await oracle.run(env, { action: "ask", problem: "junk query near the old floor" });
+		const j = JSON.parse(r.content[0].text);
+
+		expect(j.status).toBe("no_match");
+		expect(j.domains.oracle.top_score).toBeGreaterThan(0.68); // would have crossed the OLD floor…
+		expect(j.domains.oracle.top_score).toBeLessThan(ASK_FLOOR); // …but not the recalibrated one
+		expect(textCalls(run)).toHaveLength(0); // no LLM synthesis burned on the junk query
+	});
 });
 
 describe("oracle ask — degraded-domain path", () => {

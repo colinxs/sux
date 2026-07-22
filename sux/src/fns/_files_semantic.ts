@@ -87,11 +87,47 @@ async function writeBlob(env: RtEnv, blob: StoredFilesSemanticIndex): Promise<bo
 	}
 }
 
+// EXCLUDE_PATTERNS (#1347): package-manager/unpacked-archive junk that lands in Dropbox as a
+// side effect of an install/unpack, never a personal document — an audit found citations like
+// `.yarn/cache/queue-microtask-npm-1.2/node_modules/queue-microtask/package.json` ranked
+// against real content. None of this is worth embedding, ever.
+const EXCLUDE_PATTERNS: RegExp[] = [/(^|\/)node_modules\//, /\.yarn\/cache\//, /(^|\/)\.git\//, /\/Auto\/Unpack\//];
+/** True when a path is junk an indexer should never embed/serve — shared by the forward gate
+ *  (isCandidate, below) and the purge of already-indexed junk (purgeExcludedFilesChunks). */
+export const isExcludedFilesPath = (path: string): boolean => EXCLUDE_PATTERNS.some((re) => re.test(path));
+
 /** True when a live list_folder(/continue) entry is a small textual file worth embedding —
  *  the exact criteria fromFiles already applies at recall.ts:173, kept in sync by this
- *  being the ONE place either leg checks it against a listing entry. */
+ *  being the ONE place either leg checks it against a listing entry. Also excludes
+ *  known package-manager/unpack junk paths (#1347) regardless of extension/size. */
 function isCandidate(e: any): e is { kind: "file"; path: string; size: number } {
-	return e?.kind === "file" && typeof e?.path === "string" && typeof e?.size === "number" && e.size <= FILE_SIZE_CAP && FILES_SEMANTIC_TEXT_EXT.test(e.path);
+	return (
+		e?.kind === "file" &&
+		typeof e?.path === "string" &&
+		typeof e?.size === "number" &&
+		e.size <= FILE_SIZE_CAP &&
+		FILES_SEMANTIC_TEXT_EXT.test(e.path) &&
+		!isExcludedFilesPath(e.path)
+	);
+}
+
+/** Purge chunks matching EXCLUDE_PATTERNS from an already-built/cached index — an idempotent
+ *  backfill for junk indexed before #1347's exclusion existed (isCandidate alone only stops
+ *  NEW junk from entering; existing chunks need dropping explicitly). Also deletes the matching
+ *  vectors from the unified Vectorize index (their id is deterministic from domain "files" +
+ *  path + within-path sub index, the same scheme `_reindex.ts`'s enumerateFiles upserts under),
+ *  so a purged path stops being served from either store. Best-effort/no-op-safe: a rerun over
+ *  an already-clean index removes nothing. */
+export async function purgeExcludedFilesChunks(env: RtEnv, index: FilesSemanticIndex): Promise<{ index: FilesSemanticIndex; purgedPaths: string[] }> {
+	const byPath = new Map<string, FilesSemanticChunk[]>();
+	for (const c of index.chunks) (byPath.get(c.path) ?? byPath.set(c.path, []).get(c.path)!).push(c);
+	const purgedPaths = [...byPath.keys()].filter((p) => isExcludedFilesPath(p));
+	if (!purgedPaths.length) return { index, purgedPaths: [] };
+	const staleIds = await Promise.all(purgedPaths.flatMap((path) => byPath.get(path)!.map((_, sub) => vectorId("files", path, sub))));
+	await deleteCorpusIds(env, staleIds);
+	const stale = new Set(purgedPaths);
+	const chunks = index.chunks.filter((c) => !stale.has(c.path));
+	return { index: { ...index, chunks, total: new Set(chunks.map((c) => c.path)).size }, purgedPaths };
 }
 
 /** Page list_folder(/continue) from `cursor` (undefined ⇒ a fresh whole-account listing),
@@ -233,7 +269,13 @@ export async function filesSemanticIndex(env: RtEnv): Promise<FilesSemanticIndex
 	if (!hasDropboxFull(env)) return null;
 	const storedCached = await readBlob(env);
 	if (isStoredFilesSemanticIndex(storedCached) && storedCached.version === VERSION) {
-		const cached = fromStored(storedCached);
+		let cached = fromStored(storedCached);
+		const { index: cleaned, purgedPaths } = await purgeExcludedFilesChunks(env, cached);
+		if (purgedPaths.length) {
+			console.log(`files_semantic: purged ${purgedPaths.length} excluded path(s) (#1347): ${purgedPaths.slice(0, 5).join(", ")}${purgedPaths.length > 5 ? "…" : ""}`);
+			cached = cleaned;
+			await writeBlob(env, toStored(cached));
+		}
 		try {
 			const result = await applyChanges(env, cached);
 			if (result) {
@@ -261,7 +303,14 @@ export async function filesSemanticIndex(env: RtEnv): Promise<FilesSemanticIndex
 export async function filesSemanticIndexCached(env: RtEnv): Promise<FilesSemanticIndex | null> {
 	if (!hasDropboxFull(env)) return null;
 	const storedCached = await readBlob(env);
-	if (isStoredFilesSemanticIndex(storedCached) && storedCached.version === VERSION) return fromStored(storedCached);
+	if (isStoredFilesSemanticIndex(storedCached) && storedCached.version === VERSION) {
+		const idx = fromStored(storedCached);
+		// In-memory-only filter (#1347) — the hot query path stays off KV writes/Vectorize
+		// deletes; the actual purge (persisted + Vectorize-synced) happens on the next
+		// filesSemanticIndex (building) pass, which every backfill tick also drives.
+		const filtered = idx.chunks.filter((c) => !isExcludedFilesPath(c.path));
+		return filtered.length === idx.chunks.length ? idx : { ...idx, chunks: filtered, total: new Set(filtered.map((c) => c.path)).size };
+	}
 	return null;
 }
 

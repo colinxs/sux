@@ -13,6 +13,16 @@ import { errMsg, oj } from "./_util";
 // Financial data is sensitive: cacheable:false + raw:true, so amounts never enter the response
 // cache and never a /s/ share handle (the same PHI-fence mychart uses for clinical data).
 //
+// DECIDED (#1348): #1326 asked to also push the NSLDS student-loan balance (_nslds.ts) here as
+// a Lunch Money asset update once a write-capable integration existed. Now that it does, the
+// decision is WONTFIX — no write op. Money-moving automation (even a single asset-balance PUT)
+// is a materially different trust boundary than a read: a parser bug or a stale/mis-scoped
+// value would silently corrupt the user's own source of truth for net worth, and the failure
+// mode is silent (a wrong balance looks identical to a right one until reconciliation). The
+// read-only boundary stays deliberate; #1326's closed-issue record no longer implies the push
+// exists. If a write op is ever wanted, it needs its own explicit, narrowly-scoped design (not
+// a drive-by op added to this fn) — see #1348 for the full writeup.
+//
 // NET WORTH — the one non-obvious bit: Lunch Money stores every balance as a POSITIVE
 // magnitude. A liability (loan / credit card / other liability) is a positive number that must
 // be SUBTRACTED, never added — a $30k loan comes back as +30000 and would otherwise inflate
