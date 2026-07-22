@@ -10,13 +10,29 @@ import { errMsg, oj } from "./_util";
 // is exactly label:add / archive / unarchive / undelete — archive (the one attention-reducing op)
 // only above the high archive-confidence bar — plus draft-reply, which stages a reply DRAFT for a
 // personal message that asks for one and NEVER sends. Never a junk-move, label-remove, delete, or
-// send. The same run() is invoked once daily by the cron tick.
+// send. The same run() is invoked by the cron tick on the FREQUENT (~5min) trigger, not the daily
+// one (index.ts's scheduled(), METRICS_CRON branch) — a label is only useful before the next time
+// mail gets opened, so new mail is triaged within minutes, not once a day (#1356).
+//
+// SINGLE OWNER OF TRIAGE (#1356): this worker-side JMAP labeling loop is the one live, ongoing
+// triage mechanism — it runs continuously (every ~5min), applies labels via mailbox membership
+// (Fastmail "Labels" are Mailboxes with showAsLabel:true, not IMAP keywords — see mail_domain_
+// backfill.ts/mail_sieve_backfill.ts), and its last-run outcome is visible on the health page via
+// the cron heartbeat (cron-heartbeat.ts's CRON_JOBS "mail_triage"/"mail_triage_plan", surfaced by
+// github-handler.ts's gatherHealth). The Fastmail-SIDE Sieve scripts this repo generates
+// (mail_sieve.ts / mail_sieve_hc.ts, docs/mail/README.md) are a DELIBERATELY SEPARATE, optional,
+// manually-pasted delivery-time pre-filter — never auto-installed (sux never writes Sieve via
+// token, docs/knowledge/product-vision-and-roadmap.md), and NOT required for triage to work: they
+// only save a hair of latency on the highest-confidence rules and are otherwise redundant with
+// this loop. Downstream consumers (briefing.ts's gatherBriefing, _agenda.ts's unanswered-text
+// detector, and #1317's w6-mail assimilation path) select on the SAME classifyMessage() this loop
+// uses to apply labels — one classifier, no separate/stale heuristic living anywhere else.
 export const mail_triage: Fn = {
 	name: "mail_triage",
 	surface: "leaf",
 	annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
 	description:
-		"Autonomous mail triage: classify inbox messages and (when armed) act with REVERSIBLE ops ONLY — add a label, archive, unarchive, undelete — plus draft-reply, which stages a suggested reply DRAFT (to Drafts, for your review) for a personal message that asks for a reply and NEVER sends. NEVER a junk-move, label-remove, delete, or send. Archiving (the one op that hides mail) fires only when highly confident; below that bar a declutter guess is labeled in place instead. action:'run' (default) processes new/unseen messages once (idempotent per message); 'undo' reverses a whole cycle by its cycle_id (moves/labels only — staged drafts are left for you to send or delete); 'log' reads the action log. Pass sweep_backlog:true to page through the EXISTING backlog (already-read mail included by default) instead of just the newest page — still reversible-only, and strictly LABEL-only: a sweep never stages reply drafts (stale reply cues in old mail suggest a `personal` label instead). DORMANT unless MAIL_TRIAGE_ENABLED is set; suggest-only (no actions) until MAIL_TRIAGE_ACT is also set. Pass dry_run:true to force suggest-only. Each cycle appends a did/suggests/undo digest to the vault Daily note.",
+		"Autonomous mail triage: classify inbox messages and (when armed) act with REVERSIBLE ops ONLY — add a label, archive, unarchive, undelete — plus draft-reply, which stages a suggested reply DRAFT (to Drafts, for your review) for a personal message that asks for a reply and NEVER sends. NEVER a junk-move, label-remove, delete, or send. Archiving (the one op that hides mail) fires only when highly confident; below that bar a declutter guess is labeled in place instead. action:'run' (default) processes new/unseen messages once (idempotent per message); 'undo' reverses a whole cycle by its cycle_id (moves/labels only — staged drafts are left for you to send or delete); 'log' reads the action log. Pass sweep_backlog:true to page through the EXISTING backlog (already-read mail included by default) instead of just the newest page — still reversible-only, and strictly LABEL-only: a sweep never stages reply drafts (stale reply cues in old mail suggest a `personal` label instead). DORMANT unless MAIL_TRIAGE_ENABLED is set; suggest-only (no actions) until MAIL_TRIAGE_ACT is also set. Pass dry_run:true to force suggest-only. Each cycle appends a did/suggests/undo digest to the vault Daily note. This IS the single, authoritative, continuously-running (~5min cron) triage mechanism — labels apply via mailbox membership, visible in Fastmail's UI; the generated Fastmail-side Sieve scripts (mail_sieve/mail_sieve_hc) are a separate, optional, manually-installed pre-filter, never required.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,

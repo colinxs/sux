@@ -1,4 +1,5 @@
-// Cloudflare Email Routing → sux ingest doors: vault@/files@ on a zone (#1198 P1a, #1199).
+// Cloudflare Email Routing → sux ingest doors: vault@/files@/ingest@ on a zone (#1198 P1a,
+// #1199, #1355).
 // Pointing those addresses at this Worker is an operator action in the Cloudflare dashboard
 // (Email Routing → Address rules) — a zone/DNS config step this code never touches; this file
 // is only the handler side, wired in as `email()` (src/index.ts).
@@ -15,16 +16,21 @@
 //      fails closed. The raw header is logged on a fail (#1322) so the FIRST real production
 //      message can be inspected in Worker logs to confirm the header shape this code assumes
 //      (spf=/dkim=, case/ordering) actually matches before fully trusting the gate.
-//   4. A per-recipient KV sender allowlist (vault@ and files@ can have different allowed
-//      senders — e.g. family gets files@ only). No seed data ships with this build; an empty/
-//      absent allowlist is correctly "reject everything," same fail-closed posture as the flag.
+//   4. A per-recipient KV sender allowlist (vault@, files@, and ingest@ can each have different
+//      allowed senders — e.g. family gets files@ only). No seed data ships with this build; an
+//      empty/absent allowlist is correctly "reject everything," same fail-closed posture as the flag.
 // Anything that fails a gate is dropped (message.setReject) and logged to the ledger — never
 // silently swallowed, never ingested.
 //
 // vault@ → the plain-text body, provenance (from/date/message-id) folded in, fed through the
 // `ingest` fn's toss-path (a provenance-stamped Inbox/ note). files@ → attachments land in R2
 // (content-addressed, via putBlob) and a ref-note (never raw bytes) goes into the vault Inbox —
-// the message body becomes the note's text content.
+// the message body becomes the note's text content. ingest@ (#1355) → the shared _ingest_route.ts
+// routing layer: a subject-line prefix (`extract:`/`summarize:`/`archive:`) is an explicit mode
+// override (stripped before it becomes the note title), defaulting to routeIngestItem's own
+// smart-detect; each attachment is routed independently, and a message with NO attachment falls
+// back to the vault@ behavior (body text becomes the note). Confirmation is a one-line append to
+// the ingest ledger — this door has no outbound mail surface (no reply, ever) in v1.
 //
 // No MIME-parsing dependency exists in this repo (checked package.json) — `parseRawEmail` below
 // is a pragmatic, scoped parser (header/body split on the first blank line, a boundary-based
@@ -38,6 +44,7 @@ import { obsidian } from "./obsidian";
 import { vaultInboxDir } from "./_vaultpaths";
 import { clampBytes, errMsg, fromB64, putBlob, vaultToday } from "./_util";
 import { ledger } from "../ledger";
+import { routeIngestItem, type IngestRouteResult } from "./_ingest_route";
 
 // Copied exactly from _document_radar.ts's flagOn (per CLAUDE.md's convention for this pattern).
 const flagOn = (v: string | undefined): boolean => {
@@ -299,6 +306,8 @@ export type EmailIngestDeps = {
 	ingestText: (env: RtEnv, args: { text: string; title?: string; tags?: string[] }) => Promise<{ ok: boolean; note?: string; error?: string }>;
 	writeNote: (env: RtEnv, path: string, content: string) => Promise<{ ok: boolean; error?: string }>;
 	putBlob: (env: RtEnv, bytes: Uint8Array, contentType: string) => Promise<{ url: string; sha256: string; size: number }>;
+	/** ingest@'s attachment path (#1355) — the shared _ingest_route.ts routing layer. */
+	routeAttachment: (env: RtEnv, args: { name: string; bytes: Uint8Array; mode?: string; source: string }) => Promise<IngestRouteResult>;
 };
 
 async function defaultIngestText(env: RtEnv, args: { text: string; title?: string; tags?: string[] }): Promise<{ ok: boolean; note?: string; error?: string }> {
@@ -323,8 +332,34 @@ async function defaultPutBlob(env: RtEnv, bytes: Uint8Array, contentType: string
 	return { url: ref.url, sha256: ref.sha256, size: ref.size };
 }
 
+async function defaultRouteAttachment(env: RtEnv, args: { name: string; bytes: Uint8Array; mode?: string; source: string }): Promise<IngestRouteResult> {
+	return routeIngestItem(env, args);
+}
+
 export function defaultDeps(): EmailIngestDeps {
-	return { ingestText: defaultIngestText, writeNote: defaultWriteNote, putBlob: defaultPutBlob };
+	return { ingestText: defaultIngestText, writeNote: defaultWriteNote, putBlob: defaultPutBlob, routeAttachment: defaultRouteAttachment };
+}
+
+// --- ingest@ subject-line mode prefix (#1355) ---
+
+const MODE_PREFIX_RE = /^\s*(extract|summarize|archive):\s*/i;
+
+/** Strip a leading `extract:`/`summarize:`/`archive:` prefix off the subject, if present, and
+ *  return it as the explicit mode override (passed straight through to _ingest_route.ts, which
+ *  ignores anything that isn't one of its three real modes). Absent ⇒ smart-detect decides. */
+function parseModePrefix(subject: string): { mode?: string; subject: string } {
+	const m = MODE_PREFIX_RE.exec(subject);
+	if (!m) return { subject };
+	return { mode: m[1].toLowerCase(), subject: subject.slice(m[0].length).trim() };
+}
+
+/** Confirmation for ingest@ is a one-line ledger append, never a reply email (no outbound mail
+ *  surface in v1) — this is the "existing ingest queue error surface" pattern (ledger()) the
+ *  Dropbox watcher's failures already use, reused here for the SUCCESS case too. */
+async function logIngestConfirmation(env: RtEnv, id: string, detail: string): Promise<void> {
+	await ledger(env, "email_ingest_log")
+		.mark(id, detail || "(no content)")
+		.catch(() => {});
 }
 
 export type EmailIngestResult =
@@ -332,6 +367,7 @@ export type EmailIngestResult =
 	| { action: "rejected"; reason: string }
 	| { action: "ingested_vault"; note?: string }
 	| { action: "ingested_files"; note: string; attachments: number }
+	| { action: "ingested_route"; notes: string[]; mode?: string; attachments: number }
 	| { action: "error"; error: string };
 
 /** The email() entrypoint's whole gate→route pipeline (see module doc for the gate order). Never
@@ -365,7 +401,7 @@ export async function handleEmail(message: EmailIngestMessage, env: RtEnv, deps:
 		}
 
 		const localPart = recipient.split("@")[0];
-		if (localPart !== "vault" && localPart !== "files") return await reject(`unrecognized recipient address: ${recipient}`);
+		if (localPart !== "vault" && localPart !== "files" && localPart !== "ingest") return await reject(`unrecognized recipient address: ${recipient}`);
 
 		const allowlist = await getAllowlist(env, recipient);
 		if (!senderAllowed(sender, allowlist)) return await reject(`sender not allowlisted for ${recipient}: ${sender}`);
@@ -383,6 +419,31 @@ export async function handleEmail(message: EmailIngestMessage, env: RtEnv, deps:
 			const r = await deps.ingestText(env, { text: renderVaultBody(parsed.text, provenance), title: provenance.subject || `email from ${provenance.from}`, tags: ["email"] });
 			if (!r.ok) return { action: "error", error: r.error ?? "ingest failed" };
 			return { action: "ingested_vault", note: r.note };
+		}
+
+		if (localPart === "ingest") {
+			const { mode, subject: cleanSubject } = parseModePrefix(provenance.subject);
+			const title = cleanSubject || `email from ${provenance.from}`;
+			if (parsed.attachments.length === 0) {
+				// No attachment: same shape as vault@ — the body becomes the note.
+				const r = await deps.ingestText(env, { text: renderVaultBody(parsed.text, provenance), title, tags: ["email", "ingest"] });
+				if (!r.ok) return { action: "error", error: r.error ?? "ingest failed" };
+				await logIngestConfirmation(env, rejectId, r.note ? `ingested: ${r.note}` : "ingested (no note path returned)");
+				return { action: "ingested_route", notes: r.note ? [r.note] : [], mode, attachments: 0 };
+			}
+			const notes: string[] = [];
+			const errors: string[] = [];
+			for (const att of parsed.attachments) {
+				try {
+					const routed = await deps.routeAttachment(env, { name: att.filename, bytes: att.bytes, mode, source: `email from ${sender}${title ? `: ${title}` : ""}` });
+					if (routed.notePath) notes.push(routed.notePath);
+				} catch (e) {
+					errors.push(`${att.filename}: ${errMsg(e)}`);
+				}
+			}
+			await logIngestConfirmation(env, rejectId, notes.length ? `ingested: ${notes.join(", ")}` : `failed: ${errors.join("; ") || "no attachments routed"}`);
+			if (!notes.length) return { action: "error", error: errors.join("; ") || "ingest@ routing failed for all attachments" };
+			return { action: "ingested_route", notes, mode, attachments: parsed.attachments.length };
 		}
 
 		if (parsed.attachments.length === 0) return { action: "error", error: "files@ message carried no attachments" };

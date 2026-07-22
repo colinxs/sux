@@ -45,11 +45,17 @@ function buildMessage(opts: { from: string; to: string; body: string; headers?: 
 	};
 }
 
-function fakeDeps(): EmailIngestDeps & { ingestText: ReturnType<typeof vi.fn>; writeNote: ReturnType<typeof vi.fn>; putBlob: ReturnType<typeof vi.fn> } {
+function fakeDeps(): EmailIngestDeps & {
+	ingestText: ReturnType<typeof vi.fn>;
+	writeNote: ReturnType<typeof vi.fn>;
+	putBlob: ReturnType<typeof vi.fn>;
+	routeAttachment: ReturnType<typeof vi.fn>;
+} {
 	return {
 		ingestText: vi.fn(async () => ({ ok: true, note: "Inbox/2026-01-01 test-note.md" })),
 		writeNote: vi.fn(async () => ({ ok: true })),
 		putBlob: vi.fn(async (_env: unknown, bytes: Uint8Array) => ({ url: "https://suxos.net/s/abc123", sha256: "deadbeef", size: bytes.length })),
+		routeAttachment: vi.fn(async (_env: unknown, args: { name: string }) => ({ mode: "extract" as const, notePath: `Inbox/2026-01-01 ${args.name}.md`, hasText: true, blob: { link: "https://suxos.net/s/abc123", placement: "r2" } })),
 	};
 }
 
@@ -269,6 +275,77 @@ describe("handleEmail", () => {
 		const r = await handleEmail(message, e, fakeDeps());
 		expect(r).toMatchObject({ action: "error" });
 		expect(message.setReject).not.toHaveBeenCalled();
+	});
+
+	it("ingest@ with no attachment ⇒ falls back to the vault@ body-becomes-note behavior", async () => {
+		const e = env({ EMAIL_INGEST_ENABLED: "1" });
+		await setAllowlist(e, "ingest@suxos.net", ["friend@example.com"]);
+		const message = buildMessage({
+			from: "friend@example.com",
+			to: "ingest@suxos.net",
+			body: "Content-Type: text/plain\r\n\r\njust a note, no file",
+			headers: { "Authentication-Results": PASS_AUTH, Subject: "extract: a quick note" },
+		});
+		const deps = fakeDeps();
+		const r = await handleEmail(message, e, deps);
+		expect(r).toMatchObject({ action: "ingested_route", mode: "extract", attachments: 0 });
+		expect(deps.routeAttachment).not.toHaveBeenCalled();
+		expect(deps.ingestText).toHaveBeenCalledTimes(1);
+		const call = deps.ingestText.mock.calls[0][1];
+		expect(call.title).toBe("a quick note"); // mode prefix stripped
+		expect(call.text).toContain("just a note, no file");
+	});
+
+	it("ingest@ with an attachment and a subject mode prefix ⇒ routes through _ingest_route.ts", async () => {
+		const e = env({ EMAIL_INGEST_ENABLED: "1" });
+		await setAllowlist(e, "ingest@suxos.net", ["friend@example.com"]);
+		const boundary = "BOUNDARY456";
+		const pdfBytes = new TextEncoder().encode("%PDF-1.4 fake pdf content");
+		const b64 = Buffer.from(pdfBytes).toString("base64");
+		const raw = [
+			`Content-Type: multipart/mixed; boundary="${boundary}"`,
+			"",
+			`--${boundary}`,
+			"Content-Type: text/plain; charset=utf-8",
+			"",
+			"See attached.",
+			`--${boundary}`,
+			'Content-Type: application/pdf; name="report.pdf"',
+			'Content-Disposition: attachment; filename="report.pdf"',
+			"Content-Transfer-Encoding: base64",
+			"",
+			b64,
+			`--${boundary}--`,
+			"",
+		].join("\r\n");
+		const message = buildMessage({
+			from: "friend@example.com",
+			to: "ingest@suxos.net",
+			body: raw,
+			headers: { "Authentication-Results": PASS_AUTH, Subject: "summarize: quarterly report" },
+		});
+		const deps = fakeDeps();
+		const r = await handleEmail(message, e, deps);
+		expect(r).toMatchObject({ action: "ingested_route", mode: "summarize", attachments: 1 });
+		expect(deps.routeAttachment).toHaveBeenCalledTimes(1);
+		const call = deps.routeAttachment.mock.calls[0][1];
+		expect(call.name).toBe("report.pdf");
+		expect(call.mode).toBe("summarize");
+		expect(call.source).toContain("quarterly report");
+	});
+
+	it("ingest@ ⇒ non-allowlisted sender is dropped with a log line, same as vault@/files@", async () => {
+		const e = env({ EMAIL_INGEST_ENABLED: "1" });
+		await setAllowlist(e, "ingest@suxos.net", ["friend@example.com"]);
+		const message = buildMessage({
+			from: "stranger@evil.example.com",
+			to: "ingest@suxos.net",
+			body: "Content-Type: text/plain\r\n\r\nhi",
+			headers: { "Authentication-Results": PASS_AUTH },
+		});
+		const r = await handleEmail(message, e, fakeDeps());
+		expect(r).toMatchObject({ action: "rejected" });
+		expect(message.setReject).toHaveBeenCalledTimes(1);
 	});
 
 	it("oversized message ⇒ rejected cleanly WITHOUT ever reading the raw stream", async () => {
