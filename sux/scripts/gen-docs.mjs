@@ -30,7 +30,7 @@ const CATEGORIES = [
 	["Mail (JMAP)", ["jmap", "mail_triage", "mail_triage_plan", "mail_sieve", "mail_sieve_hc", "mail_sieve_backfill", "mail_domain_backfill", "briefing"]],
 	["Personal namespaces (one /mcp)", ["vault", "mail", "files", "calendar", "contact", "contact_consolidate_plan", "files_consolidate_plan", "imessage"]],
 	["Agent / autonomy", ["proposals", "webpush"]],
-	["Personal finance", ["monarch"]],
+	["Personal finance", ["lunchmoney"]],
 	["Personal health", ["mychart", "mychart_reconcile_plan", "medical_timeline_plan"]],
 	["Feedback / meta", ["issue", "suggest"]],
 	["Infra / meta", ["selftest", "autonomy_status", "controld", "tailscale", "sux", "fn", "todoist", "audit_log"]],

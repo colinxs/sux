@@ -1,6 +1,6 @@
 // Document-expiry radar (#1148): sux's own motivating agenda examples (docs/design/
 // personal-agent-roadmap.md ~L25-30) are things silently expiring, but that pattern was only
-// wired for MyChart (Rx/labs) and Monarch (bills). Personal legal/ID documents (passport,
+// wired for MyChart (Rx/labs) and Lunch Money (bills). Personal legal/ID documents (passport,
 // driver's license, insurance card, warranty, registration) are the same shape and had zero
 // detector/ingestion/schema anywhere in the tree. This mirrors _learning_folder.ts's proven
 // Dropbox-folder-watch/dedup skeleton: a scanned photo dropped in a configured app-folder path

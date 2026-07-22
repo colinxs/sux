@@ -29,7 +29,7 @@ export type Stakes = "low" | "med" | "high";
 
 export type Proposal = {
 	id: string;
-	source: string; // "mail" | "monarch" | "vault" | … — which sense raised it
+	source: string; // "mail" | "lunchmoney" | "vault" | … — which sense raised it
 	kind: string; // "archive_newsletters" | "bill_due" | … — the specific situation
 	intent: string; // human-readable one-liner Colin reads to decide
 	payload: { fn: string; args: Record<string, unknown> }; // what runs on approval
@@ -47,8 +47,8 @@ export type Proposal = {
 // The security boundary: the ONLY leaf fns a proposal may execute on approval. Every
 // entry is reversible-first + non-money + non-destructive AT THE ACTION IT'S PROPOSED
 // FOR — and even a mis-proposed irreversible action stays caught by lock #3 (no force →
-// the target's own staged() gate fires). sux never proposes to move money: `monarch`
-// is deliberately absent (it's read-only and its graphql escape refuses mutations).
+// the target's own staged() gate fires). sux never proposes to move money: `lunchmoney`
+// is deliberately absent (it's read-only — only GET endpoints are wired, no mutation op).
 export const PROPOSABLE_FNS = new Set<string>([
 	"mail", // reversible mail actions (label/move/archive/draft); send stays staged (lock #3)
 	"calendar", // create/update (reversible); delete stays staged

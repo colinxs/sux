@@ -23,7 +23,7 @@ export type PushMessage = { title: string; body: string; url?: string };
 const SUB_PREFIX = "sux:webpush:sub:";
 
 /** All three VAPID fields configured ⇒ armed; any absent ⇒ every export below no-ops
- *  (not_configured), like monarch/dropbox/mychart. */
+ *  (not_configured), like lunchmoney/dropbox/mychart. */
 export function hasWebPush(env: RtEnv): boolean {
 	return Boolean(env.VAPID_PUBLIC_KEY && env.VAPID_PRIVATE_KEY && env.VAPID_SUBJECT);
 }

@@ -60,7 +60,7 @@ interface SmartConfig {
 }
 
 /** Both EPIC_CLIENT_ID / EPIC_CLIENT_SECRET set. Absent → the fn and routes stay
- * inert (not_configured), exactly like monarch/dropbox. EPIC_FHIR_BASE is retired
+ * inert (not_configured), exactly like lunchmoney/dropbox. EPIC_FHIR_BASE is retired
  * (§2.1) — the org's base now comes from MYCHART_ORGS, a code constant, not a secret. */
 export function mychartConfigured(env: RtEnv): boolean {
 	return Boolean(env.EPIC_CLIENT_ID && env.EPIC_CLIENT_SECRET);

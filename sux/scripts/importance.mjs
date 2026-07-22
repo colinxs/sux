@@ -25,7 +25,7 @@ export const IMPORTANCE = [
 	// Tier 9 — mail (JMAP)
 	"jmap", "mail_triage", "mail_sieve", "mail_sieve_backfill", "briefing",
 	// Tier 10 — personal namespaces (one /mcp) + finance/health
-	"vault", "mail", "files", "calendar", "contact", "monarch", "mychart",
+	"vault", "mail", "files", "calendar", "contact", "lunchmoney", "mychart",
 	// Tier 11 — batching/composition + watch/automation
 	"pipe", "watch", "watch_pipeline",
 	// Tier 12 — storage primitives + meta/feedback

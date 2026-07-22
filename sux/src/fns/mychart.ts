@@ -12,7 +12,7 @@ import { runVerb } from "./run";
 // (lab results, notes, conditions), which must NEVER enter the shared KV result cache.
 // The only cached token is the opaque, short-lived access token in OAUTH_KV.
 //
-// Inert until EPIC_CLIENT_ID / EPIC_CLIENT_SECRET are set (like monarch/dropbox);
+// Inert until EPIC_CLIENT_ID / EPIC_CLIENT_SECRET are set (like lunchmoney/dropbox);
 // `status` still answers so an operator can see it's unconfigured. Multi-org (§2/§2.4):
 // the org set lives in mychart.ts's MYCHART_ORGS registry, not env — connect/pull/get
 // take an `org` arg, defaulting to the sole CONNECTED org when omitted and unambiguous.

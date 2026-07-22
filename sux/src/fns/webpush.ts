@@ -6,7 +6,7 @@ import { hasWebPush, listSubscriptions, notify, subscribe, unsubscribe, validSub
 // message out to every registered device — see _webpush.ts for the design note
 // (Web Push only; Cloudflare Notifications is a separate, out-of-scope idea) and
 // the crypto. Not_configured (rather than an error) when VAPID secrets are unset,
-// matching the mychart/monarch/dropbox convention.
+// matching the mychart/lunchmoney/dropbox convention.
 export const webpush: Fn = {
 	name: "webpush",
 	description:

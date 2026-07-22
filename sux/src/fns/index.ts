@@ -97,7 +97,7 @@ import { mail } from "./mail";
 import { files } from "./files";
 import { calendar } from "./calendar";
 import { contact } from "./contact";
-import { monarch } from "./monarch";
+import { lunchmoney } from "./lunchmoney";
 import { mychart } from "./mychart";
 import { pipe } from "./pipe";
 import { watch } from "./watch";
@@ -236,7 +236,7 @@ export const FUNCTIONS: Fn[] = [
 	files,
 	calendar,
 	contact,
-	monarch,
+	lunchmoney,
 	mychart,
 	pipe,
 	watch,

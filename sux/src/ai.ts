@@ -4,7 +4,7 @@ import type { TailscaleEnv } from "./proxy";
 export type AiEnv = TailscaleEnv & {
 	AI?: { run: (model: string, inputs: any, options?: Record<string, unknown>) => Promise<any> };
 	// AI Gateway id (#1060) — dormant until a human creates the gateway in the
-	// Cloudflare account and sets this (same convention as MONARCH_TOKEN etc.):
+	// Cloudflare account and sets this (same convention as LUNCHMONEY_API_KEY etc.):
 	// unset means every Workers-AI call behaves exactly as it does today.
 	AI_GATEWAY_ID?: string;
 };

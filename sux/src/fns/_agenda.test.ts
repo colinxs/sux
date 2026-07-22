@@ -797,8 +797,8 @@ describe("agenda — loop", () => {
 		expect(r.sources.watch).toMatch(/1 changed/);
 	});
 
-	it("wires Monarch financial signals (W7) in only when MONARCH_TOKEN is set", async () => {
-		const e = env({ MONARCH_TOKEN: "tok" });
+	it("wires Monarch financial signals (W7) in only when LUNCHMONEY_API_KEY is set", async () => {
+		const e = env({ LUNCHMONEY_API_KEY: "tok" });
 		const d = deps({
 			monarchAccounts: vi.fn(async () => [{ id: "acct1", name: "Checking", balance: 10, type: "depository" }]),
 			monarchTransactions: vi.fn(async () => []),
@@ -806,14 +806,14 @@ describe("agenda — loop", () => {
 		});
 		const r = await runAgenda(e, {}, d);
 		expect(r.proposals?.map((p) => p.kind)).toEqual(expect.arrayContaining(["low_balance"]));
-		expect(r.sources.monarch).toMatch(/account/);
+		expect(r.sources.lunchmoney).toMatch(/account/);
 	});
 
-	it("skips Monarch entirely (not_configured) when MONARCH_TOKEN is unset", async () => {
+	it("skips Monarch entirely (not_configured) when LUNCHMONEY_API_KEY is unset", async () => {
 		const e = env();
 		const d = deps();
 		const r = await runAgenda(e, {}, d);
-		expect(r.sources.monarch).toBe("not_configured");
+		expect(r.sources.lunchmoney).toBe("not_configured");
 		expect(d.monarchAccounts).not.toHaveBeenCalled();
 	});
 
@@ -942,8 +942,8 @@ describe("agenda — loop", () => {
 		});
 	});
 
-	it("wires Monarch portfolio + savings-rate signals (W7.1, #803) in only when MONARCH_TOKEN is set", async () => {
-		const e = env({ MONARCH_TOKEN: "tok" });
+	it("wires Monarch portfolio + savings-rate signals (W7.1, #803) in only when LUNCHMONEY_API_KEY is set", async () => {
+		const e = env({ LUNCHMONEY_API_KEY: "tok" });
 		const d = deps({
 			monarchHoldings: vi.fn(async () => [{ ticker: "AAPL", value: 9000 }, { ticker: "MSFT", value: 1000 }]),
 			monarchCashflow: vi.fn(async () => ({ sumIncome: 1000, sumExpense: 1200, savings: -200, savingsRate: 999 })),
@@ -955,7 +955,7 @@ describe("agenda — loop", () => {
 	});
 
 	it("caches the Monarch snapshot across cycles so drift compares to the last check, not from scratch", async () => {
-		const e = env({ MONARCH_TOKEN: "tok" });
+		const e = env({ LUNCHMONEY_API_KEY: "tok" });
 		await runAgenda(e, { date: "2026-07-17" }, deps({ monarchHoldings: vi.fn(async () => [{ ticker: "AAPL", value: 5000 }, { ticker: "MSFT", value: 5000 }]) }));
 
 		const r = await runAgenda(e, { date: "2026-07-18" }, deps({ monarchHoldings: vi.fn(async () => [{ ticker: "AAPL", value: 9000 }, { ticker: "MSFT", value: 1000 }]) }));
@@ -1029,7 +1029,7 @@ describe("agenda — loop", () => {
 	});
 
 	it("dry_run never persists the Monarch snapshot", async () => {
-		const e = env({ MONARCH_TOKEN: "tok" });
+		const e = env({ LUNCHMONEY_API_KEY: "tok" });
 		await runAgenda(e, { date: "2026-07-17", dry_run: true }, deps({ monarchHoldings: vi.fn(async () => [{ ticker: "AAPL", value: 5000 }, { ticker: "MSFT", value: 5000 }]) }));
 
 		const r = await runAgenda(e, { date: "2026-07-18" }, deps({ monarchHoldings: vi.fn(async () => [{ ticker: "AAPL", value: 9000 }, { ticker: "MSFT", value: 1000 }]) }));
@@ -1044,7 +1044,7 @@ describe("agenda — Monarch infer signal wiring (#1085)", () => {
 	];
 
 	it("does not feed the infer signal log when INFER_ARM_PURCHASES is unset (dormant by default)", async () => {
-		const e = env({ MONARCH_TOKEN: "tok" });
+		const e = env({ LUNCHMONEY_API_KEY: "tok" });
 		e.AI = { run: vi.fn(async () => ({ data: [[0.1, 0.2]] })) };
 		const d = deps({ monarchTransactions: vi.fn(async () => TXNS) });
 		await runAgenda(e, {}, d);
@@ -1053,7 +1053,7 @@ describe("agenda — Monarch infer signal wiring (#1085)", () => {
 	});
 
 	it("feeds a redacted, embedded signal per new transaction when INFER_ARM_PURCHASES is armed", async () => {
-		const e = env({ MONARCH_TOKEN: "tok", INFER_ARM_PURCHASES: "1" });
+		const e = env({ LUNCHMONEY_API_KEY: "tok", INFER_ARM_PURCHASES: "1" });
 		e.AI = { run: vi.fn(async () => ({ data: [[0.1, 0.2]] })) };
 		const d = deps({ monarchTransactions: vi.fn(async () => TXNS) });
 		await runAgenda(e, {}, d);
@@ -1064,7 +1064,7 @@ describe("agenda — Monarch infer signal wiring (#1085)", () => {
 	});
 
 	it("does not re-log the same transaction across cycles (rolling-window dedupe)", async () => {
-		const e = env({ MONARCH_TOKEN: "tok", INFER_ARM_PURCHASES: "1" });
+		const e = env({ LUNCHMONEY_API_KEY: "tok", INFER_ARM_PURCHASES: "1" });
 		e.AI = { run: vi.fn(async () => ({ data: [[0.1, 0.2]] })) };
 		await runAgenda(e, { date: "2026-07-17" }, deps({ monarchTransactions: vi.fn(async () => TXNS) }));
 		// Next cycle re-fetches the same rolling window (both txns still inside it) plus one new one.
@@ -1074,7 +1074,7 @@ describe("agenda — Monarch infer signal wiring (#1085)", () => {
 	});
 
 	it("dry_run never persists purchase signals", async () => {
-		const e = env({ MONARCH_TOKEN: "tok", INFER_ARM_PURCHASES: "1" });
+		const e = env({ LUNCHMONEY_API_KEY: "tok", INFER_ARM_PURCHASES: "1" });
 		e.AI = { run: vi.fn(async () => ({ data: [[0.1, 0.2]] })) };
 		await runAgenda(e, { dry_run: true }, deps({ monarchTransactions: vi.fn(async () => TXNS) }));
 		expect(e.AI.run).not.toHaveBeenCalled();
@@ -1082,7 +1082,7 @@ describe("agenda — Monarch infer signal wiring (#1085)", () => {
 	});
 
 	it("a signal-log failure (e.g. AI down) is swallowed — the agenda cycle still completes", async () => {
-		const e = env({ MONARCH_TOKEN: "tok", INFER_ARM_PURCHASES: "1" });
+		const e = env({ LUNCHMONEY_API_KEY: "tok", INFER_ARM_PURCHASES: "1" });
 		e.AI = { run: vi.fn(async () => { throw new Error("AI unavailable"); }) };
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		const r = await runAgenda(e, {}, deps({ monarchTransactions: vi.fn(async () => TXNS) }));
@@ -1092,54 +1092,54 @@ describe("agenda — Monarch infer signal wiring (#1085)", () => {
 	});
 });
 
-describe("agenda — defaultDeps.monarchTransactions pagination (#1097)", () => {
-	const page = (ids: number[], offset: number, totalCount: number) => ({
-		content: [{ text: JSON.stringify({ totalCount, count: ids.length, offset, limit: 200, transactions: ids.map((i) => ({ id: `txn${i}`, amount: -1, date: "2026-07-17" })) }) }],
-	});
+describe("agenda — defaultDeps financial seam is sourced from lunchmoney (W7)", () => {
+	const body = (obj: unknown) => ({ content: [{ text: JSON.stringify(obj) }] });
 
-	it("paginates past a single 200-row page using totalCount, rather than silently truncating", async () => {
+	it("monarchTransactions maps ONE windowed lunchmoney call — payee→merchant, negative=expense, capped at 500", async () => {
 		const { defaultDeps } = await import("./_agenda");
-		const { monarch } = await import("./monarch");
-		const run = vi
-			.spyOn(monarch, "run")
-			.mockImplementationOnce(async () => page(Array.from({ length: 200 }, (_, i) => i), 0, 350) as any)
-			.mockImplementationOnce(async () => page(Array.from({ length: 150 }, (_, i) => 200 + i), 200, 350) as any);
-
+		const { lunchmoney } = await import("./lunchmoney");
+		const run = vi.spyOn(lunchmoney, "run").mockResolvedValue(
+			body({ count: 2, transactions: [{ id: 7, amount: -4.5, date: "2026-07-05", payee: "Café" }, { id: 8, amount: 1000, date: "2026-07-06", payee: "Paycheck" }] }) as any,
+		);
 		const deps = await defaultDeps();
 		const txns = await deps.monarchTransactions({} as any, { start: "2026-04-19", end: "2026-07-17" });
-
-		expect(run).toHaveBeenCalledTimes(2);
-		expect(run).toHaveBeenNthCalledWith(1, {}, { op: "transactions", start: "2026-04-19", end: "2026-07-17", limit: 200, offset: 0 });
-		expect(run).toHaveBeenNthCalledWith(2, {}, { op: "transactions", start: "2026-04-19", end: "2026-07-17", limit: 200, offset: 200 });
-		expect(txns).toHaveLength(350);
-		expect(txns[349]?.id).toBe("txn349");
-		run.mockRestore();
-	});
-
-	it("stops at a single page when totalCount fits (no wasted extra call)", async () => {
-		const { defaultDeps } = await import("./_agenda");
-		const { monarch } = await import("./monarch");
-		const run = vi.spyOn(monarch, "run").mockImplementationOnce(async () => page([0, 1, 2], 0, 3) as any);
-
-		const deps = await defaultDeps();
-		const txns = await deps.monarchTransactions({} as any, { start: "2026-07-14", end: "2026-07-17" });
-
 		expect(run).toHaveBeenCalledTimes(1);
-		expect(txns).toHaveLength(3);
+		expect(run).toHaveBeenCalledWith({}, { op: "transactions", since: "2026-04-19", until: "2026-07-17", limit: 500 });
+		expect(txns).toEqual([{ id: "7", amount: -4.5, date: "2026-07-05", merchant: "Café" }, { id: "8", amount: 1000, date: "2026-07-06", merchant: "Paycheck" }]);
 		run.mockRestore();
 	});
 
-	it("stops at MONARCH_TRANSACTIONS_MAX rather than looping forever on a pathological totalCount", async () => {
+	it("monarchAccounts flattens /assets + /plaid_accounts into balance refs", async () => {
 		const { defaultDeps } = await import("./_agenda");
-		const { monarch } = await import("./monarch");
-		const run = vi.spyOn(monarch, "run").mockImplementation(async (_env: any, a: any) => page(Array.from({ length: 200 }, (_, i) => a.offset + i), a.offset, 1_000_000) as any);
-
+		const { lunchmoney } = await import("./lunchmoney");
+		const run = vi.spyOn(lunchmoney, "run").mockResolvedValue(
+			body({ assets: [{ id: 1, name: "Cash", balance: 50, type: "cash" }], plaid_accounts: [{ id: 2, name: "Checking", balance: 1000, type: "depository", subtype: "checking" }] }) as any,
+		);
 		const deps = await defaultDeps();
-		const txns = await deps.monarchTransactions({} as any, { start: "2026-04-19", end: "2026-07-17" });
-
-		expect(txns.length).toBeLessThanOrEqual(1000);
-		expect(run.mock.calls.length).toBeLessThanOrEqual(6);
+		const accts = await deps.monarchAccounts({} as any);
+		expect(run).toHaveBeenCalledWith({}, { op: "accounts" });
+		expect(accts).toEqual([{ id: "1", name: "Cash", balance: 50, type: "cash", subtype: undefined }, { id: "2", name: "Checking", balance: 1000, type: "depository", subtype: "checking" }]);
 		run.mockRestore();
+	});
+
+	it("monarchBudgets asks Lunch Money for the whole month and reads remaining = budgeted − spending", async () => {
+		const { defaultDeps } = await import("./_agenda");
+		const { lunchmoney } = await import("./lunchmoney");
+		const run = vi.spyOn(lunchmoney, "run").mockResolvedValue(
+			body({ budgets: [{ category: "Rent", categoryId: 3, months: { "2026-07-01": { budgeted: 1500, spending: 400 } } }] }) as any,
+		);
+		const deps = await defaultDeps();
+		const budgets = await deps.monarchBudgets({} as any, { month: "2026-07" });
+		expect(run).toHaveBeenCalledWith({}, { op: "budgets", since: "2026-07-01", until: "2026-07-31" });
+		expect(budgets).toEqual([{ category: "Rent", categoryId: 3, remaining: 1100 }]);
+		run.mockRestore();
+	});
+
+	it("cashflow + holdings are dormant (Lunch Money has no equivalent), so the W7.1 detectors stay quiet", async () => {
+		const { defaultDeps } = await import("./_agenda");
+		const deps = await defaultDeps();
+		expect(await deps.monarchCashflow({} as any, { start: "2026-07-01", end: "2026-07-17" })).toBeNull();
+		expect(await deps.monarchHoldings({} as any)).toEqual([]);
 	});
 });
 

@@ -31,7 +31,7 @@ import type { ConsolidateFindings } from "./_consolidate";
 import type { CrossSemanticFindings } from "./_cross_semantic";
 import { classifyMessage } from "./_mail_triage";
 import { hasImessage, imessage } from "./imessage";
-import { hasMonarch, monarch } from "./monarch";
+import { hasLunchmoney, lunchmoney } from "./lunchmoney";
 import { crossOrgAllergyGaps, crossOrgMedicationAllergyConflicts, mychartConfigured, orgLabel, summarizeMyChart } from "../mychart";
 import { errMsg, vaultToday } from "./_util";
 import { vaultDailyDir } from "./_vaultpaths";
@@ -541,8 +541,11 @@ export function detectStudyReviewDrops(due: DueReview[]): Drop[] {
 	return sortByUrgency(drops);
 }
 
-/** Monarch's read-only accounts/transactions/budgets/holdings/cashflow ops (W7/W7.1), trimmed
- *  to what the detectors below need — see fns/monarch.ts for the full shapes. */
+/** The read-only financial-signal refs the detectors below consume (W7/W7.1), trimmed to what
+ *  they need. The `Monarch*` names are retained as the internal module vocabulary, but the live
+ *  data source is now Lunch Money (fns/lunchmoney.ts) — Monarch was retired. accounts/
+ *  transactions/budgets are fed live; holdings/cashflow have no Lunch Money equivalent and are
+ *  dormant (see defaultDeps), so the portfolio + savings-rate detectors currently stay quiet. */
 export type MonarchAccountRef = { id: string; name?: string; balance?: number; type?: string; subtype?: string };
 export type MonarchTxnRef = { id: string; amount?: number; date?: string; merchant?: string };
 export type MonarchBudgetRef = { category?: string; categoryId?: string; remaining?: number };
@@ -598,13 +601,12 @@ const SUBSCRIPTION_GROWTH_THRESHOLD = 0.2;
 // Recurring charges above this read as a bill (rent, insurance) already covered by bill_due,
 // not a subscription.
 const SUBSCRIPTION_MAX_CHARGE = 200;
-// defaultDeps.monarchTransactions pagination (#1097): monarch.ts's transactions op caps a single
-// page at 200 and reports totalCount, so the wider SUBSCRIPTION_LOOKBACK_DAYS window (anyone above
-// ~1.1 txns/day) needs an offset loop rather than one unpaginated call, or rows past the first page
-// silently vanish. MAX bounds the loop itself — a sane ceiling, not a truncation anyone should hit
-// at a 90-day window, so a pathological account/API bug can't turn one cycle into unbounded fetches.
-const MONARCH_TRANSACTIONS_PAGE_SIZE = 200;
-const MONARCH_TRANSACTIONS_MAX = 1000;
+// defaultDeps.monarchTransactions fetch cap (financial seam now sourced from Lunch Money): its
+// read-only transactions op returns one windowed page (no offset in the surface), so a single call
+// over the SUBSCRIPTION_LOOKBACK_DAYS window feeds the unusual-charge + subscription-creep
+// detectors. MAX bounds what one cycle ingests — a sane ceiling, not a truncation anyone should hit
+// at a ~90-day window (and the fn itself caps a page at 500).
+const LUNCHMONEY_TRANSACTIONS_MAX = 500;
 
 const daysLeftInMonth = (date: string): number => {
 	const d = new Date(`${date}T00:00:00Z`);
@@ -1155,16 +1157,16 @@ export type AgendaDeps = {
 	/** The cross-domain-link sweep's most recent findings (#785/#948) — a ledger-cache
 	 *  read, never a fresh cross-domain rank. */
 	crossSemanticFindings: (env: RtEnv) => Promise<CrossSemanticFindings | null>;
-	/** Monarch account balances (W7) — only called when hasMonarch(env). */
+	/** Monarch account balances (W7) — only called when hasLunchmoney(env). */
 	monarchAccounts: (env: RtEnv) => Promise<MonarchAccountRef[]>;
-	/** Monarch transactions in a window (W7) — only called when hasMonarch(env). */
+	/** Monarch transactions in a window (W7) — only called when hasLunchmoney(env). */
 	monarchTransactions: (env: RtEnv, opts: { start: string; end: string }) => Promise<MonarchTxnRef[]>;
-	/** Monarch per-category budget for a month (W7) — only called when hasMonarch(env). */
+	/** Monarch per-category budget for a month (W7) — only called when hasLunchmoney(env). */
 	monarchBudgets: (env: RtEnv, opts: { month: string }) => Promise<MonarchBudgetRef[]>;
 	/** Monarch cashflow income/expense/savings summary over a window (W7.1, #803) — only called
-	 *  when hasMonarch(env). Null when Monarch has no summary for the window. */
+	 *  when hasLunchmoney(env). Null when Monarch has no summary for the window. */
 	monarchCashflow: (env: RtEnv, opts: { start: string; end: string }) => Promise<MonarchCashflowRef | null>;
-	/** Monarch investment holdings (W7.1, #803) — only called when hasMonarch(env). */
+	/** Monarch investment holdings (W7.1, #803) — only called when hasLunchmoney(env). */
 	monarchHoldings: (env: RtEnv) => Promise<MonarchHoldingRef[]>;
 	/** Recent iMessage threads' last message, one per thread (#849) — only called when
 	 *  hasImessage(env). */
@@ -1330,8 +1332,8 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 			status.cross_semantic = `unavailable (${errMsg(e).slice(0, 90)})`;
 		}),
 		(async () => {
-			if (!hasMonarch(env)) {
-				status.monarch = "not_configured";
+			if (!hasLunchmoney(env)) {
+				status.lunchmoney = "not_configured";
 				return;
 			}
 			const windowStart = addDays(date, -SUBSCRIPTION_LOOKBACK_DAYS);
@@ -1348,9 +1350,9 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 			monarchCashflow = cashflow;
 			monarchHoldings = holdings;
 			monarchOk = true;
-			status.monarch = `${accts.length} account(s), ${txns.length} txn(s), ${holdings.length} holding(s)`;
+			status.lunchmoney = `${accts.length} account(s), ${txns.length} txn(s)`;
 		})().catch((e) => {
-			status.monarch = `unavailable (${errMsg(e).slice(0, 90)})`;
+			status.lunchmoney = `unavailable (${errMsg(e).slice(0, 90)})`;
 		}),
 		(async () => {
 			if (!hasImessage(env)) {
@@ -1691,51 +1693,47 @@ export async function defaultDeps(): Promise<AgendaDeps> {
 		studyTopics: studyReviewCandidates,
 		crossSemanticFindings: lastCrossSemanticFindings,
 		monarchAccounts: async (env) => {
-			const r = await monarch.run(env, { op: "accounts" });
-			if (r.isError) throw new Error(r.content?.[0]?.text ?? "monarch accounts failed");
+			const r = await lunchmoney.run(env, { op: "accounts" });
+			if (r.isError) throw new Error(r.content?.[0]?.text ?? "lunchmoney accounts failed");
 			const parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
-			return (parsed.accounts ?? []).map((a: any) => ({ id: String(a?.id ?? ""), name: a?.name, balance: typeof a?.balance === "number" ? a.balance : undefined, type: a?.type, subtype: a?.subtype }));
+			// Flatten manually-managed /assets + Plaid-linked /plaid_accounts into balance refs.
+			// The low-balance detector keys on type === "depository" (Plaid checking/savings), so a
+			// liability's positive magnitude never reads as a cash-crunch.
+			const rows = [...(parsed.assets ?? []), ...(parsed.plaid_accounts ?? [])];
+			return rows.map((a: any) => ({ id: String(a?.id ?? ""), name: a?.name, balance: typeof a?.balance === "number" ? a.balance : undefined, type: a?.type, subtype: a?.subtype }));
 		},
 		monarchTransactions: async (env, o) => {
-			let all: MonarchTxnRef[] = [];
-			let offset = 0;
-			for (;;) {
-				const r = await monarch.run(env, { op: "transactions", start: o.start, end: o.end, limit: MONARCH_TRANSACTIONS_PAGE_SIZE, offset });
-				if (r.isError) throw new Error(r.content?.[0]?.text ?? "monarch transactions failed");
-				const parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
-				const page = (parsed.transactions ?? []).map((t: any) => ({ id: String(t?.id ?? ""), amount: typeof t?.amount === "number" ? t.amount : undefined, date: t?.date, merchant: t?.merchant }));
-				all = all.concat(page);
-				const totalCount = typeof parsed.totalCount === "number" ? parsed.totalCount : all.length;
-				offset += MONARCH_TRANSACTIONS_PAGE_SIZE;
-				if (page.length < MONARCH_TRANSACTIONS_PAGE_SIZE || all.length >= totalCount || all.length >= MONARCH_TRANSACTIONS_MAX) break;
-			}
-			return all.slice(0, MONARCH_TRANSACTIONS_MAX);
+			// Lunch Money's read-only transactions op returns one windowed page (no offset), so a
+			// single call over the window feeds the unusual-charge + subscription-creep detectors.
+			// debit_as_negative (set by the fn) makes expenses negative — the sign they expect; payee
+			// is the merchant.
+			const r = await lunchmoney.run(env, { op: "transactions", since: o.start, until: o.end, limit: LUNCHMONEY_TRANSACTIONS_MAX });
+			if (r.isError) throw new Error(r.content?.[0]?.text ?? "lunchmoney transactions failed");
+			const parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
+			return (parsed.transactions ?? []).map((t: any) => ({ id: String(t?.id ?? ""), amount: typeof t?.amount === "number" ? t.amount : undefined, date: t?.date, merchant: t?.payee }));
 		},
 		monarchBudgets: async (env, o) => {
-			const r = await monarch.run(env, { op: "budgets", month: o.month });
-			if (r.isError) throw new Error(r.content?.[0]?.text ?? "monarch budgets failed");
+			// o.month is YYYY-MM; ask Lunch Money for that whole month and read `remaining` as
+			// budgeted − spending from the month-keyed data so the bill-due detector still fires.
+			const [y, mo] = o.month.split("-").map(Number);
+			const start = `${o.month}-01`;
+			const end = new Date(Date.UTC(y, mo, 0)).toISOString().slice(0, 10);
+			const r = await lunchmoney.run(env, { op: "budgets", since: start, until: end });
+			if (r.isError) throw new Error(r.content?.[0]?.text ?? "lunchmoney budgets failed");
 			const parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
-			return (parsed.budgets ?? []).map((b: any) => ({ category: b?.category, categoryId: b?.categoryId, remaining: typeof b?.remaining === "number" ? b.remaining : undefined }));
+			return (parsed.budgets ?? []).map((b: any) => {
+				const m: any = b?.months?.[start] ?? Object.values(b?.months ?? {})[0] ?? {};
+				const budgeted = typeof m?.budgeted === "number" ? m.budgeted : undefined;
+				const spending = typeof m?.spending === "number" ? m.spending : undefined;
+				return { category: b?.category, categoryId: b?.categoryId, remaining: budgeted === undefined ? undefined : budgeted - (spending ?? 0) };
+			});
 		},
-		monarchCashflow: async (env, o) => {
-			const r = await monarch.run(env, { op: "cashflow", start: o.start, end: o.end });
-			if (r.isError) throw new Error(r.content?.[0]?.text ?? "monarch cashflow failed");
-			const parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
-			const s = parsed?.summary;
-			if (!s || typeof s !== "object") return null;
-			return {
-				sumIncome: typeof s.sumIncome === "number" ? s.sumIncome : undefined,
-				sumExpense: typeof s.sumExpense === "number" ? s.sumExpense : undefined,
-				savings: typeof s.savings === "number" ? s.savings : undefined,
-				savingsRate: typeof s.savingsRate === "number" ? s.savingsRate : undefined,
-			};
-		},
-		monarchHoldings: async (env) => {
-			const r = await monarch.run(env, { op: "holdings" });
-			if (r.isError) throw new Error(r.content?.[0]?.text ?? "monarch holdings failed");
-			const parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
-			return (parsed.holdings ?? []).map((h: any) => ({ ticker: h?.ticker, name: h?.name, value: typeof h?.value === "number" ? h.value : undefined, quantity: typeof h?.quantity === "number" ? h.quantity : undefined }));
-		},
+		// Lunch Money's developer API exposes no cash-flow aggregate and no investment holdings, so
+		// the W7.1 savings-rate + portfolio detectors have no live feed here — dormant, returning
+		// null/[] so those detectors simply produce nothing. Wiring them would need deriving cash flow
+		// from the transaction stream and a holdings source Lunch Money doesn't currently provide.
+		monarchCashflow: async () => null,
+		monarchHoldings: async () => [],
 		textThreads: async (env, o) => {
 			const tr = await imessage.run(env, { action: "threads", since: o.since });
 			if (tr.isError) throw new Error(tr.content?.[0]?.text ?? "imessage threads failed");

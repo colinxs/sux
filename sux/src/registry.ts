@@ -285,7 +285,7 @@ export type RtEnv = Env &
 		// secrets). The durable REFRESH token is NOT here — it's minted at
 		// /mychart/callback and held in OAUTH_KV per org (sux:mychart:grant:${org})
 		// because Epic rotates it at runtime and the org sets its lifetime. Both absent
-		// → the fn and routes are inert (not_configured), like monarch/dropbox.
+		// → the fn and routes are inert (not_configured), like lunchmoney/dropbox.
 		EPIC_CLIENT_ID?: string;
 		EPIC_CLIENT_SECRET?: string;
 
@@ -298,7 +298,7 @@ export type RtEnv = Env &
 		// Outbound Web Push (VAPID, #219) — sux pushing OUT to Colin's devices, distinct
 		// from #213's inbound JMAP PushSubscription (Fastmail pushing INTO sux). All
 		// absent ⇒ the webpush fn and every cron push hook are inert (not_configured),
-		// like monarch/dropbox/mychart. Set via `wrangler secret` — generate a keypair
+		// like lunchmoney/dropbox/mychart. Set via `wrangler secret` — generate a keypair
 		// with e.g. `npx web-push generate-vapid-keys` (or any RFC8291-compatible
 		// generator); VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY are the raw base64url P-256
 		// point/scalar it prints. VAPID_SUBJECT is the mailto:/https: contact URL the
@@ -331,13 +331,16 @@ export type RtEnv = Env &
 		// fn returns not_configured; nothing about it runs until the token is set.
 		TODOIST_TOKEN?: string;
 
-		// Monarch Money GraphQL API (monarch fn) — a personal API token used directly
-		// as `Authorization: Token <token>`. NOT OAuth and NOT the email+password+MFA
-		// login flow (prohibited to handle): Colin mints it out-of-band — the monarchmoney
-		// Python lib's interactive login, or the `Authorization: Token …` request header
-		// from app.monarchmoney.com devtools — and sets it as a write-only Worker secret.
-		// Absent → the fn returns not_configured; nothing about it runs. READ-ONLY:
-		// monarch never moves money (no mutation op; the graphql escape hatch refuses them).
+		// Lunch Money developer API (lunchmoney fn) — a personal API key used directly as
+		// `Authorization: Bearer <key>` (my.lunchmoney.app → Settings → Developers). NOT OAuth
+		// and NOT a browser-session token: Colin mints it in the Lunch Money UI and sets it as a
+		// write-only Worker secret. Absent → the fn returns not_configured; nothing about it runs.
+		// READ-ONLY: lunchmoney never moves money (only GET endpoints are wired, no mutation op).
+		LUNCHMONEY_API_KEY?: string;
+
+		// Legacy Monarch Money token — the `monarch` fn + the /monarch/connect paste-door it fed
+		// were retired in favor of Lunch Money above. Retained (no longer read anywhere) so the
+		// existing Worker secret can stay set until it's cleaned up out-of-band.
 		MONARCH_TOKEN?: string;
 
 		// Fastmail JMAP conduit (jmap fn + /mail/mcp namespace). A JMAP-scoped API
@@ -414,10 +417,11 @@ export type RtEnv = Env &
 		// gate, ALSO requires AGENDA_ENABLED. Uses its OWN ledger namespace, entirely separate
 		// from AGENDA_REPLY_ENABLED's, so the two inbound loops can never cross-match a reply.
 		AGENDA_ASK_ENABLED?: string;
-		// W7 — Monarch financial-signal detector thresholds (fns/_agenda.ts's detectMonarchDrops).
-		// Both optional; unset ⇒ sane defaults ($100 / $500). Only ever read, never gates whether
-		// the detectors run at all — that's MONARCH_TOKEN (via hasMonarch), same as every other
-		// Monarch surface. Read-only: these thresholds only decide what gets PROPOSED, never acted on.
+		// W7 — financial-signal detector thresholds (fns/_agenda.ts's detectMonarchDrops, kept
+		// so-named internally). Both optional; unset ⇒ sane defaults ($100 / $500). Only ever read,
+		// never gates whether the detectors run at all — that's LUNCHMONEY_API_KEY (via
+		// hasLunchmoney), which now feeds the financial detectors. Read-only: these thresholds only
+		// decide what gets PROPOSED, never acted on.
 		MONARCH_LOW_BALANCE_THRESHOLD?: string;
 		MONARCH_UNUSUAL_CHARGE_THRESHOLD?: string;
 		// W7.1 — portfolio-drift + savings-rate detector thresholds (fns/_agenda.ts's
@@ -586,7 +590,7 @@ export type RtEnv = Env &
 		// _embed.ts's embed(), translate, ocr) through Cloudflare AI Gateway for
 		// response caching, observability, and a cost ceiling. Dormant until a human
 		// creates the gateway in the Cloudflare account and sets this var (same
-		// convention as MONARCH_TOKEN above) — absent, every call behaves exactly as
+		// convention as LUNCHMONEY_API_KEY above) — absent, every call behaves exactly as
 		// it does today, no gateway option passed. See ai.ts's aiGatewayOptions().
 		AI_GATEWAY_ID?: string;
 		IMAGES?: ImagesBinding;
