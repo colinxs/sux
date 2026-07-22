@@ -60,15 +60,23 @@ export type GraphHealth = {
 /** Pure metric computation over an already-scanned vault index — no I/O, so it's directly
  *  unit-testable against hand-built VaultRecord[] fixtures. `now` is injectable for
  *  deterministic staleness-bucket tests. */
-export function computeGraphHealth(records: VaultRecord[], now: Date = new Date()): GraphHealth {
+export function computeGraphHealth(
+	records: VaultRecord[],
+	now: Date = new Date(),
+	excludeAsSource: ReadonlySet<string> = new Set(),
+): GraphHealth {
 	const orphans: string[] = [];
 	const dead_links: DeadLink[] = [];
 	const stale_distribution: Record<StaleBucket, number> = { "<30d": 0, "30-90d": 0, "90-365d": 0, ">365d": 0, unknown: 0 };
 	const folder_counts: Record<string, number> = {};
 
+	// `records` stays the full resolution universe (a link like `[[Graph-Health]]` must still
+	// resolve to Meta/Graph-Health.md even though the report itself contributes no *source*
+	// metrics below) — only the per-record loop that treats `r` as a source skips excluded paths.
 	const hasInbound = (path: string): boolean => records.some((r) => r.path !== path && r.links.some((l) => linkResolvesTo(l, path)));
 
 	for (const r of records) {
+		if (excludeAsSource.has(r.path)) continue;
 		const outbound = r.links.length > 0;
 		if (!outbound && !hasInbound(r.path)) orphans.push(r.path);
 
@@ -142,11 +150,12 @@ export const graph_health: Fn = {
 			return failWith("upstream_error", `graph_health: vault scan failed: ${errMsg(e)}`);
 		}
 
-		// Exclude the report's own generated note — its body documents other notes' dead
-		// links as literal `[[wikilink]]` example text, which the regex-based scan would
-		// otherwise re-parse as outgoing links from the report itself, self-inflating the
-		// count on every subsequent run (#1261).
-		const health = computeGraphHealth(records.filter((r) => r.path !== REPORT_PATH));
+		// Exclude the report's own generated note as a *source* only — its body documents
+		// other notes' dead links as literal `[[wikilink]]` example text, which the regex-based
+		// scan would otherwise re-parse as outgoing links from the report itself, self-inflating
+		// the count on every subsequent run (#1261). It stays in the resolution *universe* so a
+		// real note's `[[Graph-Health]]` link still resolves instead of reading as dead (#1299).
+		const health = computeGraphHealth(records, undefined, new Set([REPORT_PATH]));
 		const generatedAt = new Date().toISOString();
 		const w = await obsidian.run(env, { action: "write", path: REPORT_PATH, content: renderReport(health, generatedAt), backend: "git" });
 		const note_written = !w.isError;
