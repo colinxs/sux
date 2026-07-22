@@ -15,6 +15,7 @@
 // scans go through study.ts's extractDocText (same Mode-A shared-link pattern
 // _learning_folder.ts uses) — #1153.
 import { type RtEnv } from "../registry";
+import { assimilate } from "./_assimilate";
 import { hasDropbox, sharedLink } from "./dropbox";
 import { dropboxRawUrl, errMsg, putBlob } from "./_util";
 import { ledger } from "../ledger";
@@ -293,6 +294,16 @@ export async function runDocumentRadarSync(env: RtEnv, deps: DocumentRadarDeps =
 			if (!w.ok) {
 				errors.push(`${entry.path}: ${w.error ?? "vault write failed"}`);
 				continue;
+			}
+			// Best-effort enrichment layered on an ALREADY-SUCCESSFUL note write (v5 W3, #1284):
+			// reuse the `text` this loop already extracted rather than re-extract/re-OCR through
+			// the spine's own extractLeg (kind:"text" passes it through unchanged). A spine failure
+			// (or ASSIMILATE_ENABLED unset, which just returns {status:"disabled"}) is a degraded
+			// enrichment, not a sweep failure — it must never land in `errors` or gate the ledger.
+			try {
+				await assimilate(env, { source: entry.path, text, kind: "text", domain: "scan" });
+			} catch (e) {
+				console.warn(`document_radar: assimilate skipped for ${entry.path}: ${errMsg(e)}`);
 			}
 			await led.mark(entry.path);
 			processed.push(entry.path);

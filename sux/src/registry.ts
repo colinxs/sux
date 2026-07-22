@@ -491,6 +491,15 @@ export type RtEnv = Env &
 		DOCUMENT_RADAR_PATH?: string;
 		DOCUMENT_RADAR_VAULT_FOLDER?: string;
 
+		// Email ingest doors (fns/_email_ingest.ts, #1198 P1a/#1199) — Cloudflare Email Routing
+		// delivers vault@/files@ on a zone to this Worker's `email()` export (index.ts). Same
+		// fail-closed gate as every other sweep here: unset EMAIL_INGEST_ENABLED ⇒ the handler is
+		// a total no-op (Cloudflare's own default when an email() handler takes no action). Even
+		// armed, every message still has to clear its own per-recipient KV sender allowlist AND
+		// Cloudflare's SPF/DKIM Authentication-Results verdict before anything is ingested — this
+		// flag only controls whether the feature runs at all, never bypasses those checks.
+		EMAIL_INGEST_ENABLED?: string;
+
 		// Manual ops trigger for the daily cron ticks (POST /admin/tick?job=…), bearer-gated
 		// by this token. Unset ⇒ the endpoint 404s (feature off). Lets an operator run a
 		// mail-triage / self-improve / maintenance cycle on demand instead of waiting for cron.

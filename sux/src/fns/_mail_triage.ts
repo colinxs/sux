@@ -32,6 +32,7 @@
 import { hasAI, llm } from "../ai";
 import type { RtEnv } from "../registry";
 import { ledger } from "../ledger";
+import { assimilate } from "./_assimilate";
 import { passesDraftGate } from "./_briefing";
 import { errMsg, vaultToday } from "./_util";
 import { vaultDailyDir } from "./_vaultpaths";
@@ -543,6 +544,23 @@ export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps):
 			// message still gets the reversible `personal` label via ACTION_FOR, and the daily
 			// (non-sweep) cycle keeps drafting for FRESH personal mail as designed.
 			if (c.label === "personal" && !sweepBacklog) c = detectReplyDraft(m) ?? c;
+			// Best-effort assimilation feed (v5 W6, #1285): a triage-flagged message (any REAL,
+			// non-"unknown" classification — the label itself is the flag, independent of whether
+			// an auto-act fired) gets indexed into the retrieval spine so it's findable via
+			// oracle/recall later. Runs exactly once per newly-scanned message, before the
+			// act/suggest/draft-reply branch below, and never influences that decision. Content is
+			// subject+preview only — TriageMsg carries no full body, and fetching one here would add
+			// a per-message JMAP read to every triage cycle just for this enrichment. Same
+			// sensitive-sender gate as logMailSignal above (data-minimization posture): health/
+			// finance/legal mail skips the spine too. A disabled spine ({status:"disabled"}) or any
+			// failure must never affect the loop — bare try/catch, mirroring logMailSignal's idiom.
+			if (c.label !== "unknown" && !isSensitiveSender(String(m.from ?? ""))) {
+				try {
+					await assimilate(env, { source: `mail:${m.id}`, text: `${m.subject ?? ""}\n\n${m.preview ?? ""}`.trim(), kind: "text", domain: "mail" });
+				} catch (e) {
+					console.warn(`assimilate: mail feed skipped for ${m.id} — ${errMsg(e)}`);
+				}
+			}
 			// A classification may carry a per-message op override (service notifications attach a
 			// type-specific label, draft-reply attaches the create op); otherwise fall back to the
 			// label's default action. `resolveOp` then applies the archive confidence bar — a

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // The backfill/repopulate path (#1290): reindexCorpus reads the existing corpus and upserts
 // every chunk into `sux-corpus` under its namespace, reusing stored embeddings. Mock the
@@ -14,7 +14,7 @@ vi.mock("./obsidian", async (importOriginal) => ({ ...(await importOriginal<obje
 import { queryCorpus, vectorId } from "./_vectorize";
 import { listChunks, listDomains } from "./_source";
 import { vaultSemanticIndex } from "./_vault_semantic";
-import { reindexCorpus } from "./_reindex";
+import { REINDEX_DOMAINS, advanceReindexCursor, hasVectorizeBackfill, nextReindexDomain, reindexCorpus, reindexCorpusTick, rotateReindexDomain } from "./_reindex";
 
 const vaultBuild = vaultSemanticIndex as unknown as ReturnType<typeof vi.fn>;
 const domainsList = listDomains as unknown as ReturnType<typeof vi.fn>;
@@ -96,5 +96,97 @@ describe("reindexCorpus (#1290 backfill)", () => {
 		const report = await reindexCorpus(env, { domains: ["vault", "source"] });
 		expect(report.domains.vault.error).toMatch(/boom/);
 		expect(report.domains.source.indexed).toBe(0); // ran despite vault failing
+	});
+});
+
+// The automatic batched backfill (#1315): a cron tick runs EXACTLY one REINDEX_DOMAINS entry
+// (the existing per-domain granularity IS the batching) and rotates a persisted KV cursor, so
+// a full corpus backfill spans multiple ticks instead of one oversized request.
+function makeKV() {
+	const store = new Map<string, string>();
+	return {
+		store,
+		get: async (key: string) => store.get(key) ?? null,
+		put: async (key: string, value: string) => {
+			store.set(key, value);
+		},
+	};
+}
+
+describe("reindex rotation cursor (#1315 batched backfill)", () => {
+	it("rotateReindexDomain steps through REINDEX_DOMAINS in order", () => {
+		for (let i = 0; i < REINDEX_DOMAINS.length - 1; i++) {
+			expect(rotateReindexDomain(REINDEX_DOMAINS[i])).toBe(REINDEX_DOMAINS[i + 1]);
+		}
+	});
+
+	it("rotateReindexDomain wraps back to the first domain after the last", () => {
+		expect(rotateReindexDomain(REINDEX_DOMAINS[REINDEX_DOMAINS.length - 1])).toBe(REINDEX_DOMAINS[0]);
+	});
+
+	it("nextReindexDomain defaults to the first domain when the cursor is unset", async () => {
+		const env = { OAUTH_KV: makeKV() } as any;
+		expect(await nextReindexDomain(env)).toBe(REINDEX_DOMAINS[0]);
+	});
+
+	it("nextReindexDomain defaults to the first domain on a stale/invalid cursor value", async () => {
+		const kv = makeKV();
+		kv.store.set("sux:reindex:cursor", "not-a-real-domain");
+		const env = { OAUTH_KV: kv } as any;
+		expect(await nextReindexDomain(env)).toBe(REINDEX_DOMAINS[0]);
+	});
+
+	it("advanceReindexCursor persists the next domain, and wraps after the last", async () => {
+		const kv = makeKV();
+		const env = { OAUTH_KV: kv } as any;
+		await advanceReindexCursor(env, REINDEX_DOMAINS[0]);
+		expect(await nextReindexDomain(env)).toBe(REINDEX_DOMAINS[1]);
+		await advanceReindexCursor(env, REINDEX_DOMAINS[REINDEX_DOMAINS.length - 1]);
+		expect(await nextReindexDomain(env)).toBe(REINDEX_DOMAINS[0]);
+	});
+});
+
+describe("reindexCorpusTick (#1315 batched backfill)", () => {
+	beforeEach(() => {
+		// Reset the per-domain builder mocks to the same safe defaults they start the file
+		// with — this suite's tests shouldn't depend on execution order relative to the
+		// reindexCorpus suite above (which leaves some of these mocked to error/empty states).
+		vaultBuild.mockReset();
+		domainsList.mockReset();
+		domainsList.mockResolvedValue([]);
+		chunksList.mockReset();
+		chunksList.mockResolvedValue([]);
+	});
+
+	it("is a dormant no-op when VECTORIZE_BACKFILL_ENABLED is unset", async () => {
+		const kv = makeKV();
+		const env = { VECTORIZE: makeVectorize(), OAUTH_KV: kv } as any;
+		expect(hasVectorizeBackfill(env)).toBe(false);
+		expect(await reindexCorpusTick(env)).toEqual({ dormant: true });
+		expect(kv.store.size).toBe(0); // cursor untouched — no partial progress recorded
+	});
+
+	it("processes exactly one domain per call and advances the cursor to the next", async () => {
+		const env = { VECTORIZE: makeVectorize(), OAUTH_KV: makeKV(), VECTORIZE_BACKFILL_ENABLED: "1" } as any;
+		const r1 = (await reindexCorpusTick(env)) as { domain: string; next: string; domains: Record<string, unknown> };
+		expect(r1.domain).toBe(REINDEX_DOMAINS[0]);
+		expect(r1.next).toBe(REINDEX_DOMAINS[1]);
+		expect(Object.keys(r1.domains)).toEqual([REINDEX_DOMAINS[0]]);
+		expect(await nextReindexDomain(env)).toBe(REINDEX_DOMAINS[1]);
+
+		const r2 = (await reindexCorpusTick(env)) as { domain: string; next: string; domains: Record<string, unknown> };
+		expect(r2.domain).toBe(REINDEX_DOMAINS[1]);
+		expect(Object.keys(r2.domains)).toEqual([REINDEX_DOMAINS[1]]);
+	});
+
+	it("a full rotation (REINDEX_DOMAINS.length ticks) touches every domain exactly once and wraps", async () => {
+		const env = { VECTORIZE: makeVectorize(), OAUTH_KV: makeKV(), VECTORIZE_BACKFILL_ENABLED: "1" } as any;
+		const seen: string[] = [];
+		for (let i = 0; i < REINDEX_DOMAINS.length; i++) {
+			const r = (await reindexCorpusTick(env)) as { domain: string };
+			seen.push(r.domain);
+		}
+		expect(seen).toEqual(REINDEX_DOMAINS);
+		expect(await nextReindexDomain(env)).toBe(REINDEX_DOMAINS[0]); // wrapped back to the start
 	});
 });

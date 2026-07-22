@@ -201,6 +201,51 @@ export function topKPassages(queryVec: number[], chunks: SourceChunk[], k = 6): 
 		.slice(0, Math.max(1, k));
 }
 
+// --- observability (v5 WS5, #1278) ------------------------------------------
+
+/** KV's per-key packed-blob cap is 25MiB; an embedded chunk (text + a 768-dim float embedding,
+ *  JSON-serialized) runs ~5-6KB, so a single domain's chunk set approaches that cap somewhere
+ *  around 4.5k chunks. This is the GRADUATION TRIGGER for sux#1290's pre-written Vectorize
+ *  escape-hatch issue (held until a trigger fires) — instrumentation only, NOT auto-graduation;
+ *  crossing it just means the KV-brute-force approach (_examples.ts:48's deliberate KISS choice)
+ *  needs a human to go open/action #1290 for that domain. */
+export const KV_CHUNK_CEILING = 4_500;
+const KV_CHUNK_WARN_RATIO = 0.9;
+
+export type DomainQueryStats = {
+	source_domain: string;
+	chunk_count: number;
+	blob_size_bytes: number;
+	retrieval_ms: number;
+	indexed_at: number | null;
+};
+
+/** The one instrumented kNN query path (advise.ts/oracle.ts's retrieval, per #1278) — wraps
+ *  listChunks + topKPassages with the timing/size/freshness fields Workers Observability keys
+ *  on, so an approaching KV_CHUNK_CEILING shows up before it's hit blind rather than after.
+ *  Behavior-identical to calling listChunks then topKPassages directly; this only adds the log. */
+export async function queryDomain(env: RtEnv, domain: string, queryVec: number[], k = 6): Promise<{ passages: Passage[]; stats: DomainQueryStats }> {
+	const start = Date.now();
+	const chunks = await listChunks(env, domain);
+	const passages = topKPassages(queryVec, chunks, k);
+	const retrieval_ms = Date.now() - start;
+
+	const chunk_count = chunks.length;
+	const blob_size_bytes = chunks.reduce((sum, c) => sum + JSON.stringify(c).length, 0);
+	const indexed_at = chunk_count ? Math.max(...chunks.map((c) => c.ts)) : null;
+
+	const stats: DomainQueryStats = { source_domain: domain, chunk_count, blob_size_bytes, retrieval_ms, indexed_at };
+	console.log(JSON.stringify({ event: "source_knn_query", ...stats }));
+
+	if (chunk_count >= KV_CHUNK_CEILING) {
+		console.warn(`source: domain=${domain} chunk_count=${chunk_count} is AT/OVER the ~${KV_CHUNK_CEILING}-chunk KV ceiling — open sux#1290 (Vectorize escape-hatch) if this domain keeps growing.`);
+	} else if (chunk_count >= KV_CHUNK_CEILING * KV_CHUNK_WARN_RATIO) {
+		console.warn(`source: domain=${domain} chunk_count=${chunk_count} is approaching the ~${KV_CHUNK_CEILING}-chunk KV ceiling — open sux#1290 (Vectorize escape-hatch) if this domain keeps growing.`);
+	}
+
+	return { passages, stats };
+}
+
 // --- profile store (KV) -----------------------------------------------------
 
 export async function loadProfile(env: RtEnv, domain: string): Promise<Profile | null> {

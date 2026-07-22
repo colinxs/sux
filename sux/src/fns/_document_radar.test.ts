@@ -1,5 +1,14 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const assimilateMock = vi.fn(async (..._args: unknown[]) => ({ status: "disabled", note: "disabled" }));
+vi.mock("./_assimilate", () => ({ assimilate: (...args: unknown[]) => assimilateMock(...args) }));
+
 import { classifyDocType, findExpiryDate, hasDocumentRadar, listTrackedDocuments, runDocumentRadarSync } from "./_document_radar";
+
+beforeEach(() => {
+	assimilateMock.mockClear();
+	assimilateMock.mockImplementation(async () => ({ status: "disabled", note: "disabled" }));
+});
 
 function kvStub() {
 	const map = new Map<string, string>();
@@ -203,6 +212,46 @@ describe("runDocumentRadarSync", () => {
 		expect(r.errors).toBeUndefined();
 		expect(writeNote.mock.calls[0]?.[2]).not.toContain("original_ref:");
 		expect(writeNote.mock.calls[0]?.[2]).toContain("expiry_date: 2031-04-12");
+	});
+
+	it("calls the assimilate spine with the already-extracted text as its terminal step (#1284)", async () => {
+		const e = env({ DOCUMENT_RADAR_ENABLED: "1", DROPBOX_TOKEN: "t", DROPBOX_APP_FOLDER: "f" });
+		const writeNote = vi.fn(async (_env: unknown, _path: string, _content: string) => ({ ok: true }));
+		const r = await runDocumentRadarSync(e, {
+			listFolder: vi.fn(async () => [{ path: "/documents/passport.jpg", name: "passport.jpg" }]),
+			shareUrl: vi.fn(async () => "https://dropbox.example/s/abc"),
+			ocrImage: vi.fn(async () => "PASSPORT\nExpires: 2031-04-12"),
+			extractPdfText: vi.fn(async () => undefined),
+			writeNote,
+			readNote: vi.fn(async () => undefined),
+		});
+		expect(r.processed).toEqual(["/documents/passport.jpg"]);
+		expect(assimilateMock).toHaveBeenCalledTimes(1);
+		expect(assimilateMock).toHaveBeenCalledWith(e, {
+			source: "/documents/passport.jpg",
+			text: "PASSPORT\nExpires: 2031-04-12",
+			kind: "text",
+			domain: "scan",
+		});
+	});
+
+	it("does not fail the sweep when the assimilate spine throws (#1284)", async () => {
+		const e = env({ DOCUMENT_RADAR_ENABLED: "1", DROPBOX_TOKEN: "t", DROPBOX_APP_FOLDER: "f" });
+		const writeNote = vi.fn(async (_env: unknown, _path: string, _content: string) => ({ ok: true }));
+		assimilateMock.mockImplementation(async () => {
+			throw new Error("assimilate distilled an empty note — retry.");
+		});
+		const r = await runDocumentRadarSync(e, {
+			listFolder: vi.fn(async () => [{ path: "/documents/passport.jpg", name: "passport.jpg" }]),
+			shareUrl: vi.fn(async () => "https://dropbox.example/s/abc"),
+			ocrImage: vi.fn(async () => "PASSPORT\nExpires: 2031-04-12"),
+			extractPdfText: vi.fn(async () => undefined),
+			writeNote,
+			readNote: vi.fn(async () => undefined),
+		});
+		expect(r.processed).toEqual(["/documents/passport.jpg"]);
+		expect(r.errors).toBeUndefined();
+		expect(assimilateMock).toHaveBeenCalledTimes(1);
 	});
 });
 

@@ -4,6 +4,7 @@ import { putPhi } from "../mychart";
 import { makeCaps } from "../op-engine/caps";
 import type { RtEnv } from "../registry";
 import { embed } from "./_embed";
+import { shrinkPdfImages } from "./_pdf_shrink";
 import { chunkText, distillProfile, newId, putChunk, type SourceChunk } from "./_source";
 import { errMsg, putBlob, sha256Hex, toB64 } from "./_util";
 import { ocr } from "./ocr";
@@ -23,9 +24,10 @@ import { docBytesToMarkdown, resolveDocSource } from "./study";
 //                 (learnTopic's ≤500-word-note tier), provenance stamped on every chunk;
 //                 _source.ts's distillProfile is the rolling-summary tier (learnTopic's
 //                 re-distill idea, generalized per-domain).
-//   3. optimize-original — shrink hook (W4 #1276, seam below) → putBlob to R2 CAS for
-//                 ordinary material; putPhi (private `phi/` prefix, NEVER a /s/ handle)
-//                 for PHI. Dropbox stays the human home — this leg never touches it.
+//   3. optimize-original — best-effort PDF image-shrink (_pdf_shrink.ts, W4 #1276) then
+//                 putBlob to R2 CAS for ordinary material; putPhi (private `phi/` prefix,
+//                 NEVER a /s/ handle) for PHI. Dropbox stays the human home — this leg
+//                 never touches it.
 //   4. index    — _source.ts chunk+embed under namespaced domains `assim:<stream>`
 //                 (assim:scan / assim:mail / assim:doc) and `phi:medical`, preserving
 //                 #1242's namespace-isolation rule and the phi fence (#613).
@@ -98,7 +100,7 @@ export type AssimilateResult =
 			source_id: string;
 			distilled: string;
 			indexed: { chunks: number; skipped?: string };
-			archived: { r2_key?: string; sha256?: string; size?: number; skipped?: string };
+			archived: { r2_key?: string; sha256?: string; size?: number; optimized_r2_key?: string; optimized_sha256?: string; optimized_size?: number; skipped?: string };
 	  };
 
 /** The one KV/index namespace decision (#1242's isolation rule): PHI-adjacent material lives
@@ -159,29 +161,47 @@ async function extractLeg(
 	return { text: await docBytesToMarkdown(env, name, bytes), bytes, name };
 }
 
-/** OPTIMIZE-ORIGINAL (best-effort): archive the original bytes. PHI → the private `phi/`
- *  R2 prefix via putPhi (no /s/ handle is ever minted, #613); everything else → the R2 CAS
- *  via putBlob (cas/<sha256>, dedup by content). W4's pdf shrink (#1276) slots in HERE,
- *  before the write, when it lands — best-effort like the rest of this leg. Dropbox roles
- *  are untouched: R2 is the machine archive, Dropbox stays the human home. */
+/** OPTIMIZE-ORIGINAL (best-effort): shrink a PDF's embedded images (_pdf_shrink.ts, W4
+ *  #1276) then archive the original bytes AND, only when the shrink actually shrank
+ *  something, a second optimized handle. PHI → the private `phi/` R2 prefix via putPhi
+ *  (no /s/ handle is ever minted, #613); everything else → the R2 CAS via putBlob
+ *  (cas/<sha256>, dedup by content). Dropbox roles are untouched: R2 is the machine
+ *  archive, Dropbox stays the human home. */
 async function archiveLeg(
 	env: RtEnv,
 	opts: { phi: boolean; name: string; bytes?: Uint8Array; contentType: string },
-): Promise<{ r2_key?: string; sha256?: string; size?: number; skipped?: string }> {
+): Promise<{ r2_key?: string; sha256?: string; size?: number; optimized_r2_key?: string; optimized_sha256?: string; optimized_size?: number; skipped?: string }> {
 	if (!opts.bytes?.length) return { skipped: "no original bytes (text input)" };
 	try {
-		// W4 seam (#1276): when the pdf shrink leg lands, recompress opts.bytes here
-		// (best-effort — a shrink failure archives the original, never skips the archive).
+		// W4 (#1276): best-effort embedded-image recompression, PDF content only. A
+		// shrink failure/no-op leaves `optimized` undefined — the original still
+		// archives below either way, this never skips or fails the archive.
+		let optimized: Uint8Array | undefined;
+		if (opts.contentType === "application/pdf") {
+			try {
+				const shrunk = await shrinkPdfImages(env, opts.bytes);
+				if (shrunk.imagesShrunk > 0 && shrunk.outputBytes < shrunk.inputBytes) optimized = shrunk.bytes;
+			} catch (e) {
+				console.log(`assimilate: pdf shrink skipped: ${errMsg(e)}`);
+			}
+		}
+
 		if (opts.phi) {
 			// Content-addressed under phi/ (sha-prefixed key) so a re-assimilated document is
 			// idempotent, mirroring the CAS layout — but through putPhi, which never mints the
 			// public /s/ handle putBlob does (#613's fence is exactly that difference).
 			const sha256 = await sha256Hex(opts.bytes);
 			const key = await putPhi(env, `assimilate/${sha256}-${opts.name}`, opts.bytes, opts.contentType);
-			return { r2_key: key, sha256, size: opts.bytes.length };
+			const base = { r2_key: key, sha256, size: opts.bytes.length };
+			if (!optimized) return base;
+			const optSha256 = await sha256Hex(optimized);
+			const optKey = await putPhi(env, `assimilate/${optSha256}-${opts.name}`, optimized, opts.contentType);
+			return { ...base, optimized_r2_key: optKey, optimized_sha256: optSha256, optimized_size: optimized.length };
 		}
 		const ref = await putBlob(env, opts.bytes, opts.contentType);
-		return { r2_key: ref.key, sha256: ref.sha256, size: ref.size };
+		if (!optimized) return { r2_key: ref.key, sha256: ref.sha256, size: ref.size };
+		const optRef = await putBlob(env, optimized, opts.contentType);
+		return { r2_key: ref.key, sha256: ref.sha256, size: ref.size, optimized_r2_key: optRef.key, optimized_sha256: optRef.sha256, optimized_size: optRef.size };
 	} catch (e) {
 		const skipped = `archive skipped: ${errMsg(e)}`;
 		console.log(`assimilate: ${skipped}`);

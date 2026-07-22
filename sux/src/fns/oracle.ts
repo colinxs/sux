@@ -6,7 +6,7 @@ import { hasVectorize } from "./_vectorize";
 import { embed, embedOne } from "./_embed";
 import { maybeCompressString, maybeDecompressString } from "./_gzip";
 import { appendOnOracle } from "./_kb";
-import { chunkText, deleteDomain, listChunks, newId, type Passage, putChunk, type SourceChunk, topKPassages } from "./_source";
+import { chunkText, deleteDomain, newId, type Passage, putChunk, queryDomain, type SourceChunk } from "./_source";
 import { errMsg, fetchText, isHttpUrl, stripHtml, oj } from "./_util";
 import { readability } from "./readability";
 
@@ -360,8 +360,7 @@ export const oracle: Fn = {
 				let passages: Passage[] = [];
 				try {
 					const vec = await embedOne(env, problem);
-					const chunks = await listChunks(env, sourceDomain(topic));
-					passages = topKPassages(vec, chunks, 6);
+					passages = (await queryDomain(env, sourceDomain(topic), vec, 6)).passages;
 				} catch (e) {
 					console.log(`oracle: retrieval skipped for topic=${topic}: ${errMsg(e)}`);
 				}

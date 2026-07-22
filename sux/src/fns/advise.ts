@@ -18,8 +18,8 @@ import {
 	type Passage,
 	type Profile,
 	putChunk,
+	queryDomain,
 	type SourceChunk,
-	topKPassages,
 } from "./_source";
 import { errMsg, oj } from "./_util";
 
@@ -276,8 +276,7 @@ export const advise: Fn = {
 
 				// tier 1 — retrieve the governing passages + load the always-injected Profile.
 				const vec = await embedOne(env, question);
-				const chunks = await listChunks(env, domain);
-				const passages = topKPassages(vec, chunks, k);
+				const { passages } = await queryDomain(env, domain, vec, k);
 				const profile: Profile | null = await loadProfile(env, domain);
 
 				// tier 1 (cont.) — fold in a WHITELISTED oracle KB studied (via `study`) for this domain,

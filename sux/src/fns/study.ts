@@ -4,6 +4,7 @@ import { appendOnWhitelist } from "./_kb";
 import { hasDropboxFull, normFull, readFull } from "./_dropbox-full";
 import { hasDropbox, sharedLink } from "./dropbox";
 import { dropboxRawUrl, errMsg, fromB64, isHttpUrl, isHttpUrlStr, loadBytes, oj, putBlob } from "./_util";
+import { shrinkPdfImages } from "./_pdf_shrink";
 import { obsidian } from "./obsidian";
 import { wayback } from "./wayback";
 import { KV_PREFIX, loadKb, learnTopic, oracle, type Whitelist } from "./oracle";
@@ -179,7 +180,12 @@ export async function listWhitelisted(env: RtEnv): Promise<Array<{ topic: string
 	return out;
 }
 
-type ArchiveResult = { r2?: { url: string; sha256: string; size: number }; wayback?: string; vault_note?: string; skipped?: string };
+type ArchiveResult = {
+	r2?: { url: string; sha256: string; size: number; optimized_url?: string; optimized_sha256?: string; optimized_size?: number };
+	wayback?: string;
+	vault_note?: string;
+	skipped?: string;
+};
 
 const INSIGHT_CARD_SYSTEM =
 	"Reorganize the following distilled knowledge notes into a per-book insight card using exactly these four markdown headings, in this order: \"## Core models\", \"## Techniques\", \"## When to use\", \"## Notable passages\". Bullet points under each heading, drawn ONLY from the material given — never invent anything not present in it. Under \"## Notable passages\", quote 2-4 short (<=30 words) excerpts verbatim from the material, each as a blockquote line starting with \"> \". If a heading has nothing to say from the material, write \"(none)\" under it rather than inventing content. Output ONLY the four headings and their content — no preamble, no closing remarks.";
@@ -239,6 +245,26 @@ async function archiveKnowledge(
 		if (bytes) {
 			const ref = await putBlob(env, bytes, contentType);
 			result.r2 = { url: ref.url, sha256: ref.sha256, size: ref.size };
+
+			// Optimize-original leg (v5 arc W4, #1276): best-effort embedded-image
+			// recompression. Original stays authoritative (already archived above,
+			// untouched); mint a SECOND handle only when the shrink actually shrank
+			// something. A no-op shrink (no raster XObjects, or nothing beat the
+			// original) omits optimized_* entirely rather than duplicating a handle
+			// identical to the original one.
+			if (contentType === "application/pdf") {
+				try {
+					const shrunk = await shrinkPdfImages(env, bytes);
+					if (shrunk.imagesShrunk > 0 && shrunk.outputBytes < shrunk.inputBytes) {
+						const optRef = await putBlob(env, shrunk.bytes, contentType);
+						result.r2.optimized_url = optRef.url;
+						result.r2.optimized_sha256 = optRef.sha256;
+						result.r2.optimized_size = optRef.size;
+					}
+				} catch (e) {
+					console.log(`study.archiveKnowledge: pdf shrink skipped: ${errMsg(e)}`);
+				}
+			}
 		} else {
 			result.skipped = "source bytes were not directly fetchable here — not archived to R2.";
 		}
@@ -277,6 +303,7 @@ async function archiveKnowledge(
 			"## Provenance",
 			`- Source: ${opts.sourceLabel}`,
 			`- R2 archive: ${result.r2 ? result.r2.url : "(not archived)"}`,
+			...(result.r2?.optimized_url ? [`- R2 archive (optimized): ${result.r2.optimized_url}`] : []),
 			...(result.wayback ? [`- Wayback: ${result.wayback}`] : []),
 			`- Query: oracle({ problem: "…", topic: "${opts.topic}" })`,
 			"",

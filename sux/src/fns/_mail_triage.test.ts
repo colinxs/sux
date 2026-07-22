@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+
+const assimilateMock = vi.fn(async (..._args: unknown[]) => ({ status: "disabled", note: "disabled" }));
+vi.mock("./_assimilate", () => ({ assimilate: (...args: unknown[]) => assimilateMock(...args) }));
+
 import { ACTION_FOR, ARCHIVE_CONFIDENCE_THRESHOLD, AUTO_ACT_OPS, CONFIDENCE_THRESHOLD, DRAFT_REPLY_CONFIDENCE_THRESHOLD, classify, classifyMessage, detectReplyDraft, hasMailTriage, hasMailTriageAct, isAutoActAllowed, isSensitiveSender, resolveOp, runTriage, type TriageDeps, type TriageLabel, type TriageMsg, type TriageOp } from "./_mail_triage";
 import { appendTriageEntries, bulkUndo, readTriageEntries } from "./_mail_triage_log";
 import { readInferSignals } from "./_infer";
@@ -787,5 +791,39 @@ describe("runTriage — infer signal wiring (#913)", () => {
 		const signals = await readInferSignals(env, "mail");
 		expect(signals.map((s) => s.source_tag)).not.toContain(`mail:${sensitive.id}`);
 		expect(signals.some((s) => s.redacted_snippet.includes("explanation of benefits") || s.redacted_snippet.includes("patient responsibility"))).toBe(false);
+	});
+});
+
+describe("runTriage — assimilation feed (v5 W6, #1285): triage-flagged mail through the _assimilate.ts spine", () => {
+	it("calls assimilate for every REAL (non-unknown) classification, but skips 'unknown'", async () => {
+		assimilateMock.mockClear();
+		const deps = mkDeps(SAMPLE);
+		const env = envWith({ MAIL_TRIAGE_ENABLED: "1" });
+		await runTriage(env, { cycle_id: "asm1" }, deps);
+		// j1 (junk), r1 (receipt), p1 (personal) are all real labels; u1 (unknown) is excluded.
+		const sources = assimilateMock.mock.calls.map((c) => (c[1] as { source: string }).source).sort();
+		expect(sources).toEqual(["mail:j1", "mail:p1", "mail:r1"]);
+		expect(assimilateMock).toHaveBeenCalledWith(env, expect.objectContaining({ source: "mail:j1", kind: "text", domain: "mail" }));
+	});
+
+	it("never calls assimilate for a sensitive-sender message, mirroring the logMailSignal guard", async () => {
+		assimilateMock.mockClear();
+		const bank: TriageMsg[] = [{ id: "b1", from: "alerts@chase.com", subject: "Your statement is ready" }];
+		const deps = mkDeps(bank);
+		const env = envWith({ MAIL_TRIAGE_ENABLED: "1" });
+		await runTriage(env, { cycle_id: "asm2" }, deps);
+		expect(assimilateMock).not.toHaveBeenCalled();
+	});
+
+	it("an assimilate rejection is best-effort: the triage cycle still completes and processes every message normally", async () => {
+		assimilateMock.mockClear();
+		assimilateMock.mockRejectedValueOnce(new Error("assimilate boom"));
+		const deps = mkDeps(SAMPLE);
+		const env = envWith({ MAIL_TRIAGE_ENABLED: "1", MAIL_TRIAGE_ACT: "1" });
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const report = await runTriage(env, { cycle_id: "asm3" }, deps);
+		expect(report.acted!.length + report.suggested!.length).toBe(SAMPLE.length);
+		expect(warn).toHaveBeenCalledWith(expect.stringMatching(/assimilate: mail feed skipped/));
+		warn.mockRestore();
 	});
 });

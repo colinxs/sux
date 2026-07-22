@@ -134,3 +134,71 @@ export async function reindexCorpus(env: RtEnv, opts: { domains?: ReindexDomain[
 	console.log(`reindex: ${CORPUS_INDEX} total=${total} domains=${which.map((d) => `${d}:${domains[d]?.indexed ?? 0}`).join(",")}`);
 	return { index: CORPUS_INDEX, domains, total };
 }
+
+// --- automatic batched backfill (#1315) -------------------------------------
+//
+// A sync `oracle {action:"reindex"}` over the WHOLE corpus (or even one heavy domain) can
+// exceed a single Worker request's lifetime — reindexVault/reindexMail/etc. each rebuild a
+// domain's full KV cosine core and upsert ALL of it in one call. `domains` already lets a
+// caller scope one manual call to one domain, but that still relies on an operator
+// remembering to run it repeatedly. This adds the unattended half: a cron tick that runs
+// EXACTLY one domain (the existing per-domain granularity IS the batching) and rotates a
+// persisted KV cursor across REINDEX_DOMAINS, so the full corpus backfills over multiple
+// ticks instead of one oversized request. The manual `oracle reindex` action above is
+// untouched — a separate, still-useful operator escape hatch to force one domain NOW.
+
+/** Fail-closed master switch — mirrors _assimilate.ts's flagOn: an explicit "0"/"false"/"off"
+ *  stays off rather than arming on mere presence. A SEPARATE decision from hasVectorize (is
+ *  the binding present) — an operator must explicitly arm the unattended cron write into
+ *  Vectorize, same reasoning as every other `_ENABLED` cron flag in this repo. Read via a
+ *  local structural cast (mirrors reindexMail's FASTMAIL_TOKEN cast above) rather than adding
+ *  to RtEnv, since this flag has exactly one reader. */
+const flagOn = (v: string | undefined): boolean => {
+	const s = (v ?? "").trim().toLowerCase();
+	return s !== "" && s !== "0" && s !== "false" && s !== "off";
+};
+export const hasVectorizeBackfill = (env: RtEnv): boolean => flagOn((env as { VECTORIZE_BACKFILL_ENABLED?: string }).VECTORIZE_BACKFILL_ENABLED);
+
+/** The rotation cursor: a plain string (one of REINDEX_DOMAINS), not a numeric index, so a raw
+ *  `wrangler kv key get` reads it directly without decoding. */
+const REINDEX_CURSOR_KEY = "sux:reindex:cursor";
+
+function isReindexDomain(v: unknown): v is ReindexDomain {
+	return typeof v === "string" && (REINDEX_DOMAINS as string[]).includes(v);
+}
+
+/** Pure: the domain that follows `completed` in the fixed REINDEX_DOMAINS rotation, wrapping
+ *  back to the first after the last — kept KV-free so the wrap-around is directly testable. */
+export function rotateReindexDomain(completed: ReindexDomain): ReindexDomain {
+	const i = REINDEX_DOMAINS.indexOf(completed);
+	return REINDEX_DOMAINS[(i + 1) % REINDEX_DOMAINS.length];
+}
+
+/** Read the rotation cursor. Defaults to the FIRST domain when unset or holding a stale/
+ *  invalid value (e.g. a domain retired from REINDEX_DOMAINS since it was written) — a
+ *  corrupt cursor should restart the lap, never wedge the rotation. */
+export async function nextReindexDomain(env: RtEnv): Promise<ReindexDomain> {
+	const raw = await env.OAUTH_KV?.get(REINDEX_CURSOR_KEY);
+	return isReindexDomain(raw) ? raw : REINDEX_DOMAINS[0];
+}
+
+/** Advance the cursor past `completed` to the next domain in rotation. */
+export async function advanceReindexCursor(env: RtEnv, completed: ReindexDomain): Promise<void> {
+	await env.OAUTH_KV?.put(REINDEX_CURSOR_KEY, rotateReindexDomain(completed));
+}
+
+/** One cron tick of the automatic backfill: reindex exactly the cursor's current domain, then
+ *  advance the cursor. Fail-closed — a dormant no-op unless VECTORIZE_BACKFILL_ENABLED is
+ *  armed. STEADY STATE IS FREE: upsertCorpus's stable ids make a repeat pass over an
+ *  already-caught-up domain a same-count no-op upsert, so once the first full lap finishes,
+ *  rotating forever after costs only that one domain's read + re-upsert per tick — no separate
+ *  "done backfilling" state to track or gate on. */
+export async function reindexCorpusTick(env: RtEnv): Promise<(ReindexReport & { domain: ReindexDomain; next: ReindexDomain }) | { dormant: true }> {
+	if (!hasVectorizeBackfill(env)) return { dormant: true };
+	const domain = await nextReindexDomain(env);
+	const report = await reindexCorpus(env, { domains: [domain] });
+	await advanceReindexCursor(env, domain);
+	const next = rotateReindexDomain(domain);
+	console.log(`reindex tick: domain=${domain} indexed=${report.total} next=${next}`);
+	return { ...report, domain, next };
+}

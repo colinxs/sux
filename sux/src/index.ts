@@ -756,6 +756,25 @@ async function notifyConsolidateSummary(env: RtEnv, report: unknown): Promise<vo
 	}
 }
 
+// The unified Vectorize corpus's automatic batched backfill (#1315), riding the SAME daily
+// cron. A sync `oracle {action:"reindex"}` over the whole corpus (or even one heavy domain)
+// can exceed a single Worker request's lifetime; reindexCorpusTick instead runs EXACTLY one
+// REINDEX_DOMAINS entry per tick and rotates a persisted KV cursor, so the full corpus
+// backfills over multiple days instead of one oversized request. Once-a-day is plenty here:
+// there are only 5 domains to rotate through, and each only needs ONE full backfill to reach
+// steady state — upsertCorpus's stable ids make a repeat pass over an already-caught-up
+// domain a same-count no-op, so there's no backlog to race by running less often than the
+// other daily sweeps. FAIL-CLOSED: no-ops entirely unless VECTORIZE_BACKFILL_ENABLED is set —
+// an unattended write into Vectorize is a deliberate operator arm, same as every other cron
+// write path here. Dynamically imported so the cron path pulls in the corpus-rebuild surface
+// only when armed. Leaves oracle.ts's manual `reindex` action untouched — a separate,
+// still-useful escape hatch for an operator who wants to force one domain now.
+async function vectorizeBackfillTick(env: RtEnv): Promise<unknown> {
+	const mod = await import("./fns/_reindex");
+	if (!mod.hasVectorizeBackfill(env)) return { dormant: true };
+	return mod.reindexCorpusTick(env);
+}
+
 // One watch-directory sweep, riding the SAME daily cron (#899). FAIL-CLOSED: no-ops
 // entirely unless WATCH_SWEEP_ENABLED is set. Re-checks a bounded, rotating slice of the
 // sux:watch:index directory `watch` itself maintains; a changed page feeds _agenda.ts's
@@ -943,6 +962,7 @@ async function maintenanceTick(env: RtEnv, ctx: ExecutionContext): Promise<void>
 	await runSubJob(env, "consolidate", () => consolidateTick(env));
 	await runSubJob(env, "watch_sweep", () => watchSweepTick(env));
 	await runSubJob(env, "cross_semantic", () => crossSemanticTick(env));
+	await runSubJob(env, "vectorize_backfill", () => vectorizeBackfillTick(env));
 	await runSubJob(env, "briefing", () => briefingTick(env));
 	await runSubJob(env, "agenda", () => agendaTick(env));
 	// Rebuild the cosmetic-adblock engine blob in R2 — staleness-gated, so the
@@ -1061,6 +1081,14 @@ export default {
 		// message actually arrives (same pattern as the cron sub-handlers).
 		const { handleIngestBatch } = await import("./fns/_ingest_queue");
 		await handleIngestBatch(batch, env);
+	},
+	async email(message: ForwardableEmailMessage, env: RtEnv, _ctx: ExecutionContext): Promise<void> {
+		// Cloudflare Email Routing → vault@/files@ ingest doors (#1198 P1a, #1199). Zone routing
+		// itself (pointing those addresses at this Worker) is a Cloudflare-dashboard/DNS step an
+		// operator does separately — this is only the handler side. Lazy import, same pattern as
+		// queue() above: the email surface is pulled in only when a message actually arrives.
+		const { handleEmail } = await import("./fns/_email_ingest");
+		await handleEmail(message, env);
 	},
 	async fetch(request: Request, env: RtEnv, ctx: ExecutionContext): Promise<Response> {
 		// Public, unauthenticated observability routes (health/metrics/logs) are
