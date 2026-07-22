@@ -9,10 +9,11 @@
 // and returns what it has, flagged truncated. Kept here so the sites share one number.
 export const FANOUT_BUDGET_MS = 50_000;
 
-/** Default self-expiry for the CAS handles a bulk fan-out download mints (put /
- * batch_fetch as:"url"). These are staging artifacts, not durable records — a
- * permanent handle per URL would accrete R2/KV storage forever, so they expire
- * unless the caller overrides. Reach for `store` directly when you want permanence. */
+/** Default self-expiry for the CAS handles batch_fetch's as:"url" delivery mints —
+ * a staging artifact, not a durable record, so it expires unless the caller
+ * overrides. `put`'s own handles are permanent by default (#1381 — R2+CAS makes
+ * keeping everything nearly free); this constant is no longer put's default, just
+ * a value a caller can still opt into via ttl_seconds. */
 export const FANOUT_STORE_TTL_S = 7 * 24 * 60 * 60;
 
 /** Aggregate in-flight download budget for a SINGLE fan-out run. The per-item cap
