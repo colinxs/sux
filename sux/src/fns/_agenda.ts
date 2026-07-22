@@ -44,6 +44,7 @@ import { dueForReview, hasStudyReview, reviewIntervalDays, studyReviewCandidates
 import { documentRadarArmed, listTrackedDocuments, type TrackedDocumentRef } from "./_document_radar";
 import { hasAI } from "../ai";
 import { hasCalDav } from "./_caldav";
+import { notify } from "./_notify";
 
 // ── Gates ────────────────────────────────────────────────────────────────────
 const flagOn = (v: string | undefined): boolean => {
@@ -1530,6 +1531,17 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 	}
 
 	const digest = composeDigest(date, toDeliver);
+
+	// Push escalation (#1367): a "needs you today" drop is exactly the case notify() exists for
+	// — the digest/email may sit unread for hours, this reaches Colin's phone right away.
+	// Fire-and-forget via ctx.waitUntil (the ingest.ts backgroundAssimilate precedent); notify()
+	// itself never throws, and NTFY_URL unset makes this a complete no-op either way.
+	const todayCount = toDeliver.filter((p) => p.drop.urgency === "today").length;
+	if (!dryRun && todayCount) {
+		const task = notify(env, "agenda", digest.subject, `${todayCount} thing${todayCount === 1 ? "" : "s"} need${todayCount === 1 ? "s" : ""} you today.`, "high");
+		const pushCtx = env._egress?.ctx;
+		if (pushCtx && typeof pushCtx.waitUntil === "function") pushCtx.waitUntil(task);
+	}
 
 	let digestWritten = false;
 	let emailed = false;

@@ -397,6 +397,11 @@ export type RtEnv = Env &
 		// draft to the Drafts folder (mail_draft, send=false — never sent); otherwise it is
 		// summarize-and-nudge only. Both default OFF, so a first deploy is dormant and the first
 		// cycle stages zero drafts by construction. It never sends, never deletes.
+		// H1 (the blocker that kept this dark) is defined + verified mitigated in _briefing.ts's
+		// header (#1368): mail content only ever reaches llm() through the <<<DATA>>> fence, never
+		// the system role — see briefing.test.ts's "H1 —" suite for the automated proof. Arming
+		// BRIEFING_ENABLED alone (BRIEFING_STAGE_DRAFTS unset) is suggest-only/read-only and is
+		// cleared on the H1 axis; the arm itself is still Colin's own secret write, not code.
 		BRIEFING_ENABLED?: string;
 		BRIEFING_STAGE_DRAFTS?: string;
 		// Cap on reply drafts staged per briefing run (bounded autonomy). Parsed as an integer,
@@ -412,6 +417,12 @@ export type RtEnv = Env &
 		// party, never moves/deletes, never auto-approves.
 		AGENDA_ENABLED?: string;
 		AGENDA_EMAIL?: string;
+		// notify — the push-to-Colin escalation primitive (fns/_notify.ts, #1367). NTFY_URL is the
+		// full ntfy topic URL (e.g. "https://ntfy.sh/colin-sux" or a self-hosted server); absent ⇒
+		// every notify() call is a silent no-op, same fail-open shape as lunchmoney/dropbox/mychart.
+		// NTFY_TOKEN is optional bearer auth for an access-controlled topic. Colin provisions both.
+		NTFY_URL?: string;
+		NTFY_TOKEN?: string;
 		// Agenda REPLY loop (fns/_agenda_reply.ts, W2.1) — the inbound half: parses
 		// approve/snooze/reject replies to the agenda digest and dispatches them through the
 		// W1 proposal kernel. Same two-stage fail-closed gate, ALSO requires AGENDA_ENABLED
@@ -620,11 +631,12 @@ export type RtEnv = Env &
 		// convention as LUNCHMONEY_API_KEY above) — absent, every call behaves exactly as
 		// it does today, no gateway option passed. See ai.ts's aiGatewayOptions().
 		AI_GATEWAY_ID?: string;
-		// OpenAI fallback lane (#1369) — ai.ts's llm() retries once via OpenAI (gpt-5-mini
-		// class) when Workers AI hard-fails, rate-limits, or isn't bound. Out-of-band secret
-		// (`wrangler secret put OPENAI_API_KEY`), same convention as MISTRAL_API_KEY/
-		// LUNCHMONEY_API_KEY above: unset ⇒ llm() behaves exactly as it did before this lane
-		// existed. See ai.ts's hasOpenAiFallback().
+		// OpenAI fallback lane (#1369) — ai.ts's llm() retries via OpenAI (a cheap chat-model
+		// class) ONCE, only when Workers AI hard-fails/rate-limits (or isn't bound at all);
+		// never the default provider, never swapped in for a successful Workers-AI call, and
+		// an OpenAI-side failure always surfaces the ORIGINAL Workers-AI error, not its own.
+		// Absent ⇒ llm() behaves exactly as it did before this lane existed (fail-open, zero
+		// new hard dependency). Colin provisions via `wrangler secret put OPENAI_API_KEY`.
 		OPENAI_API_KEY?: string;
 		IMAGES?: ImagesBinding;
 

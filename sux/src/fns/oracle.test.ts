@@ -9,13 +9,20 @@ vi.mock("./obsidian", async (importOriginal) => ({
 	obsidian: { run: vi.fn(async () => ({ content: [{ type: "text", text: "{}" }] })) },
 }));
 
+// #1371 — deleteSource/deleteDomain now also purge the unified Vectorize index. Mock ONLY
+// deleteCorpusIds (its own suite covers it) so a forget's ids can be asserted regardless of
+// whether a VECTORIZE binding is present in these tests.
+vi.mock("./_vectorize", async (importOriginal) => ({ ...(await importOriginal<object>()), deleteCorpusIds: vi.fn(async () => {}) }));
+
 import { DATA_CLOSE, DATA_OPEN } from "../ai";
 import { maybeDecompressString } from "./_gzip";
 import { listChunks, putChunk } from "./_source";
+import { deleteCorpusIds } from "./_vectorize";
 import { obsidian } from "./obsidian";
 import { oracle } from "./oracle";
 
 const obs = obsidian.run as unknown as ReturnType<typeof vi.fn>;
+const deleteIds = deleteCorpusIds as unknown as ReturnType<typeof vi.fn>;
 
 // We exercise the REAL guarded llm() (from ../ai) and the REAL fetchText/smartFetch
 // direct path — only env.AI.run, a Map-backed OAUTH_KV, and globalThis.fetch are
@@ -446,6 +453,19 @@ describe("oracle — get / list / forget", () => {
 		// ...and forget deletes exactly that many, not the (possibly different) note chunk_count.
 		const forgot = JSON.parse((await oracle.run(env, { action: "forget", topic: "bio" })).content[0].text);
 		expect(forgot.chunks_deleted).toBe(got.retrieval_chunk_count);
+	});
+
+	it("forget also purges the topic's mirror vectors from the unified Vectorize index (#1371)", async () => {
+		const { env } = makeEnv();
+		await oracle.run(env, { knowledge: "some material worth remembering in detail", topic: "bio" });
+		deleteIds.mockClear();
+
+		await oracle.run(env, { action: "forget", topic: "bio" });
+		expect(deleteIds).toHaveBeenCalledTimes(1);
+		const [, ids] = deleteIds.mock.calls[0] as [unknown, string[]];
+		expect(Array.isArray(ids)).toBe(true);
+		expect(ids.length).toBeGreaterThan(0);
+		for (const id of ids) expect(typeof id).toBe("string");
 	});
 
 	it("does not see or delete an advise domain's chunks when a topic shares its name (#1242)", async () => {
