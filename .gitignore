@@ -208,3 +208,6 @@ sux/mac-render/extensions/
 # (Contrast sux/src/fns/index.ts, which IS bundled into the Worker and stays committed.)
 /llms.txt
 /sux/FUNCTIONS.md
+
+# Detached scratch worktrees for parallel mutators (never committed)
+.scratch-worktrees/
