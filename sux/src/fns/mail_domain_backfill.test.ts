@@ -1,37 +1,57 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// Two mock surfaces: the jmap engine (the scan) and mail-mcp's labelMessages (the write). The
-// _jmap mock keeps everything real EXCEPT runBatch (so `JmapError instanceof` still works in the fn
-// and in these tests), stubbing only the JMAP round-trip with a canned Mailbox/get + a position-paged
-// Email/query + Email/get over a small fixture.
-const { runBatch, labelMessages } = vi.hoisted(() => ({ runBatch: vi.fn(), labelMessages: vi.fn() }));
+// One mock surface: the jmap engine. Both the scan (Email/query + Email/get) AND the write
+// (Mailbox/set create + Email/set membership add) now go through runBatch directly — no more
+// mail-mcp labelMessages import (the keyword model was invisible in Fastmail, #1196). The _jmap
+// mock keeps everything real EXCEPT runBatch (so `JmapError instanceof` still works), stubbing only
+// the JMAP round-trip with a canned Mailbox/get + a position-paged Email/query/Email/get fixture +
+// Mailbox/set + Email/set.
+const { runBatch } = vi.hoisted(() => ({ runBatch: vi.fn() }));
 
 vi.mock("./_jmap", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("./_jmap")>();
 	return { ...actual, runBatch };
 });
-vi.mock("../mail-mcp", () => ({ labelMessages: (...args: unknown[]) => labelMessages(...args) }));
 
 import { mail_domain_backfill } from "./mail_domain_backfill";
 import { JmapError } from "./_jmap";
 
 const env = { FASTMAIL_TOKEN: "t" } as any;
 
-// id 1 → finance, 2 → shopping, 3 → edu+uw+cs, 4 → none (personal), 5 → gov.
-const FIXTURE = [
-	{ id: "1", from: [{ email: "alerts@email.chase.com" }] },
-	{ id: "2", from: [{ email: "receipts@order.amazon.com" }] },
-	{ id: "3", from: [{ name: "Prof X", email: "prof@cs.uw.edu" }] },
-	{ id: "4", from: [{ email: "friend@gmail.com" }] },
-	{ id: "5", from: [{ email: "noreply@irs.gov" }] },
-];
+const INBOX = { id: "mb-inbox", name: "Inbox", role: "inbox", parentId: null };
+const ARCHIVE = { id: "mb-archive", name: "Archive", role: "archive", parentId: null };
 
-const INBOX = { id: "mb-inbox", name: "Inbox", role: "inbox" };
-const ARCHIVE = { id: "mb-archive", name: "Archive", role: "archive" };
+// id 1 → finance, 2 → shopping, 3 → edu+uw+cs, 4 → none (personal), 5 → gov. Each starts life in the
+// Inbox (mailboxIds), which the keep-in-place label add must PRESERVE (never remove).
+function freshFixture() {
+	return [
+		{ id: "1", from: [{ email: "alerts@email.chase.com" }], mailboxIds: { [INBOX.id]: true } },
+		{ id: "2", from: [{ email: "receipts@order.amazon.com" }], mailboxIds: { [INBOX.id]: true } },
+		{ id: "3", from: [{ name: "Prof X", email: "prof@cs.uw.edu" }], mailboxIds: { [INBOX.id]: true } },
+		{ id: "4", from: [{ email: "friend@gmail.com" }], mailboxIds: { [INBOX.id]: true } },
+		{ id: "5", from: [{ email: "noreply@irs.gov" }], mailboxIds: { [INBOX.id]: true } },
+	];
+}
+
+let boxes: any[];
+let FIXTURE: ReturnType<typeof freshFixture>;
 
 function scanImpl(_env: unknown, calls: any[]) {
 	const method = calls[0][0];
-	if (method === "Mailbox/get") return { response: { methodResponses: [["Mailbox/get", { list: [INBOX, ARCHIVE] }, "m"]] }, session: {} };
+	if (method === "Mailbox/get") return { response: { methodResponses: [["Mailbox/get", { list: boxes }, "m"]] }, session: {} };
+	if (method === "Mailbox/set") {
+		const create = calls[0][1]?.create?.m;
+		const id = `mb-created-${boxes.length}`;
+		const created = { id, name: create.name, parentId: create.parentId };
+		boxes.push({ ...created, role: null });
+		return { response: { methodResponses: [["Mailbox/set", { created: { m: created } }, "c"]] }, session: {} };
+	}
+	if (method === "Email/set") {
+		const update = calls[0][1]?.update ?? {};
+		const updated: Record<string, unknown> = {};
+		for (const id of Object.keys(update)) updated[id] = {};
+		return { response: { methodResponses: [["Email/set", { updated }, "s"]] }, session: {} };
+	}
 	const qArgs = calls[0][1];
 	const position = Number(qArgs.position) || 0;
 	const limit = Number(qArgs.limit) || 200;
@@ -47,42 +67,103 @@ function scanImpl(_env: unknown, calls: any[]) {
 	};
 }
 
+/** The single Email/set update patch of the whole run (the fn issues one per page). */
+function lastEmailSetUpdate(): Record<string, Record<string, unknown>> {
+	const call = [...runBatch.mock.calls].reverse().find((c) => c[1]?.[0]?.[0] === "Email/set");
+	return call![1][0][1].update;
+}
+
 beforeEach(() => {
+	boxes = [INBOX, ARCHIVE];
+	FIXTURE = freshFixture();
 	runBatch.mockReset();
-	labelMessages.mockReset();
 	runBatch.mockImplementation(scanImpl);
-	labelMessages.mockResolvedValue({ isError: false, content: [{ type: "text", text: "{}" }] });
 });
 
 describe("mail_domain_backfill", () => {
-	it("dry_run (default): reports per-keyword counts, mutates nothing", async () => {
+	it("dry_run (default): reports per-label counts, mutates nothing (no Mailbox/set, no Email/set)", async () => {
 		const r = await mail_domain_backfill.run(env, {});
 		expect(r.isError).toBeFalsy();
 		const p = JSON.parse(r.content![0].text as string);
 		expect(p.dry_run).toBe(true);
 		expect(p.scanned).toBe(5);
-		expect(p.tagged).toBe(4); // 1,2,3,5 tag; 4 (gmail) does not
+		expect(p.would_label).toBe(4); // 1,2,3,5 label; 4 (gmail) does not
 		expect(p.per_keyword).toEqual({ finance: 1, shopping: 1, edu: 1, uw: 1, cs: 1, gov: 1 });
 		expect(p.done).toBe(true);
 		expect(p.cursor).toBeNull();
-		expect(labelMessages).not.toHaveBeenCalled();
+		// No mutation of any kind in dry-run — the ONLY calls are Mailbox/get + the scan pages.
+		expect(runBatch.mock.calls.some((c) => c[1]?.[0]?.[0] === "Mailbox/set")).toBe(false);
+		expect(runBatch.mock.calls.some((c) => c[1]?.[0]?.[0] === "Email/set")).toBe(false);
 	});
 
-	it("dry_run:false applies reversible keyword-adds via labelMessages, grouped by keyword", async () => {
+	it("dry_run:false adds each message to a per-label folder NESTED under Inbox, creating them on first use", async () => {
 		const r = await mail_domain_backfill.run(env, { dry_run: false });
 		expect(r.isError).toBeFalsy();
 		const p = JSON.parse(r.content![0].text as string);
 		expect(p.dry_run).toBe(false);
-		expect(p.tagged).toBe(4);
-		expect(p.done).toBe(true);
-		expect(labelMessages).toHaveBeenCalledWith(expect.anything(), ["1"], "finance", true);
-		expect(labelMessages).toHaveBeenCalledWith(expect.anything(), ["2"], "shopping", true);
-		expect(labelMessages).toHaveBeenCalledWith(expect.anything(), ["3"], "edu", true);
-		expect(labelMessages).toHaveBeenCalledWith(expect.anything(), ["3"], "uw", true);
-		expect(labelMessages).toHaveBeenCalledWith(expect.anything(), ["3"], "cs", true);
-		expect(labelMessages).toHaveBeenCalledWith(expect.anything(), ["5"], "gov", true);
-		// The personal sender (id 4) is never labeled.
-		expect(labelMessages).not.toHaveBeenCalledWith(expect.anything(), ["4"], expect.anything(), true);
+		expect(p.labeled).toBe(4);
+		expect(p.per_keyword).toEqual({ finance: 1, shopping: 1, edu: 1, uw: 1, cs: 1, gov: 1 });
+		// A label folder was created for every distinct flag, each nested under Inbox.
+		for (const name of ["finance", "shopping", "edu", "uw", "cs", "gov"]) {
+			expect(boxes.some((b) => b.name === name && b.parentId === INBOX.id)).toBe(true);
+		}
+		// The create calls asked for that nesting explicitly (never top-level).
+		const createNames = runBatch.mock.calls.filter((c) => c[1]?.[0]?.[0] === "Mailbox/set").map((c) => c[1][0][1].create.m);
+		expect(createNames.every((m: any) => m.parentId === INBOX.id)).toBe(true);
+	});
+
+	it("KEEP-IN-PLACE + REVERSIBLE: the Email/set patch only ever ADDS label membership — never removes the Inbox, never a keyword, never a null", async () => {
+		await mail_domain_backfill.run(env, { dry_run: false });
+		const update = lastEmailSetUpdate();
+		// Every message's patch: at least one `mailboxIds/*: true` add, the Inbox membership left
+		// untouched (no `mailboxIds/<inbox>: null` — that would be a MOVE/skip-inbox), no keyword patch.
+		for (const id of Object.keys(update)) {
+			const patch = update[id];
+			const keys = Object.keys(patch);
+			expect(keys.length).toBeGreaterThan(0);
+			for (const k of keys) {
+				expect(k.startsWith("mailboxIds/")).toBe(true); // never `keywords/*`
+				expect(patch[k]).toBe(true); // additive only — never null (a removal)
+			}
+			expect(keys).not.toContain(`mailboxIds/${INBOX.id}`); // Inbox membership never touched (keep-in-place)
+		}
+	});
+
+	it("a message matching multiple categories (edu+uw+cs) joins every label folder in one additive patch, still in the Inbox", async () => {
+		const r = await mail_domain_backfill.run(env, { dry_run: false });
+		JSON.parse(r.content![0].text as string);
+		const update = lastEmailSetUpdate();
+		const eduId = boxes.find((b) => b.name === "edu" && b.parentId === INBOX.id).id;
+		const uwId = boxes.find((b) => b.name === "uw" && b.parentId === INBOX.id).id;
+		const csId = boxes.find((b) => b.name === "cs" && b.parentId === INBOX.id).id;
+		expect(update["3"][`mailboxIds/${eduId}`]).toBe(true);
+		expect(update["3"][`mailboxIds/${uwId}`]).toBe(true);
+		expect(update["3"][`mailboxIds/${csId}`]).toBe(true);
+		expect(update["3"][`mailboxIds/${INBOX.id}`]).toBeUndefined(); // still in the Inbox
+	});
+
+	it("IDEMPOTENT: a message already in a label folder is skipped (dry-run counts it as nothing-to-do)", async () => {
+		// Pre-seed a nested finance folder AND put message 1 already in it.
+		const FINANCE = { id: "mb-finance", name: "finance", role: null, parentId: INBOX.id };
+		boxes.push(FINANCE);
+		FIXTURE[0].mailboxIds = { [INBOX.id]: true, [FINANCE.id]: true };
+		const r = await mail_domain_backfill.run(env, {});
+		const p = JSON.parse(r.content![0].text as string);
+		expect(p.would_label).toBe(3); // 1 is already labeled → skipped; 2,3,5 remain
+		expect(p.per_keyword.finance).toBeUndefined();
+		expect(p.per_keyword).toEqual({ shopping: 1, edu: 1, uw: 1, cs: 1, gov: 1 });
+	});
+
+	it("IDEMPOTENT on apply: the already-labeled message gets no Email/set patch and reuses the existing folder", async () => {
+		const FINANCE = { id: "mb-finance", name: "finance", role: null, parentId: INBOX.id };
+		boxes.push(FINANCE);
+		FIXTURE[0].mailboxIds = { [INBOX.id]: true, [FINANCE.id]: true };
+		await mail_domain_backfill.run(env, { dry_run: false });
+		const update = lastEmailSetUpdate();
+		expect(update["1"]).toBeUndefined(); // never re-patched
+		// The pre-existing finance folder was reused, not duplicated.
+		const financeCreates = runBatch.mock.calls.filter((c) => c[1]?.[0]?.[0] === "Mailbox/set" && c[1][0][1].create.m.name === "finance");
+		expect(financeCreates.length).toBe(0);
 	});
 
 	it("is resumable: a bounded max returns a cursor + done:false, and the cursor resumes the sweep", async () => {
@@ -95,29 +176,37 @@ describe("mail_domain_backfill", () => {
 
 		const r2 = await mail_domain_backfill.run(env, { max: 2, cursor: p1.cursor });
 		const p2 = JSON.parse(r2.content![0].text as string);
-		expect(p2.scanned).toBe(2); // ids 3,4 — resumed at position 2
+		expect(p2.scanned).toBe(2); // ids 3,4 — resumed at position 2 (keep-in-place: full-page advance)
 		expect(p2.per_keyword).toEqual({ edu: 1, uw: 1, cs: 1 });
 		expect(p2.done).toBe(false);
 	});
 
 	it("does not advance the resume cursor past a page whose label write failed", async () => {
-		labelMessages.mockImplementation(async (_env: unknown, _ids: string[], keyword: string) => {
-			if (keyword === "shopping") return { isError: true, content: [{ type: "text", text: "JMAP write failed" }] };
-			return { isError: false, content: [{ type: "text", text: "{}" }] };
+		runBatch.mockImplementation((_env: unknown, calls: any[]) => {
+			if (calls[0][0] === "Email/set") {
+				const update = calls[0][1]?.update ?? {};
+				const updated: Record<string, unknown> = {};
+				const notUpdated: Record<string, unknown> = {};
+				for (const id of Object.keys(update)) {
+					if (id === "2") notUpdated[id] = { type: "invalidPatch" };
+					else updated[id] = {};
+				}
+				return { response: { methodResponses: [["Email/set", { updated, notUpdated }, "s"]] }, session: {} };
+			}
+			return scanImpl(_env, calls);
 		});
 		const r = await mail_domain_backfill.run(env, { max: 2, dry_run: false }); // page: ids 1 (finance), 2 (shopping)
 		const p = JSON.parse(r.content![0].text as string);
-		expect(p.errors).toEqual([{ keyword: "shopping", error: "JMAP write failed" }]);
+		expect(p.errors).toEqual([{ keyword: "shopping", error: expect.any(String) }]);
 		expect(p.done).toBe(false);
 		expect(typeof p.cursor).toBe("string");
 
-		// Resuming with the returned cursor re-scans the SAME failed page (position 0), not the next one.
-		labelMessages.mockClear();
-		labelMessages.mockResolvedValue({ isError: false, content: [{ type: "text", text: "{}" }] });
+		// Resuming re-scans the SAME failed page (position 0), not the next one.
+		runBatch.mockImplementation(scanImpl);
 		const r2 = await mail_domain_backfill.run(env, { max: 2, dry_run: false, cursor: p.cursor });
 		const p2 = JSON.parse(r2.content![0].text as string);
-		expect(labelMessages).toHaveBeenCalledWith(expect.anything(), ["1"], "finance", true);
-		expect(labelMessages).toHaveBeenCalledWith(expect.anything(), ["2"], "shopping", true);
+		expect(p2.scanned).toBe(2); // re-scanned ids 1,2 from position 0
+		expect(p2.per_keyword).toEqual({ finance: 1, shopping: 1 });
 		expect(p2.errors).toBeUndefined();
 	});
 
@@ -133,7 +222,7 @@ describe("mail_domain_backfill", () => {
 		const r = await mail_domain_backfill.run(env, { mailbox: "no-such-folder", dry_run: false });
 		expect(r.isError).toBe(true);
 		expect(r.errorCode).toBe("not_found");
-		expect(labelMessages).not.toHaveBeenCalled();
+		expect(runBatch).toHaveBeenCalledTimes(1); // only the Mailbox/get lookup
 	});
 
 	it("returns not_configured when FASTMAIL_TOKEN is absent, before any JMAP call", async () => {
