@@ -183,6 +183,20 @@ describe("recall", () => {
 		expect(out.status.files).toBe("no matches");
 	});
 
+	it("a leg that hangs past its per-source deadline is reported unavailable instead of blocking the whole answer (#1262)", async () => {
+		vi.useFakeTimers();
+		try {
+			mail.mockImplementation(() => new Promise(() => {})); // never resolves — simulates a wedged JMAP round-trip
+			const pending = gatherRecall(env(), "oncologist?", ["vault", "mail"]);
+			await vi.advanceTimersByTimeAsync(8_000);
+			const out = await pending;
+			expect(out.status.mail).toMatch(/unavailable.*timed out/);
+			expect(out.status.vault).not.toMatch(/unavailable/); // the other leg still finished on its own
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("honors the sources filter (personal-only skips the web)", async () => {
 		await recall.run(env(), { question: "oncologist?", sources: ["vault", "mail"] });
 		expect(web).not.toHaveBeenCalled();
