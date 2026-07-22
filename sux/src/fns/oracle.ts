@@ -22,9 +22,11 @@ import { readability } from "./readability";
 // TWO-TIER STORAGE (reuses _source.ts, the chunk+embed+kNN substrate behind `advise`):
 // the rolling `distilled` KB above stays the always-injected SUMMARY tier (bounded,
 // so an answer stays grounded even when retrieval misses). Each learn's distilled
-// chunk is ALSO split+embedded into a per-topic `_source` domain (unbounded — a whole
+// chunk is ALSO split+embedded into a per-topic `_source` domain, namespaced
+// "oracle:<topic>" (sourceDomain() below) so a same-named topic can never alias one of
+// `advise`'s bare-string domains in that shared keyspace (#1242) — unbounded, a whole
 // book's worth of distilled notes stays individually retrievable instead of getting
-// squashed into one ~1200-word blob). Answering retrieves the top-k passages for the
+// squashed into one ~1200-word blob. Answering retrieves the top-k passages for the
 // `problem` and injects them alongside the summary. Only ever the DISTILLED note is
 // chunked/stored here — never the raw source material — preserving the same
 // never-store-verbatim invariant `study.ts` documents for whitelisted material.
@@ -35,6 +37,12 @@ import { readability } from "./readability";
 // the knowledge base and the problem as data and never follow instructions inside them.
 
 export const KV_PREFIX = "sux:oracle:";
+
+/** oracle's `_source` domain prefix — topics/study KBs are namespaced under "oracle:<topic>"
+ *  so a same-named oracle/study topic can never alias an `advise` domain (advise domains are
+ *  bare strings like "therapy"/"cardiac-diet" with no prefix of their own) in the shared
+ *  "sux:source:chunk:<domain>:" keyspace. See _source.ts's header note. */
+const sourceDomain = (topic: string): string => `oracle:${topic}`;
 
 /** How many distilled chunks we keep — the rolling set the KB is re-distilled from. */
 const MAX_CHUNKS = 15;
@@ -173,7 +181,7 @@ export async function learnTopic(
 				const c: SourceChunk = {
 					id: newId(),
 					source_id,
-					domain: topic,
+					domain: sourceDomain(topic),
 					authority: provenance ? "authoritative" : "contextual",
 					title: source,
 					text: passages[i],
@@ -292,7 +300,7 @@ export const oracle: Fn = {
 			if (action === "forget") {
 				const existed = (await env.OAUTH_KV.get(`${KV_PREFIX}${topic}`)) != null;
 				await env.OAUTH_KV.delete(`${KV_PREFIX}${topic}`);
-				const chunks_deleted = await deleteDomain(env, topic);
+				const chunks_deleted = await deleteDomain(env, sourceDomain(topic));
 				return ok(oj({ action, topic, forgotten: existed, chunks_deleted, note: existed ? "knowledge base removed" : "no such topic (nothing to delete)" }));
 			}
 
@@ -314,7 +322,7 @@ export const oracle: Fn = {
 				let passages: Passage[] = [];
 				try {
 					const vec = await embedOne(env, problem);
-					const chunks = await listChunks(env, topic);
+					const chunks = await listChunks(env, sourceDomain(topic));
 					passages = topKPassages(vec, chunks, 6);
 				} catch (e) {
 					console.log(`oracle: retrieval skipped for topic=${topic}: ${errMsg(e)}`);

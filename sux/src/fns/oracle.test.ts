@@ -6,6 +6,7 @@ vi.mock("./obsidian", () => ({ obsidian: { run: vi.fn(async () => ({ content: [{
 
 import { DATA_CLOSE, DATA_OPEN } from "../ai";
 import { maybeDecompressString } from "./_gzip";
+import { listChunks, putChunk } from "./_source";
 import { obsidian } from "./obsidian";
 import { oracle } from "./oracle";
 
@@ -347,15 +348,49 @@ describe("oracle — get / list / forget", () => {
 		expect(JSON.parse(again.content[0].text).forgotten).toBe(false);
 	});
 
-	it("forget also deletes the topic's retrievable-detail chunks", async () => {
+	it("forget also deletes the topic's retrievable-detail chunks, namespaced under oracle:<topic>", async () => {
 		const { env, kv } = makeEnv();
 		await oracle.run(env, { knowledge: "some material worth remembering in detail", topic: "bio" });
-		const chunkKey = (k: string) => k.startsWith("sux:source:chunk:bio:");
+		const chunkKey = (k: string) => k.startsWith("sux:source:chunk:oracle:bio:");
 		expect([...kv.store.keys()].some(chunkKey)).toBe(true);
+		// Never lands in the bare "bio" domain — that's advise's keyspace to collide on (#1242).
+		expect([...kv.store.keys()].some((k) => k.startsWith("sux:source:chunk:bio:"))).toBe(false);
 
 		const r = await oracle.run(env, { action: "forget", topic: "bio" });
 		expect(JSON.parse(r.content[0].text).chunks_deleted).toBeGreaterThan(0);
 		expect([...kv.store.keys()].some(chunkKey)).toBe(false);
+	});
+
+	it("does not see or delete an advise domain's chunks when a topic shares its name (#1242)", async () => {
+		const { env, kv } = makeEnv();
+		// Simulate advise's OWN chunk for a bare "bio" domain — the exact shape advise.ts's
+		// ingest action writes via _source.ts's putChunk, landed directly (no advise import needed;
+		// this only asserts oracle never touches it).
+		await putChunk(env, {
+			id: "advise-chunk-1",
+			source_id: "advise-source-1",
+			domain: "bio",
+			authority: "authoritative",
+			title: "advise's authoritative source",
+			text: "advise's program text",
+			ts: 1,
+		});
+
+		await oracle.run(env, { knowledge: "oracle's own topic material", topic: "bio" });
+
+		// oracle's retrieval never surfaces advise's chunk (it reads "oracle:bio", not "bio").
+		const oracleChunks = await listChunks(env, "oracle:bio");
+		expect(oracleChunks.every((c) => c.source_id !== "advise-source-1")).toBe(true);
+		// advise's bare "bio" domain is untouched by the learn.
+		const adviseChunks = await listChunks(env, "bio");
+		expect(adviseChunks).toHaveLength(1);
+		expect(adviseChunks[0].source_id).toBe("advise-source-1");
+
+		// forgetting the oracle topic doesn't wipe advise's co-named domain.
+		await oracle.run(env, { action: "forget", topic: "bio" });
+		const adviseChunksAfterForget = await listChunks(env, "bio");
+		expect(adviseChunksAfterForget).toHaveLength(1);
+		expect([...kv.store.keys()].some((k) => k === "sux:source:chunk:bio:advise-chunk-1")).toBe(true);
 	});
 
 	it("management actions need no AI binding — they are pure KV", async () => {

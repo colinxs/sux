@@ -11,7 +11,17 @@ import { cosine } from "./_embed";
 // DISTINCT key space from the neighbours: _examples.ts owns "sux:learn:example:" (labeled
 // exemplars), oracle.ts owns "sux:oracle:" (one whole-KB blob). This owns two prefixes —
 // "sux:source:chunk:<domain>:" (the retrieval-chunked tier-1 detail) and "sux:profile:<domain>"
-// (the always-injected tier-1 summary). Different shapes, different key spaces, no collision.
+// (the always-injected tier-1 summary).
+//
+// SHARED substrate, not distinct: oracle.ts's two-tier storage (#1235) also chunks/embeds
+// each learned topic into THIS SAME "sux:source:chunk:<domain>:" keyspace (study.ts rides the
+// same path via oracle's learnTopic). A bare topic name would collide 1:1 with an `advise`
+// domain of the same name — a co-named oracle/study topic could silently delete or contaminate
+// an advise knowledge base (#1242). oracle.ts's `sourceDomain()` therefore namespaces every
+// topic as "oracle:<topic>" before it ever reaches putChunk/listChunks/deleteDomain here, so it
+// can't alias one of advise's bare-string domains (e.g. "therapy", "cardiac-diet"). Any FUTURE
+// caller of this module must namespace its own domain argument the same defensive way — this
+// module itself does nothing to prevent two callers' domains from colliding.
 //
 // KV brute-force cosine (not Vectorize) is the same deliberate KISS choice _examples.ts:48
 // documents: a program/care-plan/diet is tens–hundreds of chunks; a linear scan over a few
