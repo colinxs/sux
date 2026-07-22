@@ -30,6 +30,16 @@ jobs:
     uses: SuxOS/.github/.github/workflows/issue-build.yml@main
     with:
       model-hint: sonnet  # sonnet only, no Opus escalation (operator directive)
+      # v4-PUSH DRAIN TUNING (2026-07-22, operator: "drain this bitch — no churn"; 55 open
+      # issues). Throughput comes from WIDER batches at LOWER concurrency: tonight's live
+      # churn was concurrent builder PRs racing hot files (_agenda.ts DIRTY twice on #1229,
+      # again on #1225) — the opposite failure mode from the small-blast-radius rationale
+      # that shrank batches on 2026-07-15. One PR carrying 12 issues has zero cross-PR
+      # conflict risk for those 12; parallel-batches 3->2 halves the racing surface.
+      # Revisit at steady-state after the backlog drains.
+      max-issues: 12
+      effort-budget: 20
+      parallel-batches: 2
       needs-suxlib: true  # package.json depends on "@suxos/lib": "file:../suxlib" (see CLAUDE.md's Known gotcha) — the reusable clones it before npm ci when this is set
       gates-summary: |
         npm run type-check · npm test · npm run check:node ·
