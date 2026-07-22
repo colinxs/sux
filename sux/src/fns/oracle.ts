@@ -6,6 +6,7 @@ import { hasVectorize } from "./_vectorize";
 import { embed, embedOne } from "./_embed";
 import { maybeCompressString, maybeDecompressString } from "./_gzip";
 import { appendOnOracle } from "./_kb";
+import { retrievalStats } from "./_retrieval_stats";
 import { chunkText, deleteDomain, listChunks, newId, type Passage, putChunk, type SourceChunk, topKPassages } from "./_source";
 import { errMsg, fetchText, isHttpUrl, stripHtml, oj } from "./_util";
 import { readability } from "./readability";
@@ -231,7 +232,7 @@ export const oracle: Fn = {
 	description:
 		"A learn-then-answer knowledge oracle backed by KV + Workers AI. Teach it `knowledge` and it DISTILLS the material into concise notes and remembers them (one namespaced knowledge base per `topic`); ask it a `problem` and it answers using its OWN (Workers-AI) knowledge PLUS the accumulated distilled knowledge base — preferring the KB where relevant. Pass both to learn first, then answer against the freshly-updated KB. " +
 		"`knowledge` may be raw text OR an http(s) URL (article, book, website, .txt or HTML page) — a URL is fetched (residential, capped ~40KB), reduced to readable prose for HTML, then distilled. Each learn appends a distilled chunk (last 15 kept in the rolling summary) and re-distills a single coherent KB, so the always-injected summary stays bounded and self-consistent. Every learn's distilled chunk is ALSO embedded into an unbounded per-topic retrieval store, so a whole book's worth of detail stays individually retrievable instead of getting squashed into one summary — answering retrieves the top passages for the `problem` and injects them alongside the summary. " +
-		"`topic` (default \"default\") keeps separate bodies of knowledge. `action`: get (return the topic's distilled knowledge + sources + chunk count) | list (topic names) | status (a one-shot cross-topic dashboard: every topic's chunk_count + updated_at + whitelist flag + KB size, so you can see what's in the oracle without paging get per topic) | forget (delete the topic) — manages instead of learn/answer. " +
+		"`topic` (default \"default\") keeps separate bodies of knowledge. `action`: get (return the topic's distilled knowledge + sources + chunk count) | list (topic names) | status (a one-shot cross-topic dashboard: every topic's chunk_count + updated_at + whitelist flag + KB size, so you can see what's in the oracle without paging get per topic — PLUS `retrieval`: per-domain KV-bet observability for every retrieval store, each domain's chunk_count + blob_size_bytes + indexed_at and a near_ceiling flag as it approaches the ~4.5k-chunk KV cap, with `retrieval.alerts` listing any domain whose retained KV cosine core is nearing the cap — Vectorize is the read path now, cores shed after the parity soak) | forget (delete the topic) — manages instead of learn/answer. " +
 		"`action: ask` answers `problem` TOPIC-FREE across everything indexed: it embeds the question, kNN-ranks the vault/mail/files/contacts semantic indices plus every oracle KB in parallel (each domain on its own time budget, reported ok|degraded|skipped — partial coverage never fails the call), keeps only passages at/above the 0.68 similarity floor, and synthesizes a CITATION-CONSTRAINED answer grounded ONLY in what it retrieved — {status: answered|no_match, answer, citations[], domains} with per-domain indexed_at freshness; below-floor retrieval is an honest no_match, never a guess from model knowledge. Every ask logs its retrieval scores; `action: feedback` (`answer_id` + `verdict` up|down, optional `note`) records a thumbs verdict against that answer — the telemetry the embedding/floor choice is judged by. " +
 		"Learned material is untrusted and is fenced as data when distilled/answered. Stateful — never cached.",
 	inputSchema: {
@@ -300,7 +301,13 @@ export const oracle: Fn = {
 						near_cap: kb_bytes >= KB_CAP * 0.9,
 					};
 				});
-				return ok(oj({ action, count: topics.length, kb_cap: KB_CAP, topics }));
+				// KV-bet observability (#1278): alongside the per-topic KB dashboard, the per-DOMAIN
+				// retrieval-store health — chunk_count + blob_size_bytes + indexed_at for every domain
+				// the KV brute-force bet spans (the packed vault/mail/files/contacts indices + the
+				// assim:*/phi:medical/oracle:* chunk keyspace), each flagged as it nears the ~4.5k-chunk
+				// ceiling. Vectorize is the read path now (sux#1290/#1311); these alerts track the retained
+				// KV cosine cores' fill so an over-full domain is caught before the fallback is shed (sux#1308).
+				return ok(oj({ action, count: topics.length, kb_cap: KB_CAP, topics, retrieval: await retrievalStats(env) }));
 			}
 
 			if (action === "get") {

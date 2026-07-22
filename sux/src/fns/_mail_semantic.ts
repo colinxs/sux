@@ -17,7 +17,7 @@ const VERSION = 1;
 const INDEX_MAX = 1000;
 // Single JMAP account (one Fastmail mailbox) — no repo/branch dimension needed, unlike the vault's
 // per-repo keying (obsidian.ts's gitSemanticIndexKey). Mirrors mail-mcp.ts's PUSH_KV_KEY: one fixed key.
-const KV_KEY = "sux:mail:semantic";
+export const KV_KEY = "sux:mail:semantic";
 // Email/changes pages at most this many ids per call; cap the paging loop against a huge backlog
 // (e.g. a since-state that's months stale) rather than looping unbounded.
 const MAX_CHANGE_PAGES = 5;

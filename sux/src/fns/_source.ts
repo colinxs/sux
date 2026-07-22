@@ -109,8 +109,15 @@ export function chunkText(text: string, target = TARGET, max = MAX): string[] {
 // --- chunk store (KV) -------------------------------------------------------
 
 export async function putChunk(env: RtEnv, c: SourceChunk): Promise<void> {
-	await env.OAUTH_KV?.put(chunkKey(c.domain, c.id), JSON.stringify(c));
-	// Write-path tap into the unified Vectorize index (#1290): every chunk that lands in KV
+	const value = JSON.stringify(c);
+	// Stamp {ts,size} into the key's KV METADATA so sourceStats() (the #1278 KV-bet observability)
+	// can total a domain's blob_size_bytes + indexed_at from list() alone — no value GETs on the
+	// observability path. The stored VALUE is unchanged; metadata is orthogonal to it, so retrieval
+	// (listChunks/topKPassages) is untouched. Chunks written before this shipped carry no metadata
+	// and self-heal on their next re-index (assimilate re-indexes per ingest, oracle per learn).
+	const metadata: ChunkMeta = { ts: c.ts, size: new TextEncoder().encode(value).length };
+	await env.OAUTH_KV?.put(chunkKey(c.domain, c.id), value, { metadata });
+	// Write-path tap into the unified Vectorize index (#1290/#1311): every chunk that lands in KV
 	// ALSO upserts into `sux-corpus` under its coarse namespace, keyed by the SAME KV id the
 	// backfill uses — so live writes and a reindex sweep never duplicate. Best-effort and
 	// fail-open (upsertSourceChunks no-ops without the binding and never throws); the KV write
@@ -163,6 +170,89 @@ export async function listDomains(env: RtEnv): Promise<string[]> {
 		cursor = page.list_complete ? undefined : page.cursor;
 	} while (cursor);
 	return [...domains].sort();
+}
+
+// --- KV-bet observability (v5 W5, #1278) ------------------------------------
+// The KV brute-force cosine store is a deliberate KISS bet with a HARD ceiling: KV's 25MiB
+// packed-value cap ≈ ~4.5k chunks/domain at ~5–6KB/chunk (v5 arc doc §2.2). The unified Vectorize
+// read index has since LANDED (sux#1290/#1311) — but KV stays the SOURCE OF TRUTH (putChunk writes
+// KV first, then upserts the accelerator), and the per-domain KV cosine cores are RETAINED as the
+// parity-first fallback, stripped only after the prod soak (sux#1308). So this ceiling is still
+// live: this block makes the bet OBSERVABLE — per-domain chunk_count + blob_size_bytes + indexed_at
+// and a near-ceiling flag (the arc doc §2.3 trigger (a), "any single domain crosses ~4.5k chunks")
+// — so a KV core nearing the cap is caught before the fallback is shed, and the fill of the
+// source-of-truth keyspace stays visible. Computed from list() metadata alone — cheap, never an
+// O(corpus) scan.
+
+/** The KV-bet ceiling per domain (arc doc §2.2/§2.3): KV's 25MiB packed-blob cap, ≈4.5k chunks at
+ *  ~5–6KB/chunk — the point past which the retained KV cosine core (fallback to the sux#1290/#1311
+ *  Vectorize index, kept until the sux#1308 soak completes) stops being safe. */
+export const KV_CHUNK_CEILING = 4_500;
+export const KV_BLOB_CEILING_BYTES = 25 * 1024 * 1024;
+/** Warn at 90% of either bound so a nearing-cap domain has runway before hard degradation (the
+ *  already-logged KV write-drop, arc doc §2.3 trigger (a)) — enough to confirm its Vectorize
+ *  coverage (sux#1311) before the KV fallback is stripped (sux#1308). */
+export const KV_CHUNK_WARN = Math.floor(KV_CHUNK_CEILING * 0.9);
+export const KV_BLOB_WARN_BYTES = Math.floor(KV_BLOB_CEILING_BYTES * 0.9);
+
+/** The near-ceiling predicate: a domain is near the cap when its chunk count OR its packed-blob
+ *  size crosses the warn line. One shared function so every retrieval store (the chunk keyspace
+ *  here + the packed semantic indices in _retrieval_stats.ts) alerts identically. */
+export function nearCeiling(chunk_count: number, blob_size_bytes: number): boolean {
+	return chunk_count >= KV_CHUNK_WARN || blob_size_bytes >= KV_BLOB_WARN_BYTES;
+}
+
+/** Per-key KV metadata putChunk stamps so sourceStats reads size/freshness from list() (no GETs). */
+type ChunkMeta = { ts: number; size: number };
+
+/** Per-domain observability for the KV brute-force store (#1278). `metered_chunks` < `chunk_count`
+ *  means some chunks predate put-time metering — blob_size_bytes/indexed_at cover only the metered
+ *  ones and converge as the domain re-indexes; `chunk_count` (the primary ceiling trigger) is always
+ *  exact. `near_ceiling` flags a KV core nearing the cap (sux#1290/#1311 Vectorize is the read
+ *  path; the KV cores are shed after the sux#1308 parity soak). */
+export type SourceDomainStat = {
+	domain: string;
+	chunk_count: number;
+	metered_chunks: number;
+	blob_size_bytes: number;
+	indexed_at: number | null;
+	near_ceiling: boolean;
+};
+
+/** Per-domain KV-bet stats across the WHOLE chunk keyspace (assim:<stream> / phi:medical /
+ *  oracle:<topic> / bare advise domains), computed from list() metadata alone — no value GETs.
+ *  chunk_count is an exact key count; blob_size_bytes/indexed_at come from the {ts,size} metadata
+ *  putChunk stamps (chunks written before metering count but don't total — reported via
+ *  metered_chunks). Domains split on the LAST colon (matches listDomains, so a namespaced
+ *  oracle:<topic>/assim:<stream>/phi:medical stays intact rather than truncating to its head). */
+export async function sourceStats(env: RtEnv): Promise<SourceDomainStat[]> {
+	const kv = env.OAUTH_KV;
+	if (!kv) return [];
+	type Acc = { chunk_count: number; metered_chunks: number; blob_size_bytes: number; indexed_at: number | null };
+	const acc = new Map<string, Acc>();
+	let cursor: string | undefined;
+	do {
+		const page = await kv.list<ChunkMeta>({ prefix: CHUNK_PREFIX, cursor });
+		for (const k of page.keys) {
+			const rest = k.name.slice(CHUNK_PREFIX.length);
+			const i = rest.lastIndexOf(":");
+			if (i <= 0) continue;
+			const domain = rest.slice(0, i);
+			const e = acc.get(domain) ?? { chunk_count: 0, metered_chunks: 0, blob_size_bytes: 0, indexed_at: null };
+			e.chunk_count++;
+			const md = k.metadata;
+			if (md && typeof md.size === "number") {
+				e.metered_chunks++;
+				e.blob_size_bytes += md.size;
+				if (typeof md.ts === "number") e.indexed_at = Math.max(e.indexed_at ?? 0, md.ts);
+			}
+			acc.set(domain, e);
+		}
+		cursor = page.list_complete ? undefined : page.cursor;
+	} while (cursor);
+	return [...acc.entries()]
+		.map(([domain, e]) => ({ domain, ...e, near_ceiling: nearCeiling(e.chunk_count, e.blob_size_bytes) }))
+		.sort((a, b) => b.chunk_count - a.chunk_count || a.domain.localeCompare(b.domain));
 }
 
 /** Delete exactly the chunks belonging to one source document — the per-document undo. Returns

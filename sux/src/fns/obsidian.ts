@@ -66,7 +66,7 @@ const headKey = (cfg: VaultCfg) => `cache:vault:git:${cfg.repo}@${cfg.branch}:he
 const gitNoteKey = (cfg: VaultCfg, p: string) => `cache:vault:git:${cfg.repo}@${cfg.branch}:note:${cfg.inVault(normPath(p))}`;
 const gitListKey = (cfg: VaultCfg, filter: string) => `cache:vault:git:${cfg.repo}@${cfg.branch}:list:${filter || "/"}`;
 const gitIndexKey = (cfg: VaultCfg) => `cache:vault:git:${cfg.repo}@${cfg.branch}:index`;
-const gitSemanticIndexKey = (cfg: VaultCfg) => `cache:vault:git:${cfg.repo}@${cfg.branch}:semantic`;
+export const gitSemanticIndexKey = (cfg: VaultCfg) => `cache:vault:git:${cfg.repo}@${cfg.branch}:semantic`;
 const remoteNoteKey = (p: string) => `cache:vault:remote:note:${normPath(p)}`;
 
 async function cacheGet(env: any, key: string): Promise<any | null> {
