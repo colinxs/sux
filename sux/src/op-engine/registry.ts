@@ -4,6 +4,7 @@ import { proposeMerge, compactMergePlan, type DuplicateClusterInput, type MergeP
 import { proposeContactMerge, compactContactMergePlan, type ContactClusterInput, type ContactMergePlanItem } from "./_contact_consolidate_plan.js";
 import { proposeMychartOutreach, compactMychartOutreachPlan, type MychartConflictInput, type MychartOutreachPlanItem } from "./_mychart_reconcile_plan.js";
 import { proposeFileDuplicate, compactFileDuplicatePlan, type FileClusterInput, type FileDuplicatePlanItem } from "./_files_consolidate_plan.js";
+import { proposeMedicalEvent, compactMedicalTimelinePlan, type MedicalEventInput, type MedicalTimelineItem } from "./_medical_timeline_plan.js";
 import type { TriageMsg } from "../fns/_mail_triage.js";
 
 // THE op registry — named op trees that the `run` front-verb and the OpWorkflow
@@ -90,6 +91,17 @@ import type { TriageMsg } from "../fns/_mail_triage.js";
 // (caps.ts) apply them via the existing Mode-B `moveFull` primitive — never a files_delete, so
 // a wrong duplicate judgment is always undoable by moving the file back. onTimeout:'fail' — an
 // unanswered gate archives nothing.
+//
+// `medical-timeline-plan` (#1205, W2) is a lighter, no-`caps` sibling of the above plan ops:
+// input is a batch of raw health-event records (vault Health/ notes + any caller-supplied
+// MyChart entries) already gathered by `medical_timeline_plan` — same fetch-in-the-calling-fn
+// shape as the others (a leaf only sees `caps`, not env). Each record is validated/normalized
+// (`proposeMedicalEvent` — no LLM, nothing invented, title/detail copied verbatim from the
+// source) and sorted chronologically (`compactMedicalTimelinePlan`), the human approves the
+// WHOLE batch once, and only on approval does the `medical-timeline` sink (caps.ts) regenerate
+// ONE note, `Timeline/Medical.md`, as a full overwrite — never an append, since the point is a
+// REGENERABLE synthesis (mirrors _life_wiki.ts's philosophy: re-run to refresh, git is the
+// undo). onTimeout:'fail' — an unanswered gate writes nothing.
 export const registry: Record<string, () => Op> = {
 	echo: () => op("echo", async (x: unknown) => x, { kind: "pure" }),
 	"assimilate-pdfs": () =>
@@ -140,5 +152,12 @@ export const registry: Record<string, () => Op> = {
 			op("compact", async (items: Array<FileDuplicatePlanItem | null>) => compactFileDuplicatePlan(items), { kind: "pure" }),
 			ask("archive these duplicate files?", { timeout: "24 hour", onTimeout: "fail" }),
 			sink("files-duplicates"),
+		),
+	"medical-timeline-plan": () =>
+		pipe(
+			map(op("propose", async (e: MedicalEventInput) => proposeMedicalEvent(e), { kind: "pure" }), { concurrency: fixed(16) }),
+			op("compact", async (items: Array<MedicalTimelineItem | null>) => compactMedicalTimelinePlan(items), { kind: "pure" }),
+			ask("write this medical timeline?", { timeout: "24 hour", onTimeout: "fail" }),
+			sink("medical-timeline"),
 		),
 };

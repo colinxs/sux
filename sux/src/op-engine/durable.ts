@@ -25,7 +25,7 @@
 // engine lifetimes"); only `Promise.race`/`Promise.any` need wrapping. `map` stays
 // bounded by the op's own limiter (`node.concurrency`), matching `runInline`.
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep, type WorkflowStepConfig, type WorkflowTimeoutDuration } from "cloudflare:workers";
-import { memoKey, runReconcile, type Caps, type LeafOpts, type Op, type SinkOpts } from "@suxos/lib";
+import { memoKey, runReconcile, type Caps, type CondPredicate, type LeafOpts, type Op, type SinkOpts } from "@suxos/lib";
 import type { RtEnv } from "../registry.js";
 
 // Above this, the fan-out would blow through the per-instance step ceiling (25k) —
@@ -125,6 +125,18 @@ export class AskRejectedError extends Error {
 		super(`ask "${prompt}" was rejected by the answering payload`);
 		this.name = "AskRejectedError";
 	}
+}
+
+// Mirrors suxlib's runtime/inline.ts `resolveCondField`/`evalCondPredicate` exactly —
+// `cond`'s predicate semantics must agree between the inline and durable interpreters.
+function resolveCondField(input: any, field: string | undefined): unknown {
+	if (!field) return input;
+	return typeof input === "object" && input !== null ? (input as Record<string, unknown>)[field] : undefined;
+}
+
+function evalCondPredicate(p: CondPredicate, input: any): boolean {
+	const v = resolveCondField(input, p.field);
+	return "equals" in p ? v === p.equals : p.in.includes(v as any);
 }
 
 /**
@@ -241,6 +253,62 @@ export async function interpretDurable(node: Op, input: any, step: WorkflowStep,
 			// whole instance.
 			if (payload && typeof payload === "object" && payload.approved === false) throw new AskRejectedError(node.prompt, payload);
 			return input;
+		}
+		case "cond": {
+			for (let i = 0; i < node.cases.length; i++) {
+				if (evalCondPredicate(node.cases[i].when, input)) return interpretDurable(node.cases[i].then, input, step, caps, `${path}.${i}`);
+			}
+			if (node.default) return interpretDurable(node.default, input, step, caps, `${path}.default`);
+			throw new Error("cond: no case matched and no default branch was supplied");
+		}
+		case "parallel": {
+			const out = new Array(node.ops.length);
+			await Promise.all(node.ops.map(async (op, i) => (out[i] = await interpretDurable(op, input, step, caps, `${path}.${i}`))));
+			return out;
+		}
+		case "race": {
+			// Mirrors suxlib's inline race semantics (suxlib #431/#432): settle on the
+			// `need`-th success (need absent/1 resolves the BARE winning value; need>1
+			// collects the quorum into an array in settle order), and reject the moment
+			// the quorum is mathematically unreachable (one failure as-is, several as an
+			// AggregateError). Losing branches are not cancelled — a durable step in
+			// flight runs to completion, the same non-preemptive contract as suxlib's
+			// cooperative cancellation; their late settlements are ignored via `done`.
+			const need = node.need ?? 1;
+			const total = node.ops.length;
+			if (need > total) throw new Error(`race: \`need\` (${need}) exceeds its \`ops\` array's length (${total})`);
+			return new Promise((resolve, reject) => {
+				const wins: unknown[] = [];
+				const failures: unknown[] = [];
+				let settled = 0;
+				let done = false;
+				node.ops.forEach((branchOp, i) => {
+					interpretDurable(branchOp, input, step, caps, `${path}.${i}`).then(
+						(v) => {
+							settled++;
+							if (done) return;
+							wins.push(v);
+							if (wins.length >= need) {
+								done = true;
+								resolve(need === 1 ? wins[0] : wins);
+							}
+						},
+						(e) => {
+							settled++;
+							if (done) return;
+							failures.push(e);
+							if (wins.length + (total - settled) < need) {
+								done = true;
+								reject(
+									failures.length === 1
+										? failures[0]
+										: new AggregateError(failures, `race: only ${wins.length} of ${need} needed branches succeeded (${total} total, ${failures.length} failed)`),
+								);
+							}
+						},
+					);
+				});
+			});
 		}
 		default: {
 			const _exhaustive: never = node;

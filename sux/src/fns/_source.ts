@@ -158,6 +158,15 @@ export async function deleteSource(env: RtEnv, domain: string, source_id: string
 	return n;
 }
 
+/** Delete EVERY chunk in a domain, regardless of source_id — the whole-domain undo (a caller
+ *  that namespaces a domain per whole topic/KB, like oracle.ts, forgets the lot in one call
+ *  rather than enumerating source_ids itself). Returns how many were removed. */
+export async function deleteDomain(env: RtEnv, domain: string): Promise<number> {
+	const all = await listChunks(env, domain);
+	for (const c of all) await env.OAUTH_KV?.delete(chunkKey(domain, c.id));
+	return all.length;
+}
+
 export type Passage = { text: string; source_id: string; title: string; score: number };
 
 /** Brute-force kNN over a domain's chunks: cosine-rank against `queryVec`, take the top-k. Chunks

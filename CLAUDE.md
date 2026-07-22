@@ -350,6 +350,15 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   Part A's state from scratch (`git grep MYCHART_ORGS origin/main` settles it in one call) —
   go straight to scoping Part B alone, and expect it to need its own dedicated session per the
   `effort:large` precedent (see the `#920` gotcha above), not a batch slot alongside other work.
+  Confirmed directly (#1178, dropped for this exact reason): `op-engine/registry.ts`'s own
+  comments state a durable op leaf only ever receives `caps` (store/llm/clock/sinks), never
+  `env` — every existing durable op does its one env-needing fetch ONCE in the calling fn
+  before the run starts. `mychart.ts`'s `pull` is dozens of INTERLEAVED paginated FHIR fetches
+  + OAuth token-refresh KV reads/writes + R2 `phi/mychart/{org}/{patient}/{label}/` writes —
+  that can't collapse into one upfront fetch without defeating durability's whole point, and
+  `caps.store`'s content-addressed CAS layout isn't a drop-in replacement for the path
+  structure `summarizeMyChart` depends on either. This needs real `caps`/`interpretDurable`
+  surface work (per Part B's own scope above), not a leaf-shape workaround.
 - **A `building`-labeled issue can already be fully shipped on `main`** if the PR that built it
   skipped/lost its disposition record — PR #1010's body literally says "Related to #1008 (not
   auto-closed — no disposition record, please verify)" for both #1008 and #1009, yet its diff

@@ -1,11 +1,11 @@
 ---
 title: teach / ask — knowledge engine
-status: parked
+status: superseded
 cluster: knowledge
 type: proposal
-summary: "teach writes / ask reads over a per-topic KB with agentic acquisition + Obsidian projection; owns _kb.ts v3; supersedes and deletes oracle."
-tags: [sux, knowledge, parked]
-updated: 2026-07-09
+summary: "teach writes / ask reads over a per-topic KB with agentic acquisition + Obsidian projection; owns _kb.ts v3; supersedes and deletes oracle. Superseded by #1184/#1232: upgrade oracle's storage onto the _source chunk+embed substrate rather than replace the verb."
+tags: [sux, knowledge, superseded]
+updated: 2026-07-22
 ---
 
 # teach / ask — a generalized knowledge engine for sux (FINAL)

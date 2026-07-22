@@ -151,10 +151,19 @@ export function textProp(name: string, value: string): string {
 }
 
 /** One unfolded date/date-time property line: `NAME:20260711T090000Z`, `NAME;VALUE=DATE:20261225`,
- *  or — when `tz` is given (re-anchoring an existing TZID-bearing property) — `NAME;TZID=<tz>:<wall-stamp>`,
- *  DST-aware via `zonedStamp`. A date-only `iso` ignores `tz` (all-day has no zone). */
+ *  or — when `tz` is given (re-anchoring an existing TZID-bearing property) — `NAME;TZID=<tz>:<wall-stamp>`.
+ *  A ZONELESS (floating) `iso` keeps its wall-clock digits AS WRITTEN (same "never silently coerced to
+ *  UTC" contract icalStamp's floating branch documents) instead of being routed through `new Date(iso)` —
+ *  that would parse it per the runtime's local zone (UTC on Workers) and then re-render THAT instant in
+ *  `tz`, silently shifting it by the zone's offset (the bug this fixes: a floating "6pm" input coming
+ *  back as "11am" TZID=America/Los_Angeles). Only a `Z`/offset-bearing (genuinely absolute) `iso` goes
+ *  through `zonedStamp`'s DST-aware re-anchoring — it names a real instant that legitimately needs
+ *  re-rendering in `tz`, unlike a floating wall-clock string which already IS the digits to write.
+ *  A date-only `iso` ignores `tz` (all-day has no zone). */
 export function dateProp(name: string, iso: string, tz?: string | null): string {
 	if (tz && !/^\d{4}-\d{2}-\d{2}$/.test(iso)) {
+		const floating = floatingWallClockDigits(iso);
+		if (floating) return `${name};TZID=${tz}:${floating}`;
 		try {
 			return `${name};TZID=${tz}:${zonedStamp(iso, tz)}`;
 		} catch {
@@ -179,6 +188,19 @@ export function zonedStamp(iso: string, tz: string): string {
 	return `${get("year")}${get("month")}${get("day")}T${get("hour")}${get("minute")}${get("second")}`;
 }
 
+const FLOATING_DATETIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/;
+
+/** A zoneless (floating) `YYYY-MM-DDTHH:MM[:SS]` wall-clock string's digits AS WRITTEN
+ *  (`YYYYMMDDTHHMMSS`), or null when `iso` carries a `Z`/offset (an absolute instant) or isn't
+ *  date-time shaped at all. Shared by icalStamp (no-tz path) and dateProp (tz-bearing path) so
+ *  both honor the same "never silently reinterpreted as UTC" contract for a floating input. */
+function floatingWallClockDigits(iso: string): string | null {
+	const m = FLOATING_DATETIME.exec(iso);
+	if (!m) return null;
+	const [, y, mo, d, hh, mm, ss] = m;
+	return `${y}${mo}${d}T${hh}${mm}${ss ?? "00"}`;
+}
+
 /** ISO-8601 → iCal stamp. A date-only value stays a VALUE=DATE. A `…Z`/offset instant becomes a
  *  UTC stamp (20260711T090000Z). A ZONELESS (floating) date-time — no `Z`, no offset — keeps its
  *  wall-clock digits AS WRITTEN rather than being silently reinterpreted as UTC: `new Date(iso)`
@@ -187,11 +209,8 @@ export function zonedStamp(iso: string, tz: string): string {
  *  Mirrors icalDateToIso's read-side rule ("never silently coerced to UTC"). */
 export function icalStamp(iso: string): { value: string; dateOnly: boolean } {
 	if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) return { value: iso.replace(/-/g, ""), dateOnly: true };
-	const floating = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(iso);
-	if (floating) {
-		const [, y, mo, d, hh, mm, ss] = floating;
-		return { value: `${y}${mo}${d}T${hh}${mm}${ss ?? "00"}`, dateOnly: false };
-	}
+	const floating = floatingWallClockDigits(iso);
+	if (floating) return { value: floating, dateOnly: false };
 	const d = new Date(iso);
 	if (Number.isNaN(d.getTime())) throw new Error(`invalid date-time '${iso}' (want ISO-8601).`);
 	const p = (n: number, w = 2) => String(n).padStart(w, "0");

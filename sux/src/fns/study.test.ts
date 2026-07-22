@@ -42,6 +42,9 @@ function makeKv() {
 function makeEnv(opts: { toMarkdown?: (docs: any[]) => Promise<any>; distill?: string } = {}) {
 	const kv = makeKv();
 	const run = vi.fn(async (_model: string, inputs: any) => {
+		// oracle's learnTopic also embeds the distilled note into the retrievable-detail store —
+		// that call shape is { text: [...] }, never { messages: [...] }.
+		if (Array.isArray(inputs?.text)) return { data: inputs.text.map(() => [0.1, 0.2, 0.3]) };
 		const system: string = inputs.messages.find((m: any) => m.role === "system").content;
 		if (/^Consolidate/.test(system)) return { response: "CONSOLIDATED-KB" };
 		return { response: opts.distill ?? "DISTILLED-CHUNK" };

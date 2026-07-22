@@ -4,6 +4,11 @@ import { oj } from "./_util";
 // Lightweight regex NER. No model, no network — pure pattern extraction over
 // plain text. Each matcher is intentionally conservative to keep false
 // positives low; results are deduped (case-insensitive).
+//
+// Deliberately has no person-name matcher — a name has no rigid lexical shape
+// like the ones below, so it needs real NER, not regex. See
+// docs/design/person-entity-extraction-design.md for the LLM-based approach
+// (constrained extraction + quote-span self-verification) before wiring #1204.
 
 const RE = {
 	// URLs first (so emails/handles inside them don't get double-counted).
