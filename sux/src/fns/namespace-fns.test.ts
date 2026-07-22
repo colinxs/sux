@@ -28,8 +28,14 @@ afterEach(() => vi.restoreAllMocks());
 
 // ── Factory logic (synthetic tools — deterministic, no env/network) ──────────────
 // A stub tool that echoes back the exact args object it received, so we can assert
-// what the dispatcher passed through.
-const echoTool = (name: string) => ({ name, description: name, inputSchema: {}, run: async (_e: RtEnv, a: any): Promise<ToolResult> => ok(JSON.stringify(a)) });
+// what the dispatcher passed through. `properties` mirrors a real tool's declared
+// inputSchema.properties — the dispatcher validates caller args against it (#1312).
+const echoTool = (name: string, properties: Record<string, unknown> = {}) => ({
+	name,
+	description: name,
+	inputSchema: { type: "object", additionalProperties: false, properties },
+	run: async (_e: RtEnv, a: any): Promise<ToolResult> => ok(JSON.stringify(a)),
+});
 const seen = (r: ToolResult) => JSON.parse(r.content[0].text);
 const env = {} as RtEnv;
 
@@ -37,7 +43,7 @@ describe("namespaceFn dispatcher", () => {
 	const fn = namespaceFn({
 		name: "demo",
 		description: "demo",
-		tools: () => [echoTool("t_read"), echoTool("t_op")],
+		tools: () => [echoTool("t_read", { path: {}, n: {} }), echoTool("t_op", { dest: {} })],
 		actions: { read: "t_read", op_move: { tool: "t_op", inject: { action: "move" } } },
 	});
 
@@ -59,6 +65,14 @@ describe("namespaceFn dispatcher", () => {
 		expect(bad.content[0].text).toContain("read, op_move");
 		const missing = await fn.run(env, {});
 		expect(missing.errorCode).toBe("bad_input");
+	});
+
+	it("rejects an unknown per-action arg instead of silently dropping it (#1312)", async () => {
+		const bad = await fn.run(env, { action: "read", path: "/x", bogus: 1 });
+		expect(bad.isError).toBe(true);
+		expect(bad.errorCode).toBe("bad_input");
+		expect(bad.content[0].text).toContain("bogus");
+		expect(bad.content[0].text).toContain("path");
 	});
 
 	it("reports a not_configured error when an action targets an unregistered tool", async () => {
@@ -125,6 +139,30 @@ describe("vault verb dispatches into VAULT_TOOLS byte-identically", () => {
 		expect(r.isError).toBeFalsy();
 		const parsed = JSON.parse(r.content[0].text);
 		expect(parsed).toMatchObject({ staged: true, kind: "vault_delete" });
+	});
+});
+
+describe("front verbs reject an unknown per-action arg instead of degrading to match-all (#1312)", () => {
+	it("mail({action:'search', q}) errors naming `query` instead of returning the unfiltered mailbox", async () => {
+		const r = await mail.run(mailEnv(), { action: "search", q: "ecare" });
+		expect(r.isError).toBe(true);
+		expect(r.errorCode).toBe("bad_input");
+		expect(r.content[0].text).toContain("q");
+		expect(r.content[0].text).toContain("query");
+	});
+
+	it("vault({action:'search_body', query}) errors naming `q` (vault_search_body's real key)", async () => {
+		const r = await vault.run({} as RtEnv, { action: "search_body", query: "ecare" });
+		expect(r.isError).toBe(true);
+		expect(r.errorCode).toBe("bad_input");
+		expect(r.content[0].text).toContain("q");
+	});
+
+	it("files({action:'search', q}) errors naming `query` (files_search's real key)", async () => {
+		const r = await files.run({} as RtEnv, { action: "search", q: "ecare" });
+		expect(r.isError).toBe(true);
+		expect(r.errorCode).toBe("bad_input");
+		expect(r.content[0].text).toContain("query");
 	});
 });
 
