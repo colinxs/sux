@@ -98,6 +98,14 @@ jobs:
       - name: Dispatcher doc-example params match real schemas
         run: npm run lint:dispatcher-docs
 
+      # gen-docs.mjs's CATEGORIES completeness guard was pre-commit-only (advisory,
+      # non-blocking) — a new fn could silently break FUNCTIONS.md/llms.txt
+      # generation forever with no CI signal (#1219). Run the generator for its
+      # side-effect exit code only; FUNCTIONS.md itself is gitignored/regenerated
+      # on demand, so there's nothing to diff here.
+      - name: Function catalog (CATEGORIES) completeness
+        run: npm run docs
+
       # Validates the Worker bundles & config are deployable without deploying.
       - name: Build (dry-run deploy)
         run: npx wrangler deploy --dry-run --config sux/wrangler.jsonc
