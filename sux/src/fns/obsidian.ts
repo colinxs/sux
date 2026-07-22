@@ -1,5 +1,6 @@
 import { type Fn, fail, ok } from "../registry";
 import { smartFetch } from "../proxy";
+import { vaultAuthHeaders } from "../github-app";
 import { extractRpcFromText } from "../mcp-util";
 import { cfOriginHint, fromB64, toB64, oj, safeParseJson } from "./_util";
 import { maybeCompressString, maybeDecompressString } from "./_gzip";
@@ -19,7 +20,10 @@ const ghHeaders = { Accept: "application/vnd.github+json", "User-Agent": "sux-ob
 const byteLength = (s: string): number => new TextEncoder().encode(s).length;
 
 async function ghJson(env: any, url: string, init?: { method?: string; body?: string }): Promise<{ status: number; json: any }> {
-	const resp = await smartFetch(env, url, { method: init?.method, headers: { ...ghHeaders, ...(init?.body ? { "Content-Type": "application/json" } : {}) }, body: init?.body });
+	// vaultAuthHeaders prefers the suxbot App installation token (org-scoped,
+	// contents:write) over the ambient GITHUB_TOKEN — set here so smartFetch's
+	// caller-headers-win merge uses it for vault traffic ONLY, never other fetches.
+	const resp = await smartFetch(env, url, { method: init?.method, headers: { ...(await vaultAuthHeaders(env, url)), ...ghHeaders, ...(init?.body ? { "Content-Type": "application/json" } : {}) }, body: init?.body });
 	const json = await resp.json().catch(() => null);
 	// A 2xx whose body isn't JSON is a corrupted/intercepted response (a proxy
 	// interstitial, an HTML block page), NOT an empty result — every GitHub JSON
@@ -197,7 +201,8 @@ export async function readGitContents(env: any, cfg: VaultCfg, full: string): Pr
 	if (cur.json?.type && cur.json.type !== "file") return { status: cur.status, body: "", error: `'${full}' is a ${cur.json.type}, not a readable note.` };
 	let body = cur.json?.content ? new TextDecoder().decode(fromB64(String(cur.json.content).replace(/\n/g, ""))) : "";
 	if (!body && Number(cur.json?.size ?? 0) > 0) {
-		const raw = await smartFetch(env, `${GH}/repos/${cfg.repo}/contents/${encodeURIComponent(full)}?ref=${encodeURIComponent(cfg.branch)}`, { headers: { ...ghHeaders, Accept: "application/vnd.github.raw+json" } });
+		const rawUrl = `${GH}/repos/${cfg.repo}/contents/${encodeURIComponent(full)}?ref=${encodeURIComponent(cfg.branch)}`;
+		const raw = await smartFetch(env, rawUrl, { headers: { ...(await vaultAuthHeaders(env, rawUrl)), ...ghHeaders, Accept: "application/vnd.github.raw+json" } });
 		if (raw.status >= 400) return { status: raw.status, sha: cur.json?.sha, body: "", error: `GitHub error reading large note (${cur.json?.size} bytes): HTTP ${raw.status}` };
 		body = await raw.text();
 	}

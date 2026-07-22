@@ -72,6 +72,15 @@ export type RtEnv = Env &
 		OBSIDIAN_VAULT_REPO?: string;
 		OBSIDIAN_VAULT_BRANCH?: string;
 		OBSIDIAN_VAULT_DIR?: string;
+		// suxbot GitHub App — write-auth for the vault repo (src/github-app.ts). When all
+		// three are set, vault writes mint a short-lived org installation token (suxbot is
+		// installed org-wide on SuxOS with contents:write) instead of using GITHUB_TOKEN,
+		// moving them onto the org App's budget and off any personal PAT. `wrangler secret`s
+		// (NOT in wrangler.jsonc, like MONARCH_TOKEN); the private key is the App's PEM
+		// (PKCS#1 or PKCS#8). Any unset ⇒ vault writes fall back to GITHUB_TOKEN unchanged.
+		SUX_BOT_APP_ID?: string;
+		SUX_BOT_PRIVATE_KEY?: string;
+		SUX_BOT_INSTALLATION_ID?: string;
 		// Remote Obsidian backend: the Funnel'd Local REST API URL + its bearer key.
 		OBSIDIAN_REMOTE_URL?: string;
 		OBSIDIAN_REMOTE_KEY?: string;

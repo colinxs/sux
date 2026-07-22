@@ -115,6 +115,20 @@
 	// HEALTH_INGEST_TOKEN arms POST /apple-health. All absent ⇒ inert (not_configured),
 	// the routes 404. The durable Epic REFRESH token is NOT a secret — it's minted at
 	// /mychart/callback and held in OAUTH_KV (sux:mychart:grant). See src/mychart.ts.
+	//
+	// Vault repo + write-auth — all out-of-band secrets, NOT declared here (like
+	// MONARCH_TOKEN etc.). OBSIDIAN_VAULT_REPO is the 'owner/repo' the vault fns
+	// read/write; retiring colinxs/vault means flipping it to SuxOS/vault:
+	//   wrangler secret put OBSIDIAN_VAULT_REPO --config sux/wrangler.jsonc   # -> SuxOS/vault
+	// Writes then need a token with contents:write on that repo. Preferred path is the
+	// suxbot GitHub App (installed org-wide on SuxOS, contents:write) — set all three and
+	// src/github-app.ts mints a short-lived org installation token per write, off any
+	// personal PAT:
+	//   wrangler secret put SUX_BOT_APP_ID           # the App's numeric id
+	//   wrangler secret put SUX_BOT_PRIVATE_KEY       # the App's PEM key (PKCS#1 or PKCS#8)
+	//   wrangler secret put SUX_BOT_INSTALLATION_ID   # SuxOS install id (146421817)
+	// Any of the three unset ⇒ vault writes fall back to GITHUB_TOKEN unchanged, so this is
+	// a no-op until all three are set alongside the OBSIDIAN_VAULT_REPO flip.
 	"vars": { "DEBUG_MCP": "0", "MAIL_TRIAGE_ENABLED": "1", "WEEKLY_RECALL_ENABLED": "1", "SELF_IMPROVE_ENABLE": "1", "LIFE_WIKI_ENABLED": "1", "LEARNING_FOLDER_ENABLED": "1" },
 	// Per-user rate limit (same as core).
 	"unsafe": {
