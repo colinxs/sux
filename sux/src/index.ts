@@ -782,6 +782,20 @@ async function crossSemanticTick(env: RtEnv): Promise<unknown> {
 	return mod.runCrossSemanticSweep(env, {}, deps);
 }
 
+// One durable Vectorize-backfill tick (#1315), riding the FREQUENT (~5min) cron so `sux-corpus`
+// converges in hours, then no-ops cheaply once every domain's cursor is done. FAIL-CLOSED:
+// dormant unless VECTORIZE_BACKFILL_ENABLED is set AND the Vectorize binding is bound. Each tick
+// does BOUNDED work (a capped upsert window per domain, self-bounding a soft wall-clock budget)
+// and resumes from a persisted per-domain KV cursor — the synchronous reindex times out on the
+// full corpus (#1315 root cause), so this is what actually populates the index. Idempotent
+// (stable ids) so a re-run never duplicates. Dynamically imported so the cron path pulls in the
+// backfill/semantic surface only when armed.
+async function vectorizeBackfillTick(env: RtEnv): Promise<unknown> {
+	const mod = await import("./fns/_backfill");
+	if (!mod.hasBackfill(env)) return { dormant: true };
+	return mod.backfillTick(env);
+}
+
 // One daily morning-briefing cycle, driven by the same Cron Trigger. FAIL-CLOSED: early-returns
 // doing nothing unless BRIEFING_ENABLED is set — and even then it only STAGES reply drafts (to
 // Drafts, never sent) when BRIEFING_STAGE_DRAFTS is also set; otherwise it composes a
@@ -1051,6 +1065,7 @@ export default {
 			ctx.waitUntil(runSubJob(env, "agenda_reply", () => agendaReplyTick(env)));
 			ctx.waitUntil(runSubJob(env, "agenda_ask", () => agendaAskTick(env)));
 			ctx.waitUntil(runSubJob(env, "imessage_reply", () => imessageReplyTick(env)));
+			ctx.waitUntil(runSubJob(env, "vectorize_backfill", () => vectorizeBackfillTick(env)));
 			return;
 		}
 		ctx.waitUntil(maintenanceTick(env, ctx));
@@ -1182,8 +1197,9 @@ export default {
 					else if (job === "agenda-reply") out = await agendaReplyTick(env);
 					else if (job === "agenda-ask") out = await agendaAskTick(env);
 					else if (job === "self-improve") out = await selfImproveTick(env);
+					else if (job === "vectorize-backfill") out = await vectorizeBackfillTick(env);
 					else if (job === "maintenance") { await maintenanceTick(env, ctx); out = { ok: true }; }
-					else return new Response(JSON.stringify({ error: "unknown job", jobs: ["mail-triage", "weekly-recall", "briefing", "agenda", "agenda-reply", "agenda-ask", "self-improve", "maintenance"] }), { status: 400, headers: { "content-type": "application/json" } });
+					else return new Response(JSON.stringify({ error: "unknown job", jobs: ["mail-triage", "weekly-recall", "briefing", "agenda", "agenda-reply", "agenda-ask", "self-improve", "vectorize-backfill", "maintenance"] }), { status: 400, headers: { "content-type": "application/json" } });
 					return new Response(JSON.stringify({ ok: true, job, result: out }, null, 2), { headers: { "content-type": "application/json" } });
 				} catch (e) {
 					return new Response(JSON.stringify({ error: String((e as Error)?.message ?? e) }), { status: 500, headers: { "content-type": "application/json" } });
