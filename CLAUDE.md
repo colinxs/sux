@@ -474,6 +474,12 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   a real `main` break, no matter how specific/real the error looks. Don't hand-fix the sux-side
   call site to match your sandbox's suxlib shape; it'd likely just break it again against
   real CI's actual (possibly older, possibly newer) suxlib.
+- **Fastmail "Labels" are Mailboxes with `showAsLabel:true`, NOT IMAP keywords** — `addflag`/
+  keyword tagging (the original `mail_sieve_hc`/`mail_domain_backfill` model) is INVISIBLE in
+  Fastmail's UI. To apply a visible label you must `fileinto` the label's mailbox (JMAP
+  `Email/set`: add that mailbox's membership; also drop the Inbox mailbox to skip-inbox,
+  `fileinto :copy` to keep it). This is the root cause of the keyword sieve/backfill appearing
+  to "do nothing" (#1196) — any new labeling path must set mailbox membership, never a keyword.
 
 ## House style
 
