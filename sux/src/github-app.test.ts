@@ -70,6 +70,7 @@ describe("vaultAuthHeaders — suxbot App configured", () => {
 			SUX_BOT_APP_ID: "1234567",
 			SUX_BOT_PRIVATE_KEY: privateKey,
 			SUX_BOT_INSTALLATION_ID: "146421817",
+			OBSIDIAN_VAULT_REPO: "SuxOS/vault",
 			GITHUB_TOKEN: "pat-fallback",
 			OAUTH_KV: kvStub(),
 		} as any;
@@ -97,6 +98,35 @@ describe("vaultAuthHeaders — suxbot App configured", () => {
 		expect(lastMint!.init.method).toBe("POST");
 	});
 
+	it("scopes the minted token to ONLY the vault repo (least-privilege, not org-wide)", async () => {
+		// The whole point of the follow-up to #1342: the mint body must carry a
+		// `repositories` scope of exactly the vault repo NAME (owner prefix stripped),
+		// never an empty body — an empty body yields repository_selection: all.
+		await vaultAuthHeaders(appEnv(), VAULT_URL);
+		const body = JSON.parse(String(lastMint!.init.body));
+		expect(body.repositories).toEqual(["vault"]);
+		// No wildcard / all-repo escape hatch smuggled in alongside the scope.
+		expect(body.repository_selection).toBeUndefined();
+		expect(String(lastMint!.init.body)).not.toBe("{}");
+	});
+
+	it("derives the scope from OBSIDIAN_VAULT_REPO (repo name is not hardcoded)", async () => {
+		// Point the vault elsewhere and the token scope must follow, so a retarget of
+		// OBSIDIAN_VAULT_REPO can't silently leave the token scoped to the old repo.
+		const env = appEnv();
+		env.OBSIDIAN_VAULT_REPO = "SuxOS/other-vault";
+		await vaultAuthHeaders(env, VAULT_URL);
+		expect(JSON.parse(String(lastMint!.init.body)).repositories).toEqual(["other-vault"]);
+	});
+
+	it("refuses to mint a broad token when OBSIDIAN_VAULT_REPO is unset (falls back to PAT)", async () => {
+		// No repo to scope to ⇒ never mint an org-wide token; use GITHUB_TOKEN instead.
+		const env = appEnv();
+		delete env.OBSIDIAN_VAULT_REPO;
+		expect(await vaultAuthHeaders(env, VAULT_URL)).toEqual({ Authorization: "Bearer pat-fallback" });
+		expect(mints).toBe(0);
+	});
+
 	it("signs the App JWT with a verifiable RS256 signature over the right claims", async () => {
 		await vaultAuthHeaders(appEnv(), VAULT_URL);
 		const jwt = String(lastMint!.init.headers.Authorization).replace(/^Bearer /, "");
@@ -116,7 +146,10 @@ describe("vaultAuthHeaders — suxbot App configured", () => {
 		const again = await vaultAuthHeaders(env, VAULT_URL);
 		expect(again).toEqual({ Authorization: "Bearer ghs_installtok" });
 		expect(mints).toBe(1);
-		expect(env.OAUTH_KV.map.get("cache:suxbot:installation-token")).toBeTruthy();
+		// Cache key is scoped per-repo (and :v2-bumped) so a stale broad token under
+		// the old bare key can't be served after this change.
+		expect(env.OAUTH_KV.map.get("cache:suxbot:installation-token")).toBeUndefined();
+		expect(env.OAUTH_KV.map.get("cache:suxbot:installation-token:v2:vault")).toBeTruthy();
 	});
 
 	it("does not mint (or attach anything) for a non-github host", async () => {
