@@ -1,4 +1,5 @@
-import { type Fn, fail, ok } from "../registry";
+import { type Fn, type RtEnv, fail, ok } from "../registry";
+import { type AssimilateInput, assimilate, hasAssimilate } from "./_assimilate";
 import { htmlToMd } from "./_markup";
 import { clampBytes, loadBytes, putBlob, vaultToday, oj } from "./_util";
 import { vaultInboxDir } from "./_vaultpaths";
@@ -9,10 +10,14 @@ import { type VaultCfg, vaultCfg, vaultPut } from "./obsidian";
 import { redactPII } from "./redact";
 import { fingerprint, ledger } from "../ledger";
 
-// Capture — the intake half of the knowledge core (docs/proposals/domains.md §3).
+// Capture — the intake half of the knowledge core (docs/proposals/domains.md §3), and the
+// UNIVERSAL TOSS-PATH INBOX: the one verb for "toss me information you want remembered."
 // Exactly one source in (url | text | query), one provenance-stamped markdown
 // note out, into Inbox/ of the git-backed vault (git = truth; vaultPut warms the
-// KV cache). Blob routing for non-markdown sources: ≤1MB is committed into the
+// KV cache). A prose capture is ALSO handed to the assimilation spine (_assimilate.ts,
+// #1287) — fire-and-forget, dark unless ASSIMILATE_ENABLED — which distills and indexes it
+// so the oracle can retrieve it later; the note write never waits on (or fails from) that.
+// Blob routing for non-markdown sources: ≤1MB is committed into the
 // vault repo as an attachment (a vault is allowed to hold small binaries);
 // larger — or blobs:"dropbox" — uploads to the Dropbox app folder and the note
 // carries the shared link; R2 is the fallback when Dropbox isn't configured
@@ -78,6 +83,29 @@ async function logVaultSignal(env: any, notePath: string, title: string, body: s
 	}
 }
 
+/** Fire-and-forget the assimilation spine on a freshly-captured note (#1287) — the toss path's
+ *  half of the core loop "toss text → vault note → oracle learns it". The note is already
+ *  committed (git = the undo); this runs the spine (extract → distill → index) AFTER, so the
+ *  interactive capture stays instant and never waits on the LLM distill + embed. Handed to
+ *  ctx.waitUntil (EgressContext, proxy.ts) so the isolate keeps it alive past the response;
+ *  without an execution context (scheduled/queue/tests) it runs detached. Dark + best-effort:
+ *  a clean no-op unless ASSIMILATE_ENABLED is set (fail-closed, Colin-only flip), and every
+ *  spine outcome/failure is logged, never thrown — assimilation must NEVER fail a note that
+ *  already landed in the vault. Provenance is the note's own vault path, so the eventual
+ *  `oracle ask` citation of the indexed passage points back at this note. */
+function backgroundAssimilate(env: RtEnv, input: AssimilateInput): void {
+	if (!hasAssimilate(env)) return;
+	const task = assimilate(env, input)
+		.then((r) => {
+			if (r.status === "assimilated")
+				console.log(`ingest: assimilated ${input.source} → ${r.indexed.chunks} passage(s) under ${r.domain}${r.indexed.skipped ? " (index degraded)" : ""}`);
+			else if (r.status === "routed_durable") console.log(`ingest: assimilate routed ${input.source} durable (instance=${r.instanceId})`);
+		})
+		.catch((e) => console.warn(`ingest: assimilation failed for ${input.source} (note kept) — ${(e as Error)?.message ?? e}`));
+	const ctx = env._egress?.ctx;
+	if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(task);
+}
+
 // Dispatch through the registry (dynamic import avoids the index.ts cycle, same as pipe).
 async function fnByName(name: string): Promise<Fn | undefined> {
 	const { FUNCTIONS } = (await import("./index")) as { FUNCTIONS: Fn[] };
@@ -114,7 +142,7 @@ export const ingest: Fn = {
 	name: "ingest",
 	cost: 3,
 	description:
-		"Capture into the Obsidian vault (git-backed = the undo; the KV cache is warmed). Exactly one source: url (HTML → markdown; text files verbatim; binary files become attachments; fetch cap 32MB) | text (verbatim body) | query (web-search results). A non-HTML/text URL (e.g. a PDF) is stored as an opaque blob here — never text-extracted or distilled. To actually extract and learn a PDF/book's content (native PDF + OCR, distilled into a whitelisted oracle topic), use `study` instead. Writes a provenance-stamped note (frontmatter type/created/source/tags) to Inbox/<date> <slug>.md — never overwriting (collisions get a time suffix) — or to an explicit `path` (overwrites). Bodies over 150k chars are truncated with a marker. Optional passes (skipped for binary captures, degrade to verbatim when AI is unavailable): summarize:true prepends an AI summary section; compress:true stores only the distilled summary — for url sources the original stays re-fetchable via provenance; for text/query the original is not retained. Blob routing: ≤1MB commits into the vault repo (![[Attachments/…]]); larger — or blobs:'dropbox' — uploads to the Dropbox app folder and the note links the shared URL (PUBLIC anyone-with-the-link; R2 fallback when Dropbox isn't configured — either DROPBOX_TOKEN or the DROPBOX_REFRESH_TOKEN+APP_KEY durable flow). A repeat capture whose resolved content exactly matches an earlier one returns that note's ref instead of minting a new one (content-fingerprint dedup, not a URL/path match) — pass force:true to capture again anyway. Returns { note, created, commit, source, pass?, blob?, duplicate? }.",
+		"The universal toss-path inbox — \"toss me information\" for anything you want remembered: capture it into the Obsidian vault (git-backed = the undo; the KV cache is warmed) AND, when the assimilation spine is enabled, learn it — the note is distilled and indexed so `oracle ask` can later retrieve it with a citation back to this note. Exactly one source: url (HTML → markdown; text files verbatim; binary files become attachments; fetch cap 32MB) | text (verbatim body) | query (web-search results). A non-HTML/text URL (e.g. a PDF) is stored as an opaque blob here — never text-extracted or distilled. To actually extract and learn a PDF/book's content (native PDF + OCR, distilled into a whitelisted oracle topic), use `study` instead. Writes a provenance-stamped note (frontmatter type/created/source/tags) to Inbox/<date> <slug>.md — never overwriting (collisions get a time suffix) — or to an explicit `path` (overwrites). Bodies over 150k chars are truncated with a marker. Optional passes (skipped for binary captures, degrade to verbatim when AI is unavailable): summarize:true prepends an AI summary section; compress:true stores only the distilled summary — for url sources the original stays re-fetchable via provenance; for text/query the original is not retained. Blob routing: ≤1MB commits into the vault repo (![[Attachments/…]]); larger — or blobs:'dropbox' — uploads to the Dropbox app folder and the note links the shared URL (PUBLIC anyone-with-the-link; R2 fallback when Dropbox isn't configured — either DROPBOX_TOKEN or the DROPBOX_REFRESH_TOKEN+APP_KEY durable flow). A repeat capture whose resolved content exactly matches an earlier one returns that note's ref instead of minting a new one (content-fingerprint dedup, not a URL/path match) — pass force:true to capture again anyway. Returns { note, created, commit, source, pass?, blob?, duplicate? }.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -270,6 +298,11 @@ export const ingest: Fn = {
 			if (!w.ok) return fail(w.error);
 			if (dedupFp) await ledger(env, "ingest_dedup", DEDUP_TTL_SECONDS).mark(dedupFp, notePath);
 			await logVaultSignal(env, notePath, title, body);
+			// Route the tossed prose through the assimilation spine (#1287). Prose captures only —
+			// a binary blob stub is opaque here (`study` extracts + learns PDFs/books instead), so
+			// gate on `!blob`, the same seam the dedup/summarize passes use. Fire-and-forget: the
+			// capture response returns immediately; the spine indexes in the background.
+			if (!blob) backgroundAssimilate(env, { source: notePath, text: body, kind: "text", domain: "doc" });
 			return ok(oj({ ok: true, note: notePath, created: w.created, commit: w.commit, source, ...(pass ? { pass } : {}), ...(blob ? { blob } : {}) }));
 		} catch (e) {
 			return fail(`ingest failed: ${String((e as Error).message ?? e)}`);

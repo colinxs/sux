@@ -405,3 +405,102 @@ describe("ingest (capture → vault)", () => {
 		expect(putCount).toBe(3);
 	});
 });
+
+// The WRITE half of the toss-path core loop (#1287): a tossed note is handed to the
+// assimilation spine and lands a retrievable index entry — asserted at the index boundary
+// (the assim:doc chunk store), NOT via `oracle ask` retrieval (that read half is #1298).
+describe("ingest → assimilation spine (#1287)", () => {
+	// A Map-backed OAUTH_KV with the get/put/list surface putChunk/listChunks need.
+	function makeKv() {
+		const store = new Map<string, string>();
+		return {
+			store,
+			get: vi.fn(async (k: string) => (store.has(k) ? store.get(k)! : null)),
+			put: vi.fn(async (k: string, v: string) => void store.set(k, v)),
+			delete: vi.fn(async (k: string) => void store.delete(k)),
+			list: vi.fn(async ({ prefix }: { prefix?: string } = {}) => ({
+				keys: [...store.keys()].filter((k) => !prefix || k.startsWith(prefix)).map((name) => ({ name })),
+				list_complete: true as const,
+			})),
+		};
+	}
+
+	// Mock Workers-AI: an embed call (text[]) → unit vectors; a messages call → a distilled note,
+	// or a profile summary for the authoritative-profile system prompt (the _source.ts profile leg).
+	const okAiRun = () =>
+		vi.fn(async (_model: string, inputs: any) => {
+			if (Array.isArray(inputs?.text)) return { data: inputs.text.map(() => [1, 0, 0]) };
+			const system = inputs.messages.find((m: any) => m.role === "system").content;
+			if (/^You are distilling an AUTHORITATIVE/.test(system)) return { response: "PROFILE-SUMMARY" };
+			return { response: "DISTILLED note about renewing the passport." };
+		});
+
+	const assimEnv = (opts: { enabled?: string; aiRun?: any } = {}) => {
+		const deferred: Promise<unknown>[] = [];
+		const kv = makeKv();
+		const env: any = {
+			...ENV,
+			OAUTH_KV: kv,
+			AI: { run: opts.aiRun ?? okAiRun() },
+			_egress: { ctx: { waitUntil: (p: Promise<unknown>) => void deferred.push(p) }, reqId: "r" },
+		};
+		if (opts.enabled !== undefined) env.ASSIMILATE_ENABLED = opts.enabled;
+		return { env, kv, deferred };
+	};
+
+	const assimChunkKeys = (kv: ReturnType<typeof makeKv>) => [...kv.store.keys()].filter((k) => k.startsWith("sux:source:chunk:assim:"));
+
+	it("hands tossed text to the spine and writes an index entry under assim:doc, cited to the note", async () => {
+		const gh = ghMock();
+		routes.handler = gh.handler;
+		const { env, kv, deferred } = assimEnv({ enabled: "1" });
+		const r = await ingest.run(env, { text: "Renew the passport before the September trip." });
+		const out = JSON.parse(r.content[0].text);
+		expect(out.ok).toBe(true);
+		// The capture response never waits on the spine — it was deferred to ctx.waitUntil, and
+		// nothing is indexed yet on the response path.
+		expect(deferred).toHaveLength(1);
+		expect(assimChunkKeys(kv)).toHaveLength(0);
+
+		await Promise.all(deferred); // run the backgrounded spine
+
+		const keys = assimChunkKeys(kv);
+		expect(keys.length).toBeGreaterThan(0);
+		const chunk = JSON.parse(kv.store.get(keys[0])!);
+		expect(chunk.domain).toBe("assim:doc");
+		// Provenance: every indexed passage is stamped with the note's own vault path, so the
+		// eventual `oracle ask` citation of this passage points back at the ingested note.
+		expect(chunk.title).toBe(out.note);
+		expect(Array.isArray(chunk.embedding)).toBe(true);
+	});
+
+	it("leaves the capture untouched when the spine is dark (ASSIMILATE_ENABLED unset)", async () => {
+		const gh = ghMock();
+		routes.handler = gh.handler;
+		const { env, kv, deferred } = assimEnv(); // no ASSIMILATE_ENABLED
+		const r = await ingest.run(env, { text: "A note captured while the spine is off." });
+		const out = JSON.parse(r.content[0].text);
+		expect(out.ok).toBe(true);
+		expect(gh.puts[out.note]).toContain("A note captured while the spine is off.");
+		// Dark spine: nothing was even scheduled, and no index entry was written.
+		expect(deferred).toHaveLength(0);
+		expect(assimChunkKeys(kv)).toHaveLength(0);
+	});
+
+	it("a spine failure never fails the capture (best-effort, log-and-continue)", async () => {
+		const gh = ghMock();
+		routes.handler = gh.handler;
+		const aiRun = vi.fn(async () => {
+			throw new Error("AI down");
+		});
+		const { env, kv, deferred } = assimEnv({ enabled: "1", aiRun });
+		const r = await ingest.run(env, { text: "The capture must survive an assimilation failure." });
+		const out = JSON.parse(r.content[0].text);
+		expect(out.ok).toBe(true); // the note landed regardless
+		expect(gh.puts[out.note]).toContain("The capture must survive an assimilation failure.");
+		// The backgrounded spine rejects internally, but backgroundAssimilate's .catch swallows it —
+		// awaiting the deferred task does not throw, and nothing was indexed.
+		await expect(Promise.all(deferred)).resolves.toBeDefined();
+		expect(assimChunkKeys(kv)).toHaveLength(0);
+	});
+});
