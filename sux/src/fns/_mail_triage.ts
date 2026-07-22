@@ -32,6 +32,7 @@
 import { hasAI, llm } from "../ai";
 import type { RtEnv } from "../registry";
 import { ledger } from "../ledger";
+import { type AssimilateInput, type AssimilateResult, assimilate, hasAssimilate } from "./_assimilate";
 import { passesDraftGate } from "./_briefing";
 import { errMsg, vaultToday } from "./_util";
 import { vaultDailyDir } from "./_vaultpaths";
@@ -361,6 +362,14 @@ export type TriageDeps = {
 	/** Stage a reply DRAFT (mail_draft mode:"reply", send=false) — saves to Drafts, NEVER sends.
 	 *  Returns the created draft id. Structurally the only draft path; no send verb is reachable. */
 	draftReply?: (env: RtEnv, args: { reply_to: string; text: string }) => Promise<{ id: string }>;
+	/** Fire-and-forget the assimilation spine (W6 #1285) on a triage-FLAGGED message — the
+	 *  classifier's `important` elevation, the tightest flag — so it becomes oracle-knowledge
+	 *  under `assim:mail`, citable back by its JMAP id. Void by design: it's a background
+	 *  read+distill, never awaited, so a failed distill/embed cannot touch the triage cycle.
+	 *  OPTIONAL: absent → the assimilation lane is simply inert (the loop never depends on it).
+	 *  Production `defaultDeps` wires it to `assimilateFlaggedMail` (dark behind ASSIMILATE_ENABLED,
+	 *  reads the full body via mail_read, handed to ctx.waitUntil); tests inject a spy. */
+	assimilateFlagged?: (env: RtEnv, msg: TriageMsg) => void;
 };
 
 type TriageOpts = {
@@ -442,6 +451,52 @@ async function logMailSignal(env: RtEnv, m: TriageMsg): Promise<void> {
 		await appendInferSignal(env, "mail", { ts: Date.now(), vec, redacted_snippet: snippet, source_tag: `mail:${m.id}` });
 	} catch (e) {
 		console.warn(`infer: mail signal log failed for ${m.id} — ${errMsg(e)}`);
+	}
+}
+
+/** Dedup window for the mail-assimilation ledger. Mirrors ingest.ts's capture-dedup TTL: long
+ *  enough that a daily cron re-seeing an already-distilled message is a cheap no-op, short
+ *  enough that a genuinely re-flagged old message re-assimilating months later is harmless. */
+const MAIL_ASSIMILATE_TTL_SECONDS = 180 * 24 * 3600;
+
+/** W6 (#1285): route a triage-FLAGGED message through the assimilation spine so it becomes
+ *  oracle-knowledge under `assim:mail`, cited later by its JMAP id — the "important emails
+ *  become oracle-knowledge" leg of the v5 arc. Read+distill ONLY: it never sends, moves, or
+ *  relabels the message. Dark + fail-closed: a clean no-op unless ASSIMILATE_ENABLED is set
+ *  (Colin-only flip, arc §7). Idempotent per JMAP id via its OWN ledger — independent of the
+ *  triage seen-ledger, which in suggest-only mode deliberately never marks a suggested message
+ *  (so a later ACT pass still processes it); without this that message would re-distill every
+ *  daily cron. Marks seen ONLY on a real index — a disabled/durable-routed result, or a throw
+ *  (propagated to the caller's .catch), leaves the id unmarked so a later armed run still
+ *  indexes it. Exported so tests can drive it with injected read/assimilate doubles. */
+export async function assimilateFlaggedMail(
+	env: RtEnv,
+	m: TriageMsg,
+	deps: { readBody?: (env: RtEnv, id: string) => Promise<string>; assimilate: (env: RtEnv, input: AssimilateInput) => Promise<AssimilateResult> },
+): Promise<void> {
+	if (!hasAssimilate(env)) return;
+	const led = ledger(env, "mail_assimilate", MAIL_ASSIMILATE_TTL_SECONDS);
+	if (await led.seen(m.id)) return;
+	// The preview is JMAP's server-truncated snippet; read the full body so the distillate
+	// reflects the whole message. Best-effort — any read failure falls back to the preview.
+	let body = "";
+	if (deps.readBody) {
+		try {
+			body = (await deps.readBody(env, m.id)) || "";
+		} catch {
+			body = "";
+		}
+	}
+	if (!body) body = String(m.preview ?? "");
+	// Subject + sender ride in front of the body as distill context; provenance `mail:<jmap-id>`
+	// so an eventual `oracle ask` citation of an indexed passage points back at this email.
+	const header = [m.subject ? `Subject: ${m.subject}` : "", m.from ? `From: ${m.from}` : ""].filter(Boolean).join("\n");
+	const text = [header, body].filter(Boolean).join("\n\n").trim();
+	if (!text) return;
+	const r = await deps.assimilate(env, { source: `mail:${m.id}`, text, kind: "text", domain: "mail" });
+	if (r.status === "assimilated") {
+		await led.mark(m.id);
+		console.log(`mail_triage: assimilated mail:${m.id} → ${r.indexed.chunks} passage(s) under ${r.domain}${r.indexed.skipped ? " (index degraded)" : ""}`);
 	}
 }
 
@@ -543,6 +598,25 @@ export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps):
 			// message still gets the reversible `personal` label via ACTION_FOR, and the daily
 			// (non-sweep) cycle keeps drafting for FRESH personal mail as designed.
 			if (c.label === "personal" && !sweepBacklog) c = detectReplyDraft(m) ?? c;
+			// W6 (#1285): a triage-FLAGGED message rides the assimilation spine into `assim:mail`
+			// so `oracle ask` can later cite it — "important emails become oracle-knowledge".
+			// SELECTIVE by construction: the gate is the classifier's `important` elevation ALONE
+			// (the tightest flag), NEVER the full recent-mail window — receipts/notifications/
+			// mailing-lists/personal/unknown are all left un-assimilated, exactly OPEN #6's
+			// "triage-flagged only" default. Mirrors the isSensitiveSender gate on logMailSignal
+			// above: a sensitive (health/finance/gov) sender is skipped so its content never
+			// reaches the general `assim:mail` KV domain (#975's fence; the phi-fenced medical
+			// stream is W7's job). Independent of the act/suggest decision below (a suggested or
+			// suggest-only-forced important message still becomes retrievable — assimilation has
+			// ZERO mailbox side effects), fire-and-forget, and MUST never break the cycle: the dep
+			// is internally caught, and this call site swallows a synchronous dispatch failure too.
+			if (c.label === "important" && !isSensitiveSender(String(m.from ?? ""))) {
+				try {
+					deps.assimilateFlagged?.(env, m);
+				} catch (e) {
+					console.warn(`mail_triage: assimilation dispatch failed for ${m.id} (triage unaffected) — ${errMsg(e)}`);
+				}
+			}
 			// A classification may carry a per-message op override (service notifications attach a
 			// type-specific label, draft-reply attaches the create op); otherwise fall back to the
 			// label's default action. `resolveOp` then applies the archive confidence bar — a
@@ -725,6 +799,23 @@ export async function defaultDeps(): Promise<TriageDeps> {
 			if (r.isError) throw new Error(r.content?.[0]?.text ?? "mail_draft failed");
 			const d = JSON.parse(r.content?.[0]?.text ?? "{}");
 			return { id: String(d?.id ?? "") };
+		},
+		assimilateFlagged: (env, m) => {
+			// W6 (#1285): fire-and-forget the assimilation spine on a triage-FLAGGED message. Reads the
+			// full body via mail_read (the same deliberate "return the bytes" verb composeReply uses),
+			// falling back to the preview. Handed to ctx.waitUntil (proxy.ts's EgressContext) so the
+			// isolate keeps it alive past the response; without a ctx (cron/queue/tests) it runs
+			// detached. Best-effort: any failure is logged, never thrown — assimilation must never
+			// affect triage. Dark behind ASSIMILATE_ENABLED (checked inside assimilateFlaggedMail).
+			const readBody = async (e: RtEnv, id: string): Promise<string> => {
+				if (!readTool) return "";
+				const r = await readTool.run(e, { id });
+				if (r.isError) return "";
+				return String(JSON.parse(r.content?.[0]?.text ?? "{}")?.body ?? "");
+			};
+			const task = assimilateFlaggedMail(env, m, { readBody, assimilate }).catch((e) => console.warn(`mail_triage: assimilation failed for mail:${m.id} (triage unaffected) — ${errMsg(e)}`));
+			const ctx = env._egress?.ctx;
+			if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(task);
 		},
 		digestAppend: async (env, path, content) => {
 			const r = await obsidian.run(env, { action: "append", path, content, backend: "git" });
