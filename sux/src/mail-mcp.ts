@@ -6,6 +6,7 @@ import { doUpload, downloadBlobBytes, jstr, scopeProbe, submissionMaxDelayedSend
 import { embedOne } from "./fns/_embed";
 import { mailSemanticIndex, topKMailByCosine } from "./fns/_mail_semantic";
 import { contactSemanticIndex, topKContactByCosine } from "./fns/_contact_semantic";
+import { gatherContactTimeline, resolveContact } from "./fns/_contact_timeline";
 import { buildVEvent, buildVTodo, CALDAV_NOT_CONFIGURED, type CalendarRef, caldavFetch, calendarHome, dateProp, hasCalDav, icalDateToIso, listCalendars, parseICal, replaceProps, reportObjects, textProp } from "./fns/_caldav";
 import { htmlToMd } from "./fns/_markup";
 import { errMsg, putBlob, storeBase } from "./fns/_util";
@@ -1122,6 +1123,36 @@ const TOOLS: MailTool[] = [
 				const k = Math.min(50, Math.max(1, Number(a?.k) || 8));
 				const hits = topKContactByCosine(vec, idx.chunks, k);
 				return ok({ q, count: hits.length, hits, scanned: idx.chunks.length, total: idx.total, truncated: idx.truncated });
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "contact_timeline",
+		description:
+			"Assemble one person's history chronologically — mail by sender, calendar events, vault mentions, and Dropbox files — merged into one cited list (query-time only: zero new vault writes, zero new store, zero graph engine). Pass `id` (a contact id from contact_search/contact_get/contact_semantic) or `name` (free-text, resolved via ContactCard/query, preferring an exact name match). Each item is cited: mail by JMAP id, calendar by event href, vault by note path, files by Dropbox path. Every store is independent — an unconfigured or failing one (no CalDAV creds, no DROPBOX_FULL_*, ...) is skipped and reported in `sources`, never fatal, so an empty-history contact still returns cleanly. Needs a FASTMAIL_TOKEN scoped for contacts; calendar needs FASTMAIL_CALDAV_USER + FASTMAIL_APP_PASSWORD, files needs DROPBOX_FULL_*.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				id: { type: "string", description: "Contact id (from contact_search/contact_get/contact_semantic)." },
+				name: { type: "string", description: "Contact name to resolve (alternative to `id`)." },
+				limit: { type: "integer", minimum: 1, maximum: 200, description: "Max timeline items across all sources (default 50)." },
+			},
+		},
+		run: async (env, a) => {
+			const gate = await scopeGate(env, "contacts");
+			if (gate) return failWith("not_configured", gate);
+			const id = typeof a?.id === "string" ? a.id.trim() : "";
+			const name = typeof a?.name === "string" ? a.name.trim() : "";
+			if (!id && !name) return failWith("bad_input", "contact_timeline requires an `id` or a `name`.");
+			try {
+				const contact = await resolveContact(env, { id: id || undefined, name: name || undefined });
+				if (!contact) return failWith("not_found", `No contact found for ${id ? `id '${id}'` : `name '${name}'`}.`);
+				const limit = clamp(a?.limit, 1, 200, 50);
+				const { items, status } = await gatherContactTimeline(env, contact, { limit });
+				return ok({ contact: { id: contact.id, name: contact.name, emails: contact.emails }, count: items.length, items, sources: status });
 			} catch (e) {
 				return fail(errMsg(e));
 			}

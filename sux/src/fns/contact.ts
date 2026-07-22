@@ -6,6 +6,7 @@ export const CONTACT_ACTIONS: Record<string, Dispatch> = {
 	search: "contact_search",
 	get: "contact_get",
 	semantic: "contact_semantic",
+	timeline: "contact_timeline",
 	create: "contact_create",
 	update: "contact_update",
 	delete: "contact_delete",
@@ -14,7 +15,7 @@ export const CONTACT_ACTIONS: Record<string, Dispatch> = {
 export const contact: Fn = namespaceFn({
 	name: "contact",
 	description:
-		"Fastmail contacts (JMAP ContactCard) through the one /mcp connector. {action, ...args}: search·get·semantic·create·update·delete. Each action's remaining args are that contact_* tool's own — e.g. contact({action:'search', query:'ada'}), contact({action:'semantic', q:'who do I know at that hospital'}) finds contacts by meaning (Workers-AI embeddings) rather than contact_search's exact-text filter, contact({action:'create', name, emails}).",
+		"Fastmail contacts (JMAP ContactCard) through the one /mcp connector. {action, ...args}: search·get·semantic·timeline·create·update·delete. Each action's remaining args are that contact_* tool's own — e.g. contact({action:'search', query:'ada'}), contact({action:'semantic', q:'who do I know at that hospital'}) finds contacts by meaning (Workers-AI embeddings) rather than contact_search's exact-text filter, contact({action:'timeline', name:'ada'}) assembles their chronological history — mail+calendar+vault+files, cited, query-time only — contact({action:'create', name, emails}).",
 	tools: () => MAIL_TOOLS,
 	actions: CONTACT_ACTIONS,
 });

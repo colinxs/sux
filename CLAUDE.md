@@ -555,6 +555,25 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   the design doc and a codebase search each time; only attempt them once both show
   `CLOSED`/merged.
 
+- **v5 W10 (#1289, the oracle-feel E2E eval) hard-blocks on unmerged #1284/#1285/#1287**
+  — its own issue text says so explicitly ("build after all three merge"), and as of
+  2026-07-22 all three are still OPEN, with `_assimilate.ts` (the spine #1284/#1285/#1287
+  each wire into) absent from `sux/src` entirely (confirmed via grep). W8 (#1288, the
+  `contact.timeline` action) is NOT in this chain — it's independently buildable now,
+  per its own issue text, since it's a pure query-time mail+calendar+vault+files gather
+  with zero dependency on the assimilate spine. Don't conflate the two when a future
+  batch picks up more v5 W-numbered issues: check each issue's own "Depends on" line and
+  `gh issue view` the prerequisites' state rather than assuming the whole arc is blocked
+  or the whole arc is clear.
+- **`_caldav.ts`'s `parseICal` stores each VEVENT/VTODO's properties in a flat
+  `Record<string,string>`** (`finalizeComponent`'s `props`) — a repeated property line
+  (most commonly multiple `ATTENDEE`s on a real meeting) silently collapses to just the
+  LAST one seen; there is no array/multi-value support. Every current caller (`cal_events`/
+  `cal_search`'s `shapeCalObject`, `recall.ts`'s `fromCalendar`, `_contact_timeline.ts`'s
+  `fromCalendar`) already routes around this by matching on SUMMARY/LOCATION/DESCRIPTION
+  instead of ATTENDEE — don't reach for `comp.props.ATTENDEE` expecting a full attendee
+  list; it isn't one.
+
 ## Version coherence (#1238)
 
 Bump `package.json`'s `version` and `plugins/sux/.claude-plugin/plugin.json`'s

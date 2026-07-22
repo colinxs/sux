@@ -318,6 +318,28 @@ describe("mail_* ergonomic tools", () => {
 		expect(noScope.content[0].text).toMatch(/capability|re-mint|scope/i);
 	});
 
+	it("contact_timeline resolves by name or id, merges the mail leg, and degrades the rest gracefully", async () => {
+		installFetch(SESSION_SCOPED);
+		const byName = parse(await tool("contact_timeline").run(env(), { name: "ada" }));
+		expect(byName.contact).toMatchObject({ id: "c1", name: "Ada Lovelace", emails: ["ada@x.com"] });
+		expect(byName.items).toEqual(expect.arrayContaining([expect.objectContaining({ source: "mail", citation: "mail:e1" })]));
+		// CalDAV/Dropbox/vault aren't configured on the bare env() — those legs must degrade, not fail the whole call.
+		expect(byName.sources.mail).toBe("1 hit(s)");
+		expect(byName.sources.calendar).toBe("no matches"); // hasCalDav() false — a clean skip, not an error
+		expect(byName.sources.files).toBe("no matches"); // hasDropboxFull() false — a clean skip, not an error
+
+		const byId = parse(await tool("contact_timeline").run(env(), { id: "c1" }));
+		expect(byId.contact.id).toBe("c1");
+
+		const missing = await tool("contact_timeline").run(env(), {});
+		expect(missing.errorCode).toBe("bad_input");
+
+		installFetch(); // unscoped token — the contacts capability gate fires before resolution
+		const noScope = await tool("contact_timeline").run(env(), { name: "ada" });
+		expect(noScope.isError).toBe(true);
+		expect(noScope.content[0].text).toMatch(/capability|re-mint|scope/i);
+	});
+
 	it("mail_draft creates a draft and returns the id", async () => {
 		installFetch();
 		const out = parse(await tool("mail_draft").run(env(), { to: ["x@y.com"], subject: "Hi", text: "yo" }));
