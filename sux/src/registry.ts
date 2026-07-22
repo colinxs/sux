@@ -620,6 +620,12 @@ export type RtEnv = Env &
 		// convention as LUNCHMONEY_API_KEY above) — absent, every call behaves exactly as
 		// it does today, no gateway option passed. See ai.ts's aiGatewayOptions().
 		AI_GATEWAY_ID?: string;
+		// OpenAI fallback lane (#1369) — ai.ts's llm() retries once via OpenAI (gpt-5-mini
+		// class) when Workers AI hard-fails, rate-limits, or isn't bound. Out-of-band secret
+		// (`wrangler secret put OPENAI_API_KEY`), same convention as MISTRAL_API_KEY/
+		// LUNCHMONEY_API_KEY above: unset ⇒ llm() behaves exactly as it did before this lane
+		// existed. See ai.ts's hasOpenAiFallback().
+		OPENAI_API_KEY?: string;
 		IMAGES?: ImagesBinding;
 
 		BROWSER?: BrowserWorker;

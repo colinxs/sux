@@ -269,6 +269,19 @@ export type CfRenderSpec = {
 	webmcpArgs?: Record<string, unknown>;
 };
 
+/** Detects the documented page.pdf() failure shape: a structurally valid PDF whose only
+ *  content stream(s) are `/Length 0` (the Fetch-interception race above, but also reachable
+ *  from a JS-heavy SPA, an auth wall, or a blocked resource printing a blank page — #1384).
+ *  Scans raw object headers for at least one stream with a positive length rather than doing
+ *  a full PDF parse; a `/Length` that points at an indirect object (`/Length 5 0 R`) reads as
+ *  its ref number, which only makes this UNDER-flag (never false-positive on a real PDF) —
+ *  fine, since the fallback is "deliver anyway", not "block a real file". */
+function pdfLooksEmpty(bytes: Uint8Array): boolean {
+	const text = new TextDecoder("latin1").decode(bytes);
+	const lengths = [...text.matchAll(/\/Length\s+(\d+)/g)].map((m) => Number(m[1]));
+	return lengths.length > 0 && lengths.every((n) => n === 0);
+}
+
 // For html/text the payload is the string `body`; for screenshot/pdf it is the raw
 // `bytes` (the caller decides delivery). On any failure: `{ ok:false, error }`.
 export type CfRenderResult =
@@ -368,8 +381,18 @@ export async function cfRender(env: RtEnv, spec: CfRenderSpec): Promise<CfRender
 					// already torn down by a teardown race — nothing to do.
 				}
 			}
-			const doc = await page.pdf({ format, landscape, printBackground } as Parameters<typeof page.pdf>[0]);
-			const bytes = doc instanceof Uint8Array ? doc : new Uint8Array(doc as ArrayBuffer);
+			const printPdf = () => page.pdf({ format, landscape, printBackground } as Parameters<typeof page.pdf>[0]);
+			let doc = await printPdf();
+			let bytes = doc instanceof Uint8Array ? doc : new Uint8Array(doc as ArrayBuffer);
+			if (pdfLooksEmpty(bytes)) {
+				// The interception race (and similar rendering timing issues) is intermittent,
+				// not deterministic — one retry often just works.
+				doc = await printPdf();
+				bytes = doc instanceof Uint8Array ? doc : new Uint8Array(doc as ArrayBuffer);
+			}
+			if (pdfLooksEmpty(bytes)) {
+				return { ok: false, error: "render produced an empty PDF (zero-length content stream after retry) — the page may be JS-heavy, auth-walled, or blocking a needed resource" };
+			}
 			return { ok: true, contentType: "application/pdf", bytes };
 		}
 		const content =

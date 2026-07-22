@@ -147,6 +147,34 @@ describe("cfRender", () => {
 		expect(stubs.screenshot).toHaveBeenCalledWith({ fullPage: false });
 	});
 
+	it("pdf: returns raw PDF bytes as-is when the content stream isn't empty", async () => {
+		const r = await cfRender(BROWSER_ENV, { url: "https://example.com", as: "pdf" });
+		expect(r.ok).toBe(true);
+		if (!r.ok || !("bytes" in r)) throw new Error("expected bytes result");
+		expect(r.contentType).toBe("application/pdf");
+		expect(Array.from(r.bytes)).toEqual([0x25, 0x50, 0x44, 0x46, 0x2d]);
+		expect(stubs.pdf).toHaveBeenCalledTimes(1);
+	});
+
+	it("pdf: a /Length 0 husk on the first print retries once and returns the good second result (#1384)", async () => {
+		const empty = Uint8Array.from("%PDF-1.4\n1 0 obj\n<< /Length 0 >>\nstream\nendstream\n", (c) => c.charCodeAt(0));
+		const good = Uint8Array.from("%PDF-1.4\n1 0 obj\n<< /Length 42 >>\nstream\nhello\nendstream\n", (c) => c.charCodeAt(0));
+		stubs.pdf.mockClear().mockResolvedValueOnce(empty).mockResolvedValueOnce(good);
+		const r = await cfRender(BROWSER_ENV, { url: "https://example.com", as: "pdf" });
+		expect(stubs.pdf).toHaveBeenCalledTimes(2);
+		expect(r.ok).toBe(true);
+		if (!r.ok || !("bytes" in r)) throw new Error("expected bytes result");
+		expect(r.bytes).toEqual(good);
+	});
+
+	it("pdf: still /Length 0 after the retry surfaces ok:false instead of delivering a silent husk (#1384)", async () => {
+		const empty = Uint8Array.from("%PDF-1.4\n1 0 obj\n<< /Length 0 >>\nstream\nendstream\n", (c) => c.charCodeAt(0));
+		stubs.pdf.mockClear().mockResolvedValue(empty);
+		const r = await cfRender(BROWSER_ENV, { url: "https://example.com", as: "pdf" });
+		expect(stubs.pdf).toHaveBeenCalledTimes(2);
+		expect(r).toEqual({ ok: false, error: expect.stringMatching(/empty PDF/) });
+	});
+
 	it("returns ok:false (never throws) and still closes the browser when goto throws", async () => {
 		stubs.goto.mockRejectedValueOnce(new Error("nav boom"));
 		const r = await cfRender(BROWSER_ENV, { url: "https://example.com" });
