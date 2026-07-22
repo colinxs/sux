@@ -26,10 +26,12 @@ There are **three separate stores**, and they don't see each other:
   disk; a pasted key is burned: revoke + re-mint immediately (live incident: an OpenAI key pasted
   mid-session was rotated on the spot). The only paste surfaces are the interactive
   `wrangler secret put` prompt and 1Password.
-- **Verifying a `secret put` you can't read back:** every put creates a new worker version and
-  bumps the worker's `modified_on` (Workers list API). An unchanged timestamp after a claimed put
-  means it didn't land — wrong directory or wrong account (this caught a missed COHERE_API_KEY
-  put the same day).
+- **Verifying a `secret put` you can't read back:** the definitive check is the secrets-NAME
+  listing — `GET /accounts/<acct>/workers/scripts/sux/secrets` returns every secret's name (never
+  values); a claimed put whose name is absent didn't land. The quick heuristic is the worker's
+  `modified_on` bump (Workers list API) — but it only shows the LATEST version, so two puts in one
+  burst are indistinguishable from one (this ambiguity is exactly what the name listing resolved
+  for a COHERE_API_KEY put the same day).
 
 ## Can I pull existing values out to seed op? (the recurring question)
 
