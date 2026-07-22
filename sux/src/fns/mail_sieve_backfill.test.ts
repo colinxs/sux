@@ -22,8 +22,13 @@ const FIXTURE = [
 
 const INBOX = { id: "mb-inbox", name: "Inbox", role: "inbox" };
 const ARCHIVE = { id: "mb-archive", name: "Archive", role: "archive" };
-const JUNK_SUX = { id: "mb-junk-sux", name: "Junk (sux)", role: null };
-const MAILING_LIST_SUX = { id: "mb-ml-sux", name: "Mailing List (sux)", role: null };
+// Nested-under-Inbox target mailboxes (the new default shape: bare flag name, parentId = Inbox's
+// id) — mirrors what a real Sieve script's `fileinto "INBOX.<label>"` actually creates over JMAP.
+const JUNK_NESTED = { id: "mb-junk-nested", name: "junk", role: null, parentId: INBOX.id };
+const MAILING_LIST_NESTED = { id: "mb-ml-nested", name: "mailing-list", role: null, parentId: INBOX.id };
+// A TOP-LEVEL mailbox that happens to share a target name — must never satisfy a nested lookup
+// (the exact correctness gap #1236 calls out for the old flat resolveMailbox-based lookup).
+const JUNK_TOPLEVEL = { id: "mb-junk-toplevel", name: "junk", role: null, parentId: null };
 
 // Mutable per-test mailbox list (starts with just the two real system mailboxes, and gains a
 // target folder when a test pre-seeds it — otherwise `mail_sieve_backfill` must create it itself).
@@ -35,7 +40,7 @@ function scanImpl(_env: unknown, calls: any[]) {
 	if (method === "Mailbox/set") {
 		const create = calls[0][1]?.create?.m;
 		const id = `mb-created-${boxes.length}`;
-		const created = { id, name: create.name };
+		const created = { id, name: create.name, parentId: create.parentId };
 		boxes.push({ ...created, role: null });
 		return { response: { methodResponses: [["Mailbox/set", { created: { m: created } }, "c"]] }, session: {} };
 	}
@@ -78,7 +83,7 @@ describe("mail_sieve_backfill", () => {
 		expect(runBatch).not.toHaveBeenCalledWith(expect.anything(), expect.arrayContaining([expect.arrayContaining(["Email/set"])]), expect.anything());
 	});
 
-	it("dry_run:false moves matched messages into per-flag mailboxes, creating them on first use", async () => {
+	it("dry_run:false moves matched messages into per-flag mailboxes NESTED under Inbox, creating them on first use", async () => {
 		const r = await mail_sieve_backfill.run(env, { dry_run: false });
 		expect(r.isError).toBeFalsy();
 		const parsed = JSON.parse(r.content![0].text as string);
@@ -86,22 +91,63 @@ describe("mail_sieve_backfill", () => {
 		expect(parsed.moved).toBe(2);
 		const junk = parsed.applied.find((a: any) => a.flag === "junk");
 		const mailingList = parsed.applied.find((a: any) => a.flag === "mailing-list");
-		expect(junk).toEqual({ flag: "junk", mailbox: "Junk (sux)", count: 1 });
-		expect(mailingList).toEqual({ flag: "mailing-list", mailbox: "Mailing List (sux)", count: 1 });
-		// Two NEW mailboxes were created (none pre-existed in `boxes`).
-		expect(boxes.some((b) => b.name === "Junk (sux)")).toBe(true);
-		expect(boxes.some((b) => b.name === "Mailing List (sux)")).toBe(true);
+		expect(junk).toEqual({ flag: "junk", mailbox: "junk", count: 1 });
+		expect(mailingList).toEqual({ flag: "mailing-list", mailbox: "mailing-list", count: 1 });
+		// Two NEW mailboxes were created (none pre-existed in `boxes`), both nested under Inbox.
+		expect(boxes.some((b) => b.name === "junk" && b.parentId === INBOX.id)).toBe(true);
+		expect(boxes.some((b) => b.name === "mailing-list" && b.parentId === INBOX.id)).toBe(true);
+		// The actual Mailbox/set create calls asked for that nesting explicitly.
+		const createCalls = runBatch.mock.calls.filter((c) => c[1]?.[0]?.[0] === "Mailbox/set").map((c) => c[1][0][1].create.m);
+		expect(createCalls).toEqual(expect.arrayContaining([{ name: "junk", parentId: INBOX.id }, { name: "mailing-list", parentId: INBOX.id }]));
 	});
 
-	it("reuses an existing target mailbox instead of creating a duplicate", async () => {
-		boxes.push(JUNK_SUX, MAILING_LIST_SUX);
+	it("reuses an existing NESTED target mailbox instead of creating a duplicate", async () => {
+		boxes.push(JUNK_NESTED, MAILING_LIST_NESTED);
 		await mail_sieve_backfill.run(env, { dry_run: false });
 		const setCalls = runBatch.mock.calls.filter((c) => c[1]?.[0]?.[0] === "Mailbox/set");
 		expect(setCalls.length).toBe(0);
 	});
 
+	it("does not reuse a top-level same-named mailbox as the nested target — creates a distinct nested one instead", async () => {
+		boxes.push(JUNK_TOPLEVEL); // top-level "junk", no parentId — must NOT satisfy the nested lookup
+		const r = await mail_sieve_backfill.run(env, { dry_run: false, categories: ["junk"] });
+		const p = JSON.parse(r.content![0].text as string);
+		const junk = p.applied.find((a: any) => a.flag === "junk");
+		expect(junk.count).toBe(1);
+		// A mailbox/set create call fired (the top-level one didn't satisfy the parent-scoped lookup).
+		const createCall = runBatch.mock.calls.find((c) => c[1]?.[0]?.[0] === "Mailbox/set");
+		expect(createCall![1][0][1].create.m).toEqual({ name: "junk", parentId: INBOX.id });
+		// The message was moved into the NEW nested mailbox, not the pre-existing top-level one.
+		const setCall = runBatch.mock.calls.find((c) => c[1]?.[0]?.[0] === "Email/set");
+		const update = setCall![1][0][1].update;
+		expect(update["1"][`mailboxIds/${JUNK_TOPLEVEL.id}`]).toBeUndefined();
+	});
+
+	it("honors the mailboxes override param for the target mailbox name (still nested under Inbox)", async () => {
+		const r = await mail_sieve_backfill.run(env, { dry_run: false, mailboxes: { junk: "dev-pipeline", "mailing-list": "subscriptions" } });
+		const p = JSON.parse(r.content![0].text as string);
+		const junk = p.applied.find((a: any) => a.flag === "junk");
+		const mailingList = p.applied.find((a: any) => a.flag === "mailing-list");
+		expect(junk.mailbox).toBe("dev-pipeline");
+		expect(mailingList.mailbox).toBe("subscriptions");
+		expect(boxes.some((b) => b.name === "dev-pipeline" && b.parentId === INBOX.id)).toBe(true);
+		expect(boxes.some((b) => b.name === "subscriptions" && b.parentId === INBOX.id)).toBe(true);
+	});
+
+	it("rejects an unknown flag key in mailboxes before ever calling the jmap engine", async () => {
+		const r = await mail_sieve_backfill.run(env, { mailboxes: { bogus: "somewhere" } });
+		expect(r.isError).toBe(true);
+		expect(runBatch).not.toHaveBeenCalled();
+	});
+
+	it("rejects a non-string mailboxes value", async () => {
+		const r = await mail_sieve_backfill.run(env, { mailboxes: { junk: 123 as any } });
+		expect(r.isError).toBe(true);
+		expect(runBatch).not.toHaveBeenCalled();
+	});
+
 	it("moves a message matching multiple categories into every matched mailbox in one patch", async () => {
-		boxes.push(JUNK_SUX);
+		boxes.push(JUNK_NESTED);
 		// "ci@circleci.com" matches ONLY the service_notification "ci" rule (unlike a "no-reply@"
 		// sender, which would also trip the mailing-list/notification cues) — junk (subject) + ci
 		// (sender) is a clean two-flag case.
@@ -120,7 +166,7 @@ describe("mail_sieve_backfill", () => {
 		const setCall = runBatch.mock.calls.find((c) => c[1]?.[0]?.[0] === "Email/set");
 		const update = setCall![1][0][1].update;
 		expect(update["1"][`mailboxIds/${INBOX.id}`]).toBe(null);
-		expect(update["1"][`mailboxIds/${JUNK_SUX.id}`]).toBe(true);
+		expect(update["1"][`mailboxIds/${JUNK_NESTED.id}`]).toBe(true);
 		expect(update["1"][`mailboxIds/mb-created-3`]).toBe(true); // "ci" flag's freshly-created mailbox
 	});
 
@@ -142,7 +188,7 @@ describe("mail_sieve_backfill", () => {
 		const p = JSON.parse(r.content![0].text as string);
 		expect(p.applied).toEqual(
 			expect.arrayContaining([
-				{ flag: "junk", mailbox: "Junk (sux)", count: 1 },
+				{ flag: "junk", mailbox: "junk", count: 1 },
 				expect.objectContaining({ flag: "mailing-list", count: 0, error: expect.any(String) }),
 			]),
 		);
