@@ -185,6 +185,25 @@ describe("runDocumentRadarSync", () => {
 		expect(writeNote.mock.calls[0]?.[2]).not.toContain("original_ref:");
 		expect(writeNote.mock.calls[0]?.[2]).toContain("Buy milk on the way home.");
 	});
+
+	it("still writes the PDF note when shareUrl (the archive leg) throws (#1268)", async () => {
+		const e = env({ DOCUMENT_RADAR_ENABLED: "1", DROPBOX_TOKEN: "t", DROPBOX_APP_FOLDER: "f" });
+		const writeNote = vi.fn(async (_env: unknown, _path: string, _content: string) => ({ ok: true }));
+		const r = await runDocumentRadarSync(e, {
+			listFolder: vi.fn(async () => [{ path: "/documents/registration.pdf", name: "registration.pdf" }]),
+			shareUrl: vi.fn(async () => {
+				throw new Error("token refresh failed");
+			}),
+			ocrImage: vi.fn(async () => undefined),
+			extractPdfText: vi.fn(async () => "VEHICLE REGISTRATION\nExpires: 2031-04-12"),
+			writeNote,
+			readNote: vi.fn(async () => undefined),
+		});
+		expect(r.processed).toEqual(["/documents/registration.pdf"]);
+		expect(r.errors).toBeUndefined();
+		expect(writeNote.mock.calls[0]?.[2]).not.toContain("original_ref:");
+		expect(writeNote.mock.calls[0]?.[2]).toContain("expiry_date: 2031-04-12");
+	});
 });
 
 describe("listTrackedDocuments", () => {

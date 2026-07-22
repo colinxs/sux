@@ -265,4 +265,13 @@ describe("resolveAudience", () => {
 		const req = new Request("https://portal.test/portal?as=nope&preview_token=s3cret-preview");
 		expect(resolveAudience(req, PREVIEW_ENV)).toEqual(new Set(["shared"]));
 	});
+
+	it("falls back to {shared} for a prototype-chain key even with a valid preview_token, never returning a non-Set (#1269)", () => {
+		for (const as of ["constructor", "toString", "valueOf", "hasOwnProperty"]) {
+			const req = new Request(`https://portal.test/portal?as=${as}&preview_token=s3cret-preview`);
+			const result = resolveAudience(req, PREVIEW_ENV);
+			expect(result).toBeInstanceOf(Set);
+			expect(result).toEqual(new Set(["shared"]));
+		}
+	});
 });
