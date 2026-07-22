@@ -303,6 +303,17 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   one directly (only `cron-heartbeat.ts`'s `CRON_JOBS` array needed a manual merge against
   jobs added since) rather than reimplementing from the issue text — much faster and
   proven-tested.
+- **A reusable orphaned commit can bundle MORE issues than the ones you actually want** —
+  before cherry-picking, `git log -1 --format=%B <sha>` and check EVERY issue number it
+  touches against `gh pr list --state open --search "<n>"`, not just the ones in your own
+  batch. #1369/#1380's prior attempt (`d5aab28`) also carried a fix for #1378 that already
+  had its own separate OPEN/mergeable PR (#1383) — cherry-picking the whole commit and
+  leaving #1378's file (`oracle.ts`) in would have duplicated that in-flight PR's diff for
+  no reason. `git restore --staged --worktree -- <file>` the unrelated file(s) back out
+  before committing, and never write `Closes #N` for an issue you didn't actually finish in
+  THIS diff — the disposition script's `partial` bucket is for exactly that, but a literal
+  closing keyword in the commit/PR text auto-closes on merge regardless of what the
+  disposition says (see the closing-keyword gotcha above).
 - **When an issue has already been dropped several times in a row for the SAME unchanged
   reason (an `effort:large` self-description, or a fix that lives entirely outside this
   repo), self-apply the `needs-human` label rather than dropping it yet again** — a comment
