@@ -74,7 +74,7 @@ function segments(text: string): string[] {
  *  to bytes, then Workers-AI `toMarkdown` transcribes the document (native PDF text + image OCR).
  *  A textual Dropbox file is returned as-is. Throws (caller wraps) when the source can't be read or
  *  the toMarkdown binding is unavailable — the caller is told to pass the extracted `text` instead. */
-export async function extractDocText(env: RtEnv, source: string): Promise<{ text: string; name: string }> {
+export async function extractDocText(env: RtEnv, source: string): Promise<{ text: string; name: string; bytes?: Uint8Array }> {
 	const s = source.trim();
 	let bytes: Uint8Array;
 	let name: string;
@@ -134,7 +134,10 @@ export async function extractDocText(env: RtEnv, source: string): Promise<{ text
 	const md = (Array.isArray(res) ? res[0]?.data : (res as { data?: string })?.data) ?? "";
 	const text = String(md).trim();
 	if (!text) throw new Error(`Extracted no text from '${name}'. If it is a scanned image PDF, OCR it first and study the text as { kind: "text" }.`);
-	return { text, name };
+	// bytes are the ORIGINAL document bytes (pre-transcription) — archiveKnowledge's R2 leg for a
+	// Dropbox-path pdf (#1239) reuses these instead of re-deriving Mode A/B, since a Dropbox path
+	// has no directly re-fetchable URL of its own.
+	return { text, name, bytes };
 }
 
 /** List every whitelisted oracle topic with its provenance — the audit view of what's been studied. */
@@ -161,14 +164,24 @@ type ArchiveResult = { r2?: { url: string; sha256: string; size: number }; wayba
 
 /** The other two legs of the #1184 W4 three-sink ingestion pipeline (learnTopic's oracle chunk
  *  store is already the "full text into a messy model" leg — this only adds the two MISSING
- *  legs): archive the original bytes to R2 (best-effort — a Dropbox-path pdf has no directly
- *  fetchable bytes here without re-deriving Mode A/B, so it's skipped and noted rather than
- *  failing the whole learn), fire a best-effort Wayback snapshot for a url source, and write a
- *  human-readable per-topic insight-card note. Every step is independently best-effort: an
- *  archive-leg failure must never fail the underlying distill/whitelist the caller already got. */
+ *  legs): archive the original bytes to R2 (a Dropbox-path pdf's bytes are supplied by the
+ *  caller via `sourceBytes` — extractDocText already fetched them once for transcription, #1239
+ *  — so this never re-derives Mode A/B credentials itself), fire a best-effort Wayback snapshot
+ *  for a url source, and write a human-readable per-topic insight-card note. Every step is
+ *  independently best-effort: an archive-leg failure must never fail the underlying
+ *  distill/whitelist the caller already got. */
 async function archiveKnowledge(
 	env: RtEnv,
-	opts: { topic: string; title?: string; sourceLabel: string; resolvedKind: "text" | "url" | "pdf"; rawSource: string; material: string; distilled: string },
+	opts: {
+		topic: string;
+		title?: string;
+		sourceLabel: string;
+		resolvedKind: "text" | "url" | "pdf";
+		rawSource: string;
+		material: string;
+		distilled: string;
+		sourceBytes?: Uint8Array;
+	},
 ): Promise<ArchiveResult> {
 	const result: ArchiveResult = {};
 
@@ -177,6 +190,9 @@ async function archiveKnowledge(
 		let contentType = "text/plain; charset=utf-8";
 		if (opts.resolvedKind === "text") {
 			bytes = new TextEncoder().encode(opts.material);
+		} else if (opts.resolvedKind === "pdf" && opts.sourceBytes) {
+			bytes = opts.sourceBytes; // pre-fetched pdf bytes (http or Dropbox path, #1239)
+			contentType = "application/pdf";
 		} else if (isHttpUrlStr(opts.rawSource)) {
 			bytes = (await loadBytes(env, { url: opts.rawSource })).bytes;
 			contentType = opts.resolvedKind === "pdf" ? "application/pdf" : "text/html; charset=utf-8";
@@ -185,7 +201,7 @@ async function archiveKnowledge(
 			const ref = await putBlob(env, bytes, contentType);
 			result.r2 = { url: ref.url, sha256: ref.sha256, size: ref.size };
 		} else {
-			result.skipped = "source bytes were not directly fetchable here (e.g. a Dropbox-path pdf) — not archived to R2.";
+			result.skipped = "source bytes were not directly fetchable here — not archived to R2.";
 		}
 	} catch (e) {
 		result.skipped = `R2 archive failed: ${errMsg(e)}`;
@@ -245,7 +261,7 @@ export const study: Fn = {
 		"`topic` (required) namespaces the knowledge base (it becomes a whitelisted `oracle` topic). `title` labels the provenance. It distills into an oracle topic KB and stamps a whitelist marker, so `oracle({problem,topic})` and `recall` both rank it above the model + [web]. " +
 		"`action`: learn (default) → distill + whitelist; list → the studied (whitelisted) topics + provenance (the copyright audit); forget → delete one topic's KB (reversible; the git-versioned vault mirror stays as history). " +
 		"COPYRIGHT-CLEAN: only the material you supply is distilled (it fetches exactly the one url/path — never crawls to find a work), and only the compressed index is stored, never a full-text clone. Additive + reversible. Query with oracle/recall. Needs the Workers-AI binding; pdf-from-file needs DROPBOX_FULL_*. Stateful — never cached. " +
-		"`archive` (default false): also fan out to the two other knowledge-ingestion sinks — the original source bytes (url/pdf-via-url/text; a Dropbox-path pdf is skipped, noted in the result) archived privately to R2, a best-effort Wayback snapshot for a url source, and a human-readable insight-card note written to Knowledge/Distilled/<topic>.md (summary + provenance links). Best-effort: an archive failure never fails the underlying distill/whitelist.",
+		"`archive` (default false): also fan out to the two other knowledge-ingestion sinks — the original source bytes (url/pdf-via-url/pdf-via-Dropbox-path/text) archived privately to R2, a best-effort Wayback snapshot for a url source, and a human-readable insight-card note written to Knowledge/Distilled/<topic>.md (summary + provenance links). Best-effort: an archive failure never fails the underlying distill/whitelist.",
 		inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -309,6 +325,7 @@ export const study: Fn = {
 			let material: string;
 			let sourceLabel: string;
 			let extractedName: string | undefined;
+			let sourceBytes: Uint8Array | undefined;
 			if (resolved === "url") {
 				material = rawSource.trim();
 				sourceLabel = material; // oracle records the URL as the KB source
@@ -316,6 +333,7 @@ export const study: Fn = {
 				const ex = await extractDocText(env, rawSource);
 				material = ex.text;
 				extractedName = ex.name;
+				sourceBytes = ex.bytes;
 				sourceLabel = isHttpUrl(rawSource) ? rawSource.trim() : `dropbox:${normFull(rawSource)}`;
 			} else {
 				material = rawSource;
@@ -342,7 +360,10 @@ export const study: Fn = {
 
 			// The three-sink ingestion pipeline (#1184 W4) is opt-in via `archive` — the default
 			// `learn` call stays exactly as fast/cheap as it always was (one oracle distill pass).
-			const archived = args?.archive === true ? await archiveKnowledge(env, { topic, title: provenance.title, sourceLabel, resolvedKind: resolved, rawSource, material, distilled: last.distilled }) : undefined;
+			const archived =
+				args?.archive === true
+					? await archiveKnowledge(env, { topic, title: provenance.title, sourceLabel, resolvedKind: resolved, rawSource, material, distilled: last.distilled, sourceBytes })
+					: undefined;
 
 			return ok(
 				oj({

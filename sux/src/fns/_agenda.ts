@@ -1443,7 +1443,6 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		...detectTextDrops(textThreads),
 		...relationshipDropsWithOpeners,
 		...detectFollowUpDrops(Date.parse(`${date}T00:00:00Z`), followUpThreads),
-		...relationshipResult.drops,
 		...detectKnowledgeDrops(consolidateFindings, weeklyRecallFindings),
 		...detectWatchDrops(watchFindings),
 		...detectStudyReviewDrops(studyReviewDue),

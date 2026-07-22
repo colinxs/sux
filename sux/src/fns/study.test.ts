@@ -233,6 +233,19 @@ describe("study — learn archive (#1209 three-sink ingestion)", () => {
 		expect(j.archived.r2).toBeUndefined();
 		expect(j.archived.skipped).toBeTruthy();
 	});
+
+	it("archive:true on a Dropbox-path pdf still archives the original bytes to R2 (#1239 — Mode A)", async () => {
+		const { env: base } = makeEnv({ toMarkdown: async () => [{ data: "Notes from the app-folder file." }] });
+		const { env, R2 } = withR2(base);
+		dropboxMock.hasDropbox.mockReturnValue(true);
+		dropboxMock.sharedLink.mockResolvedValue("https://www.dropbox.com/s/abc/notes.pdf?dl=0");
+		fetchMock.mockImplementation(async () => new Response(new Uint8Array([0x25, 0x50, 0x44, 0x46]), { status: 200 }));
+
+		const j = parse(await study.run(env, { source: "/notes.pdf", topic: "notes", archive: true }));
+		expect(j.archived.r2).toMatchObject({ sha256: expect.any(String), size: expect.any(Number) });
+		expect(j.archived.skipped).toBeUndefined();
+		expect(R2.put).toHaveBeenCalledTimes(1);
+	});
 });
 
 describe("study — list / forget (the copyright audit + reversibility)", () => {
