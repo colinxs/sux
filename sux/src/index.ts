@@ -22,6 +22,7 @@ import { shipGithubBillingSnapshot, shipMetricsSnapshot, shipToLoki } from "./gr
 import { handleObservability } from "./observability";
 import { handleRecovery } from "./recovery";
 import { handleAppleHealth, handleMychartRoutes, refreshMychartToken } from "./mychart";
+import { handleConsensusRoutes } from "./consensus";
 import { handlePortalRoutes } from "./portal";
 import { handleGrafanaWebhook } from "./fns/_grafana_hook";
 import { normalizeArgs, normalizeText } from "./normalize";
@@ -1082,6 +1083,12 @@ export default {
 		if (mychartRoute) return mychartRoute;
 		const appleHealth = await handleAppleHealth(new URL(request.url), request, env);
 		if (appleHealth) return appleHealth;
+
+		// Consensus.app academic-search OAuth dance (/consensus/connect -> 302,
+		// /consensus/callback). Same pre-gate reason as /mychart/*; operator-token
+		// gated on /connect, 404 when SUX_CRON_TOKEN is unset.
+		const consensusRoute = await handleConsensusRoutes(new URL(request.url), request, env);
+		if (consensusRoute) return consensusRoute;
 
 		// portal.suxos.net's served view of the git vault (only #portal-tagged /
 		// visibility:portal notes) — same pre-gate reason as the routes above; its own

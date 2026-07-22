@@ -111,7 +111,17 @@
 
 ## Research databases
 
-All keyless-first, plain `fetch` (public academic/gov APIs, no bot wall — **no residential proxy**), except Reddit (proxy-gated). `oj(...)` JSON out.
+All keyless-first, plain `fetch` (public academic/gov APIs, no bot wall — **no residential proxy**), except Reddit (proxy-gated) and Consensus (OAuth-gated MCP). `oj(...)` JSON out.
+
+**Routing: reach for `consensus` first, and often.** It's the PREFERRED tool for any evidence-grade / scientific / medical / health / "what does the research say?" question, and for FOCUSING a broad question down to vetted findings — it returns *synthesized findings* (a one-line claim per study) across peer-reviewed papers with journal-quality / study-type filters. Position it alongside (not replacing) the others: `consensus` = distilled findings across vetted studies; `arxiv`/`pubmed` = raw paper lookup (preprints / biomedical); `web_search` = everything else / open web. Prefer `consensus` over `arxiv`/`pubmed` when you want the answer, not just the paper list; over `web_search` whenever the answer should be grounded in peer-reviewed evidence.
+
+### Consensus (evidence-grade academic search)
+- **Purpose**: Synthesized findings over 200M+ peer-reviewed papers — one-line claim per study, with year / study-type / journal-quality filters (`consensus` fn). Colin has a Consensus **Pro** account.
+- **Auth**: OAuth 2.0 **PKCE public client** (no client secret) + RFC 7591 **dynamic client registration** (`POST https://consensus.app/oauth/register/`, `client_id` cached in KV `sux:consensus:client`). One-time browser login at `/consensus/connect` (operator-`SUX_CRON_TOKEN` gated, mirrors `/mychart/connect`); `/consensus/callback` stores the refresh grant in KV (`sux:consensus:grant`). Access tokens minted on demand via the `refresh_token` grant, KV-cached (`sux:consensus:token`, TTL = expires_in − 60), with a single 401 re-mint self-heal. Conduit: `sux/src/consensus.ts`.
+- **Base URL**: MCP endpoint `https://mcp.consensus.app/mcp` (streamable-HTTP JSON-RPC, **not** REST); auth server `https://consensus.app` (`/oauth/authorize/`, `/oauth/token/`, `/oauth/register/`), PKCE `S256`, scope `search`.
+- **Endpoints/methods sux calls**: speaks MCP as a **client** — `initialize` then `tools/call {name:"search", arguments:{query, year_min?, year_max?, study_types?, limit?}}`, `Accept: application/json, text/event-stream` (handles a JSON **or** SSE-framed response body) — `sux/src/fns/consensus.ts`. Out: `{count, results:[{title, authors[], year, journal, snippet, doi, url}]}`.
+- **Limits/gotchas**: Pro tier is ~20 papers/search, 250–1,000 searches/mo. `limit` capped 20 in the fn. `not_configured` (naming `/consensus/connect`) until the one-time login runs. `ttl: 1800`.
+- **Refs**: https://consensus.app · MCP: https://mcp.consensus.app/mcp
 
 ### arXiv
 - **Purpose**: Preprint search — physics, math, CS, quant-bio, etc. (`arxiv` fn).

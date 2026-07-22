@@ -4,6 +4,7 @@
 // <name>: Fn) and re-run the generator.
 
 import type { Fn } from "../registry";
+import { consensus } from "./consensus";
 import { search } from "./search";
 import { fnEscape } from "./fn";
 import { scrape } from "./scrape";
@@ -141,6 +142,7 @@ import { vault_cross_link_plan } from "./vault_cross_link_plan";
 import { webpush } from "./webpush";
 
 export const FUNCTIONS: Fn[] = [
+	consensus,
 	search,
 	fnEscape,
 	scrape,

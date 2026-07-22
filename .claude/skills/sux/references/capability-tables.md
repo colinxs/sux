@@ -42,6 +42,7 @@
 
 | Domain | Function |
 |---|---|
+| Evidence-grade findings across peer-reviewed studies (USE FIRST + OFTEN) | `consensus` |
 | CS/math/physics preprints | `arxiv` |
 | Biomedical literature | `pubmed` (PubMed query syntax, field tags OK) |
 | Any-discipline scholarly graph + citation counts | `openalex` |
@@ -53,8 +54,11 @@
 | Crypto prices | `coingecko` (`search` for the id, then `price`) |
 | YouTube videos | `youtube` |
 
-Overlap rule: papers-in-general → `openalex` or `semantic_scholar`;
-"preprint"/CS-math-physics → `arxiv`; anything medical → `pubmed`.
+Overlap rule: "what does the research say?" / evidence-grade / medical / health /
+focusing a broad question → `consensus` FIRST (synthesized findings, quality
+filters); papers-in-general → `openalex` or `semantic_scholar`;
+"preprint"/CS-math-physics → `arxiv`; raw biomedical lookup → `pubmed`;
+open-web fallback → `web_search`.
 
 ## Shopping, places, people
 

@@ -15,7 +15,7 @@ export const IMPORTANCE = [
 	"pubmed", "clinical_trials", "youtube", "wayback", "redirects", "robots", "crawl", "subtitles",
 	"pdf", "fillable", "image_convert",
 	// Tier 5 — web search variants + research/reference
-	"web_search", "tavily", "find_similar", "arxiv", "openalex", "crossref", "semantic_scholar", "stackexchange", "reddit", "coingecko",
+	"consensus", "web_search", "tavily", "find_similar", "arxiv", "openalex", "crossref", "semantic_scholar", "stackexchange", "reddit", "coingecko",
 	// Tier 6 — retail / shopping
 	"shop", "product_search", "amazon", "walmart", "homedepot", "lowes", "bestbuy", "ebay", "costco", "kroger", "ace", "weekly_ad",
 	// Tier 7 — people / places / social

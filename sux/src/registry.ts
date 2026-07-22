@@ -741,7 +741,7 @@ export const TOOL_ANNOTATIONS: Record<string, ToolAnnotations> = {
 		[
 			"search", "web_search", "tavily", "scrape", "render", "proxy", "batch_fetch", "crawl",
 			"wayback", "redirects", "robots", "sitemap", "feed", "subtitles",
-			"arxiv", "pubmed", "openalex", "crossref", "semantic_scholar", "clinical_trials", "stackexchange", "reddit", "citation", "find_similar",
+			"consensus", "arxiv", "pubmed", "openalex", "crossref", "semantic_scholar", "clinical_trials", "stackexchange", "reddit", "citation", "find_similar",
 			"shop", "product_search", "amazon", "walmart", "costco", "homedepot", "lowes", "kroger", "bestbuy", "ebay", "ace", "weekly_ad",
 			"places", "people", "people_finder", "coingecko", "youtube", "watch", "linkedin", "facebook",
 			"recall", "oracle",

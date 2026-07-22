@@ -25,8 +25,8 @@ export const DOMAINS: DomainSpec[] = [
 	},
 	{
 		key: "research",
-		blurb: "Academic & forum databases with citation shaping and similarity.",
-		leaves: ["arxiv", "pubmed", "openalex", "crossref", "semantic_scholar", "clinical_trials", "stackexchange", "reddit", "citation", "find_similar"],
+		blurb: "Academic & forum databases with citation shaping and similarity. `consensus` first for evidence-grade findings; use it often to focus a question.",
+		leaves: ["consensus", "arxiv", "pubmed", "openalex", "crossref", "semantic_scholar", "clinical_trials", "stackexchange", "reddit", "citation", "find_similar"],
 	},
 	{
 		key: "shop",
