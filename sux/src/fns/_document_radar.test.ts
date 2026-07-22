@@ -152,6 +152,24 @@ describe("runDocumentRadarSync", () => {
 		expect(writeNote.mock.calls[0]?.[2]).toContain("Buy milk on the way home.");
 	});
 
+	it("archives a PDF's original scan to R2 too, not just images (#1216)", async () => {
+		const e = env({ DOCUMENT_RADAR_ENABLED: "1", DROPBOX_TOKEN: "t", DROPBOX_APP_FOLDER: "f" });
+		const writeNote = vi.fn(async (_env: unknown, _path: string, _content: string) => ({ ok: true }));
+		const storeOriginal = vi.fn(async () => "https://suxos.net/s/pdf123");
+		const r = await runDocumentRadarSync(e, {
+			listFolder: vi.fn(async () => [{ path: "/documents/registration.pdf", name: "registration.pdf" }]),
+			shareUrl: vi.fn(async () => "https://dropbox.example/s/abc"),
+			ocrImage: vi.fn(async () => undefined),
+			extractPdfText: vi.fn(async () => "VEHICLE REGISTRATION\nExpires: 2031-04-12"),
+			writeNote,
+			readNote: vi.fn(async () => undefined),
+			storeOriginal,
+		});
+		expect(r.processed).toEqual(["/documents/registration.pdf"]);
+		expect(storeOriginal).toHaveBeenCalledWith(e, expect.stringContaining("dropbox.example"), "application/pdf");
+		expect(writeNote.mock.calls[0]?.[2]).toContain("original_ref: https://suxos.net/s/pdf123");
+	});
+
 	it("still writes a note when storeOriginal is absent or fails (#1200 best-effort)", async () => {
 		const e = env({ DOCUMENT_RADAR_ENABLED: "1", DROPBOX_TOKEN: "t", DROPBOX_APP_FOLDER: "f" });
 		const writeNote = vi.fn(async (_env: unknown, _path: string, _content: string) => ({ ok: true }));

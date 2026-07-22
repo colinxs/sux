@@ -192,6 +192,7 @@ async function defaultReadNote(env: RtEnv, path: string): Promise<string | undef
 
 const CONTENT_TYPE_BY_EXT: Record<string, string> = {
 	jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", heic: "image/heic", heif: "image/heif",
+	pdf: "application/pdf",
 };
 
 async function defaultStoreOriginal(env: RtEnv, url: string, contentType: string): Promise<string | undefined> {
@@ -248,19 +249,22 @@ export async function runDocumentRadarSync(env: RtEnv, deps: DocumentRadarDeps =
 			const isPdf = PDF_RE.test(entry.name);
 			let text: string | undefined;
 			let originalUrl: string | undefined;
+			// Archive the original scan bytes to R2 (#1200, extended to PDFs by #1216) — best-effort,
+			// never blocks the note, and shares the same Mode-A shared-link mint for both branches.
+			const shareUrl = await deps.shareUrl(env, entry.path);
+			const rawUrl = shareUrl ? dropboxRawUrl(shareUrl) : undefined;
+			if (rawUrl) {
+				const ext = entry.name.split(".").pop()?.toLowerCase() ?? "";
+				originalUrl = await deps.storeOriginal?.(env, rawUrl, CONTENT_TYPE_BY_EXT[ext] ?? "application/octet-stream");
+			}
 			if (isPdf) {
 				text = await deps.extractPdfText(env, entry.path);
 			} else {
-				const url = await deps.shareUrl(env, entry.path);
-				if (!url) {
+				if (!rawUrl) {
 					errors.push(`${entry.path}: could not mint a shared link`);
 					continue;
 				}
-				const rawUrl = dropboxRawUrl(url);
 				text = await deps.ocrImage(env, rawUrl);
-				// Archive the original scan bytes to R2 (#1200) — best-effort, never blocks the note.
-				const ext = entry.name.split(".").pop()?.toLowerCase() ?? "";
-				originalUrl = await deps.storeOriginal?.(env, rawUrl, CONTENT_TYPE_BY_EXT[ext] ?? "application/octet-stream");
 			}
 			if (!text) {
 				errors.push(`${entry.path}: ${isPdf ? "PDF extraction" : "OCR"} returned no text`);

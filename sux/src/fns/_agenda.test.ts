@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { composeDigest, type AgendaDeps, type Drop, detectCrossSemanticDrops, detectDocumentExpiryDrops, detectDrops, detectKnowledgeDrops, detectMonarchDrops, detectMyChartDrops, detectMychartAllergyGapDrops, detectMychartConflictDrops, detectPortfolioDrops, detectRelationshipDrops, detectSavingsRateDrop, detectStudyReviewDrops, detectTextDrops, detectWatchDrops, computeSavingsRate, type EventRef, mailRelationshipThreads, type MailRef, type RelationshipBaseline, type TextThreadRef, rankDropsLearned, runAgenda } from "./_agenda";
+import { composeDigest, type AgendaDeps, type Drop, detectCrossSemanticDrops, detectDocumentExpiryDrops, detectDrops, detectFollowUpDrops, detectKnowledgeDrops, detectMonarchDrops, detectMyChartDrops, detectMychartAllergyGapDrops, detectMychartConflictDrops, detectPortfolioDrops, detectRelationshipDrops, detectSavingsRateDrop, detectStudyReviewDrops, detectTextDrops, detectWatchDrops, computeSavingsRate, type EventRef, mailRelationshipThreads, type MailRef, type RelationshipBaseline, type TextThreadRef, rankDropsLearned, runAgenda } from "./_agenda";
 import { listProposals } from "../proposals";
 import { recordOutcome } from "./_learning";
 import { readInferSignals } from "./_infer";
@@ -42,6 +42,7 @@ const deps = (over: Partial<AgendaDeps> = {}): AgendaDeps => ({
 	mychartConflicts: vi.fn(async () => []),
 	mychartAllergyGaps: vi.fn(async () => []),
 	trackedDocuments: vi.fn(async () => []),
+	followUpThreads: vi.fn(async () => []),
 	...over,
 });
 
@@ -396,6 +397,32 @@ describe("agenda — text detectors (iMessage, #849)", () => {
 		expect(detectTextDrops([{ id: "1", lastFromMe: false, lastText: "[unparsed rich message]" }])).toHaveLength(0);
 		expect(detectTextDrops([{ id: "1", lastFromMe: false, lastText: "" }])).toHaveLength(0);
 		expect(detectTextDrops([{ id: "1", lastFromMe: false }])).toHaveLength(0); // no lastText at all
+	});
+});
+
+describe("agenda — follow-up detector (sent mail awaiting reply, #1217)", () => {
+	const NOW = Date.parse("2026-07-22T00:00:00Z");
+
+	it("flags a thread whose last message was sent by me and is past the min-days wait", () => {
+		const drops = detectFollowUpDrops(NOW, [
+			{ id: "t1", subject: "Re: contract", to: "vendor@example.com", lastAt: "2026-07-10T00:00:00Z", lastFromMe: true },
+		]);
+		expect(drops.map((d) => d.kind)).toEqual(["follow_up"]);
+		expect(drops[0].action.fn).toBe("todoist");
+		expect(drops[0].action.args).toMatchObject({ action: "add" });
+	});
+
+	it("skips a thread that hasn't waited long enough, or whose last message was from them / unknown (fail-closed)", () => {
+		expect(detectFollowUpDrops(NOW, [{ id: "t1", lastAt: "2026-07-20T00:00:00Z", lastFromMe: true }])).toHaveLength(0); // only 2d
+		expect(detectFollowUpDrops(NOW, [{ id: "t1", lastAt: "2026-07-01T00:00:00Z", lastFromMe: false }])).toHaveLength(0); // they replied last
+		expect(detectFollowUpDrops(NOW, [{ id: "t1", lastAt: "2026-07-01T00:00:00Z" }])).toHaveLength(0); // can't tell, skip
+		expect(detectFollowUpDrops(NOW, [{ id: "t1", lastFromMe: true }])).toHaveLength(0); // no lastAt
+	});
+
+	it("dedupe key buckets by week so a sustained wait doesn't re-propose daily", () => {
+		const a = detectFollowUpDrops(NOW, [{ id: "t1", lastAt: "2026-07-10T00:00:00Z", lastFromMe: true }]);
+		const b = detectFollowUpDrops(Date.parse("2026-07-23T00:00:00Z"), [{ id: "t1", lastAt: "2026-07-10T00:00:00Z", lastFromMe: true }]);
+		expect(a[0].dedupe).toBe(b[0].dedupe);
 	});
 });
 
