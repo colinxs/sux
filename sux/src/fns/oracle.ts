@@ -288,12 +288,21 @@ export const oracle: Fn = {
 				names.sort();
 				// KV reads fan out in parallel (order-preserving) — a wide oracle stays ~one round-trip.
 				const loaded = await Promise.all(names.map((t) => loadKb(env, t)));
+				// Computed once and reused below for the top-level `retrieval` field too — sourceStats
+				// reads list() metadata only (no per-chunk GETs), so joining it per-topic here is free.
+				const retrieval = await retrievalStats(env);
+				const retrievalChunksByDomain = new Map(retrieval.domains.filter((d) => d.store === "chunk_keyspace").map((d) => [d.domain, d.chunk_count]));
 				const topics = names.map((t, i) => {
 					const kb = loaded[i];
 					const kb_bytes = kb ? kb.distilled.length : 0;
 					return {
 						topic: t,
+						// chunk_count: rolling distilled-NOTE count (bounded by MAX_CHUNKS, the summary
+						// tier). retrieval_chunk_count: the unbounded per-topic retrieval-store row count
+						// — the same set `forget`'s chunks_deleted removes (#1372); the two diverge
+						// whenever a note's text splits into >1 passage.
 						chunk_count: kb?.chunks.length ?? 0,
+						retrieval_chunk_count: retrievalChunksByDomain.get(sourceDomain(t)) ?? 0,
 						updated_at: kb?.updated_at ?? 0,
 						whitelisted: Boolean(kb?.whitelist),
 						kb_bytes,
@@ -311,18 +320,40 @@ export const oracle: Fn = {
 				// Backfill progress (#1315): the durable Vectorize-backfill cursor per domain
 				// (processed/remaining/done) + the live sux-corpus vectorCount, so 'what's in the
 				// oracle?' also answers 'is Vectorize fully populated yet?' — a pure read, no upserts.
-				return ok(oj({ action, count: topics.length, kb_cap: KB_CAP, topics, retrieval: await retrievalStats(env), corpus: await backfillStatus(env) }));
+				return ok(oj({ action, count: topics.length, kb_cap: KB_CAP, topics, retrieval, corpus: await backfillStatus(env) }));
 			}
 
 			if (action === "get") {
 				const kb = await loadKb(env, topic);
 				if (!kb) return ok(oj({ action, topic, found: false, note: `No knowledge base '${topic}'. Teach it by passing \`knowledge\`.` }));
-				return ok(oj({ action, topic, found: true, chunk_count: kb.chunks.length, sources: kb.sources, distilled: kb.distilled, updated_at: kb.updated_at, whitelisted: Boolean(kb.whitelist), ...(kb.whitelist ? { whitelist: kb.whitelist } : {}) }));
+				// chunk_count is the rolling distilled-NOTE count (bounded by MAX_CHUNKS, the KB
+				// summary tier); retrieval_chunk_count is the unbounded per-topic retrieval-store row
+				// count (the _source.ts passages `forget`'s chunks_deleted actually removes) — the two
+				// diverge whenever a note's text splits into >1 passage (chunkText), so both are reported
+				// under distinct names rather than conflated as one "chunk_count" (#1372).
+				const retrieval_chunk_count = (await listChunks(env, sourceDomain(topic))).length;
+				return ok(
+					oj({
+						action,
+						topic,
+						found: true,
+						chunk_count: kb.chunks.length,
+						retrieval_chunk_count,
+						sources: kb.sources,
+						distilled: kb.distilled,
+						updated_at: kb.updated_at,
+						whitelisted: Boolean(kb.whitelist),
+						...(kb.whitelist ? { whitelist: kb.whitelist } : {}),
+					}),
+				);
 			}
 
 			if (action === "forget") {
 				const existed = (await env.OAUTH_KV.get(`${KV_PREFIX}${topic}`)) != null;
 				await env.OAUTH_KV.delete(`${KV_PREFIX}${topic}`);
+				// chunks_deleted counts the SAME retrieval-store rows `get`/`status` report as
+				// retrieval_chunk_count — the number a caller who just checked those endpoints should
+				// see repeated here, not the (generally smaller) note-count `chunk_count` (#1372).
 				const chunks_deleted = await deleteDomain(env, sourceDomain(topic));
 				return ok(oj({ action, topic, forgotten: existed, chunks_deleted, note: existed ? "knowledge base removed" : "no such topic (nothing to delete)" }));
 			}
@@ -391,9 +422,12 @@ export const oracle: Fn = {
 				return ok(answer);
 			}
 
-			// Learn-only: report what was learned.
+			// Learn-only: report what was learned. retrieval_chunk_count is the same set
+			// `forget`'s chunks_deleted reports/removes (#1372) — reported alongside the
+			// note-count chunk_count so a caller never mistakes one for the other.
 			const learned = await learnTopic(env, topic, knowledge);
-			return ok(oj({ topic, learned: true, source: learned.source, chunk_count: learned.chunk_count, distilled_preview: learned.distilled.slice(0, 400) }));
+			const retrieval_chunk_count = (await listChunks(env, sourceDomain(topic))).length;
+			return ok(oj({ topic, learned: true, source: learned.source, chunk_count: learned.chunk_count, retrieval_chunk_count, distilled_preview: learned.distilled.slice(0, 400) }));
 		} catch (e) {
 			return failWith("upstream_error", `oracle failed: ${errMsg(e)}`);
 		}

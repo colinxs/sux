@@ -366,6 +366,25 @@ describe("oracle — get / list / forget", () => {
 		expect([...kv.store.keys()].some(chunkKey)).toBe(false);
 	});
 
+	it("learn -> status -> forget report the SAME retrieval_chunk_count/chunks_deleted across a full lifecycle (#1372)", async () => {
+		const { env } = makeEnv();
+		await oracle.run(env, { knowledge: "some material worth remembering in detail", topic: "bio" });
+
+		const learnAgain = JSON.parse((await oracle.run(env, { knowledge: "more material about bio", topic: "bio" })).content[0].text);
+		const got = JSON.parse((await oracle.run(env, { action: "get", topic: "bio" })).content[0].text);
+		const status = JSON.parse((await oracle.run(env, { action: "status" })).content[0].text);
+		const statusTopic = status.topics.find((t: any) => t.topic === "bio");
+
+		// get/status/learn all agree on the retrieval-store row count...
+		expect(got.retrieval_chunk_count).toBe(learnAgain.retrieval_chunk_count);
+		expect(statusTopic.retrieval_chunk_count).toBe(learnAgain.retrieval_chunk_count);
+		expect(got.retrieval_chunk_count).toBeGreaterThan(0);
+
+		// ...and forget deletes exactly that many, not the (possibly different) note chunk_count.
+		const forgot = JSON.parse((await oracle.run(env, { action: "forget", topic: "bio" })).content[0].text);
+		expect(forgot.chunks_deleted).toBe(got.retrieval_chunk_count);
+	});
+
 	it("does not see or delete an advise domain's chunks when a topic shares its name (#1242)", async () => {
 		const { env, kv } = makeEnv();
 		// Simulate advise's OWN chunk for a bare "bio" domain — the exact shape advise.ts's
