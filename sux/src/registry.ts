@@ -52,6 +52,13 @@ export type RtEnv = Env &
 
 		BRAVE_API_KEY?: string;
 
+		// CapSolver (api.capsolver.com) — solves the bot-wall CAPTCHAs (reCAPTCHA v2 /
+		// hCaptcha / Cloudflare Turnstile) that a credentialed-portal login throws up.
+		// Read by fns/_portal_scrape.ts's CapSolver client; a `wrangler secret` (NOT in
+		// wrangler.jsonc), like MONARCH_TOKEN. Absent ⇒ portal scrapes that hit a CAPTCHA
+		// return a not_configured/blocked status instead of solving it.
+		CAPSOLVER_API_KEY?: string;
+
 		// Facebook Graph API access token (facebook fn). (linkedin fn now scrapes via
 		// cf-residential render — Proxycurl shut down July 2025 — so it needs no key.)
 		FACEBOOK_TOKEN?: string;

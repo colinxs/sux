@@ -383,3 +383,243 @@ export async function cfRender(env: RtEnv, spec: CfRenderSpec): Promise<CfRender
 		if (browser) await browser.close();
 	}
 }
+
+// --- Stepped session driver (credentialed portals, #portal-scraper) ---------
+//
+// cfRender above is a one-shot navigate+extract. A login-gated portal needs an
+// ordered SEQUENCE of interactions in ONE live browser session — type the
+// username/password, solve a bot-wall CAPTCHA, click submit, wait for the
+// post-login dashboard — then extract. cfRenderSession is that: it reuses the
+// SAME launch/stealth/residential-interception dance as cfRender (so the home-IP
+// egress + fingerprint masking that gets past Akamai apply identically), then
+// walks a `steps` list against the live page.
+//
+// It stays deliberately GENERIC — it knows nothing about "credit scores" or any
+// particular site. Source-specific policy (which selectors, which secrets, what a
+// bot-wall/MFA page looks like) lives one layer up in fns/_portal_scrape.ts. The
+// one non-DOM capability it needs — turning a CAPTCHA into a token — is injected
+// as `solveCaptcha`, so the CapSolver wiring also stays out of this file.
+//
+// Never throws: a launch failure, a step timeout (waitForSelector has its own
+// timeout, so a missing selector FAILS rather than hangs — the "honest failure,
+// never hang" requirement), or a solver miss all resolve to `{ ok:false, error }`,
+// with a best-effort snapshot of the page so the caller can classify why.
+
+export type SessionStep =
+	| { action: "goto"; url: string; wait_until?: string; wait_ms?: number; timeout_ms?: number }
+	| { action: "type"; selector: string; value: string; timeout_ms?: number }
+	| { action: "click"; selector: string; timeout_ms?: number }
+	| { action: "wait_for"; selector: string; timeout_ms?: number }
+	| { action: "wait_ms"; ms: number }
+	| { action: "press"; key: string }
+	| { action: "solve_captcha"; provider: string; site_key?: string; site_key_selector?: string; response_selector?: string };
+
+export type CaptchaChallenge = { provider: string; siteKey: string; websiteUrl: string };
+
+/** Turn a detected CAPTCHA into a solution token (or null if unsolvable). Injected
+ *  by the caller so the CapSolver client stays in fns/_portal_scrape.ts and this
+ *  driver stays provider-agnostic. */
+export type CaptchaSolver = (challenge: CaptchaChallenge) => Promise<string | null>;
+
+export type CfSessionSpec = {
+	start_url: string;
+	steps: SessionStep[];
+	as?: "html" | "text";
+	residential?: boolean;
+	stealth?: boolean;
+	timeout_ms?: number;
+	// fieldName -> CSS selector; each selector's trimmed textContent is returned in `fields`.
+	extract_selectors?: Record<string, string>;
+	solveCaptcha?: CaptchaSolver;
+	debug_recording?: boolean;
+};
+
+export type CfSessionResult =
+	| { ok: true; contentType: string; body: string; text: string; fields: Record<string, string | null>; finalUrl: string; stepsRun: number }
+	| { ok: false; error: string; stepsRun: number; body?: string; text?: string; finalUrl?: string };
+
+// A duck-typed slice of puppeteer's Page — only the members the session driver
+// touches, mirroring PageForStealth's approach so the same cast works and tests
+// can supply a minimal mock.
+type SessionPage = {
+	goto(url: string, opts?: { waitUntil?: string; timeout?: number }): Promise<unknown>;
+	waitForSelector(selector: string, opts?: { timeout?: number; visible?: boolean }): Promise<unknown>;
+	type(selector: string, text: string, opts?: { delay?: number }): Promise<unknown>;
+	click(selector: string, opts?: { timeout?: number }): Promise<unknown>;
+	evaluate(fn: (...a: any[]) => unknown, ...args: any[]): Promise<unknown>;
+	content(): Promise<string>;
+	url(): string;
+	keyboard?: { press(key: string): Promise<unknown> };
+};
+
+// Response fields the major CAPTCHA vendors read on submit. We set ALL of them to
+// the solved token (plus any caller-named `response_selector`) rather than branch
+// per provider — a page only reads the one that matches its widget, and a stray
+// set on an absent field is harmless. Kept in the browser-evaluated function below.
+const CAPTCHA_RESPONSE_SELECTORS = ["#g-recaptcha-response", 'textarea[name="g-recaptcha-response"]', '[name="h-captcha-response"]', "#h-captcha-response", '[name="cf-turnstile-response"]', "#cf-turnstile-response"];
+
+// Best-effort in-page sitekey detection when the caller didn't pass one — the
+// common data-sitekey containers for reCAPTCHA / hCaptcha / Turnstile, plus the
+// reCAPTCHA iframe's `k=` param as a last resort. Runs in the page via evaluate.
+function detectSiteKeyInPage(selector?: string): string {
+	const doc = (globalThis as any).document;
+	const attrs = ["data-sitekey", "data-site-key"];
+	const els: any[] = [];
+	if (selector) {
+		const one = doc.querySelector(selector);
+		if (one) els.push(one);
+	}
+	for (const s of [".g-recaptcha", ".h-captcha", ".cf-turnstile", "[data-sitekey]", "[data-site-key]"]) {
+		for (const el of Array.from(doc.querySelectorAll(s))) els.push(el);
+	}
+	for (const el of els) {
+		for (const a of attrs) {
+			const v = el?.getAttribute?.(a);
+			if (v) return String(v);
+		}
+	}
+	const iframe = doc.querySelector('iframe[src*="recaptcha"], iframe[src*="hcaptcha"], iframe[src*="turnstile"]');
+	const src = iframe?.getAttribute?.("src") || "";
+	const m = /[?&]k=([^&]+)/.exec(src) || /[?&]sitekey=([^&]+)/.exec(src);
+	return m ? decodeURIComponent(m[1]) : "";
+}
+
+function injectCaptchaTokenInPage(token: string, extraSelector: string, knownSelectors: string[]): void {
+	const doc = (globalThis as any).document;
+	const sels = extraSelector ? [extraSelector, ...knownSelectors] : knownSelectors;
+	for (const sel of sels) {
+		for (const el of Array.from(doc.querySelectorAll(sel)) as any[]) {
+			try {
+				el.value = token;
+				el.dispatchEvent(new (globalThis as any).Event("input", { bubbles: true }));
+				el.dispatchEvent(new (globalThis as any).Event("change", { bubbles: true }));
+			} catch {
+				// A read-only/absent field can't be set — skip; another selector may match.
+			}
+		}
+	}
+}
+
+async function execSessionStep(env: RtEnv, page: SessionPage, step: SessionStep, defaultTimeout: number, solveCaptcha?: CaptchaSolver): Promise<void> {
+	switch (step.action) {
+		case "goto": {
+			if (isBlockedTarget(step.url)) throw new Error(`refusing to navigate to a private/loopback/metadata address`);
+			await page.goto(step.url, { waitUntil: step.wait_until ?? "networkidle0", timeout: step.timeout_ms ?? defaultTimeout } as any);
+			if (step.wait_ms && step.wait_ms > 0) await new Promise((r) => setTimeout(r, Math.min(step.wait_ms!, 10000)));
+			return;
+		}
+		case "type": {
+			await page.waitForSelector(step.selector, { timeout: step.timeout_ms ?? defaultTimeout });
+			await page.type(step.selector, step.value);
+			return;
+		}
+		case "click": {
+			await page.waitForSelector(step.selector, { timeout: step.timeout_ms ?? defaultTimeout });
+			await page.click(step.selector);
+			return;
+		}
+		case "wait_for": {
+			await page.waitForSelector(step.selector, { timeout: step.timeout_ms ?? defaultTimeout });
+			return;
+		}
+		case "wait_ms": {
+			await new Promise((r) => setTimeout(r, Math.min(Math.max(step.ms, 0), 30000)));
+			return;
+		}
+		case "press": {
+			if (page.keyboard?.press) await page.keyboard.press(step.key);
+			return;
+		}
+		case "solve_captcha": {
+			if (!solveCaptcha) throw new Error("captcha encountered but no solver configured (CAPSOLVER_API_KEY)");
+			const siteKey = step.site_key || (String(await page.evaluate(detectSiteKeyInPage, step.site_key_selector)) || "");
+			if (!siteKey) throw new Error("captcha sitekey not found on page");
+			const token = await solveCaptcha({ provider: step.provider, siteKey, websiteUrl: page.url() });
+			if (!token) throw new Error(`captcha solve failed (${step.provider})`);
+			await page.evaluate(injectCaptchaTokenInPage, token, step.response_selector ?? "", CAPTCHA_RESPONSE_SELECTORS);
+			return;
+		}
+	}
+}
+
+// One page.evaluate that snapshots what the caller needs to interpret the result:
+// the requested per-field selector text, plus the whole-page innerText for
+// bot-wall/MFA marker scanning. Kept separate from page.content() (raw HTML) so
+// the caller gets both a structured view and the source.
+function extractInPage(selectors: Record<string, string>): { fields: Record<string, string | null>; text: string } {
+	const doc = (globalThis as any).document;
+	const out: Record<string, string | null> = {};
+	for (const k of Object.keys(selectors)) {
+		try {
+			const el = doc.querySelector(selectors[k]);
+			out[k] = el ? String(el.textContent || "").trim() : null;
+		} catch {
+			out[k] = null;
+		}
+	}
+	return { fields: out, text: doc.body ? String(doc.body.innerText || "") : "" };
+}
+
+/**
+ * Drive a live, credentialed browser session: navigate to `start_url`, run the
+ * ordered `steps` (type/click/wait/press/solve_captcha), then snapshot the final
+ * page (raw HTML + innerText + per-selector fields). Reuses cfRender's stealth +
+ * residential-interception so it egresses from a home IP with a masked
+ * fingerprint. Never throws; a step timeout/solver miss returns `{ ok:false }`
+ * with a best-effort page snapshot for the caller to classify (MFA vs bot-wall vs
+ * layout change).
+ */
+export async function cfRenderSession(env: RtEnv, spec: CfSessionSpec): Promise<CfSessionResult> {
+	if (!env.BROWSER) return { ok: false, error: "Browser Run is not configured (BROWSER binding).", stepsRun: 0 };
+	if (isBlockedTarget(spec.start_url)) return { ok: false, error: "Refusing to open a private/loopback/link-local/metadata address.", stepsRun: 0 };
+
+	const residential = spec.residential !== false;
+	const stealth = spec.stealth !== false;
+	const timeout = Math.min(Math.max(spec.timeout_ms ?? 30000, 1), 120000);
+	const debugRecording = spec.debug_recording === true;
+	const selectors = spec.extract_selectors ?? {};
+
+	let browser: Awaited<ReturnType<typeof puppeteer.launch>> | undefined;
+	let stepsRun = 0;
+	let page: SessionPage | undefined;
+
+	const snapshot = async (): Promise<{ body?: string; text?: string; finalUrl?: string }> => {
+		if (!page) return {};
+		try {
+			const body = await page.content();
+			const { text } = (await page.evaluate(extractInPage, {})) as { fields: Record<string, string | null>; text: string };
+			return { body, text, finalUrl: page.url() };
+		} catch {
+			return {};
+		}
+	};
+
+	try {
+		browser = debugRecording ? await puppeteer.launch(env.BROWSER, { recording: true }) : await puppeteer.launch(env.BROWSER);
+		page = (await browser.newPage()) as unknown as SessionPage;
+
+		if (stealth) await applyStealth(page as unknown as PageForStealth, stealthUa(env.STEALTH_CHROME_MAJOR || DEFAULT_STEALTH_CHROME_MAJOR));
+
+		await (page as unknown as { setRequestInterception(on: boolean): Promise<void> }).setRequestInterception(true);
+		(page as unknown as { on(evt: string, h: (req: RequestForInterception) => void): void }).on("request", (req: RequestForInterception) => {
+			void handleRequest(env, req, { residential, blockResources: false });
+		});
+
+		await page.goto(spec.start_url, { waitUntil: "networkidle0", timeout } as any);
+
+		for (const step of spec.steps) {
+			await execSessionStep(env, page, step, timeout, spec.solveCaptcha);
+			stepsRun++;
+		}
+
+		const body = await page.content();
+		const { fields, text } = (await page.evaluate(extractInPage, selectors)) as { fields: Record<string, string | null>; text: string };
+		const as = spec.as === "text" ? "text" : "html";
+		return { ok: true, contentType: as === "text" ? "text/plain" : "text/html", body, text, fields, finalUrl: page.url(), stepsRun };
+	} catch (e) {
+		const snap = await snapshot();
+		return { ok: false, error: `session failed at step ${stepsRun + 1}: ${String((e as Error).message ?? e)}`, stepsRun, ...snap };
+	} finally {
+		if (browser) await browser.close();
+	}
+}
