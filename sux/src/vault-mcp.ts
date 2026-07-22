@@ -7,6 +7,7 @@ import { ingest } from "./fns/ingest";
 import { obsidian, readGitContents, RETRY_ATTEMPTS, retryDelay, readVaultIndexBlob, type VaultCfg, vaultCfg, vaultHead, vaultPut, writeVaultIndexBlob } from "./fns/obsidian";
 import { topKByCosine, vaultSemanticIndex } from "./fns/_vault_semantic";
 import { vaultToday } from "./fns/_util";
+import { vaultDailyDir } from "./fns/_vaultpaths";
 import {
 	bodyExcerpt,
 	bodyKeywords,
@@ -43,8 +44,7 @@ import {
 // (the provider does PKCE + dynamic client registration already), its atomic
 // temp+rename writes (git commits are atomic; live-vault writes go through
 // Obsidian's own adapter), its path guards (badVaultPath in fns/obsidian.ts).
-const DAILY_DIR = "Daily";
-const dailyPath = (env: RtEnv) => `${DAILY_DIR}/${vaultToday(env.VAULT_TZ)}.md`;
+const dailyPath = (env: RtEnv) => `${vaultDailyDir(env)}/${vaultToday(env.VAULT_TZ)}.md`;
 
 type VaultTool = {
 	name: string;

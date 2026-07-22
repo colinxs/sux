@@ -1,6 +1,7 @@
 import { type Fn, fail, ok } from "../registry";
 import { htmlToMd } from "./_markup";
 import { clampBytes, loadBytes, putBlob, vaultToday, oj } from "./_util";
+import { vaultInboxDir } from "./_vaultpaths";
 import { dropboxPut, hasDropbox } from "./dropbox";
 import { embedOne } from "./_embed";
 import { appendInferSignal, hasInferArm } from "./_infer";
@@ -262,8 +263,8 @@ export const ingest: Fn = {
 				notePath = explicit;
 				w = await vaultPut(env, cfg, explicit, md, `sux: ingest ${title.slice(0, 60)}`);
 			} else {
-				const nc = await vaultPutNoClobber(env, cfg, `Inbox/${date} ${slugify(title)}.md`, md, `sux: ingest ${title.slice(0, 60)}`);
-				notePath = nc.ok ? nc.path : `Inbox/${date} ${slugify(title)}.md`;
+				const nc = await vaultPutNoClobber(env, cfg, `${vaultInboxDir(env)}/${date} ${slugify(title)}.md`, md, `sux: ingest ${title.slice(0, 60)}`);
+				notePath = nc.ok ? nc.path : `${vaultInboxDir(env)}/${date} ${slugify(title)}.md`;
 				w = nc;
 			}
 			if (!w.ok) return fail(w.error);

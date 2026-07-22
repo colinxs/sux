@@ -1,5 +1,23 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MYCHART_ORGS, connectedOrgs, crossOrgAllergyGaps, crossOrgMedicationAllergyConflicts, handleAppleHealth, handleMychartRoutes, isUnderFhirBase, mintAccessToken, mychartFetch, readGrant, resolveFhirPath, resolveOrg, substancesOverlap, summarizeMyChart } from "./mychart";
+import {
+	MYCHART_ORGS,
+	buildPullPlan,
+	connectedOrgs,
+	crossOrgAllergyGaps,
+	crossOrgMedicationAllergyConflicts,
+	handleAppleHealth,
+	handleMychartRoutes,
+	isUnderFhirBase,
+	mintAccessToken,
+	mychartFetch,
+	pullType,
+	readGrant,
+	reconcilePull,
+	resolveFhirPath,
+	resolveOrg,
+	substancesOverlap,
+	summarizeMyChart,
+} from "./mychart";
 import { handleObservability } from "./observability";
 
 const ORG = "uwmedicine";
@@ -384,6 +402,68 @@ describe("PHI gate: /s/ handler refuses phi/ keys", () => {
 		const env = { OAUTH_KV: kv, R2: r2 } as any;
 		const resp = await handleObservability(new URL("https://suxos.net/s/11111111-1111-1111-1111-111111111111"), new Request("https://suxos.net/s/11111111-1111-1111-1111-111111111111"), env);
 		expect(resp?.status).toBe(404);
+	});
+});
+
+describe("buildPullPlan / pullType / reconcilePull — the durable `mychart-pull` op's leaves (#1178)", () => {
+	it("buildPullPlan carries org/patient/stamp onto every resourcePlan item", () => {
+		const items = buildPullPlan({ org: ORG, patient: "P1", types: ["DocumentReference"] }, "STAMP");
+		expect(items).toEqual([{ type: "DocumentReference", label: "DocumentReference", query: "patient=P1&_count=100", org: ORG, patient: "P1", stamp: "STAMP" }]);
+	});
+
+	it("pullType pages a searchset, resolves DocumentReference→Binary, writes raw FHIR under org-scoped phi/ — same key shape the old synchronous pull() wrote", async () => {
+		const env = baseEnv();
+		await env.OAUTH_KV.put(`sux:mychart:token:${ORG}`, "AT");
+		const page1 = {
+			resourceType: "Bundle",
+			link: [{ relation: "next", url: `${BASE}/DocumentReference?patient=P1&page=2` }],
+			entry: [{ resource: { resourceType: "DocumentReference", id: "d1", content: [{ attachment: { url: `${BASE}/Binary/b1` } }] } }],
+		};
+		const page2 = { resourceType: "Bundle", entry: [{ resource: { resourceType: "DocumentReference", id: "d2", content: [] } }] };
+		vi.stubGlobal(
+			"fetch",
+			fetchRouter({
+				"/Binary/b1": () => new Response(JSON.stringify({ resourceType: "Binary", contentType: "text/plain", data: "aGk=" }), { status: 200 }),
+				"page=2": () => new Response(JSON.stringify(page2), { status: 200 }),
+				"/DocumentReference": () => new Response(JSON.stringify(page1), { status: 200 }),
+			}),
+		);
+		const item = { type: "DocumentReference", label: "DocumentReference", query: "patient=P1&_count=100", org: ORG, patient: "P1", stamp: "STAMP" };
+		const result = await pullType(env, item);
+		expect(result).toEqual({ org: ORG, patient: "P1", label: "DocumentReference", count: 2, pages: 2, binaries: 1, keys: 3, status: "ok" });
+		const keys = [...env.R2.map.keys()];
+		expect(keys.every((k: string) => k.startsWith(`phi/mychart/${ORG}/P1/`))).toBe(true);
+		expect(keys.some((k: string) => k.includes("/Binary/b1.json"))).toBe(true);
+	});
+
+	it("pullType throws on a 429/5xx so the durable step retries — never silently drops the type the way the old pull() did", async () => {
+		const env = baseEnv();
+		await env.OAUTH_KV.put(`sux:mychart:token:${ORG}`, "AT");
+		vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 429 })));
+		const item = { type: "Condition", label: "Condition", query: "patient=P1&_count=100", org: ORG, patient: "P1", stamp: "STAMP" };
+		await expect(pullType(env, item)).rejects.toThrow(/429/);
+	});
+
+	it("pullType reports a 404 as status:'unsupported', never an error — some orgs don't support every USCDI type", async () => {
+		const env = baseEnv();
+		await env.OAUTH_KV.put(`sux:mychart:token:${ORG}`, "AT");
+		vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 404 })));
+		const item = { type: "Goal", label: "Goal", query: "patient=P1&_count=100", org: ORG, patient: "P1", stamp: "STAMP" };
+		const result = await pullType(env, item);
+		expect(result.status).toBe("unsupported");
+		expect(result.count).toBe(0);
+	});
+
+	it("reconcilePull merges per-type results into counts, and surfaces a truncated type in `errors` — never silently reports a partial sync as clean", () => {
+		const results = [
+			{ org: ORG, patient: "P1", label: "Condition", count: 3, pages: 1, binaries: 0, keys: 1, status: "ok" as const },
+			{ org: ORG, patient: "P1", label: "Goal", count: 0, pages: 0, binaries: 0, keys: 0, status: "unsupported" as const },
+			{ org: ORG, patient: "P1", label: "Observation.laboratory", count: 50, pages: 50, binaries: 0, keys: 50, status: "truncated" as const },
+		];
+		const out = reconcilePull(results);
+		expect(out).toMatchObject({ org: ORG, patient: "P1", counts: { Condition: 3, Goal: 0, "Observation.laboratory": 50 }, truncated: true });
+		expect(out.errors).toHaveProperty("Observation.laboratory");
+		expect(out.errors).not.toHaveProperty("Goal");
 	});
 });
 

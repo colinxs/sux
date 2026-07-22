@@ -4,12 +4,11 @@
 //   GET /logs     — rolling call log with metric fields (JSON; ?tool= / ?limit= )
 //   GET /feedback — server-side issue/suggest backlog (JSON; ?type= / ?tool= / ?limit= )
 //   GET /llms.txt — the capability map as markdown (CDN-cacheable, no secrets)
-// The browsable WAN dashboard (metrics snapshot + recent notes) lives in
-// dashboard.ts, gated by Cloudflare Access at the edge rather than app code — see
-// that file's header. `/health` is intentionally NOT handled here: it falls
-// through to the richer browsable page in github-handler.ts (residential-egress
-// stats). Returns null when the path isn't ours so index.ts can fall through to
-// the dashboard route, then OAuth.
+// `/health` is intentionally NOT handled here: it falls through to the richer
+// browsable page in github-handler.ts (residential-egress stats). Returns null
+// when the path isn't ours so index.ts can fall through to OAuth. (The browsable
+// WAN dashboard that used to live here pre-OAuth, dashboard.ts, is retired — see
+// docs/design/dashboard.md; suxdash P1 at dash.suxos.net replaces it.)
 
 import { type FeedbackKind, readFeedback } from "./fns/_feedback";
 import { maybeDecompress } from "./fns/_gzip";
@@ -32,7 +31,7 @@ function isMeteredObsPath(pathname: string): boolean {
 	return pathname.startsWith("/s/") || pathname === "/metrics" || pathname === "/logs" || pathname === "/feedback";
 }
 
-// Exported so other pre-OAuth public routes (dashboard.ts) can reuse the same
+// Exported so other pre-OAuth public routes (e.g. portal.ts) can reuse the same
 // coarse per-IP backpressure instead of standing up a second limiter.
 export async function obsRateLimited(request: Request, env: RtEnv): Promise<boolean> {
 	if (!env.OBS_RATE_LIMITER) return false;

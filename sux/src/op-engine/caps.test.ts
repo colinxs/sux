@@ -447,3 +447,41 @@ test("makeCaps's cache degrades to a graceful no-op with no OAUTH_KV binding", a
 	await expect(caps.cache?.put("k", { a: 1 })).resolves.toBeUndefined();
 	expect(await caps.cache?.get("k")).toBeUndefined();
 });
+
+// The `mychart-pull` op's terminal (#1178) — writes the reconciled PullResult as a durable
+// manifest under the private phi/ prefix. Real mychart.ts's putPhi (not mocked, unlike the
+// mail/obsidian/contact sinks above) since it's a plain env.R2.put — no dependency graph to
+// keep out of other ops' module load.
+test("phi-manifest sink writes the reconciled PullResult under phi/mychart/<org>/<patient>/manifest-<stamp>.json", async () => {
+	const objs = new Map<string, unknown>();
+	const R2 = { put: vi.fn(async (k: string, v: unknown) => void objs.set(k, v)) };
+	const { sinks } = makeCaps({ R2 } as unknown as RtEnv);
+	const result = { org: "uwmedicine", patient: "P1", counts: { Condition: 3 }, pages: 1, binaries: 0, keys: 1 };
+	const out = await sinks["phi-manifest"].write(result, { clock: { now: () => 0 } } as unknown as Caps);
+	expect(out).toBe(result);
+	const keys = [...objs.keys()];
+	expect(keys).toHaveLength(1);
+	expect(keys[0]).toMatch(/^phi\/mychart\/uwmedicine\/P1\/manifest-.*\.json$/);
+});
+
+test("phi-manifest sink is a no-op without org/patient on the input", async () => {
+	const R2 = { put: vi.fn() };
+	const { sinks } = makeCaps({ R2 } as unknown as RtEnv);
+	const out = await sinks["phi-manifest"].write({}, { clock: { now: () => 0 } } as unknown as Caps);
+	expect(out).toEqual({});
+	expect(R2.put).not.toHaveBeenCalled();
+});
+
+// caps.health (#1178) — a leaf only ever sees `caps`, never `env` (op-engine/registry.ts's
+// header note), so the `mychart-pull` op's `pull-type` leaf reaches mychart.ts's FHIR
+// fetch/OAuth/R2-write through this env-closing capability instead.
+test("caps.health.pullType delegates to mychart.ts's pullType with env in scope", async () => {
+	const R2 = { put: vi.fn(async () => {}) };
+	const OAUTH_KV = { get: vi.fn(async () => "AT"), put: vi.fn(), delete: vi.fn() };
+	vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ resourceType: "Bundle", entry: [] }), { status: 200 })));
+	const caps = makeCaps({ R2, OAUTH_KV } as unknown as RtEnv);
+	const item = { type: "Condition", label: "Condition", query: "patient=P1&_count=100", org: "uwmedicine", patient: "P1", stamp: "STAMP" };
+	const result = await caps.health.pullType(item);
+	expect(result).toMatchObject({ org: "uwmedicine", patient: "P1", label: "Condition", status: "ok" });
+	vi.unstubAllGlobals();
+});

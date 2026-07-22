@@ -101,6 +101,7 @@ function makeSinks(env: RtEnv): Record<string, SinkTarget> {
 		"mychart-outreach": mychartOutreachSink(env),
 		"files-duplicates": filesDuplicatesSink(env),
 		"medical-timeline": medicalTimelineSink(env),
+		"phi-manifest": mychartManifestSink(env),
 	};
 }
 
@@ -459,6 +460,51 @@ function medicalTimelineSink(env: RtEnv): SinkTarget {
 	};
 }
 
+// The `mychart-pull` op's terminal (registry.ts): writes the reconciled `PullResult`
+// (counts/pages/binaries/errors — never resource values) as a manifest under the same
+// private `phi/` prefix the pull itself wrote pages to, so a durable run leaves a durable,
+// resolvable record of what it actually synced. Dynamically imported for the same reason
+// mailLabelsSink/vaultNotesSink are — op-engine's non-mychart ops never pull mychart.ts's
+// FHIR dependency graph into their module load. A malformed input (no org/patient — the
+// `map` fan-out came back empty) is a no-op, not a hard failure.
+function mychartManifestSink(env: RtEnv): SinkTarget {
+	return {
+		name: "phi-manifest",
+		async write(input: any, caps: Caps): Promise<any> {
+			const org = typeof input?.org === "string" ? input.org : "";
+			const patient = typeof input?.patient === "string" ? input.patient : "";
+			if (!org || !patient) return input;
+			const { putPhi } = await import("../mychart.js");
+			const stamp = new Date(caps.clock.now()).toISOString().replace(/[:.]/g, "-");
+			await putPhi(env, `mychart/${org}/${patient}/manifest-${stamp}.json`, JSON.stringify(input), "application/json");
+			return input;
+		},
+	};
+}
+
+// The `mychart-pull` op's `pull-type` leaf effect (registry.ts): a leaf only ever sees
+// `caps`, never `env` (see registry.ts's header note) — the durable FHIR fetch/paginate/
+// putPhi loop lives in mychart.ts's `pullType`, which DOES need `env` (OAuth token KV,
+// fetch, R2). `health` closes over `env` here (same trick sinks already use) so the leaf
+// can reach it without suxlib's `Caps` interface ever needing to know mychart/FHIR exists —
+// `health` is an extra property on the object `makeCaps` returns, typed via the local
+// `OpCaps` intersection below, never added to suxlib's own `Caps` type (that repo is
+// read-only from this one; see CLAUDE.md's "don't widen Caps itself" gotcha).
+export interface MychartPullHealth {
+	pullType(item: import("../mychart.js").PullPlanItem): Promise<import("../mychart.js").PullTypeResult>;
+}
+
+function mychartHealth(env: RtEnv): MychartPullHealth {
+	return {
+		async pullType(item) {
+			const { pullType } = await import("../mychart.js");
+			return pullType(env, item);
+		},
+	};
+}
+
+export type OpCaps = Caps & { health: MychartPullHealth };
+
 // KV-backed memo cache for `LeafOpts.memo`/`SinkOpts.memo` — suxlib's runGoverned
 // (inline) and durable.ts's runStep (once #1071 lands) both short-circuit on a hit here
 // keyed by control/memo.ts's memoKey. Values are whatever shape the leaf/sink returns
@@ -489,7 +535,7 @@ function makeGovernors(): Record<string, Governor> {
 	};
 }
 
-export function makeCaps(env: RtEnv): Caps {
+export function makeCaps(env: RtEnv): OpCaps {
 	return {
 		store: r2Store(env),
 		llm: workersAiLlm(env),
@@ -498,5 +544,6 @@ export function makeCaps(env: RtEnv): Caps {
 		sinks: makeSinks(env),
 		governors: makeGovernors(),
 		cache: kvCache(env),
+		health: mychartHealth(env),
 	};
 }

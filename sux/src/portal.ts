@@ -9,12 +9,13 @@
 // target exists but isn't public) rather than leaking content or 404ing silently.
 //
 // Served here — before the OAuth provider claims every path — for the same
-// pre-gate reason /dashboard, /mychart, /apple-health are (see index.ts): this
-// is a plain unauthenticated GET surface, not an MCP JSON-RPC call. UNLIKE
-// /dashboard (Cloudflare-Access-gated), /portal's whole point is public,
-// unauthenticated reads — so it's fail-closed on its OWN feature flag
-// (PORTAL_ENABLED) instead, since flipping it on is what turns a private vault
-// into a partially-public one.
+// pre-gate reason /mychart, /apple-health are (see index.ts): this is a plain
+// unauthenticated GET surface, not an MCP JSON-RPC call. UNLIKE the retired
+// /dashboard pane (Cloudflare-Access-gated; superseded by dash.suxos.net, see
+// docs/design/dashboard.md), /portal's whole point is public, unauthenticated
+// reads — so it's fail-closed on its OWN feature flag (PORTAL_ENABLED)
+// instead, since flipping it on is what turns a private vault into a
+// partially-public one.
 //
 // First slice only (#824): serves single notes + an index of portal-visible
 // notes, and resolves wikilinks. Deferred (see design doc's "Open items"):
@@ -228,9 +229,9 @@ export async function handlePortalRoutes(url: URL, request: Request, env: RtEnv)
 	const cfg = vaultCfg(env);
 	if ("error" in cfg) return new Response("not found", { status: 404 });
 
-	// Same coarse per-IP backstop as /dashboard's notes route: an unauthenticated
-	// route that fans out into GitHub API calls is worth rate-limiting regardless
-	// of who's asking (see dashboard.ts's header).
+	// Same coarse per-IP backstop the now-retired /dashboard's notes route used:
+	// an unauthenticated route that fans out into GitHub API calls is worth
+	// rate-limiting regardless of who's asking.
 	if (await obsRateLimited(request, env)) return new Response("rate limited", { status: 429 });
 
 	let records: VaultRecord[];
@@ -259,7 +260,8 @@ export async function handlePortalRoutes(url: URL, request: Request, env: RtEnv)
 
 	// `records` (from scanVault) only carries a bounded excerpt, not the full body —
 	// re-read the note. `list`/the index return dir-prefixed paths, but `read`
-	// re-applies OBSIDIAN_VAULT_DIR itself (mirrors dashboard.ts's recentNotes fix).
+	// re-applies OBSIDIAN_VAULT_DIR itself (mirrors the same fix the now-retired
+	// dashboard.ts's recentNotes once needed).
 	const readPath = cfg.dir && match.path.startsWith(`${cfg.dir}/`) ? match.path.slice(cfg.dir.length + 1) : match.path;
 	const r = await obsidian.run(env, { action: "read", path: readPath, backend: "git" });
 	if (r.isError) return new Response("not found", { status: 404 });

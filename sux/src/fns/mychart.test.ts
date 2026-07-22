@@ -128,45 +128,34 @@ describe("mychart fn", () => {
 		expect(r.errorCode).toBe("not_configured");
 	});
 
-	it("pull pages a searchset, resolves DocumentReference→Binary, writes raw FHIR to org-scoped phi/, returns counts + org only", async () => {
+	it("pull starts a durable run and returns {instanceId} immediately — never blocks in-request on the FHIR sync (#1178)", async () => {
 		const env = connectedEnv();
-		const page1 = {
-			resourceType: "Bundle",
-			link: [{ relation: "next", url: `${BASE}/DocumentReference?patient=PatientA&page=2` }],
-			entry: [{ resource: { resourceType: "DocumentReference", id: "d1", content: [{ attachment: { url: `${BASE}/Binary/b1` } }] } }],
-		};
-		const page2 = { resourceType: "Bundle", entry: [{ resource: { resourceType: "DocumentReference", id: "d2", content: [] } }] };
-		vi.stubGlobal(
-			"fetch",
-			vi.fn(async (u: any) => {
-				const url = String(u);
-				if (url.includes(".well-known/smart-configuration")) return smartCfg();
-				if (url === TOKEN) return new Response(JSON.stringify({ access_token: "AT", expires_in: 3600 }), { status: 200 });
-				if (url.includes("/Binary/b1")) return new Response(JSON.stringify({ resourceType: "Binary", contentType: "text/plain", data: "aGk=" }), { status: 200 });
-				if (url.includes("/DocumentReference") && url.includes("page=2")) return new Response(JSON.stringify(page2), { status: 200 });
-				if (url.includes("/DocumentReference")) return new Response(JSON.stringify(page1), { status: 200 });
-				// every other USCDI type returns an empty searchset
-				return new Response(JSON.stringify({ resourceType: "Bundle", entry: [] }), { status: 200 });
-			}),
-		);
+		const created: any[] = [];
+		env.OP_WORKFLOW = { create: vi.fn(async (opts: any) => (created.push(opts), { id: "instance-1" })) };
 		const out = parse(await mychart.run(env, { op: "pull", types: ["DocumentReference"] })); // org defaulted (sole connected)
 		expect(out.org).toBe(ORG);
 		expect(out.patient).toBe("PatientA");
-		expect(out.counts.DocumentReference).toBe(2); // d1 (page1) + d2 (page2)
-		expect(out.binaries).toBe(1);
-		expect(out.pages).toBe(2);
-		// raw FHIR landed under the private, org-scoped phi/ prefix, and the Binary was resolved+stored
-		const keys = [...env.R2.map.keys()];
-		expect(keys.every((k) => k.startsWith(`phi/mychart/${ORG}/`))).toBe(true);
-		expect(keys.some((k) => k.includes("/Binary/b1.json"))).toBe(true);
-		// counts only — no resource values in the summary
-		expect(JSON.stringify(out)).not.toContain("resourceType");
+		expect(out.instanceId).toBe("instance-1");
+		expect(created).toHaveLength(1);
+		expect(created[0].params).toMatchObject({ opId: "mychart-pull", input: { org: ORG, patient: "PatientA", types: ["DocumentReference"] } });
+		// nothing was fetched or written synchronously — the actual FHIR pagination only
+		// happens once the durable Workflow instance itself runs (see mychart.test.ts's
+		// pullType coverage for that logic).
+		expect(env.R2.map.size).toBe(0);
+	});
+
+	it("pull without the OP_WORKFLOW binding is not_configured, not a silent inline fallback", async () => {
+		const env = connectedEnv();
+		const r = await mychart.run(env, { op: "pull" });
+		expect(r.errorCode).toBe("not_configured");
 	});
 
 	it("pull on an org with no grant is not_configured, and doesn't touch another connected org's data", async () => {
 		const env = connectedEnv();
+		env.OP_WORKFLOW = { create: vi.fn() };
 		const r = await mychart.run(env, { op: "pull", org: ORG2 });
 		expect(r.errorCode).toBe("not_configured");
+		expect(env.OP_WORKFLOW.create).not.toHaveBeenCalled();
 		expect(env.R2.map.size).toBe(0);
 	});
 });

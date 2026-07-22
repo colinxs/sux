@@ -319,66 +319,128 @@ export interface PullResult {
 	binaries: number;
 	keys: number;
 	truncated?: boolean;
+	errors?: Record<string, string>;
 }
 
-// A hard page ceiling per plan item so a runaway/looping `next` chain can't blow the
-// Worker's wall-clock budget on a single resource type.
+// A hard page ceiling per plan item so a runaway/looping `next` chain can't blow a
+// single durable step's wall-clock budget.
 const MAX_PAGES_PER_TYPE = 50;
 
-/** Execute a pull for `org`: iterate the resource plan, page through each searchset,
- * resolve DocumentReference → Binary attachments, and write every raw page + Binary
- * under `phi/mychart/${org}/...` (org-scoped so two orgs' opaque patient ids can never
- * collide on the same key). Returns a per-label count summary — never resource values. */
-export async function pull(env: RtEnv, org: string, opts?: { types?: string[]; since?: string }): Promise<PullResult> {
-	const grant = await readGrant(env, org);
-	const patient = grant?.patient;
-	if (!patient) throw new Error(`MyChart pull needs a patient id for org '${org}' — reconnect via /mychart/connect?org=${org} (the grant carries it).`);
-	const base = fhirBase(org);
-	const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-	const plan = resourcePlan(patient, opts?.types, opts?.since);
+// ---------------- pull: durable op-engine leaves (op-engine/registry.ts's "mychart-pull") ----------------
+//
+// `pull` used to be one synchronous function looping the WHOLE plan (every USCDI type,
+// every page) inside one `fn.run` — dozens of serial round-trips against a real hospital
+// FHIR proxy, which routinely blew past sux's own 60s `withDeadline` wrapper (index.ts) and
+// got silently abandoned (#1178; this was sux's own deadline, never the MCP client's). It's
+// now split into two leaves an op-engine `map` can fan out under Workflows' own per-step
+// retry/backoff, each memoized by `step.do` (see op-engine/durable.ts): `buildPullPlan`
+// (pure) and `pullType` (one resource type's full pagination, thrown on a transient error so
+// the durable step retries with backoff instead of the old silent `break`).
+
+export interface PullPlanItem extends PlanItem {
+	org: string;
+	patient: string;
+	stamp: string;
+}
+
+/** Build the org/patient-scoped plan for a durable pull — `resourcePlan` unchanged, just
+ * carrying `org`/`patient`/`stamp` on every item so each fanned-out `pullType` leaf is
+ * self-contained (a `map` leaf only ever sees its own item, never the tree's original input). */
+export function buildPullPlan(input: { org: string; patient: string; types?: string[]; since?: string }, stamp: string): PullPlanItem[] {
+	return resourcePlan(input.patient, input.types, input.since).map((p) => ({ ...p, org: input.org, patient: input.patient, stamp }));
+}
+
+export interface PullTypeResult {
+	org: string;
+	patient: string;
+	label: string;
+	count: number;
+	pages: number;
+	binaries: number;
+	keys: number;
+	status: "ok" | "unsupported" | "truncated";
+}
+
+/** Page through ONE resource type's searchset, resolve DocumentReference → Binary
+ * attachments, and write every raw page + Binary under `phi/mychart/${org}/...`
+ * (org-scoped so two orgs' opaque patient ids can never collide on the same key) —
+ * exactly the inner loop the old synchronous `pull` ran per plan item. A 429/5xx
+ * THROWS so the durable interpreter's `step.do` retries this ONE type with backoff
+ * (durable.ts's `stepConfig`, driven by the leaf's declared `retries`) instead of the
+ * old behavior of silently `break`ing and losing the whole type. A 404 (org doesn't
+ * support this type) is reported as `status:'unsupported'`, never an error. */
+export async function pullType(env: RtEnv, item: PullPlanItem): Promise<PullTypeResult> {
+	const base = fhirBase(item.org);
+	let url: string | null = `${base}/${item.type}?${item.query}`;
+	let page = 0;
+	let count = 0;
+	let binaries = 0;
+	let keys = 0;
+	let status: PullTypeResult["status"] = "ok";
+
+	while (url) {
+		if (page >= MAX_PAGES_PER_TYPE) {
+			status = "truncated";
+			break;
+		}
+		const resp = await mychartFetch(env, item.org, url);
+		if (resp.status === 429 || resp.status >= 500) {
+			throw new Error(`MyChart pull: HTTP ${resp.status} fetching ${item.label} (org ${item.org}, page ${page + 1})`);
+		}
+		if (resp.status === 404) return { org: item.org, patient: item.patient, label: item.label, count, pages: page, binaries, keys, status: "unsupported" };
+		if (resp.status >= 400) {
+			status = "truncated";
+			break;
+		}
+		const bundle: any = await resp.json().catch(() => null);
+		if (!bundle) {
+			status = "truncated";
+			break;
+		}
+		page++;
+		const entries: any[] = Array.isArray(bundle.entry) ? bundle.entry : [];
+		const resources = entries.map((e) => e?.resource).filter(Boolean);
+		count += resources.length;
+		keys += 1;
+		await putPhi(env, `mychart/${item.org}/${item.patient}/${item.label}/${item.stamp}-p${page}.json`, JSON.stringify(bundle), "application/fhir+json");
+		if (item.type === "DocumentReference") {
+			for (const doc of resources) {
+				for (const bin of await resolveBinaries(env, item.org, base, doc)) {
+					await putPhi(env, `mychart/${item.org}/${item.patient}/Binary/${bin.id}.json`, bin.body, "application/fhir+json");
+					binaries++;
+					keys++;
+				}
+			}
+		}
+		const next = nextLink(bundle);
+		url = next && isUnderFhirBase(item.org, next) ? next : null;
+	}
+	return { org: item.org, patient: item.patient, label: item.label, count, pages: page, binaries, keys, status };
+}
+
+/** Merge the per-type fan-out results (op-engine `map` output) into the summary
+ * `PullResult` the `mychart` fn returns — `errors` non-empty means the caller KNOWS
+ * the sync was partial (a truncated/errored type is never silently reported clean). */
+export function reconcilePull(results: PullTypeResult[]): PullResult {
 	const counts: Record<string, number> = {};
+	const errors: Record<string, string> = {};
 	let pages = 0;
 	let binaries = 0;
 	let keys = 0;
 	let truncated = false;
-
-	for (const item of plan) {
-		let url: string | null = `${base}/${item.type}?${item.query}`;
-		let page = 0;
-		counts[item.label] = counts[item.label] ?? 0;
-		while (url) {
-			if (page >= MAX_PAGES_PER_TYPE) {
-				truncated = true;
-				break;
-			}
-			const resp = await mychartFetch(env, org, url);
-			const bundle: any = await resp.json().catch(() => null);
-			if (resp.status >= 400 || !bundle) {
-				// A single failing resource type must not sink the whole pull (some orgs
-				// 404 a type they don't support). Record nothing and move on.
-				break;
-			}
-			pages++;
-			page++;
-			const entries: any[] = Array.isArray(bundle.entry) ? bundle.entry : [];
-			const resources = entries.map((e) => e?.resource).filter(Boolean);
-			counts[item.label] += resources.length;
-			keys += 1;
-			await putPhi(env, `mychart/${org}/${patient}/${item.label}/${stamp}-p${page}.json`, JSON.stringify(bundle), "application/fhir+json");
-			if (item.type === "DocumentReference") {
-				for (const doc of resources) {
-					for (const bin of await resolveBinaries(env, org, base, doc)) {
-						await putPhi(env, `mychart/${org}/${patient}/Binary/${bin.id}.json`, bin.body, "application/fhir+json");
-						binaries++;
-						keys++;
-					}
-				}
-			}
-			const next = nextLink(bundle);
-			url = next && isUnderFhirBase(org, next) ? next : null;
+	for (const r of results) {
+		counts[r.label] = r.count;
+		pages += r.pages;
+		binaries += r.binaries;
+		keys += r.keys;
+		if (r.status === "truncated") {
+			truncated = true;
+			errors[r.label] = "truncated (page cap or non-retryable HTTP error)";
 		}
 	}
-	return { org, patient, counts, pages, binaries, keys, ...(truncated ? { truncated } : {}) };
+	const org = results[0]?.org ?? "";
+	const patient = results[0]?.patient ?? "";
+	return { org, patient, counts, pages, binaries, keys, ...(truncated ? { truncated } : {}), ...(Object.keys(errors).length ? { errors } : {}) };
 }
 
 // ---------------- summarize: last-pull → redacted agenda signal (W6) ----------------

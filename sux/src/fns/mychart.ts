@@ -1,6 +1,7 @@
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { errMsg, oj } from "./_util";
-import { MYCHART_ORGS, mychartConfigured, mychartFetch, pull, readGrant, redirectUri, resolveFhirPath, resolveOrg } from "../mychart";
+import { MYCHART_ORGS, mychartConfigured, mychartFetch, readGrant, redirectUri, resolveFhirPath, resolveOrg } from "../mychart";
+import { runVerb } from "./run";
 
 // MyChart — Epic SMART-on-FHIR clinical records, read-only. The interactive OAuth
 // dance lives on the public /mychart/connect + /mychart/callback routes (src/mychart.ts);
@@ -32,7 +33,7 @@ export const mychart: Fn = {
 		"MyChart — READ-ONLY Epic clinical records over SMART-on-FHIR (labs, vitals, conditions, meds, allergies, immunizations, procedures, notes) across multiple health systems. Ops: " +
 		"status (no org — grant presence/patient id/scopes/refresh-token age for EVERY registry org, NEVER returns token material) | " +
 		"connect ({org?} — returns the /mychart/connect URL to open in a browser — the fn can't do the interactive login itself) | " +
-		"pull ({org?, types?:[...], since?:'YYYY-MM-DD'} — sync: pages the USCDI resource set for one org, resolves DocumentReference→Binary notes, writes raw FHIR to private R2; returns per-type COUNTS only, never values) | " +
+		"pull ({org?, types?:[...], since?:'YYYY-MM-DD'} — starts a DURABLE sync job (pages the USCDI resource set for one org, resolves DocumentReference→Binary notes, writes raw FHIR to private R2; never values, never inline — a full sync is dozens of round-trips, so this always returns {instanceId} immediately; poll with `run{action:'status', instanceId}` for the eventual per-type counts/errors) | " +
 		"get ({org?, path:'Observation?category=vital-signs&date=ge2026-06-01'} — read-only FHIR passthrough against one org, path-validated against its FHIR base). " +
 		`\`org\` is one of: ${ORG_IDS.join(", ")} — omit it when exactly one org is connected (defaults to it), otherwise required. ` +
 		"PHI never enters the response cache or public share links. " +
@@ -132,12 +133,18 @@ export const mychart: Fn = {
 				const resolved = await resolveOrg(env, a?.org);
 				if ("error" in resolved) return failWith("bad_input", resolved.error);
 				const { org } = resolved;
-				if (!(await readGrant(env, org))) return failWith("not_configured", `MyChart not connected for org '${org}' — open /mychart/connect?org=${org} once.`);
+				const grant = await readGrant(env, org);
+				if (!grant?.patient) return failWith("not_configured", `MyChart not connected for org '${org}' — open /mychart/connect?org=${org} once.`);
 				if (!env.R2) return failWith("not_configured", "op=pull needs the R2 bucket bound (raw FHIR is written to the private phi/ prefix).");
+				if (!env.OP_WORKFLOW) return failWith("not_configured", "op=pull needs the OP_WORKFLOW binding (the pull runs as a durable job, never inline — see `run`).");
 				const types = Array.isArray(a?.types) ? a.types.map(String).filter(Boolean) : undefined;
 				const since = typeof a?.since === "string" && a.since.trim() ? a.since.trim() : undefined;
-				const r = await pull(env, org, { types, since });
-				return ok(oj(r));
+				// A full USCDI sync is dozens of serial FHIR round-trips — always durable, never
+				// inline, so it can't be silently abandoned by sux's own 60s per-request deadline
+				// (index.ts's withDeadline; #1178). Returns immediately; poll with
+				// `run{action:"status", instanceId}` for the eventual counts/errors.
+				const { instanceId } = await runVerb({ op: "mychart-pull", input: { org, patient: grant.patient, types, since }, mode: "durable" }, env);
+				return ok(oj({ org, patient: grant.patient, instanceId, note: "Durable pull started — poll with run{action:'status', instanceId} for counts/errors once it completes." }));
 			}
 
 			return failWith("bad_input", `mychart: unknown op '${op}'. Use status | connect | pull | get.`);

@@ -37,6 +37,10 @@
 	// interpret a suxlib Op tree step-by-step, so a run survives isolate eviction,
 	// step retries, and multi-day human (ask) pauses. See src/op-engine/durable.ts.
 	"workflows": [{ "name": "op-workflow", "binding": "OP_WORKFLOW", "class_name": "OpWorkflow" }],
+	// Raised past the default (1,000) for the "mychart-pull" op (#1178): a full USCDI sync
+	// is ~17 resource types × up to 50 pages each, plus a DocumentReference's Binary
+	// fan-out and OAuth token refreshes, all inside one durable run.
+	"limits": { "subrequests": 5000 },
 	// Browser Run (Cloudflare renamed "Browser Rendering" -> "Browser Run" Apr 2026 —
 	// same `browser` binding shape and `@cloudflare/puppeteer` package, purely additive:
 	// CDP endpoint, WebMCP, session recordings, 30->120 concurrency) — headless Chromium

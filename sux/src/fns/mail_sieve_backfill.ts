@@ -58,21 +58,40 @@ function resolveMailbox(boxes: any[], mailbox: string): string | undefined {
 	return boxes.some((b) => b?.id === mailbox) ? mailbox : undefined;
 }
 
-// The visible Fastmail folder each coarse-tag flag moves into. Suffixed "(sux)" so a name never
-// collides with — and never gets resolved onto — a REAL system mailbox (e.g. plain "Junk" would
-// match `resolveMailbox`'s role lookup and start feeding Fastmail's own spam trainer/retention
-// policy, which these heuristic categories have nothing to do with).
-const FLAG_MAILBOX_NAMES: Record<string, string> = {
-	junk: "Junk (sux)",
-	spam: "Spam (sux)",
-	"mailing-list": "Mailing List (sux)",
-	notification: "Notifications (sux)",
-	gh: "GitHub (sux)",
-	gitlab: "GitLab (sux)",
-	vercel: "Vercel (sux)",
-	ci: "CI (sux)",
-};
-const mailboxNameForFlag = (flag: string): string => FLAG_MAILBOX_NAMES[flag] ?? `${flag} (sux)`;
+/** Resolve a mailbox nested directly under `parentId` by name — PARENT-scoped, unlike
+ *  resolveMailbox above, so a same-named TOP-LEVEL mailbox (e.g. Fastmail's own system "Junk")
+ *  can never satisfy a lookup meant for a target nested under Inbox (#1236). */
+function resolveChildMailbox(boxes: any[], parentId: string, name: string): string | undefined {
+	const key = name.toLowerCase();
+	const found = boxes.find((b) => String(b?.parentId ?? "") === parentId && String(b?.name ?? "").toLowerCase() === key);
+	return found?.id ? String(found.id) : undefined;
+}
+
+// The flags matchCoarseCategories/_mail_sieve.ts's rule set can produce — junk/spam/mailing-list/
+// notification, plus the four per-service tags gh/gitlab/vercel/ci (from SERVICE_SENDERS there).
+// Not exported by _mail_sieve.ts (allRules() is private to that file), so this list is kept in
+// sync by hand — it must match every `flags: [...]` entry in that file's allRules(). Used both as
+// the default per-flag mailbox name (see mailboxNameForFlag) and to validate the `mailboxes`
+// override input's keys, the same way `categories` above is validated against ALL_SIEVE_CATEGORIES.
+const ALL_SIEVE_FLAGS = ["junk", "spam", "mailing-list", "notification", "gh", "gitlab", "vercel", "ci"] as const;
+
+// The visible Fastmail folder each coarse-tag flag moves into, NESTED under the account's real
+// Inbox mailbox (parentId = Inbox's own id) — this mirrors what a traditional Sieve script's
+// `fileinto "INBOX.<label>"` actually creates/targets over IMAP (JMAP has no dotted-name
+// hierarchy; that convention surfaces here as a Mailbox object whose `parentId` points at Inbox),
+// which is what Colin's real, hand-pasted Sieve script files NEW mail into. Backfilled mail and
+// sieve-filed mail have to land in the SAME folder for "backfill" to mean anything (#1236) — the
+// prior default was a flat, top-level `${flag} (sux)` name. The "(sux)" suffix existed so a bare
+// name like "Junk" could never collide with — and get wrongly resolved onto — Fastmail's own
+// top-level system "Junk" mailbox and its spam trainer/retention policy. Nesting under Inbox
+// removes that need entirely: every lookup here is PARENT-scoped (see resolveChildMailbox), so a
+// same-named top-level system mailbox can never satisfy it, and the default name can just be the
+// bare flag string. `mailboxes` (fn input) lets an operator override individual flags to whatever
+// folder name their own installed Sieve script actually uses — sux can't discover a hand-pasted
+// script's contents to derive this automatically.
+function mailboxNameForFlag(flag: string, overrides?: Record<string, string>): string {
+	return overrides?.[flag] ?? flag;
+}
 
 /** The first methodResponse for `method`; throws JmapError on a method-level JMAP error in the batch. */
 function resultFor(methodResponses: any[], method: string): any {
@@ -97,7 +116,7 @@ export const mail_sieve_backfill: Fn = {
 	surface: "leaf",
 	annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
 	description:
-		"One-time backfill: apply mail_sieve's coarse categories (junk / spam / mailing-list / gh,gitlab,vercel,ci / notification) to mail that ALREADY exists in a mailbox — a live Sieve script only tags NEW deliveries, so this fn covers the backlog once. Uses the SAME rule set as mail_sieve (from/subject cues; the List-Unsubscribe-header rule never fires here since the engine scan fetches no headers). Scans the jmap engine directly (Email/query + Email/get, past mail_search's 50-cap), oldest-first. Applies a REAL, VISIBLE mailbox move (skip-inbox — Fastmail doesn't render IMAP keywords as Labels, so a keyword-based tag is invisible) into a dedicated '<Category> (sux)' folder, auto-created on first use; a message matching multiple categories lands in all of them. Fully reversible (mail_move it back). dry_run:true (default) reports what WOULD move without mutating anything; pass dry_run:false to actually move. Resumable: each 55s-budgeted call sweeps a page window and returns {cursor, done} — re-call with the cursor until done:true to drain a large mailbox.",
+		`One-time backfill: apply mail_sieve's coarse categories (junk / spam / mailing-list / gh,gitlab,vercel,ci / notification) to mail that ALREADY exists in a mailbox — a live Sieve script only tags NEW deliveries, so this fn covers the backlog once. Uses the SAME rule set as mail_sieve (from/subject cues; the List-Unsubscribe-header rule never fires here since the engine scan fetches no headers). Scans the jmap engine directly (Email/query + Email/get, past mail_search's 50-cap), oldest-first. Applies a REAL, VISIBLE mailbox move (skip-inbox — Fastmail doesn't render IMAP keywords as Labels, so a keyword-based tag is invisible) into a per-flag folder NESTED under the account's real Inbox mailbox — mirrors what a traditional Sieve script's 'fileinto "INBOX.<label>"' actually creates over IMAP, which is what a hand-installed Sieve script files new mail into, so backfilled mail lands in the SAME folder new mail does. Named the bare flag by default (${ALL_SIEVE_FLAGS.join(", ")}); pass 'mailboxes' to point individual flags at whatever folder name YOUR OWN installed Sieve script actually uses (sux can't discover a hand-pasted script's contents). Target folders auto-create on first use; a message matching multiple categories lands in all of them. Fully reversible (mail_move it back). dry_run:true (default) reports what WOULD move without mutating anything; pass dry_run:false to actually move. Resumable: each 55s-budgeted call sweeps a page window and returns {cursor, done} — re-call with the cursor until done:true to drain a large mailbox.`,
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -111,12 +130,28 @@ export const mail_sieve_backfill: Fn = {
 			},
 				dry_run: { type: "boolean", default: true, description: "true (default): report matches only, mutate nothing. false: actually apply the mailbox moves." },
 			cursor: { type: "string", description: "Opaque cursor from a prior call — resumes the sweep where it left off (must be the same mailbox). Omit to start fresh." },
+			mailboxes: {
+				type: "object",
+				additionalProperties: { type: "string" },
+				description: `Optional override map from a sieve flag (one of ${ALL_SIEVE_FLAGS.join(", ")}) to the exact target mailbox NAME to file that flag's mail into instead of the bare flag — still created/resolved nested under the account's Inbox mailbox. Use this to match whatever folder name your OWN hand-installed Sieve script actually files new mail into (sux can't discover a hand-pasted script's contents to derive this automatically); omit to use the bare flag name for every category.`,
+			},
 		},
 	},
 	run: async (env: RtEnv, a: any) => {
 		const categories = Array.isArray(a?.categories) ? a.categories.map(String) : undefined;
 		const invalid = (categories ?? []).filter((c: string) => !ALL_SIEVE_CATEGORIES.includes(c as any));
 		if (invalid.length) return failWith("bad_input", `unknown categor${invalid.length === 1 ? "y" : "ies"}: ${invalid.join(", ")} (valid: ${ALL_SIEVE_CATEGORIES.join(", ")})`);
+		let mailboxOverrides: Record<string, string> | undefined;
+		if (a?.mailboxes !== undefined) {
+			if (typeof a.mailboxes !== "object" || a.mailboxes === null || Array.isArray(a.mailboxes))
+				return failWith("bad_input", "mailboxes must be an object mapping a sieve flag to a target mailbox name.");
+			const entries = Object.entries(a.mailboxes as Record<string, unknown>);
+			const badFlags = entries.filter(([k]) => !(ALL_SIEVE_FLAGS as readonly string[]).includes(k)).map(([k]) => k);
+			if (badFlags.length) return failWith("bad_input", `unknown mailboxes flag${badFlags.length === 1 ? "" : "s"}: ${badFlags.join(", ")} (valid: ${ALL_SIEVE_FLAGS.join(", ")})`);
+			const badValues = entries.filter(([, v]) => typeof v !== "string" || !v.trim()).map(([k]) => k);
+			if (badValues.length) return failWith("bad_input", `mailboxes values must be non-empty strings (flags: ${badValues.join(", ")})`);
+			mailboxOverrides = Object.fromEntries(entries as Array<[string, string]>);
+		}
 		if (!env.FASTMAIL_TOKEN)
 			return failWith("not_configured", "Fastmail JMAP not configured — set FASTMAIL_TOKEN to a JMAP-scoped API token (Fastmail → Settings → Privacy & Security → API tokens).");
 		const mailbox = a?.mailbox ? String(a.mailbox) : "inbox";
@@ -125,10 +160,15 @@ export const mail_sieve_backfill: Fn = {
 		const startedAt = Date.now();
 
 		try {
-			const boxResp = await runBatch(env, [["Mailbox/get", { properties: ["id", "name", "role"] }, "m"]], { startedAt });
+			const boxResp = await runBatch(env, [["Mailbox/get", { properties: ["id", "name", "role", "parentId"] }, "m"]], { startedAt });
 			const boxes: any[] = resultFor(boxResp.response.methodResponses, "Mailbox/get")?.list ?? [];
 			const inMailbox = resolveMailbox(boxes, mailbox);
 			if (!inMailbox) return failWith("not_found", `no mailbox matching '${mailbox}' — try a role like inbox/archive or a folder name.`);
+			// The Sieve nesting target is always the account's REAL Inbox, independent of `mailbox`
+			// (the scan target) above — those are conceptually different: this fn might be scanning
+			// Archive while every target folder still nests under Inbox, same as the installed Sieve.
+			const inboxBox = boxes.find((b) => String(b?.role ?? "").toLowerCase() === "inbox");
+			const inboxId: string | undefined = inboxBox?.id ? String(inboxBox.id) : undefined;
 
 			let position = 0;
 			if (a?.cursor) {
@@ -148,20 +188,21 @@ export const mail_sieve_backfill: Fn = {
 			const appliedByFlag = new Map<string, { count: number; error?: string }>();
 			// Target mailbox ids, resolved (and created if missing) lazily on first use — once per
 			// flag per run, never per message/page. `boxes` grows in place as new folders get
-			// created so a later resolveMailbox() in this same run sees them too.
+			// created so a later resolveChildMailbox() in this same run sees them too.
 			const targetIdByFlag = new Map<string, string>();
 			async function ensureTargetMailbox(flag: string): Promise<string> {
 				const cached = targetIdByFlag.get(flag);
 				if (cached) return cached;
-				const name = mailboxNameForFlag(flag);
-				let id = resolveMailbox(boxes, name);
+				if (!inboxId) throw new Error("could not resolve the account's Inbox mailbox (no mailbox with role=inbox) — needed to nest target mailboxes under it.");
+				const name = mailboxNameForFlag(flag, mailboxOverrides);
+				let id = resolveChildMailbox(boxes, inboxId, name);
 				if (!id) {
-					const { response: createResp } = await runBatch(env, [["Mailbox/set", { create: { m: { name } } }, "c"]], { startedAt });
+					const { response: createResp } = await runBatch(env, [["Mailbox/set", { create: { m: { name, parentId: inboxId } } }, "c"]], { startedAt });
 					const setR = resultFor(createResp.methodResponses, "Mailbox/set");
 					const created = setR?.created?.m;
 					if (!created?.id) throw new Error(`could not create mailbox '${name}': ${JSON.stringify(setR?.notCreated ?? {})}`);
 					id = String(created.id);
-					boxes.push({ id, name, role: null });
+					boxes.push({ id, name, role: null, parentId: inboxId });
 				}
 				targetIdByFlag.set(flag, id);
 				return id;
@@ -282,7 +323,7 @@ export const mail_sieve_backfill: Fn = {
 				);
 			}
 
-			const applied: Array<{ flag: string; mailbox: string; count: number; error?: string }> = [...appliedByFlag].map(([flag, v]) => ({ flag, mailbox: mailboxNameForFlag(flag), ...v }));
+			const applied: Array<{ flag: string; mailbox: string; count: number; error?: string }> = [...appliedByFlag].map(([flag, v]) => ({ flag, mailbox: mailboxNameForFlag(flag, mailboxOverrides), ...v }));
 			return ok(oj({ dry_run: false, mailbox, scanned, moved: matched.length, applied, cursor, done, ...(total !== undefined ? { total } : {}) }));
 		} catch (e) {
 			if (e instanceof JmapError) return failWith(e.code, e.message);

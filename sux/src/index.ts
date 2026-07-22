@@ -20,7 +20,6 @@ import { runSubJob } from "./cron-heartbeat";
 import { recordCall } from "./metrics";
 import { shipGithubBillingSnapshot, shipMetricsSnapshot, shipToLoki } from "./grafana";
 import { handleObservability } from "./observability";
-import { handleDashboardRoutes } from "./dashboard";
 import { handleRecovery } from "./recovery";
 import { handleAppleHealth, handleMychartRoutes, refreshMychartToken } from "./mychart";
 import { handlePortalRoutes } from "./portal";
@@ -1046,13 +1045,6 @@ export default {
 		// served before the OAuth provider claims every path.
 		const obs = await handleObservability(new URL(request.url), request, env);
 		if (obs) return obs;
-
-		// WAN dashboard (metrics snapshot + recent vault notes) — served here for the
-		// same reason /metrics/logs are: it must NOT go through the GitHub-OAuth MCP
-		// gate below. Its actual authorization is Cloudflare Access at the edge, scoped
-		// to this hostname's /dashboard* path — see dashboard.ts's header.
-		const dashboard = await handleDashboardRoutes(new URL(request.url), request, env);
-		if (dashboard) return dashboard;
 
 		// Recovery dead-drop — the out-of-band control channel the home router phones
 		// home to (HMAC-authed checkin, bearer-authed operator enqueue/status). Served

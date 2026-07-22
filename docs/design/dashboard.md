@@ -1,15 +1,22 @@
 ---
 title: WAN dashboard — metrics + notes behind Cloudflare Access
-status: shipped (app code) / pending (Access policy)
+status: retired
 cluster: infrastructure
 type: design
-summary: "A read-only single-page dashboard on the sux Worker (metrics snapshot + recent vault notes), meant to be gated by a Cloudflare Access self-hosted application. The app-side route is shipped; the actual Access application/policy is a manual Cloudflare dashboard/API step, not done by this change."
+summary: "A read-only single-page dashboard on the sux Worker (metrics snapshot + recent vault notes), gated by a Cloudflare Access self-hosted application. Retired (#1233) in favor of suxdash P1, a separate app at dash.suxos.net."
 tags: [sux, infrastructure, dashboard, observability, cloudflare-access]
-updated: 2026-07-14
+updated: 2026-07-22
 related: ["[[observability-grafana]]", "[[keys]]"]
 ---
 
 # WAN dashboard — metrics + notes behind Cloudflare Access
+
+> **⚠️ Superseded — point-in-time design record.** suxdash P1 is now live at
+> https://dash.suxos.net (a separate app), superseding the in-Worker `/dashboard`
+> pane this doc describes. The route, `sux/src/dashboard.ts`, and its
+> `sux/src/access-jwt.ts` Access-JWT verifier were removed from this repo in
+> #1233. Read this as the original design record for the retired pane, not a
+> description of anything still live.
 
 Implements GitHub issue #359: a single-page dashboard for sux, reachable from the
 WAN, gated by Cloudflare Access — not a custom auth system.

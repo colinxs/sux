@@ -6,6 +6,8 @@ import { proposeMychartOutreach, compactMychartOutreachPlan, type MychartConflic
 import { proposeFileDuplicate, compactFileDuplicatePlan, type FileClusterInput, type FileDuplicatePlanItem } from "./_files_consolidate_plan.js";
 import { proposeMedicalEvent, compactMedicalTimelinePlan, type MedicalEventInput, type MedicalTimelineItem } from "./_medical_timeline_plan.js";
 import type { TriageMsg } from "../fns/_mail_triage.js";
+import { buildPullPlan, reconcilePull, type PullPlanItem, type PullTypeResult } from "../mychart.js";
+import type { OpCaps } from "./caps.js";
 
 // THE op registry — named op trees that the `run` front-verb and the OpWorkflow
 // dispatch by id. Each entry is a FACTORY that builds a FRESH tree per invocation,
@@ -102,6 +104,27 @@ import type { TriageMsg } from "../fns/_mail_triage.js";
 // ONE note, `Timeline/Medical.md`, as a full overwrite — never an append, since the point is a
 // REGENERABLE synthesis (mirrors _life_wiki.ts's philosophy: re-run to refresh, git is the
 // undo). onTimeout:'fail' — an unanswered gate writes nothing.
+//
+// `mychart-pull` (#1178) is NOT a "plan" op like the others above — there's no `ask` gate,
+// since a read-only FHIR sync needs no human approval before applying anything (it writes
+// nothing but raw PHI pages under the private `phi/` prefix it always owned). It exists to
+// get `mychart.pull` OFF the synchronous single-request path entirely: the old `pull()`
+// looped every USCDI resource type's every page inside one `fn.run`, dozens of serial
+// round-trips against a real hospital FHIR proxy, and routinely blew past sux's own 60s
+// `withDeadline` wrapper (index.ts) — which then silently ABANDONED the run (never
+// cancelled it), losing all progress. `plan` (pure) builds the per-type search plan; the
+// `map` fans each resource type out to its own `pull-type` leaf under Workflows' per-step
+// retry/backoff (durable.ts's `stepConfig`, driven by `retries` below) — a 429/5xx throws
+// so THAT ONE type retries with backoff instead of a single flaky type sinking the whole
+// pull; `reconcile-pull` merges the per-type results (never resource values, counts only)
+// into the summary `PullResult`, whose `errors`/`truncated` never silently reports a partial
+// sync as clean. A leaf only ever sees `caps`, not `env` (this file's own header note) —
+// `pull-type` reaches the FHIR fetch/OAuth/R2-write it needs via `caps.health` (op-engine/
+// caps.ts's `OpCaps`, an env-closing extra property on top of suxlib's own `Caps`, never
+// added to `Caps` itself). `needsDurable` (fns/run.ts) sees the `map` and always routes this
+// op through the durable Workflow runtime — `mychart op:"pull"` starts an instance and
+// returns `{instanceId}` immediately; the caller polls `run{action:"status"}` for the
+// eventual counts/errors.
 export const registry: Record<string, () => Op> = {
 	echo: () => op("echo", async (x: unknown) => x, { kind: "pure" }),
 	"assimilate-pdfs": () =>
@@ -159,5 +182,17 @@ export const registry: Record<string, () => Op> = {
 			op("compact", async (items: Array<MedicalTimelineItem | null>) => compactMedicalTimelinePlan(items), { kind: "pure" }),
 			ask("write this medical timeline?", { timeout: "24 hour", onTimeout: "fail" }),
 			sink("medical-timeline"),
+		),
+	"mychart-pull": () =>
+		pipe(
+			op(
+				"plan",
+				async (input: { org: string; patient: string; types?: string[]; since?: string }, caps: Caps) =>
+					buildPullPlan(input, new Date(caps.clock.now()).toISOString().replace(/[:.]/g, "-")),
+				{ kind: "effect" },
+			),
+			map(op("pull-type", async (item: PullPlanItem, caps: Caps) => (caps as OpCaps).health.pullType(item), { kind: "effect", retries: 4 }), { concurrency: aimd({ start: 3, max: 8 }) }),
+			op("reconcile-pull", async (results: PullTypeResult[]) => reconcilePull(results), { kind: "pure" }),
+			sink("phi-manifest"),
 		),
 };

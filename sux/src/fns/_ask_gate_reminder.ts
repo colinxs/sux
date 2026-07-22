@@ -15,6 +15,7 @@
 import type { RtEnv } from "../registry";
 import { ledger } from "../ledger";
 import { errMsg, vaultToday } from "./_util";
+import { vaultDailyDir } from "./_vaultpaths";
 
 const flagOn = (v: string | undefined): boolean => {
 	const s = String(v ?? "").trim().toLowerCase();
@@ -155,7 +156,7 @@ export async function runAskGateReminder(env: RtEnv, deps: AskGateReminderDeps):
 	}
 
 	try {
-		await deps.digestAppend(env, `Daily/${vaultToday(env.VAULT_TZ)}.md`, buildDigestBlock(due, emailed, digest));
+		await deps.digestAppend(env, `${vaultDailyDir(env)}/${vaultToday(env.VAULT_TZ)}.md`, buildDigestBlock(due, emailed, digest));
 	} catch (e) {
 		return { checked: runs.length, pending: pending.length, reminded: due.length, digest_written: false, emailed, error: `vault append failed: ${errMsg(e)}` };
 	}

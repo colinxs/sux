@@ -25,6 +25,7 @@ import { ledger } from "../ledger";
 import { classifyMessage } from "./_mail_triage";
 import { hasTodoist } from "./todoist";
 import { errMsg, vaultToday } from "./_util";
+import { vaultDailyDir } from "./_vaultpaths";
 
 // ── Gates ────────────────────────────────────────────────────────────────────
 // Read as a truthy toggle ("0"/"false"/"off"/empty → off) rather than mere presence,
@@ -420,7 +421,7 @@ export async function runBriefing(env: RtEnv, opts: BriefingOpts, deps: Briefing
 		const digKey = `digest::${cycle}`;
 		if (!(await dled.seen(digKey))) {
 			try {
-				await deps.digestAppend(env, `Daily/${vaultToday(env.VAULT_TZ)}.md`, buildDigestBlock({ cycle, date, stageEnabled, digest, drafts }));
+				await deps.digestAppend(env, `${vaultDailyDir(env)}/${vaultToday(env.VAULT_TZ)}.md`, buildDigestBlock({ cycle, date, stageEnabled, digest, drafts }));
 				await dled.mark(digKey);
 				digestWritten = true;
 			} catch (e) {

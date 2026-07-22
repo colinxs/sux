@@ -34,6 +34,7 @@ import { hasImessage, imessage } from "./imessage";
 import { hasMonarch, monarch } from "./monarch";
 import { crossOrgAllergyGaps, crossOrgMedicationAllergyConflicts, mychartConfigured, orgLabel, summarizeMyChart } from "../mychart";
 import { errMsg, vaultToday } from "./_util";
+import { vaultDailyDir } from "./_vaultpaths";
 import { embedOne } from "./_embed";
 import { appendInferSignal, hasInferArm } from "./_infer";
 import { redactPII } from "./redact";
@@ -1551,7 +1552,7 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 				}
 			}
 			try {
-				await deps.digestAppend(env, `Daily/${vaultToday(env.VAULT_TZ)}.md`, buildDigestBlock(date, cycle, emailed, digest));
+				await deps.digestAppend(env, `${vaultDailyDir(env)}/${vaultToday(env.VAULT_TZ)}.md`, buildDigestBlock(date, cycle, emailed, digest));
 				digestWritten = true;
 			} catch {
 				/* a vault-append failure must never fail the cycle */

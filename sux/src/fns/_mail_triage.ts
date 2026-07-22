@@ -34,6 +34,7 @@ import type { RtEnv } from "../registry";
 import { ledger } from "../ledger";
 import { passesDraftGate } from "./_briefing";
 import { errMsg, vaultToday } from "./_util";
+import { vaultDailyDir } from "./_vaultpaths";
 import { embedOne } from "./_embed";
 import { appendInferSignal, hasInferArm } from "./_infer";
 import { appendTriageEntries, type TriageEntry } from "./_mail_triage_log";
@@ -636,7 +637,7 @@ export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps):
 		const digKey = `digest::${cycle}`;
 		if (!(await dled.seen(digKey))) {
 			try {
-				await deps.digestAppend(env, `Daily/${vaultToday(env.VAULT_TZ)}.md`, buildDigest({ cycle, mailbox, actEnabled: actAllowed, acted, suggested }));
+				await deps.digestAppend(env, `${vaultDailyDir(env)}/${vaultToday(env.VAULT_TZ)}.md`, buildDigest({ cycle, mailbox, actEnabled: actAllowed, acted, suggested }));
 				await dled.mark(digKey);
 				digestWritten = true;
 			} catch (e) {

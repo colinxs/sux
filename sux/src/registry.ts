@@ -45,12 +45,6 @@ export type RtEnv = Env &
 		// Facebook Graph API access token (facebook fn). (linkedin fn now scrapes via
 		// cf-residential render — Proxycurl shut down July 2025 — so it needs no key.)
 		FACEBOOK_TOKEN?: string;
-		// Cloudflare Access self-hosted application fronting /dashboard (dashboard.ts).
-		// Team domain e.g. 'https://your-team.cloudflareaccess.com'; AUD is the
-		// application's Audience tag from the Access dashboard. Both unset = the
-		// dashboard route fails closed (401 on everything under /dashboard).
-		CF_ACCESS_TEAM_DOMAIN?: string;
-		CF_ACCESS_AUD?: string;
 		// Git-backed Obsidian vault (obsidian fn): 'owner/repo', branch, optional subfolder.
 		OBSIDIAN_VAULT_REPO?: string;
 		OBSIDIAN_VAULT_BRANCH?: string;
@@ -164,6 +158,12 @@ export type RtEnv = Env &
 
 		// IANA tz for the vault owner's "today" (daily-note tools). Default Pacific.
 		VAULT_TZ?: string;
+
+		// Vault folder names, for the eventual colinxs/vault taxonomy rename (Daily/ →
+		// 06-daily/, Inbox/ → 00-inbox/) — see fns/_vaultpaths.ts. Unset ⇒ current
+		// names ("Daily"/"Inbox"); the migration hasn't happened yet, don't flip these.
+		VAULT_DAILY_DIR?: string;
+		VAULT_INBOX_DIR?: string;
 
 		// Weekly recall digest (fns/_weekly_recall.ts, rides the daily cron; runs at most
 		// once per ISO week). Fail-closed, default OFF, set via `wrangler secret` (NOT

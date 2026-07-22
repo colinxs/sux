@@ -26,6 +26,7 @@ import { detectCentroidDrift, type DriftCandidate, type DriftOptions } from "./_
 import { ANOMALY_RECIPES, detectScalarAnomaly, type AnomalyCandidate, type AnomalyOptions, type AnomalyRecipe } from "./_infer_anomaly";
 import { cappedKvLog } from "./_capped_kv_log";
 import { errMsg, vaultToday } from "./_util";
+import { vaultDailyDir } from "./_vaultpaths";
 
 const numOr = (v: unknown, dflt: number): number => {
 	const n = Number(v);
@@ -263,7 +264,7 @@ export async function runInferNudge(env: RtEnv, opts: { domains?: InferDomain[] 
 		}
 	} else {
 		try {
-			await deps.digestAppend(env, `Daily/${vaultToday(env.VAULT_TZ)}.md`, digestContent);
+			await deps.digestAppend(env, `${vaultDailyDir(env)}/${vaultToday(env.VAULT_TZ)}.md`, digestContent);
 		} catch (e) {
 			await deleteInferInference(env, domains[0], inferenceId);
 			return { error: `vault append failed: ${errMsg(e)}`, cluster: candidate.cluster, driftScore: candidate.driftScore, inferenceId };
@@ -443,7 +444,7 @@ async function runOneAnomalyRecipe(env: RtEnv, recipe: AnomalyRecipe, deps: Infe
 		}
 	} else {
 		try {
-			await deps.digestAppend(env, `Daily/${vaultToday(env.VAULT_TZ)}.md`, digestContent);
+			await deps.digestAppend(env, `${vaultDailyDir(env)}/${vaultToday(env.VAULT_TZ)}.md`, digestContent);
 		} catch (e) {
 			await deleteInferInference(env, recipe.domain, inferenceId);
 			return { ...base, error: `vault append failed: ${errMsg(e)}`, zScore: candidate.zScore, inferenceId };
