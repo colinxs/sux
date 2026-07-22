@@ -34,6 +34,10 @@ export type RtEnv = Env &
 
 		COINGECKO_API_KEY?: string;
 		R2?: R2Bucket;
+		// Transit inbox for the general ingest pipe (docs/design/scan-to-vault-pipeline.md,
+		// suxrouter): R2 event notifications on sux-ingest feed the `ingest` queue, consumed
+		// by queue() in index.ts. See fns/_ingest_queue.ts.
+		INGEST_R2?: R2Bucket;
 		// Workers Analytics Engine dataset (#220) — see wrangler.jsonc's
 		// analytics_engine_datasets comment for why this rides AE over Pipelines.
 		// AnalyticsEngineDataset is declared ambiently by wrangler's generated

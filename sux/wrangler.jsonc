@@ -24,7 +24,18 @@
 	// Cloudflare Images — format convert/resize/adjust for image_convert.
 	"images": { "binding": "IMAGES" },
 	// R2 object storage for `store` (content-addressed blobs; KV maps uuid→object).
-	"r2_buckets": [{ "binding": "R2", "bucket_name": "sux-mcp" }],
+	"r2_buckets": [
+		{ "binding": "R2", "bucket_name": "sux-mcp" },
+		// Transit inbox for the general ingest pipe (scan/ prefix = printer scans;
+		// future sources get their own prefix). Objects are DELETED by the queue
+		// consumer after landing in Dropbox+vault — scan → vault → forget.
+		{ "binding": "INGEST_R2", "bucket_name": "sux-ingest" }
+	],
+	// One general ingest queue, fed by R2 event notifications on sux-ingest
+	// (provisioned in Task 4 — notifications are account-level, not in this file).
+	"queues": {
+		"consumers": [{ "queue": "ingest", "max_batch_size": 5, "max_retries": 10, "dead_letter_queue": "ingest-dlq" }]
+	},
 	// Workers Analytics Engine (#220) — durable, SQL-queryable event log for cron
 	// heartbeats, mail-triage decisions, and self-improve findings, replacing "grep
 	// wrangler tail" as the only way to answer e.g. "which cron sub-job fails most
