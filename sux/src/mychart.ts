@@ -30,6 +30,7 @@ export const MYCHART_ORGS: Record<string, { name: string; fhirBase: string }> = 
 	uwmedicine: { name: "UW Medicine (WA)", fhirBase: "https://fhir.epic.medical.washington.edu/FHIR-Proxy/UWM/api/FHIR/R4" },
 	swedish: { name: "Providence Swedish (WA)", fhirBase: "https://haikuwa.providence.org/fhirproxy/api/FHIR/R4" },
 	bozeman: { name: "Bozeman Health (MT)", fhirBase: "https://revproxy.bh.bozemanhealth.org/Interconnect-Oauth2-PRD/api/FHIR/R4" },
+	evergreen: { name: "EvergreenHealth (WA)", fhirBase: "https://epicproxy.et1270.epichosted.com/apiproxyprd/api/FHIR/R4" },
 };
 
 const grantKey = (org: string): string => `sux:mychart:grant:${org}`;
