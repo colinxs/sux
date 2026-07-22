@@ -555,6 +555,20 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   the design doc and a codebase search each time; only attempt them once both show
   `CLOSED`/merged.
 
+- **v5 W2 (#1283, the `_assimilate.ts` spine) is itself blocked, not just unclaimed** — its
+  own issue text requires arc W1 (`oracle ask` action + per-answer retrieval-score/thumbs
+  instrumentation) to be merged first, and as of 2026-07-22 `sux/src/fns/oracle.ts` has no
+  `ask` action at all (only `learn`/`get`/`list`/`status`/`forget` — confirmed by reading the
+  file, not just grepping) and no open PR touches it. Every issue that names #1283 as its own
+  dependency (#1284 W3, #1285 W6, and by extension W7/W9) is therefore blocked TWO layers deep,
+  not one — checking `gh issue view 1283 --json state` alone (OPEN) isn't enough to conclude
+  it's merely "not yet built"; read #1283's body for its own W1 precondition and re-verify
+  `oracle.ts` before assuming the spine is a green light. Also: #1283's own text flags that
+  #1204/#1275/#1279/#1280 were filed against an earlier, superseded doc version and pursue a
+  different (not-adopted-as-spine) architecture — don't treat them as prerequisites of #1283,
+  but they're still independently live work (both #1204 and #1275 are actively `building` as
+  of this date), not stale/closeable.
+
 ## Version coherence (#1238)
 
 Bump `package.json`'s `version` and `plugins/sux/.claude-plugin/plugin.json`'s
