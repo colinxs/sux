@@ -574,6 +574,12 @@ export type RtEnv = Env &
 
 		TAVILY_API_KEY?: string;
 
+		// Mistral OCR (api.mistral.ai/v1/ocr) — the single OCR engine (fns/_ocr.ts).
+		// Out-of-band secret (`wrangler secret put MISTRAL_API_KEY`), same convention as
+		// MONARCH_TOKEN etc.: unset ⇒ every OCR path fails cleanly ("set MISTRAL_API_KEY")
+		// and keeps the raw file, never fabricating text.
+		MISTRAL_API_KEY?: string;
+
 
 		GOOGLE_MAPS_KEY?: string;
 
@@ -783,7 +789,7 @@ export const TOOL_ANNOTATIONS: Record<string, ToolAnnotations> = {
 	...Object.fromEntries(
 		[
 			"extract", "readability", "tables", "metadata", "extract_contacts", "entities", "select", "grep",
-			"summarize", "translate", "classify", "redact", "ocr",
+			"summarize", "translate", "classify", "redact",
 			"markdown", "html", "csv", "json", "xml", "yaml", "encode", "hash", "compress", "archive", "pack", "declutter", "fontcase",
 			"kv_get", "kv_list",
 		].map((n) => [n, READ_LOCAL]),

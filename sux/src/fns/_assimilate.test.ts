@@ -5,9 +5,19 @@ import { ASSIMILATE_DURABLE_BYTES, assimDomain, assimilate, hasAssimilate } from
 import { listChunks, topKPassages } from "./_source";
 
 // The spine composes real legs end-to-end wherever vitest can carry them: the guarded llm()
-// distill, _source.ts's chunk+embed+profile substrate, ocr's vision call, and putBlob/putPhi's
-// R2 writes all run for real against stubbed AI/KV/R2 bindings (the study/oracle suite idiom).
-// Only the bindings themselves are fakes — no spine internals are mocked.
+// distill, _source.ts's chunk+embed+profile substrate, and putBlob/putPhi's R2 writes all run
+// for real against stubbed AI/KV/R2 bindings (the study/oracle suite idiom). The shared Mistral
+// OCR engine (_ocr.ts) has its own suite, so it's mocked here — the extract leg is tested for how
+// it COMPOSES on ocrBytes (image) / ocrDocument (pdf, via study's docBytesToMarkdown), not the
+// OCR internals. Only those + the bindings are fakes.
+const ocrMock = {
+	ocrBytes: vi.fn(async (_env: unknown, _bytes: unknown, _opts?: unknown) => "OCR-TEXT from the scanned image."),
+	ocrDocument: vi.fn(async (_env: unknown, _src: unknown) => "OCR-TEXT from the document."),
+};
+vi.mock("./_ocr", () => ({
+	ocrBytes: (env: unknown, bytes: unknown, opts?: unknown) => ocrMock.ocrBytes(env, bytes, opts),
+	ocrDocument: (env: unknown, src: unknown) => ocrMock.ocrDocument(env, src),
+}));
 
 /** A minimal Map-backed OAUTH_KV (get/put/delete/list) matching the CF KV surface. */
 function makeKv() {
@@ -41,21 +51,19 @@ function makeR2() {
 	};
 }
 
-/** env driving the REAL guarded llm()/embed()/ocr: AI.run answers by call shape (embed →
- *  vectors, vision → OCR text, messages → distill/profile by system prompt), toMarkdown
- *  transcribes pdf bytes. All spine writes land in the kv/r2 fakes for assertion. */
-function makeEnv(opts: { enabled?: string | undefined; toMarkdown?: (docs: any[]) => Promise<any>; distill?: string; r2?: boolean } = {}) {
+/** env driving the REAL guarded llm()/embed(): AI.run answers by call shape (embed → vectors,
+ *  messages → distill/profile by system prompt). Document/image OCR rides the mocked _ocr engine
+ *  above. All spine writes land in the kv/r2 fakes for assertion. */
+function makeEnv(opts: { enabled?: string | undefined; distill?: string; r2?: boolean } = {}) {
 	const kv = makeKv();
 	const r2 = makeR2();
 	const run = vi.fn(async (_model: string, inputs: any) => {
 		if (Array.isArray(inputs?.text)) return { data: inputs.text.map(() => [1, 0, 0]) };
-		if (inputs?.image) return { response: "OCR-TEXT from the scanned image." };
 		const system: string = inputs.messages.find((m: any) => m.role === "system").content;
 		if (/^You are distilling an AUTHORITATIVE/.test(system)) return { response: "PROFILE-SUMMARY" };
 		return { response: opts.distill ?? "DISTILLED-NOTE about the document." };
 	});
 	const AI: any = { run };
-	if (opts.toMarkdown) AI.toMarkdown = vi.fn(opts.toMarkdown);
 	const env: any = { AI, OAUTH_KV: kv };
 	if (opts.r2 !== false) env.R2 = r2;
 	if ("enabled" in opts) {
@@ -63,7 +71,7 @@ function makeEnv(opts: { enabled?: string | undefined; toMarkdown?: (docs: any[]
 	} else {
 		env.ASSIMILATE_ENABLED = "1";
 	}
-	return { env, kv, r2, run, toMarkdown: AI.toMarkdown };
+	return { env, kv, r2, run };
 }
 
 const textCalls = (run: ReturnType<typeof vi.fn>) => run.mock.calls.filter(([, inputs]: any) => (inputs as any)?.messages);
@@ -137,14 +145,15 @@ describe("assimilate — text happy path", () => {
 });
 
 describe("assimilate — pdf happy path (the W2 acceptance round-trip)", () => {
-	it("pdf bytes → toMarkdown → distillate + CAS blob + retrievable passages", async () => {
-		const { env, kv, r2, toMarkdown } = makeEnv({ toMarkdown: async () => [{ data: "# Scanned lease agreement\nRent due on the 1st." }] });
+	it("pdf bytes → OCR → distillate + CAS blob + retrievable passages", async () => {
+		const { env, kv, r2 } = makeEnv();
+		ocrMock.ocrDocument.mockResolvedValueOnce("# Scanned lease agreement\nRent due on the 1st.");
 		const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 1, 2, 3]); // %PDF…
 		const r = await assimilate(env, { source: "/Scans/lease.pdf", bytes, kind: "pdf", domain: "scan" });
 
 		expect(r.status).toBe("assimilated");
 		if (r.status !== "assimilated") return;
-		expect(toMarkdown).toHaveBeenCalledOnce();
+		expect(ocrMock.ocrDocument).toHaveBeenCalledOnce();
 		expect(r.distilled).toBe("DISTILLED-NOTE about the document.");
 
 		// Original archived to the R2 CAS (cas/<sha256>) with a KV handle — dedup by content.
@@ -162,11 +171,14 @@ describe("assimilate — pdf happy path (the W2 acceptance round-trip)", () => {
 		expect([...kv.store.keys()].filter((k) => k.startsWith("sux:source:chunk:phi:"))).toHaveLength(0);
 	});
 
-	it("image kind rides ocr's vision call", async () => {
+	it("image kind rides the shared Mistral OCR (image part)", async () => {
 		const { env } = makeEnv();
+		ocrMock.ocrBytes.mockResolvedValueOnce("OCR-TEXT from the scanned image.");
 		const r = await assimilate(env, { source: "scan-42.png", bytes: new Uint8Array([9, 9, 9]), kind: "image", domain: "scan", contentType: "image/png" });
 		expect(r.status).toBe("assimilated");
 		if (r.status !== "assimilated") return;
+		expect(ocrMock.ocrBytes).toHaveBeenCalledOnce();
+		expect(ocrMock.ocrBytes.mock.calls[0][2]).toMatchObject({ image: true });
 		expect(r.archived.r2_key).toMatch(/^cas\//);
 		expect((await listChunks(env, "assim:scan")).length).toBeGreaterThan(0);
 	});
@@ -263,7 +275,7 @@ describe("assimilate — book-scale auto-route", () => {
 	});
 
 	it("just-under-threshold bytes stay inline", async () => {
-		const { env } = makeEnv({ toMarkdown: async () => [{ data: "small doc text" }] });
+		const { env } = makeEnv();
 		env.OP_WORKFLOW = { create: vi.fn(async () => ({ id: "wf-never" })) };
 		const r = await assimilate(env, { source: "small.pdf", bytes: new Uint8Array(64), kind: "pdf", domain: "doc" });
 		expect(r.status).toBe("assimilated");
@@ -271,19 +283,19 @@ describe("assimilate — book-scale auto-route", () => {
 	});
 
 	it("PHI never routes durable — oversize phi input processes inline", async () => {
-		const { env, toMarkdown } = makeEnv({ toMarkdown: async () => [{ data: "long medical record text" }] });
+		const { env } = makeEnv();
 		env.OP_WORKFLOW = { create: vi.fn(async () => ({ id: "wf-never" })) };
 		const r = await assimilate(env, { source: "records.pdf", bytes: bigPdf(), kind: "pdf", domain: "medical" });
 		expect(r.status).toBe("assimilated");
 		expect(env.OP_WORKFLOW.create).not.toHaveBeenCalled();
-		expect(toMarkdown).toHaveBeenCalledOnce();
+		expect(ocrMock.ocrDocument).toHaveBeenCalledOnce();
 		if (r.status !== "assimilated") return;
 		expect(r.domain).toBe("phi:medical");
 		expect(r.archived.r2_key).toMatch(/^phi\//);
 	});
 
 	it("no OP_WORKFLOW binding: oversize input degrades to inline instead of failing", async () => {
-		const { env } = makeEnv({ toMarkdown: async () => [{ data: "book text" }] });
+		const { env } = makeEnv();
 		const r = await assimilate(env, { source: "book.pdf", bytes: bigPdf(), kind: "pdf", domain: "doc" });
 		expect(r.status).toBe("assimilated");
 	});

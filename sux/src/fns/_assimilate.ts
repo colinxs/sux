@@ -6,8 +6,8 @@ import type { RtEnv } from "../registry";
 import { embed } from "./_embed";
 import { chunkText, distillProfile, newId, putChunk, type SourceChunk } from "./_source";
 import { shrinkPdfImages } from "./_pdf_shrink";
-import { errMsg, putBlob, sha256Hex, toB64 } from "./_util";
-import { ocr } from "./ocr";
+import { errMsg, putBlob, sha256Hex } from "./_util";
+import { ocrBytes } from "./_ocr";
 import { DISTILL_SYSTEM } from "./oracle";
 import { runVerb } from "./run";
 import { docBytesToMarkdown, resolveDocSource } from "./study";
@@ -18,8 +18,8 @@ import { docBytesToMarkdown, resolveDocSource } from "./study";
 // naming a topic. This is an INTERNAL MODULE, not a verb: no MCP surface, no new binding,
 // no new store — it ORCHESTRATES four existing legs (the arc doc's "wire, don't design"):
 //
-//   1. extract  — study.ts's resolveDocSource/docBytesToMarkdown (PDFs/URLs/Dropbox paths,
-//                 whole-doc toMarkdown) and ocr.ts (images); text passes through unchanged.
+//   1. extract  — study.ts's resolveDocSource/docBytesToMarkdown (PDFs/URLs/Dropbox paths)
+//                 and _ocr.ts's Mistral OCR (images/docs); text passes through unchanged.
 //   2. distill  — oracle.ts's DISTILL_SYSTEM through the guarded llm() <<<DATA>>> fence
 //                 (learnTopic's ≤500-word-note tier), provenance stamped on every chunk;
 //                 _source.ts's distillProfile is the rolling-summary tier (learnTopic's
@@ -61,7 +61,7 @@ const flagOn = (v: string | undefined): boolean => {
 export const hasAssimilate = (env: RtEnv): boolean => flagOn(env.ASSIMILATE_ENABLED);
 
 /** Above this many original-document bytes, a PDF routes to the durable Workflows runtime
- *  instead of transcribing inline — book-scale toMarkdown + a full embed pass won't fit the
+ *  instead of transcribing inline — book-scale OCR + a full embed pass won't fit the
  *  synchronous request budget. Exported for the threshold test. */
 export const ASSIMILATE_DURABLE_BYTES = 8 * 1024 * 1024;
 
@@ -126,7 +126,7 @@ async function routeDurable(env: RtEnv, name: string, bytes: Uint8Array): Promis
 }
 
 /** EXTRACT: resolve the input to prose. Text passes through; a PDF/URL/Dropbox source rides
- *  study.ts's resolution + toMarkdown; an image rides ocr.ts. Book-scale PDF bytes are
+ *  study.ts's resolution + Mistral OCR; an image rides _ocr.ts's Mistral OCR. Book-scale PDF bytes are
  *  detected here — after resolution, before the expensive transcription — and reported for
  *  the durable route. Throws (caller wraps) when nothing extractable is found. */
 async function extractLeg(
@@ -141,9 +141,13 @@ async function extractLeg(
 	}
 	if (input.kind === "image") {
 		if (!input.bytes?.length) throw new Error("assimilate: kind 'image' needs `bytes`.");
-		const r = await ocr.run(env, { image: toB64(input.bytes) });
-		const text = String(r.content?.[0]?.text ?? "").trim();
-		if (r.isError || !text || text === "(no text found)") throw new Error(`assimilate: OCR extracted no text from '${fallbackName}'${r.isError ? ` (${text})` : ""}.`);
+		let text: string;
+		try {
+			text = (await ocrBytes(env, input.bytes, { image: true })).trim();
+		} catch (e) {
+			throw new Error(`assimilate: OCR extracted no text from '${fallbackName}' (${errMsg(e)}).`);
+		}
+		if (!text) throw new Error(`assimilate: OCR extracted no text from '${fallbackName}'.`);
 		return { text, bytes: input.bytes, name: fallbackName };
 	}
 	// kind "pdf": bytes given directly (radar/mail hand them over), else resolved from source.

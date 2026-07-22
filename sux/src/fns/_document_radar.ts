@@ -18,7 +18,7 @@ import { type RtEnv } from "../registry";
 import { hasDropbox, sharedLink } from "./dropbox";
 import { dropboxRawUrl, errMsg, putBlob } from "./_util";
 import { ledger } from "../ledger";
-import { ocr } from "./ocr";
+import { ocrTextOrUndefined, ocrUrl } from "./_ocr";
 import { obsidian } from "./obsidian";
 import { parseFrontmatter } from "../vault-graph";
 
@@ -166,10 +166,9 @@ async function defaultListFolder(env: RtEnv): Promise<DocumentRadarEntry[]> {
 }
 
 async function defaultOcrImage(env: RtEnv, url: string): Promise<string | undefined> {
-	const r = await ocr.run(env, { url, prompt: "Transcribe all text in this image exactly, including any expiration/validity/renewal date." });
-	if (r.isError) return undefined;
-	const text = r.content?.[0]?.text ?? "";
-	return text && text !== "(no text found)" ? text : undefined;
+	// A photo of a document (passport/license/receipt) — force the image_url part and OCR it.
+	// Best-effort: a Mistral failure yields undefined so the radar just skips that file.
+	return ocrTextOrUndefined(() => ocrUrl(env, url, { image: true }));
 }
 
 async function defaultExtractPdfText(env: RtEnv, path: string): Promise<string | undefined> {

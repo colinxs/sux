@@ -102,6 +102,12 @@
 	// drop-box ingest point. Also requires hasDropbox(env) (DROPBOX_TOKEN secret) — absent that,
 	// this flag alone still leaves the sync dormant.
 	//
+	// OCR is powered by Mistral OCR (api.mistral.ai/v1/ocr) — its key is an out-of-band
+	// secret, NOT declared in vars (same convention as MONARCH_TOKEN etc.):
+	//   wrangler secret put MISTRAL_API_KEY --config sux/wrangler.jsonc
+	// Unset ⇒ the `ocr` leaf + study/assimilate/radar OCR paths fail cleanly ("set
+	// MISTRAL_API_KEY") and keep the raw file; text is never fabricated.
+	//
 	// MyChart (Epic SMART-on-FHIR) + Apple Health ingest are configured entirely by
 	// out-of-band secrets, NOT declared here (like LUNCHMONEY_API_KEY / KROGER_* / the
 	// SELF_IMPROVE_* secrets): EPIC_CLIENT_ID, EPIC_CLIENT_SECRET, EPIC_FHIR_BASE

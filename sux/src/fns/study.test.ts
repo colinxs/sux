@@ -13,6 +13,14 @@ vi.mock("./dropbox", () => ({
 	sharedLink: (env: unknown, path: unknown) => dropboxMock.sharedLink(env, path),
 }));
 
+// The shared Mistral OCR engine (_ocr.ts) has its own suite — mock it here so study's
+// pdf/document path is tested for how it COMPOSES on ocrDocument (url vs bytes), not for
+// the OCR internals. Default resolves; per-test mockResolvedValueOnce/mockRejectedValueOnce.
+const ocrMock = { ocrDocument: vi.fn(async (_env: unknown, _src: unknown) => "OCR_TEXT") };
+vi.mock("./_ocr", () => ({
+	ocrDocument: (env: unknown, src: unknown) => ocrMock.ocrDocument(env, src),
+}));
+
 import { DATA_CLOSE, DATA_OPEN } from "../ai";
 import { maybeDecompressString } from "./_gzip";
 import { study } from "./study";
@@ -38,8 +46,8 @@ function makeKv() {
 }
 
 /** env with the REAL guarded llm() driving a stubbed AI.run that answers by ROLE (the oracle-suite
- *  idiom), plus an optional toMarkdown stub for the pdf/document-extraction path. */
-function makeEnv(opts: { toMarkdown?: (docs: any[]) => Promise<any>; distill?: string } = {}) {
+ *  idiom). The pdf/document-extraction path rides the mocked _ocr engine above. */
+function makeEnv(opts: { distill?: string } = {}) {
 	const kv = makeKv();
 	const run = vi.fn(async (_model: string, inputs: any) => {
 		// oracle's learnTopic also embeds the distilled note into the retrievable-detail store —
@@ -50,8 +58,7 @@ function makeEnv(opts: { toMarkdown?: (docs: any[]) => Promise<any>; distill?: s
 		return { response: opts.distill ?? "DISTILLED-CHUNK" };
 	});
 	const AI: any = { run };
-	if (opts.toMarkdown) AI.toMarkdown = vi.fn(opts.toMarkdown);
-	return { env: { AI, OAUTH_KV: kv } as any, kv, run, toMarkdown: AI.toMarkdown };
+	return { env: { AI, OAUTH_KV: kv } as any, kv, run };
 }
 
 const kbFor = async (kv: ReturnType<typeof makeKv>, topic: string) => JSON.parse(await maybeDecompressString(kv.store.get(`sux:oracle:${topic}`)!));
@@ -128,15 +135,17 @@ describe("study — learn (url / pdf)", () => {
 		expect(stored.sources).toEqual(["https://example.com/my-article"]);
 	});
 
-	it("auto-detects a .pdf URL, transcribes it via Workers-AI toMarkdown, then distills", async () => {
-		const { env, kv, toMarkdown } = makeEnv({ toMarkdown: async () => [{ data: "# Chapter 1\n\nExtracted PDF prose about distress tolerance." }] });
-		fetchMock.mockImplementation(async () => new Response(new Uint8Array([0x25, 0x50, 0x44, 0x46]), { status: 200 }));
+	it("auto-detects a .pdf URL, OCRs it via the shared Mistral engine (url input), then distills", async () => {
+		const { env, kv } = makeEnv();
+		ocrMock.ocrDocument.mockResolvedValueOnce("# Chapter 1\n\nExtracted PDF prose about distress tolerance.");
 
 		const j = parse(await study.run(env, { source: "https://example.com/dbt.pdf", topic: "dbt" }));
 		expect(j).toMatchObject({ kind: "pdf", whitelisted: true, title: "dbt.pdf" });
-		expect(toMarkdown).toHaveBeenCalledTimes(1);
+		// An http(s) source is handed to Mistral by URL (it fetches the doc itself), not pre-downloaded.
+		expect(ocrMock.ocrDocument).toHaveBeenCalledTimes(1);
+		expect(ocrMock.ocrDocument.mock.calls[0][1]).toEqual({ url: "https://example.com/dbt.pdf" });
 
-		// The distill saw the TRANSCRIBED text, fenced as data.
+		// The distill saw the OCR'd text, fenced as data.
 		const distillUser = (env.AI.run.mock.calls[0][1].messages.find((m: any) => m.role === "user").content) as string;
 		expect(distillUser).toContain("Extracted PDF prose about distress tolerance");
 		const stored = await kbFor(kv, "dbt");
@@ -144,8 +153,8 @@ describe("study — learn (url / pdf)", () => {
 	});
 
 	it("source_label overrides the inferred provenance source (the sweep→study call shape, #822)", async () => {
-		const { env, kv, toMarkdown } = makeEnv({ toMarkdown: async () => [{ data: "Notes from a Dropbox-sourced PDF, fetched via a shared link." }] });
-		fetchMock.mockImplementation(async () => new Response(new Uint8Array([0x25, 0x50, 0x44, 0x46]), { status: 200 }));
+		const { env, kv } = makeEnv();
+		ocrMock.ocrDocument.mockResolvedValueOnce("Notes from a Dropbox-sourced PDF, fetched via a shared link.");
 
 		// A Dropbox shared link (http(s) URL) — same shape _learning_folder.ts hands study —
 		// but with an explicit source_label so the KB records the dropbox: path, not the URL.
@@ -155,30 +164,33 @@ describe("study — learn (url / pdf)", () => {
 		expect(j).toMatchObject({ kind: "pdf", whitelisted: true, source: "dropbox:/learning/report.pdf" });
 		const stored = await kbFor(kv, "reports");
 		expect(stored.whitelist).toMatchObject({ source: "dropbox:/learning/report.pdf" });
-		expect(toMarkdown).toHaveBeenCalledTimes(1);
+		expect(ocrMock.ocrDocument).toHaveBeenCalledTimes(1);
 	});
 
-	it("a pdf source with no toMarkdown binding fails cleanly, telling the caller to pass extracted text", async () => {
-		const { env } = makeEnv(); // no toMarkdown
-		fetchMock.mockImplementation(async () => new Response(new Uint8Array([0x25, 0x50, 0x44, 0x46]), { status: 200 }));
+	it("a pdf source with OCR unconfigured fails cleanly, telling the caller to pass extracted text", async () => {
+		const { env } = makeEnv();
+		ocrMock.ocrDocument.mockRejectedValueOnce(new Error("Mistral OCR is not configured — set MISTRAL_API_KEY (wrangler secret put MISTRAL_API_KEY)."));
 		const r = await study.run(env, { source: "https://example.com/scan.pdf", topic: "x" });
 		expect(r.isError).toBe(true);
 		expect(r.errorCode).toBe("upstream_error");
-		expect(r.content[0].text).toMatch(/toMarkdown|extract the text yourself/i);
+		expect(r.content[0].text).toMatch(/MISTRAL_API_KEY|extract the text yourself/i);
 	});
 
 	it("a Dropbox app-folder path (Mode A) is read via a shared link before requiring Mode B (#768)", async () => {
-		const { env, kv, toMarkdown } = makeEnv({ toMarkdown: async () => [{ data: "Notes from the app-folder file." }] });
+		const { env, kv } = makeEnv();
 		dropboxMock.hasDropbox.mockReturnValue(true);
 		dropboxMock.sharedLink.mockResolvedValue("https://www.dropbox.com/s/abc/notes.pdf?dl=0");
 		fetchMock.mockImplementation(async () => new Response(new Uint8Array([0x25, 0x50, 0x44, 0x46]), { status: 200 }));
+		ocrMock.ocrDocument.mockResolvedValueOnce("Notes from the app-folder file.");
 
 		const j = parse(await study.run(env, { source: "/notes.pdf", topic: "notes" }));
 		expect(j).toMatchObject({ kind: "pdf", whitelisted: true });
 		expect(dropboxMock.sharedLink).toHaveBeenCalledWith(env, "/notes.pdf");
-		// The raw-download URL (dl=1), not the HTML preview link, is what got fetched.
+		// The raw-download URL (dl=1), not the HTML preview link, is what study fetched to get the bytes.
 		expect(String(fetchMock.mock.calls[0][0])).toContain("dl=1");
-		expect(toMarkdown).toHaveBeenCalledTimes(1);
+		// A Dropbox path has no re-fetchable URL — the bytes are OCR'd (ocrDocument({bytes})), not the URL.
+		expect(ocrMock.ocrDocument).toHaveBeenCalledTimes(1);
+		expect((ocrMock.ocrDocument.mock.calls[0][1] as any).bytes).toBeInstanceOf(Uint8Array);
 		const stored = await kbFor(kv, "notes");
 		expect(stored.whitelist).toMatchObject({ kind: "pdf", via: "study" });
 	});
@@ -284,15 +296,18 @@ describe("study — learn archive (#1209 three-sink ingestion)", () => {
 	});
 
 	it("archive:true on a Dropbox-path pdf still archives the original bytes to R2 (#1239 — Mode A)", async () => {
-		const { env: base } = makeEnv({ toMarkdown: async () => [{ data: "Notes from the app-folder file." }] });
+		const { env: base } = makeEnv();
 		const { env, R2 } = withR2(base);
 		dropboxMock.hasDropbox.mockReturnValue(true);
 		dropboxMock.sharedLink.mockResolvedValue("https://www.dropbox.com/s/abc/notes.pdf?dl=0");
 		fetchMock.mockImplementation(async () => new Response(new Uint8Array([0x25, 0x50, 0x44, 0x46]), { status: 200 }));
+		ocrMock.ocrDocument.mockResolvedValueOnce("Notes from the app-folder file.");
 
 		const j = parse(await study.run(env, { source: "/notes.pdf", topic: "notes", archive: true }));
 		expect(j.archived.r2).toMatchObject({ sha256: expect.any(String), size: expect.any(Number) });
 		expect(j.archived.skipped).toBeUndefined();
+		// Only the archive leg writes to R2 here — the OCR engine (which would also putBlob to mint a
+		// Mistral URL) is mocked out, so R2.put is the single archive write.
 		expect(R2.put).toHaveBeenCalledTimes(1);
 	});
 });

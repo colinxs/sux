@@ -12,7 +12,6 @@ export type AiEnv = TailscaleEnv & {
 export const MODELS = {
 	text: "@cf/meta/llama-3.2-3b-instruct",
 	embed: "@cf/baai/bge-base-en-v1.5",
-	vision: "@cf/meta/llama-3.2-11b-vision-instruct",
 	translate: "@cf/meta/m2m100-1.2b",
 } as const;
 

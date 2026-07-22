@@ -1,5 +1,6 @@
 import { type Cache, type Caps, createGovernor, type Governor, type Handle, type Llm, type SinkTarget, type Store } from "@suxos/lib";
 import { llm } from "../ai.js";
+import { ocrBytes } from "../fns/_ocr.js";
 import type { RtEnv } from "../registry.js";
 
 // The op-engine's effect surface, backed by the Worker's real bindings: an R2 content
@@ -43,20 +44,12 @@ function r2Store(env: RtEnv): Store {
 function workersAiLlm(env: RtEnv): Llm {
 	return {
 		async markdownFromPdf(bytes: Uint8Array): Promise<string> {
-			// The PDF→markdown leaf (suxlib domain `extract`) converts each PDF via Workers-AI's
-			// document-conversion surface — `env.AI.toMarkdown`, a DISTINCT method from the text
-			// `run()` path `summarize` uses. Fail LOUD if the binding is absent, same as the
-			// store/sinks above (and ai.ts's hasAI guard) — never a silent empty conversion.
-			if (typeof env.AI?.toMarkdown !== "function") {
-				throw new Error("run: the Workers-AI binding (env.AI.toMarkdown) is missing — the PDF extract leaf needs it.");
-			}
-			// One document in ⇒ one ConversionResponse out (the single-doc toMarkdown overload).
-			const result = await env.AI.toMarkdown({ name: "document.pdf", blob: new Blob([bytes as BufferSource], { type: "application/pdf" }) });
-			// ConversionResponse is a discriminated union on `format`: the "error" branch carries
-			// no markdown (`error` instead of `data`), so surface it loudly rather than let a bad
-			// PDF slip through as an empty/garbage extraction into the reconcile → summarize chain.
-			if (result.format === "error") throw new Error(`run: Workers-AI toMarkdown could not convert the PDF: ${result.error}`);
-			return result.data;
+			// The PDF→markdown leaf (suxlib domain `extract`) OCRs each PDF via the SHARED Mistral
+			// engine (fns/_ocr.ts) — the single OCR engine, the same path the `ocr` leaf and study
+			// use, so the durable book-scale route extracts identically to the inline one. The bytes
+			// are content-addressed into R2 and Mistral OCRs that handle. Fails LOUD (throws) on any
+			// failure — never a silent empty conversion into the reconcile → summarize chain.
+			return ocrBytes(env, bytes, { contentType: "application/pdf" });
 		},
 		async summarize(text: string): Promise<string> {
 			return llm(env, "Summarize the following content concisely and faithfully.", text, 1024, "summarize an op artifact");

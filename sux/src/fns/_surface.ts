@@ -35,13 +35,13 @@ export const DOMAINS: DomainSpec[] = [
 	},
 	{
 		key: "convert",
-		blurb: "Format transforms — markdown/html/csv/json/xml/yaml, PDF build/fill, image transcode, font-case fold.",
-		leaves: ["markdown", "html", "csv", "json", "xml", "yaml", "pdf", "fillable", "image_convert", "fontcase"],
+		blurb: "Format transforms — markdown/html/csv/json/xml/yaml, PDF build/fill, OCR (Mistral, native PDF + document photos), image transcode, font-case fold.",
+		leaves: ["markdown", "html", "csv", "json", "xml", "yaml", "pdf", "fillable", "ocr", "image_convert", "fontcase"],
 	},
 	{
 		key: "compute",
-		blurb: "Encode / hash / compress / archive / OCR, Workers-AI text (summarize, translate, classify, redact), token-pack + declutter, voice restyle.",
-		leaves: ["encode", "hash", "compress", "archive", "ocr", "summarize", "translate", "classify", "redact", "pack", "declutter", "voice"],
+		blurb: "Encode / hash / compress / archive, Workers-AI text (summarize, translate, classify, redact), token-pack + declutter, voice restyle.",
+		leaves: ["encode", "hash", "compress", "archive", "summarize", "translate", "classify", "redact", "pack", "declutter", "voice"],
 	},
 	{
 		key: "data",

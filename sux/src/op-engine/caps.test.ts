@@ -40,49 +40,58 @@ test("sinks re-address a Handle (r2 -> published/) and a {summaryHandle} (vault 
 });
 
 // The op's `extract` leaf (suxlib domain/text.ts) calls `caps.llm.markdownFromPdf(bytes)`
-// and expects the converted markdown string back. `workersAiLlm` wires that to the real
-// Workers-AI `env.AI.toMarkdown` surface — a fake AI binding here proves the call shape and
-// that we return the ConversionResponse's `data`, without needing real Workers-AI creds
-// (which is exactly why the e2e harness omits the AI binding — see cluster-E report).
-test("markdownFromPdf: converts PDF bytes via env.AI.toMarkdown and returns the markdown `data`", async () => {
-	const seen: Array<{ name: string; type: string; bytes: Uint8Array }> = [];
-	const AI = {
-		async toMarkdown(doc: { name: string; blob: Blob }) {
-			seen.push({ name: doc.name, type: doc.blob.type, bytes: new Uint8Array(await doc.blob.arrayBuffer()) });
-			return { id: "r1", name: doc.name, mimeType: "application/pdf", format: "markdown" as const, tokens: 7, data: "# Title\n\nbody" };
-		},
-	};
-	const { llm } = makeCaps({ AI } as unknown as RtEnv);
+// and expects the converted markdown string back. `workersAiLlm` now wires that to the SHARED
+// Mistral OCR engine (fns/_ocr.ts) — the single OCR engine — which content-addresses the bytes
+// into R2 and OCRs the /s/ handle. Fakes: a Map-backed R2/KV for putBlob + a stubbed global
+// fetch standing in for the Mistral API, proving the call shape without real creds.
+test("markdownFromPdf: OCRs PDF bytes via the shared Mistral engine and returns the markdown", async () => {
+	const kv = new Map<string, string>();
+	const objects = new Map<string, unknown>();
+	const fetchMock = vi.fn(async (..._args: any[]) => new Response(JSON.stringify({ pages: [{ markdown: "# Title\n\nbody" }] }), { status: 200 }));
+	vi.stubGlobal("fetch", fetchMock);
+	const env = {
+		MISTRAL_API_KEY: "test-key",
+		STORE_BASE: "https://suxos.net",
+		OAUTH_KV: { put: async (k: string, v: string) => void kv.set(k, v), get: async (k: string) => kv.get(k) ?? null, delete: async () => {} },
+		R2: { put: async (k: string, v: unknown) => void objects.set(k, v) },
+	} as unknown as RtEnv;
+	const { llm } = makeCaps(env);
 
 	const pdf = new TextEncoder().encode("%PDF-1.7 …bytes…");
 	const md = await llm.markdownFromPdf(pdf);
 
-	// Returns the converted markdown carried in the ConversionResponse `data` field.
 	expect(md).toBe("# Title\n\nbody");
-	// Sent the PDF BY VALUE as a single-document Blob to the toMarkdown surface (not the
-	// run()/text-prompt path used by summarize) — one call, correct content type + bytes.
-	expect(seen).toHaveLength(1);
-	expect(seen[0].type).toBe("application/pdf");
-	expect(Array.from(seen[0].bytes)).toEqual(Array.from(pdf));
+	// Content-addressed to R2 for Mistral to fetch, then OCR'd as a document_url.
+	expect(objects.size).toBe(1);
+	const body = JSON.parse((fetchMock.mock.calls[0][1] as any).body);
+	expect(body.model).toBe("mistral-ocr-latest");
+	expect(body.document.type).toBe("document_url");
+	vi.unstubAllGlobals();
 });
 
-// A ConversionResponse with format:"error" carries no `data` — fail LOUD so a corrupt/
+// Any OCR failure (Mistral error / no text / unconfigured) throws — fail LOUD so a corrupt/
 // unsupported PDF surfaces as a run error instead of silently assimilating a bad extraction.
-test("markdownFromPdf: fails loud when toMarkdown returns a format:'error' result", async () => {
-	const AI = {
-		async toMarkdown(doc: { name: string; blob: Blob }) {
-			return { id: "r1", name: doc.name, mimeType: "application/pdf", format: "error" as const, error: "unsupported or corrupt PDF" };
-		},
-	};
-	const { llm } = makeCaps({ AI } as unknown as RtEnv);
-	await expect(llm.markdownFromPdf(new Uint8Array([1, 2, 3]))).rejects.toThrow(/unsupported or corrupt PDF/);
+test("markdownFromPdf: fails loud when Mistral OCR errors", async () => {
+	const kv = new Map<string, string>();
+	const objects = new Map<string, unknown>();
+	const fetchMock = vi.fn(async () => new Response("unsupported or corrupt PDF", { status: 422 }));
+	vi.stubGlobal("fetch", fetchMock);
+	const env = {
+		MISTRAL_API_KEY: "test-key",
+		STORE_BASE: "https://suxos.net",
+		OAUTH_KV: { put: async (k: string, v: string) => void kv.set(k, v), get: async (k: string) => kv.get(k) ?? null, delete: async () => {} },
+		R2: { put: async (k: string, v: unknown) => void objects.set(k, v) },
+	} as unknown as RtEnv;
+	const { llm } = makeCaps(env);
+	await expect(llm.markdownFromPdf(new Uint8Array([1, 2, 3]))).rejects.toThrow(/422|Mistral OCR/);
+	vi.unstubAllGlobals();
 });
 
-// Same fail-loud convention as the store/sinks: a missing binding throws WHEN CALLED (never a
-// silent no-op), with a message that names the exact binding/method the operator must add.
-test("markdownFromPdf: fails loud when the AI binding is absent", async () => {
+// Same fail-loud convention as the store/sinks: an unconfigured OCR engine throws WHEN CALLED
+// (never a silent no-op), with a message that names the exact secret the operator must set.
+test("markdownFromPdf: fails loud when OCR is unconfigured (no MISTRAL_API_KEY)", async () => {
 	const { llm } = makeCaps({} as unknown as RtEnv);
-	await expect(llm.markdownFromPdf(new Uint8Array([1]))).rejects.toThrow(/env\.AI\.toMarkdown/);
+	await expect(llm.markdownFromPdf(new Uint8Array([1]))).rejects.toThrow(/MISTRAL_API_KEY/);
 });
 
 test("mail-labels sink groups proposals by (label, add) and calls labelMessages once per group", async () => {

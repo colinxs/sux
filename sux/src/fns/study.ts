@@ -1,5 +1,6 @@
 import { hasAI, llm } from "../ai";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
+import { ocrDocument } from "./_ocr";
 import { appendOnWhitelist } from "./_kb";
 import { hasDropboxFull, normFull, readFull } from "./_dropbox-full";
 import { hasDropbox, sharedLink } from "./dropbox";
@@ -128,35 +129,47 @@ export async function resolveDocSource(env: RtEnv, source: string): Promise<{ na
 
 /** The transcription half of `extractDocText` (#1283 hoist — callers that already hold document
  *  bytes, e.g. the assimilation spine fed by radar/mail, transcribe without re-deriving Mode A/B
- *  source resolution). Throws (caller wraps) when the toMarkdown binding is unavailable or the
- *  document yields no text. */
+ *  source resolution). Composes on the shared Mistral OCR engine (`_ocr.ts`) — the bytes are
+ *  content-addressed into R2 and Mistral OCRs the handle. Throws (caller wraps) when OCR is
+ *  unconfigured/fails or the document yields no text. */
 export async function docBytesToMarkdown(env: RtEnv, name: string, bytes: Uint8Array): Promise<string> {
-	// Workers-AI document conversion (PDF/office/image → markdown, OCR included). Feature-detected:
-	// the older AI binding only declares run(), and vitest has no real binding — so a missing
-	// toMarkdown is a clean "extract it yourself" error, never a throw the caller can't act on.
-	const ai = env.AI as unknown as { toMarkdown?: (docs: Array<{ name: string; blob: Blob }>) => Promise<Array<{ data?: string }> | { data?: string }> };
-	if (typeof ai?.toMarkdown !== "function") {
-		throw new Error("PDF text extraction needs the Workers-AI toMarkdown binding. Extract the text yourself and study it as { kind: \"text\" }.");
+	try {
+		return await ocrDocument(env, { bytes });
+	} catch (e) {
+		throw new Error(`Could not OCR '${name}': ${errMsg(e)}. Set MISTRAL_API_KEY, or extract the text yourself and study it as { kind: "text" }.`);
 	}
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any — Blob accepts a BufferSource at runtime; the Worker types omit the BlobPart alias.
-	const res = await ai.toMarkdown([{ name, blob: new Blob([bytes] as any, { type: "application/pdf" }) }]);
-	const md = (Array.isArray(res) ? res[0]?.data : (res as { data?: string })?.data) ?? "";
-	const text = String(md).trim();
-	if (!text) throw new Error(`Extracted no text from '${name}'. If it is a scanned image PDF, OCR it first and study the text as { kind: "text" }.`);
-	return text;
 }
 
-/** Resolve a pdf/document source to text. An http(s) url or a Dropbox file path (Mode B) is read
- *  to bytes, then Workers-AI `toMarkdown` transcribes the document (native PDF text + image OCR).
- *  A textual Dropbox file is returned as-is. Throws (caller wraps) when the source can't be read or
- *  the toMarkdown binding is unavailable — the caller is told to pass the extracted `text` instead. */
+/** Resolve a pdf/document source to text via the shared Mistral OCR engine (`_ocr.ts`). An http(s)
+ *  url is handed to Mistral directly (native PDF ingestion — Mistral fetches the URL itself, no local
+ *  re-upload). A Dropbox file path (Mode A shared link preferred, Mode B fallback) is read to bytes
+ *  and OCR'd via the content-addressed store; an already-textual Dropbox file is returned as-is.
+ *  Throws (caller wraps) when the source can't be read or OCR fails — the caller is told to pass the
+ *  extracted `text` instead. */
 export async function extractDocText(env: RtEnv, source: string): Promise<{ text: string; name: string; bytes?: Uint8Array }> {
-	const resolved = await resolveDocSource(env, source);
+	const s = source.trim();
+	if (isHttpUrlStr(s)) {
+		let name: string;
+		try {
+			name = decodeURIComponent(new URL(s).pathname.split("/").filter(Boolean).pop() ?? "") || "document.pdf";
+		} catch {
+			name = "document.pdf";
+		}
+		// URL input — Mistral fetches the document itself. No local bytes are returned; archiveKnowledge's
+		// R2 leg re-fetches an http(s) url on its own (only a Dropbox path, with no re-fetchable URL, needs
+		// the pre-read bytes threaded through — see below).
+		try {
+			const text = await ocrDocument(env, { url: s });
+			return { text, name };
+		} catch (e) {
+			throw new Error(`Could not OCR '${s}': ${errMsg(e)}. Set MISTRAL_API_KEY, or extract the text yourself and study it as { kind: "text" }.`);
+		}
+	}
+	const resolved = await resolveDocSource(env, s);
 	if (typeof resolved.text === "string") return { text: resolved.text, name: resolved.name };
 	const text = await docBytesToMarkdown(env, resolved.name, resolved.bytes!);
-	// bytes are the ORIGINAL document bytes (pre-transcription) — archiveKnowledge's R2 leg for a
-	// Dropbox-path pdf (#1239) reuses these instead of re-deriving Mode A/B, since a Dropbox path
-	// has no directly re-fetchable URL of its own.
+	// bytes are the ORIGINAL document bytes — archiveKnowledge's R2 leg for a Dropbox-path pdf (#1239)
+	// reuses these instead of re-deriving Mode A/B, since a Dropbox path has no re-fetchable URL of its own.
 	return { text, name: resolved.name, bytes: resolved.bytes };
 }
 
@@ -326,10 +339,10 @@ export const study: Fn = {
 	annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
 	description:
 		"Learn WHITELISTED material — a document you OWN or have the right to use — into a compressed knowledge base that sux WEIGHTS ABOVE its own knowledge and web research when answering. Assisted note-taking over an owned source (a distilled index, never a verbatim copy) — not training, not scraping. " +
-		"`source` is the material; `kind`: text (verbatim body, e.g. a PDF you extracted) | url (http(s) article/page/.txt, fetched + distilled) | pdf (an http(s) URL to a PDF, or a Dropbox file path you uploaded — transcribed via Workers-AI toMarkdown) | auto (default — infers from `source`). " +
+		"`source` is the material; `kind`: text (verbatim body, e.g. a PDF you extracted) | url (http(s) article/page/.txt, fetched + distilled) | pdf (an http(s) URL to a PDF, or a Dropbox file path you uploaded — OCR'd via Mistral, the shared `ocr` engine) | auto (default — infers from `source`). " +
 		"`topic` (required) namespaces the knowledge base (it becomes a whitelisted `oracle` topic). `title` labels the provenance. It distills into an oracle topic KB and stamps a whitelist marker, so `oracle({problem,topic})` and `recall` both rank it above the model + [web]. " +
 		"`action`: learn (default) → distill + whitelist; list → the studied (whitelisted) topics + provenance (the copyright audit); forget → delete one topic's KB (reversible; the git-versioned vault mirror stays as history). " +
-		"COPYRIGHT-CLEAN: only the material you supply is distilled (it fetches exactly the one url/path — never crawls to find a work), and only the compressed index is stored, never a full-text clone. Additive + reversible. Query with oracle/recall. Needs the Workers-AI binding; pdf-from-file needs DROPBOX_FULL_*. Stateful — never cached. " +
+		"COPYRIGHT-CLEAN: only the material you supply is distilled (it fetches exactly the one url/path — never crawls to find a work), and only the compressed index is stored, never a full-text clone. Additive + reversible. Query with oracle/recall. Needs the Workers-AI binding (distillation); OCR of a pdf/document needs MISTRAL_API_KEY; a pdf from a Dropbox path needs the Dropbox binding (Mode A app-folder, or Mode B DROPBOX_FULL_*). Stateful — never cached. " +
 		"`archive` (default true, #1239): also fan out to the two other knowledge-ingestion sinks — the original source bytes (url/pdf-via-url/pdf-via-Dropbox-path/text) archived privately to R2, a best-effort Wayback snapshot for a url source, and a per-book insight-card note (core models · techniques · when-to-use · notable passages) written to Knowledge/Distilled/<topic>.md, with provenance links. Best-effort: an archive failure never fails the underlying distill/whitelist. Pass `archive:false` to skip it.",
 		inputSchema: {
 		type: "object",
