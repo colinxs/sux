@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { computeGraphHealth } from "./graph_health";
 import type { VaultRecord } from "../vault-mcp";
 
@@ -10,6 +10,38 @@ const rec = (path: string, links: string[] = [], fm: Record<string, unknown> = {
 	tasks: [],
 	excerpt: "",
 	keywords: [],
+});
+
+describe("graph_health.run", () => {
+	it("excludes its own generated report note from the scan, so the report's [[wikilink]] examples in its body never re-count as dead links from itself (#1261)", async () => {
+		vi.resetModules();
+		vi.doMock("../vault-mcp", () => ({
+			scanVault: async () => ({
+				records: [
+					rec("Notes/A.md", ["B"]),
+					rec("Folder/B.md"),
+					// The report's own generated body: cites other notes' dead links as literal
+					// `[[wikilink]]`-style text, which a naive re-scan would parse as outgoing links.
+					rec("Meta/Graph-Health.md", ["Nonexistent1", "Nonexistent2", "Nonexistent3"]),
+				],
+				total: 3,
+				truncated: false,
+			}),
+		}));
+		vi.doMock("./obsidian", () => ({
+			obsidian: { run: async () => ({ content: [{ type: "text", text: "{}" }] }) },
+			vaultCfg: () => ({ repo: "o/r", branch: "main", dir: "", inVault: (p: string) => p }),
+		}));
+		const { graph_health: freshGraphHealth } = await import("./graph_health");
+		const res = await freshGraphHealth.run({ OBSIDIAN_VAULT_REPO: "o/r" } as any, {});
+		vi.doUnmock("../vault-mcp");
+		vi.doUnmock("./obsidian");
+		vi.resetModules();
+		expect(res.isError).toBeFalsy();
+		const body = JSON.parse(res.content[0].text);
+		expect(body.dead_link_count).toBe(0);
+		expect(body.total).toBe(2);
+	});
 });
 
 describe("computeGraphHealth", () => {

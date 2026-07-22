@@ -142,7 +142,11 @@ export const graph_health: Fn = {
 			return failWith("upstream_error", `graph_health: vault scan failed: ${errMsg(e)}`);
 		}
 
-		const health = computeGraphHealth(records);
+		// Exclude the report's own generated note — its body documents other notes' dead
+		// links as literal `[[wikilink]]` example text, which the regex-based scan would
+		// otherwise re-parse as outgoing links from the report itself, self-inflating the
+		// count on every subsequent run (#1261).
+		const health = computeGraphHealth(records.filter((r) => r.path !== REPORT_PATH));
 		const generatedAt = new Date().toISOString();
 		const w = await obsidian.run(env, { action: "write", path: REPORT_PATH, content: renderReport(health, generatedAt), backend: "git" });
 		const note_written = !w.isError;

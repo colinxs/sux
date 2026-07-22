@@ -3,10 +3,12 @@ import { MemoryStore, type Caps } from "@suxos/lib";
 import { interpretDurable, AskRejectedError } from "./durable.js";
 import { registry } from "./registry.js";
 
-// A FAKE WorkflowStep mirroring durable.test.ts: `do` runs inline, `waitForEvent` records
-// the event type it waited on and returns a caller-supplied payload (default: approve).
+// A FAKE WorkflowStep mirroring durable.test.ts: `do` runs inline (handling both the bare
+// and the WorkflowStepConfig 3-arg form a `retries`-declaring leaf produces — no retrying
+// here, one throw propagates), `waitForEvent` records the event type it waited on and
+// returns a caller-supplied payload (default: approve).
 const fakeStep = (rec: { events: string[] }, payload: any = { approved: true }): any => ({
-	do: async (_name: string, fn: any) => fn(),
+	do: async (_name: string, a: any, b?: any) => (typeof a === "function" ? a() : b()),
 	waitForEvent: async (_name: string, opts: { type: string }) => {
 		rec.events.push(opts.type);
 		return { payload };
@@ -195,4 +197,32 @@ test("files-consolidate-plan: a veto ({approved:false}) rejects the gate and nev
 
 	await expect(interpretDurable(registry["files-consolidate-plan"](), clusters, fakeStep(rec, { approved: false }), caps, "root")).rejects.toThrow(AskRejectedError);
 	expect(written).toHaveLength(0);
+});
+
+test("mychart-pull: a retry-exhausted type degrades to status:'throttled' in `errors` while every other type's results land — one bad type never sinks the pull", async () => {
+	const rec = { events: [] as string[] };
+	const manifests: unknown[] = [];
+	const caps = {
+		store: new MemoryStore(),
+		llm: {},
+		clock: { now: () => 0 },
+		sinks: { "phi-manifest": { name: "phi-manifest", write: async (input: any) => (manifests.push(input), input) } },
+		// The OpCaps `health` effect (op-engine/caps.ts): Condition's fetch is persistently
+		// throttled upstream — with the fake step's no-retry `do`, the throw IS the
+		// exhausted retry budget, so the leaf's catchOp fallback must kick in.
+		health: {
+			pullType: async (item: any) => {
+				if (item.label === "Condition") throw new Error("MyChart pull: HTTP 429 fetching Condition");
+				return { org: item.org, patient: item.patient, label: item.label, count: 2, pages: 1, binaries: 0, keys: 1, status: "ok" };
+			},
+		},
+	} as unknown as Caps;
+
+	const out: any = await interpretDurable(registry["mychart-pull"](), { org: "uwmedicine", patient: "P1", types: ["Condition", "Goal"] }, fakeStep(rec), caps, "root");
+	expect(out.counts).toEqual({ Condition: 0, Goal: 2 });
+	expect(out.truncated).toBe(true);
+	expect(out.errors.Condition).toMatch(/throttled/);
+	expect(out.errors).not.toHaveProperty("Goal");
+	expect(manifests).toHaveLength(1);
+	expect((manifests[0] as any).errors.Condition).toMatch(/throttled/);
 });

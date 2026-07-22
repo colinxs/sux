@@ -51,12 +51,19 @@ jobs:
           repositories: suxlib
           permission-contents: read
 
+      # -c http.<url>.extraheader= (empty) is load-bearing: the checkout step above
+      # persisted the SUX-scoped token as an Authorization extraheader in this repo's
+      # local git config, and ls-remote (unlike clone) honors the enclosing checkout's
+      # config — the persisted header then overrides the URL credential and 404s on
+      # suxlib, which that token can't see. Clearing it for this one call lets the
+      # suxlib-scoped token in the URL actually authenticate. (Why ci.yml never hit
+      # this: git clone ignores the enclosing repo's local config.)
       - name: Resolve current suxlib main SHA
         id: resolve
         env:
           SUXLIB_TOKEN: ${{ steps.suxlib-token.outputs.token }}
         run: |
-          SHA="$(git ls-remote "https://x-access-token:${SUXLIB_TOKEN}@github.com/SuxOS/suxlib.git" refs/heads/main | cut -f1)"
+          SHA="$(git -c "http.https://github.com/.extraheader=" ls-remote "https://x-access-token:${SUXLIB_TOKEN}@github.com/SuxOS/suxlib.git" refs/heads/main | cut -f1)"
           if [ -z "$SHA" ]; then
             echo "::error::failed to resolve suxlib main's tip SHA" && exit 1
           fi

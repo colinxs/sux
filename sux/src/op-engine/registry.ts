@@ -1,4 +1,4 @@
-import { op, pipe, map, reconcile, ask, sink, aimd, fixed, unzip, extract, summarize, type Caps, type Op } from "@suxos/lib";
+import { op, pipe, map, reconcile, ask, sink, aimd, catchOp, fixed, unzip, extract, summarize, type Caps, type Op } from "@suxos/lib";
 import { classifyForLabelPlan, compactLabelPlan, type LabelPlanItem } from "./_mail_triage_plan.js";
 import { proposeMerge, compactMergePlan, type DuplicateClusterInput, type MergePlanItem } from "./_vault_consolidate_plan.js";
 import { proposeContactMerge, compactContactMergePlan, type ContactClusterInput, type ContactMergePlanItem } from "./_contact_consolidate_plan.js";
@@ -6,7 +6,7 @@ import { proposeMychartOutreach, compactMychartOutreachPlan, type MychartConflic
 import { proposeFileDuplicate, compactFileDuplicatePlan, type FileClusterInput, type FileDuplicatePlanItem } from "./_files_consolidate_plan.js";
 import { proposeMedicalEvent, compactMedicalTimelinePlan, type MedicalEventInput, type MedicalTimelineItem } from "./_medical_timeline_plan.js";
 import type { TriageMsg } from "../fns/_mail_triage.js";
-import { buildPullPlan, reconcilePull, type PullPlanItem, type PullTypeResult } from "../mychart.js";
+import { buildPullPlan, reconcilePull, throttledPullType, type PullPlanItem, type PullTypeResult } from "../mychart.js";
 import type { OpCaps } from "./caps.js";
 
 // THE op registry — named op trees that the `run` front-verb and the OpWorkflow
@@ -115,8 +115,10 @@ import type { OpCaps } from "./caps.js";
 // cancelled it), losing all progress. `plan` (pure) builds the per-type search plan; the
 // `map` fans each resource type out to its own `pull-type` leaf under Workflows' per-step
 // retry/backoff (durable.ts's `stepConfig`, driven by `retries` below) — a 429/5xx throws
-// so THAT ONE type retries with backoff instead of a single flaky type sinking the whole
-// pull; `reconcile-pull` merges the per-type results (never resource values, counts only)
+// so THAT ONE type retries with backoff, and if the retry budget exhausts, the leaf's
+// `catchOp` fallback degrades that type to `status:'throttled'` instead of a single flaky
+// type sinking the whole pull; `reconcile-pull` merges the per-type results (never
+// resource values, counts only)
 // into the summary `PullResult`, whose `errors`/`truncated` never silently reports a partial
 // sync as clean. A leaf only ever sees `caps`, not `env` (this file's own header note) —
 // `pull-type` reaches the FHIR fetch/OAuth/R2-write it needs via `caps.health` (op-engine/
@@ -191,7 +193,18 @@ export const registry: Record<string, () => Op> = {
 					buildPullPlan(input, new Date(caps.clock.now()).toISOString().replace(/[:.]/g, "-")),
 				{ kind: "effect" },
 			),
-			map(op("pull-type", async (item: PullPlanItem, caps: Caps) => (caps as OpCaps).health.pullType(item), { kind: "effect", retries: 4 }), { concurrency: aimd({ start: 3, max: 8 }) }),
+			// catchOp: when a type's 429/5xx throw outlives the step's whole retry budget
+			// (retries: 4), degrade THAT type to `status:'throttled'` (mychart.ts's
+			// `throttledPullType` — surfaced via reconcilePull's `errors`, never silently
+			// clean) instead of the bare-map behavior of one exhausted type failing the
+			// whole workflow and losing every other type's already-memoized result.
+			map(
+				catchOp(
+					op("pull-type", async (item: PullPlanItem, caps: Caps) => (caps as OpCaps).health.pullType(item), { kind: "effect", retries: 4 }),
+					op("pull-type-throttled", async (item: PullPlanItem) => throttledPullType(item), { kind: "pure" }),
+				),
+				{ concurrency: aimd({ start: 3, max: 8 }) },
+			),
 			op("reconcile-pull", async (results: PullTypeResult[]) => reconcilePull(results), { kind: "pure" }),
 			sink("phi-manifest"),
 		),

@@ -537,7 +537,12 @@ export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps):
 			// CREATE op (a reply DRAFT is staged for review, never sent). Kept OUT of the shared
 			// classify() seam so briefing's isFlagged (which only reads `.label`) is unaffected, and
 			// still runs even when a test injects `deps.classify` (draft-reply tests rely on this).
-			if (c.label === "personal") c = detectReplyDraft(m) ?? c;
+			// SUPPRESSED under sweep_backlog: backlog mail is old, so a "please reply" cue is stale —
+			// a sweep drafting replies to months-old threads floods Drafts with noise (observed live:
+			// 8 stale drafts staged in one sweep call). Backlog sweeps stay strictly label-only; the
+			// message still gets the reversible `personal` label via ACTION_FOR, and the daily
+			// (non-sweep) cycle keeps drafting for FRESH personal mail as designed.
+			if (c.label === "personal" && !sweepBacklog) c = detectReplyDraft(m) ?? c;
 			// A classification may carry a per-message op override (service notifications attach a
 			// type-specific label, draft-reply attaches the create op); otherwise fall back to the
 			// label's default action. `resolveOp` then applies the archive confidence bar — a

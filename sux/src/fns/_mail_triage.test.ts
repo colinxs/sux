@@ -390,6 +390,20 @@ describe("draft-reply — the send-proof staging lane", () => {
 		expect(logged[0]).toMatchObject({ id: "pr1", action: "acted", op: "draft-reply", draft_id: "draft-pr1" });
 	});
 
+	it("sweep_backlog SUPPRESSES the draft-reply lane: a stale reply cue in old backlog mail is suggested as a plain `personal` label, never composed or drafted", async () => {
+		const deps = mkDraftDeps(REPLY_MSG);
+		const env = envWith({ MAIL_TRIAGE_ENABLED: "1", MAIL_TRIAGE_ACT: "1" });
+		const report = await runTriage(env, { cycle_id: "d-sw", sweep_backlog: true, max: 10 }, deps);
+		// No compose call, no draft staged — a backlog sweep is strictly label-only.
+		expect(deps.composeSpy).not.toHaveBeenCalled();
+		expect(deps.draftSpy).not.toHaveBeenCalled();
+		expect(report.acted).toHaveLength(0);
+		// Without the draft upgrade the base classification (`personal`, 0.70 < the 0.75 bar)
+		// stands, so the message lands in suggested — nothing is mutated at all.
+		expect(report.suggested!.map((s) => s.id)).toEqual(["pr1"]);
+		expect(deps.actSpy).not.toHaveBeenCalled();
+	});
+
 	it("is INERT without the draft deps: a reply-worthy message is SUGGESTED, never drafted (feature is opt-in)", async () => {
 		const deps = mkDeps(REPLY_MSG); // no composeReply / draftReply
 		const env = envWith({ MAIL_TRIAGE_ENABLED: "1", MAIL_TRIAGE_ACT: "1" });

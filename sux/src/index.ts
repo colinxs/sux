@@ -1054,6 +1054,12 @@ export default {
 		ctx.waitUntil(maintenanceTick(env, ctx));
 		ctx.waitUntil(runSubJob(env, "self_improve", () => selfImproveTick(env)));
 	},
+	async queue(batch: MessageBatch<unknown>, env: RtEnv, _ctx: ExecutionContext): Promise<void> {
+		// Lazy import: the queue path pulls in the ingest surface only when a
+		// message actually arrives (same pattern as the cron sub-handlers).
+		const { handleIngestBatch } = await import("./fns/_ingest_queue");
+		await handleIngestBatch(batch, env);
+	},
 	async fetch(request: Request, env: RtEnv, ctx: ExecutionContext): Promise<Response> {
 		// Public, unauthenticated observability routes (health/metrics/logs) are
 		// served before the OAuth provider claims every path.

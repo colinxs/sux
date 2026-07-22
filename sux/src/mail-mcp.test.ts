@@ -177,6 +177,15 @@ describe("mail_* ergonomic tools", () => {
 		expect(q.filter).toMatchObject({ hasKeyword: "mailing_list" });
 	});
 
+	// #1263: a hasKeyword filter that silently degrades server-side to match-all is the bad failure
+	// mode — a bogus/never-used label must error, not quietly hand back the unfiltered set.
+	it("mail_search errors instead of returning results when the server's hasKeyword filter didn't actually apply", async () => {
+		installFetch(); // Email/get's mocked EMAIL carries no "edu" keyword, simulating a degraded filter
+		const r = await tool("mail_search").run(env(), { label: "edu", limit: 10 });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toContain("degraded to match-all");
+	});
+
 	it("mail_label adds a keyword by default, and removes it with add:false — same op mail_sieve_backfill uses", async () => {
 		installFetch();
 		lastEmailSet = null;

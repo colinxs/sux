@@ -456,6 +456,18 @@ async function fromImessage(env: RtEnv, question: string): Promise<Gathered> {
 	return { material: parts.join("\n\n"), refs };
 }
 
+// Per-leg deadline (#1262): the full default fan-out (9 sources, several doing multi-round-trip
+// JMAP/CalDAV/iMessage work) can blow the MCP client's overall call timeout even though most legs
+// finish quickly — a single slow/hung leg (imessage's per-thread fetch loop and calendar's
+// per-calendar REPORT loop are the likeliest culprits) then fails the WHOLE answer closed instead
+// of recall returning whatever the other 8 legs already found. Race each leg against its own
+// deadline and treat a timeout as that leg being "unavailable", same as any other per-source
+// failure — gatherRecall already tolerates partial coverage by design (see its status map).
+const SOURCE_TIMEOUT_MS = 8_000;
+function withSourceTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+	return Promise.race([p, new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`source timed out after ${ms}ms`)), ms))]);
+}
+
 const SOURCES: Record<string, (env: RtEnv, q: string) => Promise<Gathered | GatheredParts>> = { vault: fromVault, files: fromFiles, mail: fromMail, web: fromWeb, learned: fromLearned, oracle: fromOracle, calendar: fromCalendar, contacts: fromContacts, imessage: fromImessage };
 const BASE_SOURCES = ["vault", "files", "mail", "learned", "oracle", "calendar", "contacts", "imessage"];
 /** `web` is a default source ONLY when it's FREE — i.e. Kagi-on-the-subscription (KAGI_SESSION)
@@ -483,7 +495,7 @@ export async function gatherRecall(
 	if (!chosen.length) return { materials, citations, status, chosen };
 
 	const materialSources: string[] = [];
-	const results = await Promise.allSettled(chosen.map((s: string) => SOURCES[s](env, question)));
+	const results = await Promise.allSettled(chosen.map((s: string) => withSourceTimeout(SOURCES[s](env, question), SOURCE_TIMEOUT_MS)));
 	chosen.forEach((s: string, i: number) => {
 		const r = results[i];
 		if (r.status === "fulfilled") {

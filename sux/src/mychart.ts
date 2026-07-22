@@ -22,10 +22,11 @@ import { safeParseJson } from "./fns/_util";
 export const PHI_PREFIX = "phi/";
 
 // The multi-org registry (design §1/§2.1) — a code constant, not runtime config: the
-// org set changes rarely and a constant stays unit-testable/reviewable. One client
-// credential (EPIC_CLIENT_ID/SECRET) authenticates against all three via Epic's
-// Automatic Client-ID Distribution, so adding an org is a one-line PR, never a new
-// Epic app registration. Base URLs are public directory data, never secrets.
+// org set changes rarely and a constant stays unit-testable/reviewable. One client_id
+// (EPIC_CLIENT_ID) authenticates against all three via Epic's Automatic Client-ID
+// Distribution, so adding an org is a one-line PR, never a new Epic app registration.
+// The client SECRET is per-org, not shared (see tokenAuthHeaders below). Base URLs are
+// public directory data, never secrets.
 export const MYCHART_ORGS: Record<string, { name: string; fhirBase: string }> = {
 	uwmedicine: { name: "UW Medicine (WA)", fhirBase: "https://fhir.epic.medical.washington.edu/FHIR-Proxy/UWM/api/FHIR/R4" },
 	swedish: { name: "Providence Swedish (WA)", fhirBase: "https://haikuwa.providence.org/fhirproxy/api/FHIR/R4" },
@@ -152,20 +153,32 @@ export async function readGrant(env: RtEnv, org: string): Promise<MychartGrant |
 }
 
 // Confidential client → the token endpoint is authed with HTTP Basic client_id:secret.
-// Shared across every org (§1 — one client_id/secret via Automatic Client-ID Distribution).
-function tokenAuthHeaders(env: RtEnv): Record<string, string> {
+// The client_id IS shared across every org (§1 — Automatic Client-ID Distribution), but
+// the SECRET is not: Epic's own guidance is "Each public key or client secret should be
+// different for each customer and for each environment." Resolve a per-org secret from
+// EPIC_CLIENT_SECRET_<ORG> (org id upper-cased, non A-Z0-9_ chars squashed to `_` — see
+// epicClientSecretVar), falling back to the single global EPIC_CLIENT_SECRET so an
+// existing single-org deployment keeps working unchanged (UW today runs on the global
+// fallback; splitting out a per-org secret is a `wrangler secret put` away, no code change).
+function epicClientSecretVar(org: string): string {
+	return `EPIC_CLIENT_SECRET_${org.toUpperCase().replace(/[^A-Z0-9_]/g, "_")}`;
+}
+
+function tokenAuthHeaders(env: RtEnv, org: string): Record<string, string> {
+	const perOrg = (env as unknown as Record<string, string | undefined>)[epicClientSecretVar(org)];
+	const secret = perOrg || env.EPIC_CLIENT_SECRET;
 	return {
 		"Content-Type": "application/x-www-form-urlencoded",
 		Accept: "application/json",
-		Authorization: `Basic ${btoa(`${env.EPIC_CLIENT_ID}:${env.EPIC_CLIENT_SECRET}`)}`,
+		Authorization: `Basic ${btoa(`${env.EPIC_CLIENT_ID}:${secret}`)}`,
 	};
 }
 
 /** POST the token endpoint with a URL-encoded body; returns the parsed JSON + status. */
-async function tokenPost(env: RtEnv, cfg: SmartConfig, body: Record<string, string>): Promise<{ status: number; json: any }> {
+async function tokenPost(env: RtEnv, org: string, cfg: SmartConfig, body: Record<string, string>): Promise<{ status: number; json: any }> {
 	const resp = await fetch(cfg.token_endpoint, {
 		method: "POST",
-		headers: tokenAuthHeaders(env),
+		headers: tokenAuthHeaders(env, org),
 		body: new URLSearchParams(body).toString(),
 		signal: AbortSignal.timeout(20_000),
 	});
@@ -188,7 +201,7 @@ export async function mintAccessToken(env: RtEnv, org: string): Promise<string> 
 	const grant = await readGrant(env, org);
 	if (!grant?.refresh_token) throw new Error(`MyChart not connected for org '${org}' — no grant in KV. Open /mychart/connect?org=${org} once to link the account.`);
 	const cfg = await smartConfig(env, org);
-	const { status, json } = await tokenPost(env, cfg, {
+	const { status, json } = await tokenPost(env, org, cfg, {
 		grant_type: "refresh_token",
 		refresh_token: grant.refresh_token,
 		client_id: String(env.EPIC_CLIENT_ID),
@@ -327,6 +340,13 @@ export interface PullResult {
 // single durable step's wall-clock budget.
 const MAX_PAGES_PER_TYPE = 50;
 
+// A hard ceiling on DocumentReference→Binary fetches per plan item (design §3.1) — a
+// note-heavy chart can reference thousands of attachments, and each Binary is its own
+// FHIR round-trip + R2 write, so an unbounded fan-out could exhaust the instance's
+// subrequest budget from inside ONE step. Hitting the cap flips the type's status to
+// "truncated" (surfaced via reconcilePull's `errors`), never a silent partial.
+export const MAX_BINARIES_PER_TYPE = 200;
+
 // ---------------- pull: durable op-engine leaves (op-engine/registry.ts's "mychart-pull") ----------------
 //
 // `pull` used to be one synchronous function looping the WHOLE plan (every USCDI type,
@@ -359,7 +379,7 @@ export interface PullTypeResult {
 	pages: number;
 	binaries: number;
 	keys: number;
-	status: "ok" | "unsupported" | "truncated";
+	status: "ok" | "unsupported" | "truncated" | "throttled";
 }
 
 /** Page through ONE resource type's searchset, resolve DocumentReference → Binary
@@ -369,7 +389,9 @@ export interface PullTypeResult {
  * THROWS so the durable interpreter's `step.do` retries this ONE type with backoff
  * (durable.ts's `stepConfig`, driven by the leaf's declared `retries`) instead of the
  * old behavior of silently `break`ing and losing the whole type. A 404 (org doesn't
- * support this type) is reported as `status:'unsupported'`, never an error. */
+ * support this type) is reported as `status:'unsupported'`, never an error. Binary
+ * fan-out is bounded by MAX_BINARIES_PER_TYPE — past the cap the type reports
+ * `status:'truncated'` and stops fetching attachments (pages still land). */
 export async function pullType(env: RtEnv, item: PullPlanItem): Promise<PullTypeResult> {
 	const base = fhirBase(item.org);
 	let url: string | null = `${base}/${item.type}?${item.query}`;
@@ -405,8 +427,16 @@ export async function pullType(env: RtEnv, item: PullPlanItem): Promise<PullType
 		keys += 1;
 		await putPhi(env, `mychart/${item.org}/${item.patient}/${item.label}/${item.stamp}-p${page}.json`, JSON.stringify(bundle), "application/fhir+json");
 		if (item.type === "DocumentReference") {
-			for (const doc of resources) {
+			docs: for (const doc of resources) {
+				if (binaries >= MAX_BINARIES_PER_TYPE) {
+					status = "truncated";
+					break;
+				}
 				for (const bin of await resolveBinaries(env, item.org, base, doc)) {
+					if (binaries >= MAX_BINARIES_PER_TYPE) {
+						status = "truncated";
+						break docs;
+					}
 					await putPhi(env, `mychart/${item.org}/${item.patient}/Binary/${bin.id}.json`, bin.body, "application/fhir+json");
 					binaries++;
 					keys++;
@@ -419,9 +449,20 @@ export async function pullType(env: RtEnv, item: PullPlanItem): Promise<PullType
 	return { org: item.org, patient: item.patient, label: item.label, count, pages: page, binaries, keys, status };
 }
 
+/** The `pull-type` leaf's retry-exhaustion fallback (design §3.1): when a type's
+ * transient 429/5xx throw outlives the durable step's whole retry budget, the op's
+ * `catchOp` wrapper (op-engine/registry.ts) lands here instead of letting one bad type
+ * sink the ENTIRE pull — every other type's already-memoized result survives, and this
+ * type reports `status:'throttled'` (zero counts — nothing this attempt wrote is
+ * countable), which reconcilePull surfaces in `errors`, never as a clean sync. */
+export function throttledPullType(item: PullPlanItem): PullTypeResult {
+	return { org: item.org, patient: item.patient, label: item.label, count: 0, pages: 0, binaries: 0, keys: 0, status: "throttled" };
+}
+
 /** Merge the per-type fan-out results (op-engine `map` output) into the summary
  * `PullResult` the `mychart` fn returns — `errors` non-empty means the caller KNOWS
- * the sync was partial (a truncated/errored type is never silently reported clean). */
+ * the sync was partial (a truncated/errored/throttled type is never silently reported
+ * clean). */
 export function reconcilePull(results: PullTypeResult[]): PullResult {
 	const counts: Record<string, number> = {};
 	const errors: Record<string, string> = {};
@@ -436,7 +477,10 @@ export function reconcilePull(results: PullTypeResult[]): PullResult {
 		keys += r.keys;
 		if (r.status === "truncated") {
 			truncated = true;
-			errors[r.label] = "truncated (page cap or non-retryable HTTP error)";
+			errors[r.label] = "truncated (page/binary cap or non-retryable HTTP error)";
+		} else if (r.status === "throttled") {
+			truncated = true;
+			errors[r.label] = "throttled (retry budget exhausted on a transient HTTP error)";
 		}
 	}
 	const org = results[0]?.org ?? "";
@@ -1006,7 +1050,7 @@ export async function handleMychartRoutes(url: URL, request: Request, env: RtEnv
 		if (!verifier || !org || !isKnownOrg(org)) return new Response("Corrupt PKCE state.", { status: 400, headers: PAGE_HEADERS });
 		try {
 			const cfg = await smartConfig(env, org);
-			const { status, json } = await tokenPost(env, cfg, {
+			const { status, json } = await tokenPost(env, org, cfg, {
 				grant_type: "authorization_code",
 				code,
 				redirect_uri: redirectUri(env),
