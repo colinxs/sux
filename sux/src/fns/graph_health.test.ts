@@ -40,7 +40,33 @@ describe("graph_health.run", () => {
 		expect(res.isError).toBeFalsy();
 		const body = JSON.parse(res.content[0].text);
 		expect(body.dead_link_count).toBe(0);
+		expect(body.total).toBe(3);
+	});
+
+	it("keeps the report note in the resolution universe so another note's [[Graph-Health]] link still resolves (#1299)", async () => {
+		vi.resetModules();
+		vi.doMock("../vault-mcp", () => ({
+			scanVault: async () => ({
+				records: [rec("Home.md", ["Graph-Health"]), rec("Meta/Graph-Health.md", ["Nonexistent"])],
+				total: 2,
+				truncated: false,
+			}),
+		}));
+		vi.doMock("./obsidian", () => ({
+			obsidian: { run: async () => ({ content: [{ type: "text", text: "{}" }] }) },
+			vaultCfg: () => ({ repo: "o/r", branch: "main", dir: "", inVault: (p: string) => p }),
+		}));
+		const { graph_health: freshGraphHealth } = await import("./graph_health");
+		const res = await freshGraphHealth.run({ OBSIDIAN_VAULT_REPO: "o/r" } as any, {});
+		vi.doUnmock("../vault-mcp");
+		vi.doUnmock("./obsidian");
+		vi.resetModules();
+		expect(res.isError).toBeFalsy();
+		const body = JSON.parse(res.content[0].text);
+		expect(body.dead_links).toEqual([]);
+		expect(body.dead_link_count).toBe(0);
 		expect(body.total).toBe(2);
+		expect(body.folder_counts).toEqual({ "(root)": 1 });
 	});
 });
 
