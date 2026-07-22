@@ -545,6 +545,16 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   path (`op-engine/caps.ts`) and `interpretDurable` calls `runGoverned` (or an equivalent)
   instead of the bare `node.fn(input, caps)` it calls today.
 
+- **v5 WS1.3 (#1279, chat ingress) and WS1.4 (#1280, journal ingress) both hard-block
+  on unmerged #1204 (fact extractor) and #1275 (person-note substrate)** — as of
+  2026-07-22 both prerequisites are still OPEN/`building`, and `sux/src` has neither a
+  fact-extractor nor a `people/<name>.md` profile writer (`fns/people.ts` is an
+  unrelated public-directory-search fn, not the #1275 substrate — a filename grep for
+  "people" finds it and can mislead). A future batch picking up #1279/#1280 can skip
+  straight to `gh issue view 1204 1275 --json state` rather than re-deriving this from
+  the design doc and a codebase search each time; only attempt them once both show
+  `CLOSED`/merged.
+
 ## Version coherence (#1238)
 
 Bump `package.json`'s `version` and `plugins/sux/.claude-plugin/plugin.json`'s
