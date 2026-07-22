@@ -1,6 +1,7 @@
 import { type Fn, type RtEnv, fail, failWith, ok } from "../registry";
 import { type AssimilateInput, assimilate, hasAssimilate } from "./_assimilate";
 import { runPortalScrape } from "./_portal_scrape";
+import { classifyScan, extractScanText, reprocessScanBacklog, type ScanMode } from "./_scan_ingest";
 import { htmlToMd } from "./_markup";
 import { clampBytes, loadBytes, putBlob, vaultToday, oj } from "./_util";
 import { vaultInboxDir } from "./_vaultpaths";
@@ -161,12 +162,23 @@ export const ingest: Fn = {
 			summarize: { type: "boolean", default: false, description: "Prepend an AI summary section above the captured body." },
 			compress: { type: "boolean", default: false, description: "Store only the distilled summary instead of the full body (url sources stay re-fetchable via provenance; text/query originals are not retained)." },
 			force: { type: "boolean", default: false, description: "Mint a new note even if identical content was already captured (bypasses content-fingerprint dedup)." },
+			mode: { type: "string", enum: ["auto", "ocr", "keep", "photo"], default: "auto", description: "For a tossed PDF (#1284): force its handling — ocr (extract full text into the note + index), keep (save + index by lightweight signal, no full OCR), photo (just save), or auto (filename/size heuristic)." },
+			action: { type: "string", enum: ["capture", "reprocess-scans"], default: "capture", description: "capture (default) | reprocess-scans: re-run document extraction over existing Inbox scan notes, embedding text now that an OCR provider is available (idempotent backlog sweep)." },
 		},
 	},
 	cacheable: false,
 	run: async (env, args) => {
 		const cfg = vaultCfg(env);
 		if ("error" in cfg) return fail(cfg.error);
+		const action = String(args?.action ?? "capture").trim().toLowerCase();
+		if (action === "reprocess-scans") {
+			try {
+				return ok(oj({ ok: true, action, ...(await reprocessScanBacklog(env)) }));
+			} catch (e) {
+				return fail(`ingest reprocess-scans failed: ${String((e as Error).message ?? e)}`);
+			}
+		}
+		const scanMode: ScanMode = (["auto", "ocr", "keep", "photo"] as ScanMode[]).includes(String(args?.mode) as ScanMode) ? (String(args?.mode) as ScanMode) : "auto";
 		const url = typeof args?.url === "string" && args.url.trim() ? String(args.url).trim() : undefined;
 		const text = typeof args?.text === "string" && args.text.trim() ? String(args.text) : undefined;
 		const query = typeof args?.query === "string" && args.query.trim() ? String(args.query).trim() : undefined;
@@ -180,6 +192,7 @@ export const ingest: Fn = {
 			let source: string;
 			let body: string;
 			let blob: { placement: string; link: string; size: number; content_type?: string } | undefined;
+			let scanText: string | undefined; // OCR'd text of a tossed PDF (mode/heuristic "ocr"), for spine indexing
 
 			if (text) {
 				title ||= text.split("\n")[0].replace(/^#+\s*/, "").slice(0, 80).trim() || "capture";
@@ -263,6 +276,23 @@ export const ingest: Fn = {
 						blob = { placement: "vault", link: w.path, size: bytes.length, content_type: ct || undefined };
 						body = [`![[${w.path}]]`, "", ...meta, "- stored: vault"].join("\n");
 					}
+					// 3-way doc routing for a tossed PDF (#1284): when its text matters (mode:"ocr", or
+					// a doc/scan filename cue) OCR it into the note so it's readable/searchable; a "keep"
+					// reference stays the saved stub (indexed by signal via the spine below); a photo is
+					// just saved. Best-effort + fail-open — extraction never bounces a capture whose bytes
+					// already landed. `mode` overrides the filename/size heuristic.
+					if (/pdf/.test(ct) || /\.pdf$/i.test(name)) {
+						const cls = classifyScan(name, { mode: scanMode, size: bytes.length });
+						if (cls === "ocr") {
+							const ex = await extractScanText(env, name, bytes).catch(() => undefined);
+							if (ex?.hasText && ex.text) {
+								body = `${body}\n\n## Extracted text\n\n${ex.text}`;
+								scanText = ex.text;
+							} else {
+								body = `${body}\n\n> No embedded text layer found (image-only scan) — full-text extraction pending (set MISTRAL_API_KEY, then \`ingest({action:"reprocess-scans"})\`).`;
+							}
+						}
+					}
 				}
 			}
 
@@ -339,6 +369,7 @@ export const ingest: Fn = {
 			// gate on `!blob`, the same seam the dedup/summarize passes use. Fire-and-forget: the
 			// capture response returns immediately; the spine indexes in the background.
 			if (!blob) backgroundAssimilate(env, { source: notePath, text: body, kind: "text", domain: "doc" });
+			else if (scanText) backgroundAssimilate(env, { source: notePath, text: scanText, kind: "text", domain: "scan" });
 			return ok(oj({ ok: true, note: notePath, created: w.created, commit: w.commit, source, ...(pass ? { pass } : {}), ...(blob ? { blob } : {}) }));
 		} catch (e) {
 			return fail(`ingest failed: ${String((e as Error).message ?? e)}`);

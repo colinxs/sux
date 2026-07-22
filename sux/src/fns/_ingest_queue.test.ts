@@ -24,6 +24,22 @@ vi.mock("./obsidian", () => ({
 	}),
 }));
 
+// Drive the shared OCR engine (_ocr.ts) directly — extractScanText composes on ocrDocument, so we
+// exercise the doc-with-text, image, keep, and extraction-failure paths through the real wiring.
+// `text: null` models an image-only scan / unconfigured key (ocrDocument throws "no text").
+const ocrM = vi.hoisted(() => ({ text: null as string | null, calls: 0 }));
+vi.mock("./_ocr", () => ({
+	ocrDocument: vi.fn(async () => {
+		ocrM.calls++;
+		if (ocrM.text == null) throw new Error("Mistral OCR returned no text.");
+		return ocrM.text;
+	}),
+	// _assimilate.ts imports ocrBytes from ./_ocr; assimilation is dark in tests so it never runs.
+	ocrBytes: vi.fn(async () => {
+		throw new Error("Mistral OCR returned no text.");
+	}),
+}));
+
 import { handleIngestBatch } from "./_ingest_queue";
 
 const r2Stub = (objects: Record<string, Uint8Array>) => ({
@@ -104,5 +120,63 @@ describe("handleIngestBatch", () => {
 		expect(puts[1].path).not.toBe(puts[0].path);
 		expect(writes).toHaveLength(2);
 		expect(writes[0].path).not.toBe(writes[1].path);
+	});
+
+	it("document scan WITH a text layer → note embeds the extracted text (#1284)", async () => {
+		ocrM.text = "Superior Court of Washington, Small Claims. Judgment for plaintiff, case 25-2-12345.";
+		ocrM.calls = 0;
+		const r2 = r2Stub({ "scan/2026/07/order.pdf": new Uint8Array([1, 2, 3]) });
+		const m = msg(ev("scan/2026/07/order.pdf"));
+		await handleIngestBatch({ messages: [m] } as any, { INGEST_R2: r2 } as any);
+		const w = vault.writes[vault.writes.length - 1];
+		expect(w.content).toContain("## Extracted text");
+		expect(w.content).toContain("Superior Court");
+		expect(w.content).toContain("tags: [capture, scan, scan-ocr]");
+		expect(r2.delete).toHaveBeenCalledWith("scan/2026/07/order.pdf");
+		expect(m.acked).toBe(true);
+	});
+
+	it("image scan → saved with NO forced OCR (photo branch)", async () => {
+		ocrM.text = "SHOULD NOT BE CALLED";
+		ocrM.calls = 0;
+		const r2 = r2Stub({ "scan/2026/07/photo.jpg": new Uint8Array([9]) });
+		const m = msg(ev("scan/2026/07/photo.jpg"));
+		await handleIngestBatch({ messages: [m] } as any, { INGEST_R2: r2 } as any);
+		const w = vault.writes[vault.writes.length - 1];
+		expect(w.content).toContain("Scanned image:");
+		expect(w.content).toContain("scan-photo");
+		expect(w.content).not.toContain("## Extracted text");
+		expect(ocrM.calls).toBe(0); // a photo never pays for extraction
+		expect(m.acked).toBe(true);
+	});
+
+	it("keep-class reference PDF → saved + signal-indexed, no full-text OCR (#1284 branch 2)", async () => {
+		ocrM.text = "SHOULD NOT BE CALLED"; // keep never OCRs
+		ocrM.calls = 0;
+		const r2 = r2Stub({ "scan/2026/07/router-manual.pdf": new Uint8Array([7, 7]) });
+		const m = msg(ev("scan/2026/07/router-manual.pdf"));
+		await handleIngestBatch({ messages: [m] } as any, { INGEST_R2: r2 } as any);
+		const w = vault.writes[vault.writes.length - 1];
+		expect(w.content).toContain("scan-keep");
+		expect(w.content).toContain("Saved PDF");
+		expect(w.content).toContain("## Signal");
+		expect(w.content).not.toContain("## Extracted text");
+		expect(ocrM.calls).toBe(0); // a keep reference never pays for OCR
+		expect(m.acked).toBe(true);
+	});
+
+	it("extraction failure → note still written (fail-open), still deletes + acks", async () => {
+		ocrM.text = null; // ocrDocument throws "no text"; Mistral unconfigured in tests
+		const objects = { "scan/2026/07/doc.pdf": new Uint8Array([5]) };
+		const r2 = r2Stub(objects);
+		const m = msg(ev("scan/2026/07/doc.pdf"));
+		const before = vault.writes.length;
+		await handleIngestBatch({ messages: [m] } as any, { INGEST_R2: r2 } as any);
+		expect(vault.writes.length).toBe(before + 1);
+		const w = vault.writes[vault.writes.length - 1];
+		expect(w.content).toContain("image-only scan"); // honest marker, never fake/metadata text
+		expect(w.content).not.toContain("## Extracted text");
+		expect(r2.delete).toHaveBeenCalledWith("scan/2026/07/doc.pdf");
+		expect(m.acked).toBe(true);
 	});
 });
