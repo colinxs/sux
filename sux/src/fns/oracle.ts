@@ -1,7 +1,7 @@
 import { hasAI, llm } from "../ai";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { ASK_LOG_KEY, type AskVerdict, recordAskFeedback, runAsk } from "./_answer";
-import { type ReindexDomain, reindexCorpus } from "./_reindex";
+import { type BackfillDomain, BACKFILL_DOMAINS, backfillStatus, backfillTick, resetBackfill } from "./_backfill";
 import { hasVectorize } from "./_vectorize";
 import { embed, embedOne } from "./_embed";
 import { maybeCompressString, maybeDecompressString } from "./_gzip";
@@ -242,11 +242,12 @@ export const oracle: Fn = {
 			problem: { type: "string", description: "A question/problem to answer using own + learned knowledge." },
 			knowledge: { type: "string", description: "Raw text to learn from, OR an http(s) URL (article/book/website) to fetch, distill, and remember." },
 			topic: { type: "string", default: "default", description: "Knowledge-base namespace — keep separate bodies of knowledge (default \"default\")." },
-			action: { type: "string", enum: ["get", "list", "status", "forget", "ask", "feedback", "reindex"], description: "get | list | status | forget (manage) — or ask (topic-free cited answering over the unified Vectorize index + every KB) | feedback (thumbs verdict on a prior ask) | reindex (admin: (re)populate the sux-corpus Vectorize index from the existing corpus — idempotent)." },
+			action: { type: "string", enum: ["get", "list", "status", "forget", "ask", "feedback", "reindex"], description: "get | list | status (also reports the Vectorize backfill progress under `corpus`) | forget (manage) — or ask (topic-free cited answering over the unified Vectorize index + every KB) | feedback (thumbs verdict on a prior ask) | reindex (admin: advance ONE durable/batched, resumable, idempotent tick of the sux-corpus backfill and report progress — the ~5min cron drives it to completion, a manual call just nudges it)." },
 			answer_id: { type: "string", description: "feedback only: the `answer_id` a prior ask returned." },
 			verdict: { type: "string", enum: ["up", "down"], description: "feedback only: thumbs up or down on that answer." },
 			note: { type: "string", description: "feedback only: optional short note on why." },
-			domain: { type: "string", enum: ["vault", "mail", "files", "contacts", "source"], description: "reindex only: limit the backfill to ONE corpus domain (resumable — run one at a time if a full pass exceeds the request budget). Omit to reindex all." },
+			domain: { type: "string", enum: ["vault", "mail", "files", "contacts", "source"], description: "reindex only: limit the backfill tick to ONE corpus domain (each has its own resume cursor). Omit to advance all." },
+			reset: { type: "boolean", description: "reindex only: clear the backfill cursor(s) so the next tick restarts the domain(s) from the beginning (idempotent upserts make a re-run safe). Combine with `domain` to reset just one." },
 		},
 	},
 	cacheable: false,
@@ -307,7 +308,10 @@ export const oracle: Fn = {
 				// assim:*/phi:medical/oracle:* chunk keyspace), each flagged as it nears the ~4.5k-chunk
 				// ceiling. Vectorize is the read path now (sux#1290/#1311); these alerts track the retained
 				// KV cosine cores' fill so an over-full domain is caught before the fallback is shed (sux#1308).
-				return ok(oj({ action, count: topics.length, kb_cap: KB_CAP, topics, retrieval: await retrievalStats(env) }));
+				// Backfill progress (#1315): the durable Vectorize-backfill cursor per domain
+				// (processed/remaining/done) + the live sux-corpus vectorCount, so 'what's in the
+				// oracle?' also answers 'is Vectorize fully populated yet?' — a pure read, no upserts.
+				return ok(oj({ action, count: topics.length, kb_cap: KB_CAP, topics, retrieval: await retrievalStats(env), corpus: await backfillStatus(env) }));
 			}
 
 			if (action === "get") {
@@ -343,10 +347,19 @@ export const oracle: Fn = {
 			}
 
 			if (action === "reindex") {
+				// The DURABLE batched backfill (#1315): one bounded, resumable tick per call —
+				// advance each domain's KV cursor by a bounded window, upsert reusing stable ids
+				// (idempotent), and report progress (per-domain processed/remaining/done + the live
+				// Vectorize vectorCount). The ~5min cron (VECTORIZE_BACKFILL_ENABLED) drives this to
+				// completion unattended; a manual call nudges it forward and is safe to repeat. No AI
+				// gate — the backfill reuses stored embeddings and a cold-cache domain reports
+				// not-ready rather than failing (fail-open).
 				if (!hasVectorize(env)) return failWith("not_configured", "Vectorize binding VECTORIZE not bound (add the sux-corpus vectorize binding to wrangler) — nothing to (re)populate.");
-				if (!hasAI(env)) return failWith("not_configured", 'Workers AI binding not configured (add "ai" to wrangler) — needed to (re)build the source semantic indices before upserting.');
-				const only = args?.domain ? [String(args.domain).trim() as ReindexDomain] : undefined;
-				return ok(oj({ action, ...(await reindexCorpus(env, only ? { domains: only } : {})) }));
+				const wanted = args?.domain ? String(args.domain).trim() : "";
+				const only = (BACKFILL_DOMAINS as string[]).includes(wanted) ? (wanted as BackfillDomain) : undefined;
+				const scope = only ? { domain: only } : {};
+				if (args?.reset) return ok(oj({ action, ...(await resetBackfill(env, scope)), ...(await backfillStatus(env, scope)) }));
+				return ok(oj({ action, ...(await backfillTick(env, scope)) }));
 			}
 
 			if (action) return failWith("bad_input", `Unknown action '${action}'. Use get | list | status | forget | ask | feedback | reindex, or pass \`problem\`/\`knowledge\`.`);

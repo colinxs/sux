@@ -234,6 +234,14 @@ export type RtEnv = Env &
 		//   CROSS_SEMANTIC_ENABLED — master enable (toggle); unset/"0"/"false"/"off" ⇒ inert.
 		CROSS_SEMANTIC_ENABLED?: string;
 
+		// Durable Vectorize backfill (fns/_backfill.ts, #1315): the ~5min cron sub-job that
+		// advances a per-domain KV cursor to populate `sux-corpus` in bounded, resumable ticks —
+		// the synchronous `oracle {action:"reindex"}` times out on the full corpus. Fail-closed:
+		// unset ⇒ the cron tick is a dormant no-op (the manual reindex action is NOT gated by
+		// this — the flag only governs the unattended cron). Also needs the VECTORIZE binding.
+		//   VECTORIZE_BACKFILL_ENABLED — master enable (toggle); unset/"0"/"false"/"off" ⇒ inert.
+		VECTORIZE_BACKFILL_ENABLED?: string;
+
 		// Assimilation spine (fns/_assimilate.ts, v5 W2 #1283): the single internal path every
 		// ingested document flows through — extract → distill → optimize-original → index under
 		// `assim:*`/`phi:medical` domains. Fail-closed like CROSS_SEMANTIC_ENABLED (the bar the
