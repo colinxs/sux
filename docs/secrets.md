@@ -20,6 +20,17 @@ There are **three separate stores**, and they don't see each other:
 - You **cannot** extract existing values out of Worker/GitHub to backfill op — both are write-only. op is populated **going forward** (or by re-sourcing a value from its origin / rotating it).
 - Therefore: **op-first.** Put the value in op, then `scripts/secret-sync.sh` pushes it to the store(s) that need it.
 
+## Two field-proven rules (2026-07-22)
+
+- **Never paste a secret value into a chat with Claude (or any LLM)** — transcripts persist on
+  disk; a pasted key is burned: revoke + re-mint immediately (live incident: an OpenAI key pasted
+  mid-session was rotated on the spot). The only paste surfaces are the interactive
+  `wrangler secret put` prompt and 1Password.
+- **Verifying a `secret put` you can't read back:** every put creates a new worker version and
+  bumps the worker's `modified_on` (Workers list API). An unchanged timestamp after a claimed put
+  means it didn't land — wrong directory or wrong account (this caught a missed COHERE_API_KEY
+  put the same day).
+
 ## Can I pull existing values out to seed op? (the recurring question)
 
 - **Cloudflare Worker secrets — no.** There is no `wrangler secret get`. The Worker's own code *can* read `env.X` at runtime, but exposing that over an endpoint is a security hole — don't. Re-source (Fastmail/Dropbox/… console) or **rotate** instead.

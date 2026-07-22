@@ -61,6 +61,10 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   branch is held by another worktree, and a following rebase/push then operates on the WRONG
   branch. Drain/rebase PRs from a **detached scratch worktree** (`git worktree add --detach
   $SCRATCH origin/<br>` → rebase → `push HEAD:<br>`), never a plain checkout.
+- **wrangler is an npx devDependency at the repo ROOT; the worker config is `sux/wrangler.jsonc`**
+  — every wrangler command is `cd <repo-root> && npx wrangler <cmd> -c sux/wrangler.jsonc`; bare
+  `wrangler` is not on PATH and `sux/` has no package.json (live hit 2026-07-22: "wrangler not
+  found" mid-secret-provisioning, twice).
 - **A bot-build's starting branch can already be behind `origin/main`** — other builders'
   PRs land while yours is queued/running, and an issue can reference a file a just-merged PR
   added (e.g. #712 needed #708/#710's `_vault_semantic.ts`, absent from the branch's own base).
