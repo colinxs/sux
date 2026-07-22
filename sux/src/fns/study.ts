@@ -5,6 +5,7 @@ import { hasDropboxFull, normFull, readFull } from "./_dropbox-full";
 import { hasDropbox, sharedLink } from "./dropbox";
 import { dropboxRawUrl, errMsg, fromB64, isHttpUrl, isHttpUrlStr, loadBytes, oj, putBlob } from "./_util";
 import { obsidian } from "./obsidian";
+import { shrinkPdfImages } from "./_pdf_shrink";
 import { wayback } from "./wayback";
 import { KV_PREFIX, loadKb, learnTopic, oracle, type Whitelist } from "./oracle";
 
@@ -179,7 +180,16 @@ export async function listWhitelisted(env: RtEnv): Promise<Array<{ topic: string
 	return out;
 }
 
-type ArchiveResult = { r2?: { url: string; sha256: string; size: number }; wayback?: string; vault_note?: string; skipped?: string };
+type ArchiveResult = {
+	r2?: { url: string; sha256: string; size: number };
+	/** The optimize-original leg (#1276): a PDF's image-recompressed copy, archived
+	 *  ALONGSIDE the authoritative original in `r2`. Present only when the shrink
+	 *  actually reduced size; both sha256 handles are recorded, original stays canonical. */
+	optimized?: { url: string; sha256: string; size: number; images: number; saved_pct: number };
+	wayback?: string;
+	vault_note?: string;
+	skipped?: string;
+};
 
 const INSIGHT_CARD_SYSTEM =
 	"Reorganize the following distilled knowledge notes into a per-book insight card using exactly these four markdown headings, in this order: \"## Core models\", \"## Techniques\", \"## When to use\", \"## Notable passages\". Bullet points under each heading, drawn ONLY from the material given — never invent anything not present in it. Under \"## Notable passages\", quote 2-4 short (<=30 words) excerpts verbatim from the material, each as a blockquote line starting with \"> \". If a heading has nothing to say from the material, write \"(none)\" under it rather than inventing content. Output ONLY the four headings and their content — no preamble, no closing remarks.";
@@ -239,6 +249,24 @@ async function archiveKnowledge(
 		if (bytes) {
 			const ref = await putBlob(env, bytes, contentType);
 			result.r2 = { url: ref.url, sha256: ref.sha256, size: ref.size };
+			// Optimize-original leg (#1276): a PDF also gets an image-recompressed copy
+			// archived beside the authoritative original — BOTH sha256 handles are recorded
+			// (r2 = original, canonical; optimized = the cheaper archive tier). Best-effort:
+			// shrinkPdfImages never throws and returns the original bytes on any no-gain/
+			// failure, so a shrink that doesn't help simply omits `optimized`.
+			if (contentType === "application/pdf") {
+				const shr = await shrinkPdfImages(env, bytes);
+				if (shr.shrunk) {
+					const oref = await putBlob(env, shr.bytes, "application/pdf");
+					result.optimized = {
+						url: oref.url,
+						sha256: oref.sha256,
+						size: oref.size,
+						images: shr.imagesRecompressed,
+						saved_pct: Number((((shr.inputBytes - shr.outputBytes) / shr.inputBytes) * 100).toFixed(1)),
+					};
+				}
+			}
 		} else {
 			result.skipped = "source bytes were not directly fetchable here — not archived to R2.";
 		}
@@ -277,6 +305,7 @@ async function archiveKnowledge(
 			"## Provenance",
 			`- Source: ${opts.sourceLabel}`,
 			`- R2 archive: ${result.r2 ? result.r2.url : "(not archived)"}`,
+			...(result.optimized ? [`- Optimized (image-shrunk) archive: ${result.optimized.url} (${result.optimized.saved_pct}% smaller, ${result.optimized.images} image(s); original above stays authoritative)`] : []),
 			...(result.wayback ? [`- Wayback: ${result.wayback}`] : []),
 			`- Query: oracle({ problem: "…", topic: "${opts.topic}" })`,
 			"",
