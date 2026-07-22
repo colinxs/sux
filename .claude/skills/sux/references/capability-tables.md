@@ -51,6 +51,7 @@
 | Clinical studies | `clinical_trials` |
 | Programming/sysadmin Q&A | `stackexchange` (`site:` superuser, askubuntu, math, …) |
 | Reddit posts / subreddits / comments | `reddit` (read-only app-only OAuth) |
+| Your personal Zotero library — saved refs, notes, collections, citation text | `zotero` (`action`: search {q, qmode:'everything' for fulltext across attachments} · item {key} · collections · recent · bib {keys, style}; NOT a public database — that's arxiv/pubmed/openalex; read-only, Web API v3) |
 | Crypto prices | `coingecko` (`search` for the id, then `price`) |
 | YouTube videos | `youtube` |
 
@@ -58,7 +59,7 @@ Overlap rule: "what does the research say?" / evidence-grade / medical / health 
 focusing a broad question → `consensus` FIRST (synthesized findings, quality
 filters); papers-in-general → `openalex` or `semantic_scholar`;
 "preprint"/CS-math-physics → `arxiv`; raw biomedical lookup → `pubmed`;
-open-web fallback → `web_search`.
+something you already SAVED → `zotero`; open-web fallback → `web_search`.
 
 ## Shopping, places, people
 
