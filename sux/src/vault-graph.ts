@@ -9,10 +9,13 @@ export function noteBasename(path: string): string {
 	return base.replace(/\.md$/i, "").toLowerCase();
 }
 
-/** All [[wikilink]] targets in a note — alias (`|`), heading (`#`), and block (`^`) refs stripped. */
+/** All [[wikilink]] targets in a note — alias (`|`), heading (`#`), and block (`^`) refs stripped.
+ * Fenced code blocks and inline code spans are excluded first (mirrors extractTags below) —
+ * Obsidian itself never resolves a wikilink-shaped token inside code. */
 export function extractWikilinks(content: string): string[] {
+	const body = content.replace(/```[\s\S]*?```/g, "").replace(/`[^`]*`/g, "");
 	const out: string[] = [];
-	for (const m of content.matchAll(/\[\[([^\]]+)\]\]/g)) {
+	for (const m of body.matchAll(/\[\[([^\]]+)\]\]/g)) {
 		const target = m[1].split("|")[0].split("#")[0].split("^")[0].trim();
 		if (target) out.push(target);
 	}

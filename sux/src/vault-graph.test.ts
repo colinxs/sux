@@ -7,6 +7,11 @@ describe("vault-graph pure layer (§4)", () => {
 		expect(extractWikilinks("no links here")).toEqual([]);
 	});
 
+	it("extractWikilinks ignores [[...]]-shaped tokens inside fenced code or inline code spans (#1300)", () => {
+		expect(extractWikilinks('```bash\n[[ -o errexit ]] && echo yes\n```\n\nsee [[Real Note]]')).toEqual(["Real Note"]);
+		expect(extractWikilinks("inline `[[not a link]]` but [[Real Note]] outside")).toEqual(["Real Note"]);
+	});
+
 	it("linkResolvesTo matches by basename or full path (Obsidian semantics)", () => {
 		expect(linkResolvesTo("sux", "Projects/sux.md")).toBe(true); // basename
 		expect(linkResolvesTo("Projects/sux", "Projects/sux.md")).toBe(true); // full path
