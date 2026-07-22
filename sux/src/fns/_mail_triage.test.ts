@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ACTION_FOR, ARCHIVE_CONFIDENCE_THRESHOLD, AUTO_ACT_OPS, CONFIDENCE_THRESHOLD, DRAFT_REPLY_CONFIDENCE_THRESHOLD, classify, classifyMessage, detectReplyDraft, hasMailTriage, hasMailTriageAct, isAutoActAllowed, isSensitiveSender, resolveOp, runTriage, type TriageDeps, type TriageLabel, type TriageMsg, type TriageOp } from "./_mail_triage";
+import { ACTION_FOR, ARCHIVE_CONFIDENCE_THRESHOLD, AUTO_ACT_OPS, CONFIDENCE_THRESHOLD, DRAFT_REPLY_CONFIDENCE_THRESHOLD, assimilateFlaggedMail, classify, classifyMessage, detectReplyDraft, hasMailTriage, hasMailTriageAct, isAutoActAllowed, isSensitiveSender, resolveOp, runTriage, type TriageDeps, type TriageLabel, type TriageMsg, type TriageOp } from "./_mail_triage";
 import { appendTriageEntries, bulkUndo, readTriageEntries } from "./_mail_triage_log";
 import { readInferSignals } from "./_infer";
 
@@ -787,5 +787,103 @@ describe("runTriage — infer signal wiring (#913)", () => {
 		const signals = await readInferSignals(env, "mail");
 		expect(signals.map((s) => s.source_tag)).not.toContain(`mail:${sensitive.id}`);
 		expect(signals.some((s) => s.redacted_snippet.includes("explanation of benefits") || s.redacted_snippet.includes("patient responsibility"))).toBe(false);
+	});
+});
+
+// ── W6 (#1285): mail assimilation — triage-FLAGGED mail ONLY into the spine ──────
+describe("mail assimilation (W6 #1285) — SELECTIVITY: only `important`-flagged mail rides the spine", () => {
+	// A gmail human with a reply/urgency cue → the classifier's `important` elevation (the flag).
+	const FLAGGED: TriageMsg = { id: "im1", from: "friend@gmail.com", subject: "Please reply — I need your answer by tomorrow" };
+	// Everything a non-flagged inbox is made of — NONE of these may be assimilated.
+	const UNFLAGGED: TriageMsg[] = [
+		{ id: "rc1", from: "receipts@shopco.example", subject: "Your receipt from ShopCo" }, // receipt
+		{ id: "nt1", from: "noreply@github.com", subject: "New sign-in to your account" }, // notification
+		{ id: "pr1", from: "friend@gmail.com", subject: "lunch tomorrow?" }, // personal, NOT important
+		{ id: "un1", from: "someone@randomcorp.example", subject: "Quick question" }, // unknown
+	];
+
+	it("dispatches ONLY the `important`-flagged message — receipts/notifications/personal/unknown are NOT assimilated (scope stays exactly triage-flagged)", async () => {
+		const assimSpy = vi.fn();
+		// Suggest-only mode (ENABLED, no ACT): proves assimilation is independent of the act decision.
+		const env = envWith({ MAIL_TRIAGE_ENABLED: "1" });
+		await runTriage(env, { cycle_id: "w6a" }, { ...mkDeps([FLAGGED, ...UNFLAGGED]), assimilateFlagged: assimSpy });
+		expect(assimSpy).toHaveBeenCalledTimes(1);
+		expect((assimSpy.mock.calls[0][1] as TriageMsg).id).toBe("im1");
+	});
+
+	it("skips a sensitive (health/finance/gov) sender even when classified important — content stays out of assim:mail (#975 fence; W7 owns phi:medical)", async () => {
+		const assimSpy = vi.fn();
+		const env = envWith({ MAIL_TRIAGE_ENABLED: "1" });
+		// The rules stub only ever elevates personal-domain senders; force `important` on a sensitive
+		// sender via the classify seam (the learned-classifier path) to exercise the exclusion.
+		await runTriage(env, { cycle_id: "w6b" }, { ...mkDeps([{ id: "h1", from: "care@myhospital.com", subject: "Please review your results" }]), classify: () => ({ label: "important", confidence: 0.9, reason: "forced" }), assimilateFlagged: assimSpy });
+		expect(assimSpy).not.toHaveBeenCalled();
+	});
+
+	it("a synchronous assimilation-dispatch failure NEVER breaks the triage cycle (assimilation failure → triage still completes)", async () => {
+		const deps = mkDeps([FLAGGED, ...UNFLAGGED]);
+		const boom = vi.fn(() => {
+			throw new Error("dispatch boom");
+		});
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const env = envWith({ MAIL_TRIAGE_ENABLED: "1", MAIL_TRIAGE_ACT: "1" });
+		const report = await runTriage(env, { cycle_id: "w6c" }, { ...deps, assimilateFlagged: boom });
+		expect(boom).toHaveBeenCalledTimes(1); // fired for the important message
+		expect(report.dormant).toBeUndefined(); // the cycle ran normally
+		expect(deps.actSpy).toHaveBeenCalled(); // and still labeled the taggable mail — ran to completion
+		expect(report.new).toBe(5);
+		expect(warn).toHaveBeenCalledWith(expect.stringMatching(/assimilation dispatch failed for im1/));
+		warn.mockRestore();
+	});
+});
+
+describe("assimilateFlaggedMail (W6 #1285) — spine call: dark gate, provenance, body-read, dedup", () => {
+	const msg: TriageMsg = { id: "m42", from: "friend@gmail.com", subject: "Trip plans", preview: "short preview snippet" };
+	const okResult = { status: "assimilated", source: "mail:m42", domain: "assim:mail", source_id: "s", distilled: "d", indexed: { chunks: 2 }, archived: {} } as any;
+
+	it("is a NO-OP unless ASSIMILATE_ENABLED — dark/fail-closed, the spine is never called", async () => {
+		const assim = vi.fn(async (_env: any, _input: any) => okResult);
+		await assimilateFlaggedMail(envWith(), msg, { readBody: async () => "full body", assimilate: assim });
+		expect(assim).not.toHaveBeenCalled();
+	});
+
+	it("reads the full body and calls the spine with `mail:<jmap-id>` provenance, kind text, domain mail", async () => {
+		const assim = vi.fn(async (_env: any, _input: any) => okResult);
+		await assimilateFlaggedMail(envWith({ ASSIMILATE_ENABLED: "1" }), msg, { readBody: async () => "THE FULL BODY past the preview cutoff", assimilate: assim });
+		expect(assim).toHaveBeenCalledTimes(1);
+		const input = assim.mock.calls[0][1] as { source: string; text: string; kind: string; domain: string };
+		expect(input.source).toBe("mail:m42"); // provenance → citation points back at the email
+		expect(input.kind).toBe("text");
+		expect(input.domain).toBe("mail"); // → assim:mail, never phi
+		expect(input.text).toContain("THE FULL BODY past the preview cutoff");
+		expect(input.text).toContain("Subject: Trip plans");
+	});
+
+	it("falls back to the preview when the body read fails (best-effort)", async () => {
+		const assim = vi.fn(async (_env: any, _input: any) => okResult);
+		await assimilateFlaggedMail(envWith({ ASSIMILATE_ENABLED: "1" }), msg, {
+			readBody: async () => {
+				throw new Error("read boom");
+			},
+			assimilate: assim,
+		});
+		expect((assim.mock.calls[0][1] as { text: string }).text).toContain("short preview snippet");
+	});
+
+	it("is idempotent per JMAP id — a second call for the same message does NOT re-distill (independent of the triage seen-ledger)", async () => {
+		const assim = vi.fn(async (_env: any, _input: any) => okResult);
+		const env = envWith({ ASSIMILATE_ENABLED: "1" }); // ONE shared KV/ledger across both calls
+		await assimilateFlaggedMail(env, msg, { readBody: async () => "b", assimilate: assim });
+		await assimilateFlaggedMail(env, msg, { readBody: async () => "b", assimilate: assim });
+		expect(assim).toHaveBeenCalledTimes(1);
+	});
+
+	it("does NOT mark seen on a non-indexed result (routed_durable) — a later run still indexes it", async () => {
+		const env = envWith({ ASSIMILATE_ENABLED: "1" });
+		const routed = vi.fn(async () => ({ status: "routed_durable", instanceId: "i", note: "book-scale" }) as any);
+		await assimilateFlaggedMail(env, msg, { readBody: async () => "b", assimilate: routed });
+		const real = vi.fn(async () => okResult);
+		await assimilateFlaggedMail(env, msg, { readBody: async () => "b", assimilate: real });
+		expect(real).toHaveBeenCalledTimes(1); // not deduped away — the routed attempt didn't mark seen
 	});
 });
