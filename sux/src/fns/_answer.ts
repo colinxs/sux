@@ -1,4 +1,4 @@
-import { llm } from "../ai";
+import { defuseCitationTag, llm } from "../ai";
 import type { RtEnv } from "../registry";
 import { cappedKvLog } from "./_capped_kv_log";
 import { contactSemanticIndex, topKContactByCosine } from "./_contact_semantic";
@@ -249,7 +249,15 @@ export async function runAsk(env: RtEnv, question: string): Promise<AskOutcome> 
 	let answer: string | undefined;
 	let citations: string[] = [];
 	if (chosen.length) {
-		const material = chosen.map((p) => `[${p.pointer}]\n${p.text}`).join("\n\n---\n\n").slice(0, MATERIAL_CAP);
+		// SECURITY: passage CONTENT is attacker-influenced (mail) or user-editable (vault/
+		// files/contacts) — and even a KB chunk's distilled text derives from untrusted
+		// material — so a literal "[whitelisted:…]" planted inside it would ride into the
+		// prompt looking exactly like a genuine authority tag. Defuse every passage's text
+		// (the gatherRecall control, see recall.ts's materials push); the REAL tag is safe
+		// because it's emitted here from `p.pointer`, outside the defused text, and pointers
+		// only ever say "whitelisted" when the chunk's own `authority` field was
+		// "authoritative" (fromOracleKbs) — never from tag-shaped text in content.
+		const material = chosen.map((p) => `[${p.pointer}]\n${defuseCitationTag(p.text)}`).join("\n\n---\n\n").slice(0, MATERIAL_CAP);
 		answer = (await llm(env, askSystem(question), material, 900, "answer from personal indices")).trim() || "(the synthesizer returned nothing — try rephrasing)";
 		citations = [...new Set(chosen.map((p) => p.pointer))];
 	}
