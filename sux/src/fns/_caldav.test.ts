@@ -32,6 +32,29 @@ describe("_caldav iCal build/parse", () => {
 		expect(dateProp("DTSTART", "2026-07-11T13:00:00Z", "Not/AZone")).toBe("DTSTART:20260711T130000Z"); // unrecognized zone falls back, never throws
 	});
 
+	// #1173: a zoneless (floating) wall-clock `iso` handed to dateProp with a TZID used to be
+	// routed through zonedStamp — new Date(iso) parses it as UTC (Workers' runtime zone), then
+	// re-renders THAT instant in `tz`, silently shifting a literal "6pm" by the zone's offset
+	// (11am for a US zone). dateProp must instead keep the floating digits AS WRITTEN, same as
+	// icalStamp's no-tz path — this is the exact cal_events → edit → cal_update round trip
+	// icalDateToIso's read side hands back (a bare iso + a separate tz field).
+	it("dateProp keeps a FLOATING (zoneless) iso's wall-clock digits as written, even with a tz — never silently reinterpreted as UTC (#1173)", () => {
+		expect(dateProp("DTSTART", "2026-07-11T18:00:00", "America/Los_Angeles")).toBe("DTSTART;TZID=America/Los_Angeles:20260711T180000");
+		expect(dateProp("DTSTART", "2026-07-11T18:00", "Europe/Berlin")).toBe("DTSTART;TZID=Europe/Berlin:20260711T180000");
+		// An offset/Z-bearing instant is a real absolute moment — it still legitimately re-anchors
+		// via zonedStamp (no regression to the currently-correct case).
+		expect(dateProp("DTSTART", "2026-07-11T13:00:00Z", "America/New_York")).toBe("DTSTART;TZID=America/New_York:20260711T090000");
+	});
+
+	it("cal_events → edit → cal_update round trip: a TZID-bearing event's stored wall-clock digits survive unmodified (#1173)", () => {
+		// icalDateToIso is the read side: a TZID-bearing DTSTART comes back as a bare (zoneless)
+		// iso string plus a separate `tz` field — exactly what a natural agent read-edit-write
+		// flow hands straight back to dateProp/cal_update unmodified.
+		const read = icalDateToIso("20260711T180000", { TZID: "America/Los_Angeles" });
+		expect(read).toEqual({ iso: "2026-07-11T18:00:00", all_day: false, tz: "America/Los_Angeles" });
+		expect(dateProp("DTSTART", read.iso, read.tz)).toBe("DTSTART;TZID=America/Los_Angeles:20260711T180000");
+	});
+
 	it("buildVEvent emits a valid VCALENDAR/VEVENT with escaping", () => {
 		const ical = buildVEvent({ uid: "u1", summary: "Lunch, w/ Ada; notes", start: "2026-07-11T12:00:00Z", end: "2026-07-11T13:00:00Z", location: "Cafe", dtstamp: "2026-07-10T00:00:00Z" });
 		expect(ical).toContain("BEGIN:VEVENT");
