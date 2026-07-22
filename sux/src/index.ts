@@ -23,6 +23,7 @@ import { handleObservability } from "./observability";
 import { handleRecovery } from "./recovery";
 import { handleAppleHealth, handleMychartRoutes, refreshMychartToken } from "./mychart";
 import { handleConsensusRoutes } from "./consensus";
+import { handleMonarchRoutes } from "./monarch";
 import { handlePortalRoutes } from "./portal";
 import { handleGrafanaWebhook } from "./fns/_grafana_hook";
 import { normalizeArgs, normalizeText } from "./normalize";
@@ -1089,6 +1090,13 @@ export default {
 		// gated on /connect, 404 when SUX_CRON_TOKEN is unset.
 		const consensusRoute = await handleConsensusRoutes(new URL(request.url), request, env);
 		if (consensusRoute) return consensusRoute;
+
+		// Monarch Money paste-door (/monarch/connect — operator paste of the session token,
+		// stored read-only in KV; W7, #1301). Same pre-gate reason + operator-Bearer
+		// (SUX_CRON_TOKEN) gate as /mychart/connect; 404s when the gate secret is unset.
+		const monarchRoute = await handleMonarchRoutes(new URL(request.url), request, env);
+		if (monarchRoute) return monarchRoute;
+
 
 		// portal.suxos.net's served view of the git vault (only #portal-tagged /
 		// visibility:portal notes) — same pre-gate reason as the routes above; its own

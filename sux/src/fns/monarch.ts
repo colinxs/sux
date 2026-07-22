@@ -1,15 +1,19 @@
 import { type Fn, type FailCode, failWith, ok, type RtEnv } from "../registry";
 import { errMsg, oj } from "./_util";
+import { MONARCH_API, monarchToken } from "../monarch";
 
 // Monarch Money over its GraphQL API — a read-only, honest adapter (accounts,
 // balances, transactions, budgets, cashflow, categories, holdings). Auth is a
-// personal API token used directly as `Authorization: Token <token>` (NO OAuth,
-// NO email/password/MFA login — that flow is prohibited to handle; Colin mints the
-// token out-of-band via `scripts/mint-monarch-token.py`, which drives the
-// monarchmoney fork's interactive login. NOTE: the web app authenticates over an
-// httpOnly session cookie + CSRF, so there is NO `Authorization: Token` header to
-// copy from devtools — the login flow is the only source).
-// Inert until MONARCH_TOKEN is set, exactly like FASTMAIL_TOKEN / TODOIST_TOKEN.
+// personal SESSION token used directly as `Authorization: Token <token>` (NO OAuth,
+// NO email/password/MFA login — that flow is prohibited to handle). The token is
+// captured by the operator paste-door at /monarch/connect (src/monarch.ts) and stored
+// in KV under the private `monarch:` grant prefix — Colin pastes his app.monarch.com
+// Local-Storage token there once, so it lands directly in sux storage without ever
+// transiting chat/Claude's context. A legacy MONARCH_TOKEN wrangler secret still works
+// as a fallback (monarchToken() resolves the grant first, then the secret).
+// Inert until a grant is pasted (or MONARCH_TOKEN is set) → not_configured, naming
+// /monarch/connect. A stale token (Monarch answers 401) surfaces as not_configured too,
+// never a hard error.
 //
 // READ-ONLY BY CONSTRUCTION: no mutation op exists, and the `graphql` escape hatch
 // refuses any mutation/subscription document. sux never moves money — the field
@@ -17,26 +21,29 @@ import { errMsg, oj } from "./_util";
 // (raw:true, cacheable:false — personal financial data never enters the response
 // cache); Monarch's sign convention is preserved (negative = expense/outflow).
 
-const API = "https://api.monarchmoney.com/graphql";
+const API = MONARCH_API;
 
 const NOT_CONFIGURED =
-	"Monarch Money not configured. Set MONARCH_TOKEN to a Monarch API token — " +
-	"mint one with `scripts/mint-monarch-token.py` (drives the monarchmoney fork's " +
-	"login; the web app is cookie+CSRF, so there is no devtools token to copy). " +
-	"Read-only — sux never moves money.";
+	"Monarch Money not configured. Open /monarch/connect (operator-gated) and paste your " +
+	"Monarch session token once — grab it from app.monarch.com DevTools → Local Storage. " +
+	"The token is stored read-only in sux; sux never moves money. (A MONARCH_TOKEN wrangler " +
+	"secret also works as a fallback.)";
 
-/** True when the Monarch token is configured. */
+/** True when a legacy MONARCH_TOKEN secret is configured — the SYNC env-only signal used by
+ * the _agenda financial-signal detectors (their KV-grant wiring is the W7 second half, a
+ * separate follow-up). The `monarch` fn itself gates on the async monarchToken() (grant OR
+ * secret), so it works from a pasted grant even when this returns false. */
 export const hasMonarch = (env: RtEnv): boolean => Boolean(env.MONARCH_TOKEN);
 
 /** Map an HTTP status to the shared failure taxonomy (mirrors todoist's mapping). */
 export const codeFor = (status: number): FailCode =>
 	status === 401 || status === 403 ? "not_configured" : status === 429 ? "rate_limited" : status === 400 ? "bad_input" : status === 404 ? "not_found" : "upstream_error";
 
-async function gql(env: RtEnv, query: string, variables?: Record<string, unknown>): Promise<{ status: number; json: any }> {
+async function gql(token: string, query: string, variables?: Record<string, unknown>): Promise<{ status: number; json: any }> {
 	const resp = await fetch(API, {
 		method: "POST",
 		headers: {
-			Authorization: `Token ${String(env.MONARCH_TOKEN)}`,
+			Authorization: `Token ${token}`,
 			"Content-Type": "application/json",
 			Accept: "application/json",
 			"Client-Platform": "web", // Monarch rejects requests without a Client-Platform.
@@ -53,8 +60,14 @@ async function gql(env: RtEnv, query: string, variables?: Record<string, unknown
  *  with a populated `errors` array on a partial/field failure that a bare status check misses. */
 function gqlFailure(op: string, r: { status: number; json: any }): ReturnType<typeof failWith> | undefined {
 	if (r.status >= 400) {
+		const code = codeFor(r.status);
+		// A 401/403 means the stored token went stale (logout-everywhere / password change).
+		// Surface it as not_configured pointing back at the paste-door, never a hard error.
+		if (code === "not_configured") {
+			return failWith("not_configured", `Monarch ${op}: token rejected (HTTP ${r.status}) — it likely went stale. Re-paste a fresh one at /monarch/connect.`);
+		}
 		const detail = r.json?.errors?.[0]?.message ?? `HTTP ${r.status}`;
-		return failWith(codeFor(r.status), `Monarch ${op}: ${detail}`);
+		return failWith(code, `Monarch ${op}: ${detail}`);
 	}
 	if (Array.isArray(r.json?.errors) && r.json.errors.length) {
 		return failWith("upstream_error", `Monarch ${op}: ${r.json.errors.map((e: any) => e?.message).filter(Boolean).join("; ") || "GraphQL error"}`);
@@ -63,8 +76,8 @@ function gqlFailure(op: string, r: { status: number; json: any }): ReturnType<ty
 }
 
 /** Run a query, folding HTTP status + GraphQL `errors` into the failure taxonomy. */
-async function query(env: RtEnv, op: string, gqlDoc: string, variables?: Record<string, unknown>): Promise<{ data?: any; fail?: ReturnType<typeof failWith> }> {
-	const r = await gql(env, gqlDoc, variables);
+async function query(token: string, op: string, gqlDoc: string, variables?: Record<string, unknown>): Promise<{ data?: any; fail?: ReturnType<typeof failWith> }> {
+	const r = await gql(token, gqlDoc, variables);
 	const fail = gqlFailure(op, r);
 	if (fail) return { fail };
 	return { data: r.json?.data };
@@ -157,7 +170,7 @@ export const monarch: Fn = {
 		"Monarch Money — READ-ONLY personal finance (accounts, balances, transactions, budgets, cashflow, categories, holdings). sux NEVER moves money: no transfer/trade op exists and the raw escape hatch refuses mutations. Ops: " +
 		"accounts (balances + institutions) | transactions ({start?, end?, search?, accounts?, categories?, limit?, offset?} — YYYY-MM-DD dates, ids from `categories`/`accounts`) | budgets ({month?} YYYY-MM, planned vs actual per category) | cashflow ({start?, end?} — income/expense/savings summary + per-category breakdown) | categories (id source for filtering) | holdings (investment positions) | graphql ({query, variables?} — raw read-only passthrough; mutation/subscription refused). " +
 		"Amounts are byte-exact in Monarch's convention (negative = expense/outflow). " +
-		"Needs MONARCH_TOKEN (the `Authorization: Token` header from app.monarchmoney.com, or the monarchmoney Python lib's interactive login) — absent → not_configured, nothing runs.",
+		"Auth: paste your Monarch session token once at /monarch/connect (operator-gated; grab it from app.monarch.com DevTools → Local Storage) — it's stored read-only in KV, never in chat. Absent or stale (Monarch 401) → not_configured, pointing back at /monarch/connect.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -177,23 +190,24 @@ export const monarch: Fn = {
 		},
 	},
 	run: async (env: RtEnv, a: any) => {
-		if (!hasMonarch(env)) return failWith("not_configured", NOT_CONFIGURED);
+		const token = await monarchToken(env);
+		if (!token) return failWith("not_configured", NOT_CONFIGURED);
 		const op = String(a?.op ?? "");
 		try {
 			if (op === "accounts") {
-				const { data, fail } = await query(env, "accounts", Q_ACCOUNTS);
+				const { data, fail } = await query(token, "accounts", Q_ACCOUNTS);
 				if (fail) return fail;
 				const accounts = (data?.accounts ?? []).map(account);
 				return ok(oj({ count: accounts.length, accounts }));
 			}
 			if (op === "categories") {
-				const { data, fail } = await query(env, "categories", Q_CATEGORIES);
+				const { data, fail } = await query(token, "categories", Q_CATEGORIES);
 				if (fail) return fail;
 				const categories = (data?.categories ?? []).map((c: any) => ({ id: c?.id, name: c?.name, group: c?.group?.name, groupType: c?.group?.type }));
 				return ok(oj({ count: categories.length, categories }));
 			}
 			if (op === "holdings") {
-				const { data, fail } = await query(env, "holdings", Q_HOLDINGS);
+				const { data, fail } = await query(token, "holdings", Q_HOLDINGS);
 				if (fail) return fail;
 				const holdings = (data?.portfolio?.aggregateHoldings?.edges ?? []).map((e: any) => ({ ticker: e?.node?.security?.ticker, name: e?.node?.security?.name, value: e?.node?.totalValue, quantity: e?.node?.quantity }));
 				return ok(oj({ count: holdings.length, holdings }));
@@ -202,7 +216,7 @@ export const monarch: Fn = {
 				const limit = Math.min(200, Math.max(1, Number.isFinite(Number(a?.limit)) ? Number(a.limit) : 100));
 				const offset = Math.max(0, Number.isFinite(Number(a?.offset)) ? Number(a.offset) : 0);
 				const filters = definedOnly({ startDate: a?.start, endDate: a?.end, search: a?.search, accounts: strArr(a?.accounts), categories: strArr(a?.categories) });
-				const { data, fail } = await query(env, "transactions", Q_TRANSACTIONS, { offset, limit, filters });
+				const { data, fail } = await query(token, "transactions", Q_TRANSACTIONS, { offset, limit, filters });
 				if (fail) return fail;
 				const all = data?.allTransactions ?? {};
 				const results = (all.results ?? []).map(txn);
@@ -211,7 +225,7 @@ export const monarch: Fn = {
 			if (op === "budgets") {
 				const startDate = monthStart(a?.month);
 				const endDate = monthEnd(a?.month);
-				const { data, fail } = await query(env, "budgets", Q_BUDGETS, { startDate, endDate });
+				const { data, fail } = await query(token, "budgets", Q_BUDGETS, { startDate, endDate });
 				if (fail) return fail;
 				const rows = (data?.budgetData?.monthlyAmountsByCategory ?? []).map((r: any) => {
 					const m = r?.monthlyAmounts?.[0] ?? {};
@@ -221,7 +235,7 @@ export const monarch: Fn = {
 			}
 			if (op === "cashflow") {
 				const filters = definedOnly({ startDate: a?.start, endDate: a?.end });
-				const { data, fail } = await query(env, "cashflow", Q_CASHFLOW, { filters });
+				const { data, fail } = await query(token, "cashflow", Q_CASHFLOW, { filters });
 				if (fail) return fail;
 				const summary = data?.summary?.[0]?.summary ?? data?.summary?.summary ?? null;
 				const byCategory = (data?.byCategory ?? []).map((g: any) => ({ category: g?.groupBy?.category?.name, categoryId: g?.groupBy?.category?.id, income: g?.summary?.sumIncome, expense: g?.summary?.sumExpense }));
@@ -232,7 +246,7 @@ export const monarch: Fn = {
 				if (!doc.trim()) return failWith("bad_input", "monarch graphql requires a `query` document string.");
 				if (!isReadOnlyDoc(doc)) return failWith("bad_input", "monarch graphql is read-only — mutation/subscription documents are refused (sux never moves money).");
 				const vars = a?.variables && typeof a.variables === "object" && !Array.isArray(a.variables) ? (a.variables as Record<string, unknown>) : undefined;
-				const r = await gql(env, doc, vars);
+				const r = await gql(token, doc, vars);
 				const fail = gqlFailure("graphql", r);
 				if (fail) return fail;
 				return ok(oj(r.json ?? {}));

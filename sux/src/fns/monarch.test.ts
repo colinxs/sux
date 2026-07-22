@@ -7,16 +7,52 @@ const parse = (r: any) => JSON.parse(r.content[0].text);
 afterEach(() => vi.unstubAllGlobals());
 
 describe("monarch (read-only GraphQL adapter)", () => {
-	it("is inert (not_configured) without a token", async () => {
+	it("is inert (not_configured) without a token, pointing at /monarch/connect", async () => {
 		const r = await monarch.run({} as any, { op: "accounts" });
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toContain("[not_configured]");
-		expect(r.content[0].text).toMatch(/MONARCH_TOKEN/);
+		expect(r.content[0].text).toMatch(/\/monarch\/connect/);
+	});
+
+	it("reads the pasted KV grant (monarch:grant) when no MONARCH_TOKEN secret is set", async () => {
+		const kv = { get: vi.fn(async (k: string) => (k === "monarch:grant" ? JSON.stringify({ token: "pasted-tok", issued_at: 1 }) : null)) };
+		vi.stubGlobal("fetch", vi.fn(async (_u: string | URL, init?: any) => {
+			expect(init.headers.Authorization).toBe("Token pasted-tok");
+			return new Response(JSON.stringify({ data: { accounts: [] } }), { status: 200 });
+		}));
+		const out = parse(await monarch.run({ OAUTH_KV: kv } as any, { op: "accounts" }));
+		expect(out).toMatchObject({ count: 0 });
+	});
+
+	it("the KV grant WINS over a legacy MONARCH_TOKEN secret", async () => {
+		const kv = { get: vi.fn(async (k: string) => (k === "monarch:grant" ? JSON.stringify({ token: "grant-tok", issued_at: 1 }) : null)) };
+		vi.stubGlobal("fetch", vi.fn(async (_u: string | URL, init?: any) => {
+			expect(init.headers.Authorization).toBe("Token grant-tok"); // not the secret "mtk"
+			return new Response(JSON.stringify({ data: { accounts: [] } }), { status: 200 });
+		}));
+		await monarch.run({ MONARCH_TOKEN: "mtk", OAUTH_KV: kv } as any, { op: "accounts" });
+	});
+
+	it("a stale token (Monarch 401) surfaces as not_configured pointing at /monarch/connect, never a hard error", async () => {
+		vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ errors: [{ message: "unauthorized" }] }), { status: 401 })));
+		const r = await monarch.run(ENV, { op: "accounts" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toContain("[not_configured]");
+		expect(r.content[0].text).toMatch(/\/monarch\/connect/);
+	});
+
+	it("exposes no mutation/transfer/trade op — only the read-only enum", () => {
+		const ops = (monarch.inputSchema as any).properties.op.enum as string[];
+		expect(ops).toEqual(["accounts", "transactions", "budgets", "cashflow", "categories", "holdings", "graphql"]);
+		for (const forbidden of ["transfer", "trade", "move", "pay", "send", "buy", "sell", "delete", "update", "create"]) {
+			expect(ops).not.toContain(forbidden);
+		}
+		expect(monarch.annotations?.readOnlyHint).toBe(true);
 	});
 
 	it("accounts POSTs to the GraphQL API with the Token + Client-Platform headers, shapes accounts", async () => {
 		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
-			expect(String(u)).toBe("https://api.monarchmoney.com/graphql");
+			expect(String(u)).toBe("https://api.monarch.com/graphql");
 			expect(init.method).toBe("POST");
 			expect(init.headers.Authorization).toBe("Token mtk");
 			expect(init.headers["Client-Platform"]).toBe("web");
