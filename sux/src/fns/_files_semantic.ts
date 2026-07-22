@@ -41,7 +41,7 @@ export const FILES_SEMANTIC_TEXT_EXT = /\.(md|txt|json|csv|tsv|ya?ml|xml|html?)$
 const MAX_LIST_PAGES = 5;
 // Single Dropbox (Mode B) account — no repo/branch dimension, unlike the vault's
 // per-repo keying. Mirrors mail's KV_KEY: one fixed key.
-const KV_KEY = "sux:files:semantic";
+export const KV_KEY = "sux:files:semantic";
 
 export type FilesSemanticChunk = { path: string; text: string; embedding: number[] };
 export type FilesSemanticIndex = { cursor: string; version: number; at: number; total: number; truncated: boolean; chunks: FilesSemanticChunk[] };

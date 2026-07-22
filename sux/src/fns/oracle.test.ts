@@ -1,8 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-// The vault mirror rides obsidian.run — mock it (its own suite covers it) so we can
-// assert the learn path mirrors the re-distilled KB without a configured vault.
-vi.mock("./obsidian", () => ({ obsidian: { run: vi.fn(async () => ({ content: [{ type: "text", text: "{}" }] })) } }));
+// The vault mirror rides obsidian.run — mock ONLY it (its own suite covers it) so we can
+// assert the learn path mirrors the re-distilled KB without a configured vault. Partial mock:
+// the rest of obsidian stays real (vaultCfg/gitSemanticIndexKey are read by _retrieval_stats.ts,
+// which the status action now surfaces).
+vi.mock("./obsidian", async (importOriginal) => ({
+	...(await importOriginal<object>()),
+	obsidian: { run: vi.fn(async () => ({ content: [{ type: "text", text: "{}" }] })) },
+}));
 
 import { DATA_CLOSE, DATA_OPEN } from "../ai";
 import { maybeDecompressString } from "./_gzip";

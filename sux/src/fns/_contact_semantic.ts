@@ -16,7 +16,7 @@ const VERSION = 1;
 // _mail_semantic.ts's INDEX_MAX, which bounds a mailbox the same way).
 const INDEX_MAX = 2000;
 // Single JMAP account — no repo/branch dimension needed. Mirrors _mail_semantic.ts's KV_KEY.
-const KV_KEY = "sux:contact:semantic";
+export const KV_KEY = "sux:contact:semantic";
 // ContactCard/changes pages at most this many ids per call; caps the paging loop against a huge
 // backlog, mirroring _mail_semantic.ts's MAX_CHANGE_PAGES.
 const MAX_CHANGE_PAGES = 5;
