@@ -32,6 +32,7 @@
 // calls to find out what a given request may see — today via a `?as=<profile>`
 // preview override only, real share-link/session auth lands in a later phase.
 
+import { timingSafeEqual } from "./crypto-util";
 import { obsidian, vaultCfg } from "./fns/obsidian";
 import { obsRateLimited } from "./observability";
 import type { RtEnv } from "./registry";
@@ -101,13 +102,23 @@ export const PROFILES: Record<string, Set<string>> = {
 
 /** THE chokepoint (#1191 §2): every route below asks this, and only this, what a
  * given request may see. Phase 1 has no real auth wired up yet (share links/
- * sessions land in a later phase) — `?as=<profile>` is a placeholder preview
- * override (meant to survive into later phases as an admin-preview escape hatch),
- * and the fallback is today's existing default: visible to everyone. */
+ * sessions land in a later phase) — `?as=<profile>` is the admin-preview escape
+ * hatch ONLY, and because /portal is a public pre-gate surface it must never be
+ * an unauthenticated privilege grant (security-review on #1229 confirmed a
+ * critical: any visitor could self-grant `internal-confidential` with a bare
+ * query param). The preview override therefore requires `?preview_token=` to
+ * match the PORTAL_PREVIEW_TOKEN secret (timing-safe compare, same shape as
+ * _grafana_hook's bearer check). Fail-closed twice over: no secret configured →
+ * previews are OFF; token missing/mismatched → the `as` param is ignored and the
+ * request gets today's existing default, the shared baseline. */
 export function resolveAudience(request: Request, env: RtEnv): Set<string> {
-	void env;
-	const as = new URL(request.url).searchParams.get("as");
-	if (as && PROFILES[as]) return PROFILES[as];
+	const url = new URL(request.url);
+	const as = url.searchParams.get("as");
+	if (as && PROFILES[as]) {
+		const secret = env.PORTAL_PREVIEW_TOKEN?.trim();
+		const presented = url.searchParams.get("preview_token") ?? "";
+		if (secret && presented && timingSafeEqual(secret, presented)) return PROFILES[as];
+	}
 	return new Set([SHARED_LABEL]);
 }
 

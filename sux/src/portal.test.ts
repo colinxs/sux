@@ -234,9 +234,26 @@ describe("PROFILES", () => {
 });
 
 describe("resolveAudience", () => {
-	it("picks the matching profile's bundle from ?as=<profile>", () => {
-		const req = new Request("https://portal.test/portal?as=legal-general");
-		expect(resolveAudience(req, ENV)).toEqual(new Set(["shared", "legal"]));
+	const PREVIEW_ENV = { ...ENV, PORTAL_PREVIEW_TOKEN: "s3cret-preview" } as typeof ENV;
+
+	it("grants the profile's bundle only with ?as= AND a matching preview_token", () => {
+		const req = new Request("https://portal.test/portal?as=legal-general&preview_token=s3cret-preview");
+		expect(resolveAudience(req, PREVIEW_ENV)).toEqual(new Set(["shared", "legal"]));
+	});
+
+	it("ignores ?as= without a preview_token — a bare query param must never grant an audience (#1229 critical)", () => {
+		const req = new Request("https://portal.test/portal?as=internal-confidential");
+		expect(resolveAudience(req, PREVIEW_ENV)).toEqual(new Set(["shared"]));
+	});
+
+	it("ignores ?as= with a WRONG preview_token", () => {
+		const req = new Request("https://portal.test/portal?as=internal-confidential&preview_token=guess");
+		expect(resolveAudience(req, PREVIEW_ENV)).toEqual(new Set(["shared"]));
+	});
+
+	it("fails closed when no PORTAL_PREVIEW_TOKEN secret is configured, even with a token presented", () => {
+		const req = new Request("https://portal.test/portal?as=internal-confidential&preview_token=anything");
+		expect(resolveAudience(req, ENV)).toEqual(new Set(["shared"]));
 	});
 
 	it("falls back to {shared} when ?as= is missing", () => {
@@ -245,7 +262,7 @@ describe("resolveAudience", () => {
 	});
 
 	it("falls back to {shared} when ?as= names an unknown profile", () => {
-		const req = new Request("https://portal.test/portal?as=nope");
-		expect(resolveAudience(req, ENV)).toEqual(new Set(["shared"]));
+		const req = new Request("https://portal.test/portal?as=nope&preview_token=s3cret-preview");
+		expect(resolveAudience(req, PREVIEW_ENV)).toEqual(new Set(["shared"]));
 	});
 });
