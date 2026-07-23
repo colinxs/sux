@@ -36,7 +36,34 @@ manifest() { # $1 var name in secret-check.sh
     sed "s/^$1=\"//; s/\"\$//; s/\\\\\$//" | tr ' ' '\n' | grep -E '^[A-Z][A-Z0-9_]*$' || true
 }
 
-op_titles() { op item list --format json | python3 -c 'import sys,json;[print(i["title"]) for i in json.load(sys.stdin)]'; }
+# --vault is REQUIRED, not cosmetic: under a service-account token (how this runs
+# unattended) `op item list` without it errors or returns a different set than the
+# vault-scoped call, so a vault-less listing silently under-reports and every missing
+# title then reads as "unrecoverable". Always scope the query.
+op_titles() { op item list --vault "$VAULT" --format json | python3 -c 'import sys,json;[print(i["title"]) for i in json.load(sys.stdin)]'; }
+
+# op items are not uniformly one-secret-per-item with a `credential` field: some are
+# multi-field (e.g. 'Epic FHIR sux - PROD' carries client_id_prod, client_secret_sandbox,
+# client_secret_productioin, ... in one item). A title-only diff therefore reports a
+# secret as missing when its value is really a named field inside another item. Emit
+# `title<TAB>field` for every populated non-boilerplate field so the audit can see them.
+op_fields() {
+  op item list --vault "$VAULT" --format json |
+    python3 -c 'import sys,json;[print(i["id"]) for i in json.load(sys.stdin)]' |
+    while read -r id; do
+      op item get "$id" --vault "$VAULT" --format json 2>/dev/null | python3 -c '
+import sys, json
+try: d = json.load(sys.stdin)
+except Exception: sys.exit(0)
+t = d.get("title", "")
+for f in d.get("fields", []):
+    if f.get("value") is None: continue
+    lab = f.get("label") or f.get("id") or ""
+    if lab in ("notesPlain",): continue
+    print(f"{t}\t{lab}")
+'
+    done
+}
 
 worker_names() {
   npx wrangler secret list --config sux/wrangler.jsonc 2>/dev/null |
@@ -47,21 +74,36 @@ github_names() { gh secret list 2>/dev/null | awk '{print $1}' || true; }
 
 has() { printf '%s\n' "$2" | grep -qx "$1"; }
 
+# Does `$1` exist in op as either a top-level item title or a named field inside one?
+# Compared case-insensitively with -/_ folded, since op titles use both.
+in_op() { # $1 name  $2 titles  $3 fields(title<TAB>label)
+  local n; n="$(printf '%s' "$1" | tr 'A-Z-' 'a-z_')"
+  printf '%s\n' "$2" | tr 'A-Z-' 'a-z_' | grep -qx "$n" && return 0
+  printf '%s\n' "$3" | cut -f2 | tr 'A-Z-' 'a-z_' | grep -qx "$n"
+}
+
+# Where a name lives, for reporting. Empty when absent.
+where_in_op() {
+  local n; n="$(printf '%s' "$1" | tr 'A-Z-' 'a-z_')"
+  printf '%s\n' "$2" | grep -ix -m1 -- "$(printf '%s' "$1" | tr '_' '-')" 2>/dev/null && return 0
+  printf '%s\n' "$3" | awk -F'\t' -v n="$n" 'tolower($2) ~ /./ {l=tolower($2); gsub(/-/,"_",l); if (l==n) {print "field \x27" $2 "\x27 in \x27" $1 "\x27"; exit}}'
+}
+
 cmd_audit() {
   op_preflight || exit 1
-  local titles worker github show_optional=false
+  local titles worker github fields show_optional=false
   [ "${1:-}" = "--all" ] && show_optional=true
-  titles="$(op_titles)"; worker="$(worker_names)"; github="$(github_names)"
+  titles="$(op_titles)"; worker="$(worker_names)"; github="$(github_names)"; fields="$(op_fields)"
 
   # A secret live on a write-only store but absent from op is the one state that
   # cannot be repaired later — surface it first and loudest.
   echo "== unrecoverable (on a store, NOT in op) =="
   local n=0
   for k in $(printf '%s\n' "$worker" | grep -E '^[A-Z]' || true); do
-    has "$k" "$titles" || { echo "  ✗ Worker  $k"; n=$((n + 1)); }
+    in_op "$k" "$titles" "$fields" || { echo "  ✗ Worker  $k"; n=$((n + 1)); }
   done
   for k in $(printf '%s\n' "$github" | grep -E '^[A-Z]' || true); do
-    has "$k" "$titles" || { echo "  ✗ GitHub  $k"; n=$((n + 1)); }
+    in_op "$k" "$titles" "$fields" || { echo "  ✗ GitHub  $k"; n=$((n + 1)); }
   done
   [ "$n" -eq 0 ] && echo "  ✓ none"
   echo "  ($n value(s) exist only in a store Cloudflare/GitHub will never read back)"
@@ -83,7 +125,7 @@ cmd_audit() {
   for set in $sets; do
     echo "  -- $set --"
     for k in $(manifest "$set"); do
-      has "$k" "$titles" && continue
+      in_op "$k" "$titles" "$fields" && continue
       # A near-miss title is a silent sync-all skip, not a missing secret.
       local near
       near="$(printf '%s\n' "$titles" | grep -i -- "$k" | head -1 || true)"
@@ -202,10 +244,10 @@ cmd_sync_all() {
 # is exactly the destructive direction sync-all's --apply gate exists to prevent.
 cmd_backfill() {
   op_preflight || exit 1
-  local titles worker github missing=""
-  titles="$(op_titles)"; worker="$(worker_names)"; github="$(github_names)"
+  local titles worker github fields missing=""
+  titles="$(op_titles)"; worker="$(worker_names)"; github="$(github_names)"; fields="$(op_fields)"
   for k in $(printf '%s\n%s\n' "$worker" "$github" | grep -E '^[A-Z]' | sort -u); do
-    has "$k" "$titles" || missing="$missing $k"
+    in_op "$k" "$titles" "$fields" || missing="$missing $k"
   done
   [ -n "$missing" ] || { echo "✓ nothing to backfill — every store secret has an op item"; return 0; }
 
