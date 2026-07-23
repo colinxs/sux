@@ -314,5 +314,11 @@ Recorded because they are the part most easily lost, and several are seductive.
 - MCP traffic attribution must be re-grouped **by authenticated principal**, not user-agent — the
   `claude@` bot and `m@` human present the same UA, so the earlier "one client" inference is unsupported.
   (The 405 fix stands regardless; only the cost/causal story is unresolved.)
-- The tooling/language doctrine (typed helpers vs nushell vs Go/Rust to replace fragile `bash`+`jq`) has
-  its research banked but its synthesis unfinished.
+- The tooling/language doctrine (typed helpers vs nushell vs Go/Rust to replace fragile `bash`+`jq`) is
+  **unfinished and its research is LOST, not banked.** An earlier note in this doc said the twelve
+  agent results were recoverable from the workflow journal; that was asserted from memory and never
+  checked. Verified 2026-07-23: no `wf_*` transcript directory survives anywhere under the session
+  tmp — it was cleaned. Re-deriving means re-running the research, so decide whether it is worth it
+  before assuming a cheap resume. *(The rule this broke is already written down: never carry an
+  unverified "recoverable"/"completed" claim into a handoff — verify the artifact, not the memory
+  of it.)*
