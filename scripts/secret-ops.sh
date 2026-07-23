@@ -15,6 +15,7 @@
 #
 # Usage:
 #   scripts/secret-ops.sh audit [--all]
+#   scripts/secret-ops.sh backfill                       # walk every store secret missing from op
 #   scripts/secret-ops.sh create NAME [--generate] [--worker] [--github]
 #   scripts/secret-ops.sh capture NAME [--worker] [--github]
 #   scripts/secret-ops.sh rename OLD NEW
@@ -186,8 +187,59 @@ cmd_sync_all() {
   done
 }
 
+# Walk everything live on a store but missing from op, in one pass. There is no bulk
+# import: Cloudflare and GitHub never return a secret's value, so each one has to come
+# from its original source (a vendor console, a local .dev.vars) or be rotated. This just
+# removes the per-secret ceremony — it does NOT make the values recoverable.
+#
+# `sux/.dev.vars` is checked first because wrangler dev reads it, so any secret used
+# locally already has a plaintext copy there — those import with no prompting at all.
+# Everything else is offered one at a time; ENTER skips, so a pass can be abandoned
+# partway without losing the ones already stored.
+#
+# Nothing is pushed to any store here. Backfilling means teaching op a value the Worker
+# ALREADY has — pushing would overwrite a live secret with whatever was just typed, which
+# is exactly the destructive direction sync-all's --apply gate exists to prevent.
+cmd_backfill() {
+  op_preflight || exit 1
+  local titles worker github missing=""
+  titles="$(op_titles)"; worker="$(worker_names)"; github="$(github_names)"
+  for k in $(printf '%s\n%s\n' "$worker" "$github" | grep -E '^[A-Z]' | sort -u); do
+    has "$k" "$titles" || missing="$missing $k"
+  done
+  [ -n "$missing" ] || { echo "✓ nothing to backfill — every store secret has an op item"; return 0; }
+
+  local devvars="sux/.dev.vars" imported=0 stored=0 skipped=0
+  for k in $missing; do
+    local v=""
+    if [ -f "$devvars" ]; then
+      # Take the value verbatim after the first '=', minus one layer of matching quotes.
+      v="$(sed -n "s/^$k=//p" "$devvars" | head -1 | sed 's/^"\(.*\)"$/\1/; s/^'"'"'\(.*\)'"'"'$/\1/')"
+    fi
+    if [ -n "$v" ]; then
+      op item create --vault "$VAULT" --category "API Credential" --title "$k" "credential=$v" >/dev/null
+      unset v
+      echo "✓ op       $k  (from $devvars)"
+      imported=$((imported + 1))
+      continue
+    fi
+    printf '%s — paste value (ENTER to skip): ' "$k" >&2
+    read -rs v; echo >&2
+    if [ -z "$v" ]; then skipped=$((skipped + 1)); continue; fi
+    op item create --vault "$VAULT" --category "API Credential" --title "$k" "credential=$v" >/dev/null
+    unset v
+    echo "✓ op       $k"
+    stored=$((stored + 1))
+  done
+  echo
+  echo "imported from $devvars: $imported   entered by hand: $stored   skipped: $skipped"
+  [ "$skipped" -gt 0 ] && echo "(skipped ones stay unrecoverable — re-issue from the vendor console or rotate)"
+  echo "Nothing was pushed to a store; op now matches what you supplied."
+}
+
 case "${1:-}" in
   audit) shift; cmd_audit "$@" ;;
+  backfill) shift; cmd_backfill "$@" ;;
   create) shift; cmd_create "$@" ;;
   capture) shift; cmd_capture "$@" ;;
   rename) shift; cmd_rename "$@" ;;
