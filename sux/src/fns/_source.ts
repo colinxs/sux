@@ -1,7 +1,7 @@
 import { llm } from "../ai";
 import type { RtEnv } from "../registry";
 import { cosine } from "./_embed";
-import { upsertSourceChunks } from "./_vectorize";
+import { coarseDomain, deleteCorpusIds, upsertSourceChunks, vectorId } from "./_vectorize";
 
 // The AUTHORITATIVE-SOURCE substrate behind the `advise` fn — the tier-1 store the
 // grounded advisor is gated by. Modeled one-for-one on _examples.ts: a KV-backed set of
@@ -256,25 +256,27 @@ export async function sourceStats(env: RtEnv): Promise<SourceDomainStat[]> {
 }
 
 /** Delete exactly the chunks belonging to one source document — the per-document undo. Returns
- *  how many were removed. Non-atomic (scan then delete), the acceptable race _examples.ts documents. */
+ *  how many were removed. Non-atomic (scan then delete), the acceptable race _examples.ts documents.
+ *  Also purges each removed chunk's mirror vector from the unified Vectorize index (#1371) —
+ *  otherwise a forgotten chunk keeps citing from `oracle ask` until a full reindexCorpus rebuild. */
 export async function deleteSource(env: RtEnv, domain: string, source_id: string): Promise<number> {
 	const all = await listChunks(env, domain);
-	let n = 0;
-	for (const c of all) {
-		if (c.source_id === source_id) {
-			await env.OAUTH_KV?.delete(chunkKey(domain, c.id));
-			n++;
-		}
-	}
-	return n;
+	const removed = all.filter((c) => c.source_id === source_id);
+	for (const c of removed) await env.OAUTH_KV?.delete(chunkKey(domain, c.id));
+	const namespace = coarseDomain(domain);
+	await deleteCorpusIds(env, await Promise.all(removed.map((c) => vectorId(namespace, c.id, ""))));
+	return removed.length;
 }
 
 /** Delete EVERY chunk in a domain, regardless of source_id — the whole-domain undo (a caller
  *  that namespaces a domain per whole topic/KB, like oracle.ts, forgets the lot in one call
- *  rather than enumerating source_ids itself). Returns how many were removed. */
+ *  rather than enumerating source_ids itself). Returns how many were removed. Also purges each
+ *  chunk's mirror vector from the unified Vectorize index (#1371, same rationale as deleteSource). */
 export async function deleteDomain(env: RtEnv, domain: string): Promise<number> {
 	const all = await listChunks(env, domain);
 	for (const c of all) await env.OAUTH_KV?.delete(chunkKey(domain, c.id));
+	const namespace = coarseDomain(domain);
+	await deleteCorpusIds(env, await Promise.all(all.map((c) => vectorId(namespace, c.id, ""))));
 	return all.length;
 }
 

@@ -1,5 +1,5 @@
 import zlib from "node:zlib";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // A 1x1 PNG (magic bytes so the pdf fn embeds it as an image, not text).
 const PNG_B64 =
@@ -16,7 +16,13 @@ vi.mock("../proxy", () => ({
 	}),
 }));
 
+vi.mock("./dropbox", () => ({
+	hasDropbox: vi.fn(() => true),
+	dropboxPut: vi.fn(async (_env: unknown, path: string, bytes: Uint8Array) => ({ path, size: bytes.length, url: `https://dropbox.example${path}` })),
+}));
+
 import { put } from "./put";
+import { dropboxPut, hasDropbox } from "./dropbox";
 
 // Minimal R2 + KV mocks (mirrors batch_fetch.test.ts / store.test.ts).
 function mockKV() {
@@ -157,17 +163,14 @@ describe("put", () => {
 		expect(new TextDecoder().decode(pdfBytes.slice(0, 5))).toBe("%PDF-");
 	});
 
-	it("defaults to a self-expiring handle when no ttl_seconds is given (no permanent handle)", async () => {
+	it("defaults to a permanent handle when no ttl_seconds is given (#1381)", async () => {
 		const env = mkEnv();
 		const r = await put.run(env, { urls: ["https://a.com"], force: true });
 		const out = JSON.parse(r.content[0].text);
 		const uuid = out[0].ref.split("/s/")[1];
 		const handle = JSON.parse(env.OAUTH_KV._m.get(`store:${uuid}`));
-		// Bulk downloads self-expire by default — a permanent handle would accrete storage.
-		expect(typeof handle.expiry).toBe("number");
-		const now = Math.floor(Date.now() / 1000);
-		expect(handle.expiry).toBeGreaterThan(now);
-		expect(handle.expiry).toBeLessThanOrEqual(now + 7 * 24 * 60 * 60 + 5);
+		// R2+CAS makes keeping everything nearly free — no expiry unless ttl_seconds is opted into.
+		expect(handle.expiry).toBeUndefined();
 	});
 
 	it("passes ttl_seconds through to a self-expiring handle and rejects a bad ttl", async () => {
@@ -180,5 +183,49 @@ describe("put", () => {
 		const bad = await put.run(env, { urls: ["https://a.com"], ttl_seconds: 0 });
 		expect(bad.isError).toBe(true);
 		expect(bad.content[0].text).toMatch(/positive integer/);
+	});
+
+	describe("dropbox projection (#1381)", () => {
+		beforeEach(() => {
+			vi.mocked(hasDropbox).mockReset().mockReturnValue(true);
+			vi.mocked(dropboxPut).mockClear();
+		});
+
+		it("rejects an empty dropbox path and one when Dropbox isn't configured", async () => {
+			const env = mkEnv();
+			const empty = await put.run(env, { urls: ["https://a.com"], dropbox: "   " });
+			expect(empty.isError).toBe(true);
+			expect(empty.content[0].text).toMatch(/non-empty folder path/);
+
+			vi.mocked(hasDropbox).mockReturnValueOnce(false);
+			const notConfigured = await put.run(env, { urls: ["https://a.com"], dropbox: "/Downloads" });
+			expect(notConfigured.isError).toBe(true);
+			expect(notConfigured.content[0].text).toMatch(/requires Dropbox to be configured/);
+		});
+
+		it("fires a fire-and-forget R2→Dropbox projection and returns dropbox_path immediately, R2 ref unaffected", async () => {
+			const env = mkEnv();
+			const r = await put.run(env, { urls: ["https://ex.com/report.pdf"], dropbox: "/Downloads", force: true });
+			const out = JSON.parse(r.content[0].text);
+			expect(out[0].ref).toMatch(UUID);
+			expect(out[0].dropbox_path).toBe("/Downloads/report.pdf");
+			expect(dropboxPut).toHaveBeenCalledWith(env, "/Downloads/report.pdf", expect.any(Uint8Array), { overwrite: false });
+		});
+
+		it("de-duplicates a basename collision within the same batch", async () => {
+			const env = mkEnv();
+			const r = await put.run(env, { urls: ["https://a.com/report.pdf", "https://b.com/report.pdf"], dropbox: "/Downloads", force: true });
+			const out = JSON.parse(r.content[0].text);
+			const paths = out.map((o: any) => o.dropbox_path).sort();
+			expect(paths).toEqual(["/Downloads/report-2.pdf", "/Downloads/report.pdf"]);
+		});
+
+		it("omits dropbox_path when the dropbox param isn't set — byte-identical to today", async () => {
+			const env = mkEnv();
+			const r = await put.run(env, { urls: ["https://a.com"], force: true });
+			const out = JSON.parse(r.content[0].text);
+			expect(out[0].dropbox_path).toBeUndefined();
+			expect(dropboxPut).not.toHaveBeenCalled();
+		});
 	});
 });

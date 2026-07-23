@@ -117,7 +117,10 @@ describe("study — learn (text)", () => {
 		expect(j.segments).toBeGreaterThan(1);
 		expect(j.chunk_count).toBeGreaterThan(1);
 		const stored = await kbFor(kv, "manual");
-		expect(stored.chunks.length).toBe(j.segments);
+		// oracle's own learnTopic now ALSO splits each segment on structure/size (#1373), so a
+		// segment can itself land more than one chunk — the KB's chunk count is at least the
+		// segment count, not necessarily equal to it.
+		expect(stored.chunks.length).toBeGreaterThanOrEqual(j.segments);
 		expect(stored.whitelist.kind).toBe("text");
 	});
 });

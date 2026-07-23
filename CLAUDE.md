@@ -61,6 +61,10 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   branch is held by another worktree, and a following rebase/push then operates on the WRONG
   branch. Drain/rebase PRs from a **detached scratch worktree** (`git worktree add --detach
   $SCRATCH origin/<br>` → rebase → `push HEAD:<br>`), never a plain checkout.
+- **wrangler is an npx devDependency at the repo ROOT; the worker config is `sux/wrangler.jsonc`**
+  — every wrangler command is `cd <repo-root> && npx wrangler <cmd> -c sux/wrangler.jsonc`; bare
+  `wrangler` is not on PATH and `sux/` has no package.json (live hit 2026-07-22: "wrangler not
+  found" mid-secret-provisioning, twice).
 - **A bot-build's starting branch can already be behind `origin/main`** — other builders'
   PRs land while yours is queued/running, and an issue can reference a file a just-merged PR
   added (e.g. #712 needed #708/#710's `_vault_semantic.ts`, absent from the branch's own base).
@@ -299,6 +303,17 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   one directly (only `cron-heartbeat.ts`'s `CRON_JOBS` array needed a manual merge against
   jobs added since) rather than reimplementing from the issue text — much faster and
   proven-tested.
+- **A reusable orphaned commit can bundle MORE issues than the ones you actually want** —
+  before cherry-picking, `git log -1 --format=%B <sha>` and check EVERY issue number it
+  touches against `gh pr list --state open --search "<n>"`, not just the ones in your own
+  batch. #1369/#1380's prior attempt (`d5aab28`) also carried a fix for #1378 that already
+  had its own separate OPEN/mergeable PR (#1383) — cherry-picking the whole commit and
+  leaving #1378's file (`oracle.ts`) in would have duplicated that in-flight PR's diff for
+  no reason. `git restore --staged --worktree -- <file>` the unrelated file(s) back out
+  before committing, and never write `Closes #N` for an issue you didn't actually finish in
+  THIS diff — the disposition script's `partial` bucket is for exactly that, but a literal
+  closing keyword in the commit/PR text auto-closes on merge regardless of what the
+  disposition says (see the closing-keyword gotcha above).
 - **When an issue has already been dropped several times in a row for the SAME unchanged
   reason (an `effort:large` self-description, or a fix that lives entirely outside this
   repo), self-apply the `needs-human` label rather than dropping it yet again** — a comment

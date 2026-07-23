@@ -17,11 +17,14 @@ import { readability } from "./readability";
 // using Claude's own (Workers-AI) knowledge PLUS the accumulated distilled knowledge
 // base. Give it both and it learns first, then answers against the freshly-updated KB.
 //
-// Each learn appends a distilled chunk to a rolling set (last MAX_CHUNKS kept) and
-// RE-DISTILLS a single coherent `distilled` knowledge base from the whole set — so
-// the KB stays bounded and self-consistent as it grows. `knowledge` may be raw text
-// or an http(s) URL (article/book/website) that is fetched, reduced to readable prose
-// (via readability for HTML), then distilled.
+// Each learn first SPLITS the payload on structure (#1373: `## ` headings, else a plain
+// size-cap split — see splitPayload()) so a multi-section body distills into several
+// chunks instead of one regardless of how much distinct material it held, then appends
+// each distilled chunk to a rolling set (last MAX_CHUNKS kept) and RE-DISTILLS a single
+// coherent `distilled` knowledge base from the whole set — so the KB stays bounded and
+// self-consistent as it grows. `knowledge` may be raw text or an http(s) URL
+// (article/book/website) that is fetched, reduced to readable prose (via readability for
+// HTML), then split+distilled.
 //
 // TWO-TIER STORAGE (reuses _source.ts, the chunk+embed+kNN substrate behind `advise`):
 // the rolling `distilled` KB above stays the always-injected SUMMARY tier (bounded,
@@ -51,6 +54,14 @@ const sourceDomain = (topic: string): string => `oracle:${topic}`;
 /** How many distilled chunks we keep — the rolling set the KB is re-distilled from. */
 const MAX_CHUNKS = 15;
 
+/** Cap on how many of a SINGLE learn() call's pieces may feed the rolling summary window
+ *  (#1378) — without this, one large multi-section payload (up to ~13 pieces from a 40KB
+ *  URL fetch, given PIECE_TARGET/PIECE_MAX below) could fill nearly the whole MAX_CHUNKS
+ *  budget by itself, evicting a topic's ENTIRE prior history (from unrelated earlier learns)
+ *  in one call. The retrievable detail tier (_source, unbounded) still gets every piece
+ *  regardless — only the bounded rolling SUMMARY sacrifices completeness here. */
+const MAX_CHUNKS_PER_LEARN = 5;
+
 /** Fetch cap for URL-sourced knowledge — enough for a long article, bounded for the model. */
 const FETCH_CAP = 40_000;
 
@@ -59,6 +70,58 @@ const DISTILL_INPUT_CAP = 24_000;
 
 /** How many chars we let the consolidated KB grow to (~8KB / ~1200 words). */
 const KB_CAP = 8_000;
+
+/** Target/max size (chars) of one PRE-distill piece (#1373) — a single learn's payload is split on
+ *  structure before distilling, so a multi-section body (clean `## ` headings, or just a long body
+ *  with none) becomes several independently-distilled, independently-retrievable chunks instead of
+ *  getting squashed into one ~500-word note regardless of how much material it actually held. */
+const PIECE_TARGET = 3_000;
+const PIECE_MAX = 4_000;
+
+/** Split raw material on structure before distilling (#1373). Splits on markdown `## ` headings
+ *  first (the common shape for structured knowledge — a book chapter, a multi-topic article); a
+ *  heading-free (or still-oversized) body falls back to a plain paragraph-aligned size-cap split so
+ *  no single piece rides one distill pass above PIECE_MAX. A short, unstructured payload — the
+ *  common case, a paragraph or short article — comes back as the single original piece, so a plain
+ *  learn stays exactly one distill call, one chunk (unchanged contract). */
+function splitPayload(content: string): string[] {
+	const byHeading = content
+		.split(/\n(?=##\s+\S)/g)
+		.map((p) => p.trim())
+		.filter(Boolean);
+	const pieces = byHeading.length > 1 ? byHeading : [content];
+	return pieces.flatMap((p) => sizeCapSplit(p));
+}
+
+/** Hard-split a piece on paragraph boundaries so no single piece exceeds ~PIECE_MAX chars — mirrors
+ *  _source.ts's chunkText idiom, sized for a pre-distill piece rather than a post-distill passage. */
+function sizeCapSplit(text: string, target = PIECE_TARGET, max = PIECE_MAX): string[] {
+	if (text.length <= max) return [text];
+	const paras = text
+		.split(/\n\s*\n/)
+		.map((p) => p.trim())
+		.filter(Boolean);
+	const out: string[] = [];
+	let cur = "";
+	const flush = () => {
+		if (cur.trim()) out.push(cur.trim());
+		cur = "";
+	};
+	for (let p of paras) {
+		while (p.length > max) {
+			flush();
+			let cut = p.lastIndexOf(" ", max);
+			if (cut < max * 0.6) cut = max; // no space to break on — fall back to a hard cut
+			out.push(p.slice(0, cut).trim());
+			p = p.slice(cut).trim();
+		}
+		if (cur && cur.length + p.length + 2 > max) flush();
+		cur = cur ? `${cur}\n\n${p}` : p;
+		if (cur.length >= target) flush();
+	}
+	flush();
+	return out.length ? out : [text];
+}
 
 /** Distill a single body of material into concise notes (trusted system role). Exported for the
  *  assimilation spine (_assimilate.ts, #1283), which reuses this exact distill instruction rather
@@ -167,54 +230,68 @@ export async function learnTopic(
 		if (!content) throw new Error(`Fetched no readable content from ${knowledge}.`);
 	}
 
-	// 2. Distill the material into a chunk. It is UNTRUSTED, so it rides the guarded
+	// 2. Split the material on structure (#1373) and distill EACH piece into its own chunk —
+	// a single call's payload no longer collapses to one chunk regardless of how much distinct
+	// material it held. Pieces are distilled sequentially so ordering (and provenance) stays
+	// stable across a re-learn of the same material. Each is UNTRUSTED, so it rides the guarded
 	// llm() as the user arg (fenced in <<<DATA>>>); the instruction stays in system.
-	const chunk = (await llm(env, DISTILL_SYSTEM, content.slice(0, DISTILL_INPUT_CAP), 800, "distill knowledge")).trim();
-	if (!chunk) throw new Error("oracle distilled an empty knowledge chunk — retry.");
+	const pieces = splitPayload(content);
+	const newChunks: string[] = [];
+	for (const piece of pieces) {
+		const distilledPiece = (await llm(env, DISTILL_SYSTEM, piece.slice(0, DISTILL_INPUT_CAP), 800, "distill knowledge")).trim();
+		if (!distilledPiece) continue;
+		newChunks.push(distilledPiece);
 
-	// 2b. Retrievable detail tier: split this learn's distilled note into passages and embed+store
-	// them under a per-topic `_source` domain (the same chunk+embed+kNN substrate `advise` uses) —
-	// unbounded, unlike the rolling KB_CAP summary, so a whole book's worth of notes stays
-	// individually retrievable instead of getting squashed into one blob. Best-effort: an embedding
-	// hiccup shouldn't fail the whole learn — the rolling KB summary below still gets the note.
-	try {
-		const passages = chunkText(chunk);
-		if (passages.length) {
-			const vecs = await embed(env, passages);
-			const source_id = newId();
-			const ts = Date.now();
-			for (let i = 0; i < passages.length; i++) {
-				const c: SourceChunk = {
-					id: newId(),
-					source_id,
-					domain: sourceDomain(topic),
-					authority: provenance ? "authoritative" : "contextual",
-					title: source,
-					text: passages[i],
-					embedding: vecs[i],
-					ts: ts + i,
-				};
-				await putChunk(env, c);
+		// 2b. Retrievable detail tier: split this piece's distilled note into passages and embed+store
+		// them under a per-topic `_source` domain (the same chunk+embed+kNN substrate `advise` uses) —
+		// unbounded, unlike the rolling KB_CAP summary, so a whole book's worth of notes stays
+		// individually retrievable instead of getting squashed into one blob. Best-effort: an embedding
+		// hiccup shouldn't fail the whole learn — the rolling KB summary below still gets the note.
+		try {
+			const passages = chunkText(distilledPiece);
+			if (passages.length) {
+				const vecs = await embed(env, passages);
+				const source_id = newId();
+				const ts = Date.now();
+				for (let i = 0; i < passages.length; i++) {
+					const c: SourceChunk = {
+						id: newId(),
+						source_id,
+						domain: sourceDomain(topic),
+						authority: provenance ? "authoritative" : "contextual",
+						title: source,
+						text: passages[i],
+						embedding: vecs[i],
+						ts: ts + i,
+					};
+					await putChunk(env, c);
+				}
 			}
+		} catch (e) {
+			console.log(`oracle: retrievable-detail embed skipped for topic=${topic}: ${errMsg(e)}`);
 		}
-	} catch (e) {
-		console.log(`oracle: retrievable-detail embed skipped for topic=${topic}: ${errMsg(e)}`);
 	}
+	if (!newChunks.length) throw new Error("oracle distilled an empty knowledge chunk — retry.");
 
-	// 3. Append + cap the rolling set, then RE-DISTILL one coherent KB from the whole
+	// 3. Cap how many of THIS call's pieces feed the rolling summary window (#1378) — keep
+	// the lead pieces (a document's opening sections tend to carry the most overview-level
+	// material) when a single call produced more than MAX_CHUNKS_PER_LEARN.
+	const summaryChunks = newChunks.length > MAX_CHUNKS_PER_LEARN ? newChunks.slice(0, MAX_CHUNKS_PER_LEARN) : newChunks;
+
+	// 4. Append + cap the rolling set, then RE-DISTILL one coherent KB from the whole
 	// set (also fenced — the chunks derive from untrusted material). This keeps the KB
 	// bounded and self-consistent as it accumulates.
 	const prior = await loadKb(env, topic);
-	const chunks = [...(prior?.chunks ?? []), chunk].slice(-MAX_CHUNKS);
-	const sources = [...(prior?.sources ?? []), source].slice(-MAX_CHUNKS);
+	const chunks = [...(prior?.chunks ?? []), ...summaryChunks].slice(-MAX_CHUNKS);
+	const sources = [...(prior?.sources ?? []), ...summaryChunks.map(() => source)].slice(-MAX_CHUNKS);
 	const combined = chunks.map((c, i) => `Note ${i + 1}:\n${c}`).join("\n\n");
 	// An empty consolidation is a transient model hiccup, not an empty KB — fall back to
 	// the raw notes rather than throwing away knowledge we just distilled.
 	// With a single note there's nothing to consolidate — the chunk is already the distilled
 	// output of the pass above, so re-distilling would re-word one note for a full extra
 	// generation call. Skip it; the whole set is redistilled as designed once a 2nd note lands.
-	// (Use `chunk`, not `combined`, to store the clean note without the "Note 1:" label.)
-	const distilled = chunks.length === 1 ? chunk : (await llm(env, REDISTILL_SYSTEM, combined, 1_800, "consolidate knowledge")).trim() || combined;
+	// (Use `chunks[0]`, not `combined`, to store the clean note without the "Note 1:" label.)
+	const distilled = chunks.length === 1 ? chunks[0] : (await llm(env, REDISTILL_SYSTEM, combined, 1_800, "consolidate knowledge")).trim() || combined;
 
 	// Preserve any existing whitelist marker across re-learns; a new `provenance` (re)stamps it.
 	const whitelist = provenance ?? prior?.whitelist;
@@ -231,7 +308,7 @@ export const oracle: Fn = {
 	cost: 3,
 	description:
 		"A learn-then-answer knowledge oracle backed by KV + Workers AI. Teach it `knowledge` and it DISTILLS the material into concise notes and remembers them (one namespaced knowledge base per `topic`); ask it a `problem` and it answers using its OWN (Workers-AI) knowledge PLUS the accumulated distilled knowledge base — preferring the KB where relevant. Pass both to learn first, then answer against the freshly-updated KB. " +
-		"`knowledge` may be raw text OR an http(s) URL (article, book, website, .txt or HTML page) — a URL is fetched (residential, capped ~40KB), reduced to readable prose for HTML, then distilled. Each learn appends a distilled chunk (last 15 kept in the rolling summary) and re-distills a single coherent KB, so the always-injected summary stays bounded and self-consistent. Every learn's distilled chunk is ALSO embedded into an unbounded per-topic retrieval store, so a whole book's worth of detail stays individually retrievable instead of getting squashed into one summary — answering retrieves the top passages for the `problem` and injects them alongside the summary. " +
+		"`knowledge` may be raw text OR an http(s) URL (article, book, website, .txt or HTML page) — a URL is fetched (residential, capped ~40KB), reduced to readable prose for HTML, split on structure (`## ` headings, else a size-cap split), then each piece distilled into its own chunk. Each learn appends one chunk PER PIECE (last 15 kept in the rolling summary) and re-distills a single coherent KB, so the always-injected summary stays bounded and self-consistent. Every piece's distilled chunk is ALSO embedded into an unbounded per-topic retrieval store, so a whole book's worth of detail stays individually retrievable instead of getting squashed into one summary — answering retrieves the top passages for the `problem` and injects them alongside the summary. " +
 		"`topic` (default \"default\") keeps separate bodies of knowledge. `action`: get (return the topic's distilled knowledge + sources + chunk count) | list (topic names) | status (a one-shot cross-topic dashboard: every topic's chunk_count + updated_at + whitelist flag + KB size, so you can see what's in the oracle without paging get per topic — PLUS `retrieval`: per-domain KV-bet observability for every retrieval store, each domain's chunk_count + blob_size_bytes + indexed_at and a near_ceiling flag as it approaches the ~4.5k-chunk KV cap, with `retrieval.alerts` listing any domain whose retained KV cosine core is nearing the cap — Vectorize is the read path now, cores shed after the parity soak) | forget (delete the topic) — manages instead of learn/answer. " +
 		"`action: ask` answers `problem` TOPIC-FREE across everything indexed: it embeds the question, kNN-ranks the vault/mail/files/contacts semantic indices plus every oracle KB plus the assimilation spine's scanned/mail/tossed-document chunks (never the phi-fenced medical stream) in parallel (each domain on its own time budget, reported ok|degraded|skipped — partial coverage never fails the call), keeps only passages at/above the similarity floor (ASK_FLOOR), and synthesizes a CITATION-CONSTRAINED answer grounded ONLY in what it retrieved — {status: answered|no_match, answer, citations[], domains} with per-domain indexed_at freshness; below-floor retrieval is an honest no_match, never a guess from model knowledge. Every ask logs its retrieval scores; `action: feedback` (`answer_id` + `verdict` up|down, optional `note`) records a thumbs verdict against that answer — the telemetry the embedding/floor choice is judged by. " +
 		"Learned material is untrusted and is fenced as data when distilled/answered. Stateful — never cached.",
@@ -288,12 +365,21 @@ export const oracle: Fn = {
 				names.sort();
 				// KV reads fan out in parallel (order-preserving) — a wide oracle stays ~one round-trip.
 				const loaded = await Promise.all(names.map((t) => loadKb(env, t)));
+				// Computed once and reused below for the top-level `retrieval` field too — sourceStats
+				// reads list() metadata only (no per-chunk GETs), so joining it per-topic here is free.
+				const retrieval = await retrievalStats(env);
+				const retrievalChunksByDomain = new Map(retrieval.domains.filter((d) => d.store === "chunk_keyspace").map((d) => [d.domain, d.chunk_count]));
 				const topics = names.map((t, i) => {
 					const kb = loaded[i];
 					const kb_bytes = kb ? kb.distilled.length : 0;
 					return {
 						topic: t,
+						// chunk_count: rolling distilled-NOTE count (bounded by MAX_CHUNKS, the summary
+						// tier). retrieval_chunk_count: the unbounded per-topic retrieval-store row count
+						// — the same set `forget`'s chunks_deleted removes (#1372); the two diverge
+						// whenever a note's text splits into >1 passage.
 						chunk_count: kb?.chunks.length ?? 0,
+						retrieval_chunk_count: retrievalChunksByDomain.get(sourceDomain(t)) ?? 0,
 						updated_at: kb?.updated_at ?? 0,
 						whitelisted: Boolean(kb?.whitelist),
 						kb_bytes,
@@ -311,18 +397,40 @@ export const oracle: Fn = {
 				// Backfill progress (#1315): the durable Vectorize-backfill cursor per domain
 				// (processed/remaining/done) + the live sux-corpus vectorCount, so 'what's in the
 				// oracle?' also answers 'is Vectorize fully populated yet?' — a pure read, no upserts.
-				return ok(oj({ action, count: topics.length, kb_cap: KB_CAP, topics, retrieval: await retrievalStats(env), corpus: await backfillStatus(env) }));
+				return ok(oj({ action, count: topics.length, kb_cap: KB_CAP, topics, retrieval, corpus: await backfillStatus(env) }));
 			}
 
 			if (action === "get") {
 				const kb = await loadKb(env, topic);
 				if (!kb) return ok(oj({ action, topic, found: false, note: `No knowledge base '${topic}'. Teach it by passing \`knowledge\`.` }));
-				return ok(oj({ action, topic, found: true, chunk_count: kb.chunks.length, sources: kb.sources, distilled: kb.distilled, updated_at: kb.updated_at, whitelisted: Boolean(kb.whitelist), ...(kb.whitelist ? { whitelist: kb.whitelist } : {}) }));
+				// chunk_count is the rolling distilled-NOTE count (bounded by MAX_CHUNKS, the KB
+				// summary tier); retrieval_chunk_count is the unbounded per-topic retrieval-store row
+				// count (the _source.ts passages `forget`'s chunks_deleted actually removes) — the two
+				// diverge whenever a note's text splits into >1 passage (chunkText), so both are reported
+				// under distinct names rather than conflated as one "chunk_count" (#1372).
+				const retrieval_chunk_count = (await listChunks(env, sourceDomain(topic))).length;
+				return ok(
+					oj({
+						action,
+						topic,
+						found: true,
+						chunk_count: kb.chunks.length,
+						retrieval_chunk_count,
+						sources: kb.sources,
+						distilled: kb.distilled,
+						updated_at: kb.updated_at,
+						whitelisted: Boolean(kb.whitelist),
+						...(kb.whitelist ? { whitelist: kb.whitelist } : {}),
+					}),
+				);
 			}
 
 			if (action === "forget") {
 				const existed = (await env.OAUTH_KV.get(`${KV_PREFIX}${topic}`)) != null;
 				await env.OAUTH_KV.delete(`${KV_PREFIX}${topic}`);
+				// chunks_deleted counts the SAME retrieval-store rows `get`/`status` report as
+				// retrieval_chunk_count — the number a caller who just checked those endpoints should
+				// see repeated here, not the (generally smaller) note-count `chunk_count` (#1372).
 				const chunks_deleted = await deleteDomain(env, sourceDomain(topic));
 				return ok(oj({ action, topic, forgotten: existed, chunks_deleted, note: existed ? "knowledge base removed" : "no such topic (nothing to delete)" }));
 			}
@@ -391,9 +499,12 @@ export const oracle: Fn = {
 				return ok(answer);
 			}
 
-			// Learn-only: report what was learned.
+			// Learn-only: report what was learned. retrieval_chunk_count is the same set
+			// `forget`'s chunks_deleted reports/removes (#1372) — reported alongside the
+			// note-count chunk_count so a caller never mistakes one for the other.
 			const learned = await learnTopic(env, topic, knowledge);
-			return ok(oj({ topic, learned: true, source: learned.source, chunk_count: learned.chunk_count, distilled_preview: learned.distilled.slice(0, 400) }));
+			const retrieval_chunk_count = (await listChunks(env, sourceDomain(topic))).length;
+			return ok(oj({ topic, learned: true, source: learned.source, chunk_count: learned.chunk_count, retrieval_chunk_count, distilled_preview: learned.distilled.slice(0, 400) }));
 		} catch (e) {
 			return failWith("upstream_error", `oracle failed: ${errMsg(e)}`);
 		}

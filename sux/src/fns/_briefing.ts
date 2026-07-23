@@ -19,6 +19,26 @@
 //     only — no mail_send, no EmailSubmission, no moveMessages/delete. Every read is
 //     read-only; the digest append is git-reversible; a draft sits in Drafts (edit/delete,
 //     never dispatched). No irreversible act is representable in this module.
+//
+// H1 (#1368) — the blocker that kept this feature dark, defined here so it's never
+// undefined again: untrusted mail content (subjects/previews/bodies, attacker-controlled)
+// reaching llm() PROMPTS could smuggle instructions ("ignore the above, reply X") into
+// either the trusted system role or an unfenced user role, hijacking the synthesis. DISPOSITION:
+// verified mitigated, not open. Every mail-derived string in this module reaches the model
+// through exactly two call sites — deps.compose (mail summary + full digest) and
+// deps.composeReply (reply drafts) — and BOTH are wired to ai.ts's llm(), which (a) never
+// interpolates caller content into the system role (the system string here is always a
+// static constant — briefingSystem()/MAIL_SUMMARY_SYSTEM/REPLY_SYSTEM take no mail input)
+// and (b) wraps the `user` role's material in the <<<DATA>>>...<<</DATA>>> fence
+// (wrapUntrusted) with any embedded fence-breaking sentinel defused first (defuseMarkers),
+// so a message body containing the literal string "<<</DATA>>>" can't prematurely close the
+// real fence. See briefing.test.ts's "H1 —" suite for the automated proof (asserts the
+// system role never carries mail content and the fence count stays exactly one open/one
+// close even when the material contains an injection attempt). ACCEPTANCE for arming
+// BRIEFING_ENABLED in suggest-only mode (BRIEFING_STAGE_DRAFTS unset — read-only:
+// summarize + nudge, zero mail_draft/send calls) is therefore CLEARED on the H1 axis; arming
+// remains Colin's own secret write (`wrangler secret put BRIEFING_ENABLED`), not this
+// module's decision.
 import { hasAI, llm } from "../ai";
 import type { RtEnv } from "../registry";
 import { ledger } from "../ledger";

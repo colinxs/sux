@@ -9,13 +9,20 @@ vi.mock("./obsidian", async (importOriginal) => ({
 	obsidian: { run: vi.fn(async () => ({ content: [{ type: "text", text: "{}" }] })) },
 }));
 
+// #1371 — deleteSource/deleteDomain now also purge the unified Vectorize index. Mock ONLY
+// deleteCorpusIds (its own suite covers it) so a forget's ids can be asserted regardless of
+// whether a VECTORIZE binding is present in these tests.
+vi.mock("./_vectorize", async (importOriginal) => ({ ...(await importOriginal<object>()), deleteCorpusIds: vi.fn(async () => {}) }));
+
 import { DATA_CLOSE, DATA_OPEN } from "../ai";
 import { maybeDecompressString } from "./_gzip";
 import { listChunks, putChunk } from "./_source";
+import { deleteCorpusIds } from "./_vectorize";
 import { obsidian } from "./obsidian";
 import { oracle } from "./oracle";
 
 const obs = obsidian.run as unknown as ReturnType<typeof vi.fn>;
+const deleteIds = deleteCorpusIds as unknown as ReturnType<typeof vi.fn>;
 
 // We exercise the REAL guarded llm() (from ../ai) and the REAL fetchText/smartFetch
 // direct path — only env.AI.run, a Map-backed OAUTH_KV, and globalThis.fetch are
@@ -169,6 +176,69 @@ describe("oracle — learn", () => {
 		expect(stored.chunks[0]).toBe("chunk 2"); // 0..1 dropped
 		expect(stored.chunks[14]).toBe("chunk 16");
 		expect(stored.sources).toHaveLength(15);
+	});
+
+	it("a multi-section payload with clean `## ` headings splits into one chunk per section (#1373)", async () => {
+		const { env, kv, run } = makeEnv();
+		const section = (n: number) => `## Section ${n}\n${"x".repeat(700)}\nDetail about section ${n}.`;
+		const knowledge = [1, 2, 3, 4, 5].map(section).join("\n\n");
+
+		const r = await oracle.run(env, { knowledge, topic: "book" });
+		expect(r.isError).toBeFalsy();
+		const j = JSON.parse(r.content[0].text);
+		expect(j.chunk_count).toBe(5);
+
+		// Five independent distill passes (one per section) plus one redistill across the set.
+		expect(textCallCount(run)).toBe(6);
+		for (let i = 0; i < 5; i++) {
+			const { user } = messages(run, i);
+			expect(user).toContain(`Section ${i + 1}`);
+		}
+
+		const stored = JSON.parse(await maybeDecompressString(kv.store.get("sux:oracle:book")!));
+		expect(stored.chunks).toHaveLength(5);
+
+		// Each section's distilled note landed in the per-topic retrieval store.
+		const chunks = await listChunks(env, "oracle:book");
+		expect(chunks).toHaveLength(5);
+	});
+
+	it("a long, heading-free payload also splits on size — one call isn't one chunk regardless of length (#1373)", async () => {
+		const { env } = makeEnv();
+		const para = (n: number) => `Paragraph ${n} covers distinct material. `.repeat(80);
+		const knowledge = [1, 2, 3].map(para).join("\n\n");
+
+		const r = await oracle.run(env, { knowledge, topic: "longbook" });
+		const j = JSON.parse(r.content[0].text);
+		expect(j.chunk_count).toBeGreaterThan(1);
+	});
+
+	it("a short, unstructured payload stays exactly one chunk (unchanged contract)", async () => {
+		const { env } = makeEnv();
+		const r = await oracle.run(env, { knowledge: "A single short paragraph with no structure at all.", topic: "short" });
+		expect(JSON.parse(r.content[0].text).chunk_count).toBe(1);
+	});
+
+	it("a single large multi-section learn call doesn't evict a topic's entire prior history (#1378)", async () => {
+		const { env, kv, run } = makeEnv();
+		// 8 earlier, unrelated learns — each a single distinct chunk.
+		for (let i = 0; i < 8; i++) {
+			run.mockImplementationOnce(async () => ({ response: `chunk ${i}` }));
+			await oracle.run(env, { knowledge: `material ${i}`, topic: "crowd" });
+		}
+
+		// One large multi-section payload that would, if uncapped, produce more new pieces
+		// (one per section) than fit alongside the 8 prior chunks within MAX_CHUNKS=15 —
+		// wiping out the earlier, unrelated learns' history in a single call.
+		const section = (n: number) => `## Section ${n}\n${"x".repeat(700)}\nDetail about section ${n}.`;
+		const knowledge = [1, 2, 3, 4, 5, 6, 7, 8].map(section).join("\n\n");
+		await oracle.run(env, { knowledge, topic: "crowd" });
+
+		const stored = JSON.parse(await maybeDecompressString(kv.store.get("sux:oracle:crowd")!));
+		// All 8 prior chunks survive — the big call is capped at MAX_CHUNKS_PER_LEARN=5 new
+		// pieces (8 + 5 = 13 <= 15), so nothing needed to be evicted.
+		expect(stored.chunks.slice(0, 8)).toEqual([0, 1, 2, 3, 4, 5, 6, 7].map((i) => `chunk ${i}`));
+		expect(stored.chunks).toHaveLength(13);
 	});
 
 	it("learn-from-URL fetches the page, reduces HTML to prose, then distills", async () => {
@@ -364,6 +434,38 @@ describe("oracle — get / list / forget", () => {
 		const r = await oracle.run(env, { action: "forget", topic: "bio" });
 		expect(JSON.parse(r.content[0].text).chunks_deleted).toBeGreaterThan(0);
 		expect([...kv.store.keys()].some(chunkKey)).toBe(false);
+	});
+
+	it("learn -> status -> forget report the SAME retrieval_chunk_count/chunks_deleted across a full lifecycle (#1372)", async () => {
+		const { env } = makeEnv();
+		await oracle.run(env, { knowledge: "some material worth remembering in detail", topic: "bio" });
+
+		const learnAgain = JSON.parse((await oracle.run(env, { knowledge: "more material about bio", topic: "bio" })).content[0].text);
+		const got = JSON.parse((await oracle.run(env, { action: "get", topic: "bio" })).content[0].text);
+		const status = JSON.parse((await oracle.run(env, { action: "status" })).content[0].text);
+		const statusTopic = status.topics.find((t: any) => t.topic === "bio");
+
+		// get/status/learn all agree on the retrieval-store row count...
+		expect(got.retrieval_chunk_count).toBe(learnAgain.retrieval_chunk_count);
+		expect(statusTopic.retrieval_chunk_count).toBe(learnAgain.retrieval_chunk_count);
+		expect(got.retrieval_chunk_count).toBeGreaterThan(0);
+
+		// ...and forget deletes exactly that many, not the (possibly different) note chunk_count.
+		const forgot = JSON.parse((await oracle.run(env, { action: "forget", topic: "bio" })).content[0].text);
+		expect(forgot.chunks_deleted).toBe(got.retrieval_chunk_count);
+	});
+
+	it("forget also purges the topic's mirror vectors from the unified Vectorize index (#1371)", async () => {
+		const { env } = makeEnv();
+		await oracle.run(env, { knowledge: "some material worth remembering in detail", topic: "bio" });
+		deleteIds.mockClear();
+
+		await oracle.run(env, { action: "forget", topic: "bio" });
+		expect(deleteIds).toHaveBeenCalledTimes(1);
+		const [, ids] = deleteIds.mock.calls[0] as [unknown, string[]];
+		expect(Array.isArray(ids)).toBe(true);
+		expect(ids.length).toBeGreaterThan(0);
+		for (const id of ids) expect(typeof id).toBe("string");
 	});
 
 	it("does not see or delete an advise domain's chunks when a topic shares its name (#1242)", async () => {

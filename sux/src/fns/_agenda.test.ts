@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
+
+vi.mock("./_notify", () => ({ notify: vi.fn(async () => true) }));
+
 import { composeDigest, type AgendaDeps, type Drop, detectCrossSemanticDrops, detectDocumentExpiryDrops, detectDrops, detectFollowUpDrops, detectKnowledgeDrops, detectMonarchDrops, detectMyChartDrops, detectMychartAllergyGapDrops, detectMychartConflictDrops, detectPortfolioDrops, detectRelationshipDrops, detectSavingsRateDrop, detectStudyReviewDrops, detectTextDrops, detectWatchDrops, computeSavingsRate, type EventRef, mailRelationshipThreads, type MailRef, type RelationshipBaseline, type TextThreadRef, rankDropsLearned, runAgenda, detectTaskDeadlineDrops, type TaskRef } from "./_agenda";
 import { listProposals } from "../proposals";
 import { recordOutcome } from "./_learning";
 import { readInferSignals } from "./_infer";
+import { notify as mockedNotify } from "./_notify";
 
 function kvStub() {
 	const map = new Map<string, string>();
@@ -717,6 +721,30 @@ describe("agenda — loop", () => {
 		expect(d.digestAppend).toHaveBeenCalledTimes(1);
 		// the proposals are really recorded in the W1 queue
 		expect((await listProposals(e)).length).toBe(7);
+	});
+
+	it("push escalation (#1367): notify() fires when a 'today'-urgency drop is delivered (rx1/pay1 are 'today')", async () => {
+		const notifyMock = mockedNotify as unknown as ReturnType<typeof vi.fn>;
+		notifyMock.mockClear();
+		const e = env();
+		await runAgenda(e, {}, deps());
+		expect(notifyMock).toHaveBeenCalledTimes(1);
+		const [, topic, , , priority] = notifyMock.mock.calls[0];
+		expect(topic).toBe("agenda");
+		expect(priority).toBe("high");
+	});
+
+	it("push escalation: notify() is NOT called on a dry run, or when nothing is 'today'-urgency", async () => {
+		const notifyMock = mockedNotify as unknown as ReturnType<typeof vi.fn>;
+		notifyMock.mockClear();
+		const e = env();
+		await runAgenda(e, { dry_run: true }, deps());
+		expect(notifyMock).not.toHaveBeenCalled();
+
+		notifyMock.mockClear();
+		// A mail stream with no "today"-urgency kind (drop the rx/payment senders).
+		await runAgenda(e, {}, deps({ mailSearch: vi.fn(async () => MAIL.filter((m) => m.id !== "rx1" && m.id !== "pay1")) }));
+		expect(notifyMock).not.toHaveBeenCalled();
 	});
 
 	it("emails the digest to self only when AGENDA_EMAIL is armed", async () => {

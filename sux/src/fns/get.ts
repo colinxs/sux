@@ -5,7 +5,7 @@ import { kagiTool } from "../kagi";
 import type { Route } from "../proxy";
 import { type Fn, fail, ok } from "../registry";
 import type { RtEnv, ToolResult } from "../registry";
-import { deliverBytes, fromB64, inlineB64, loadBytes, putBlob, toB64 } from "./_util";
+import { deliverBytes, fromB64, inlineB64, loadBytes, putBlob, storeRefUuid, toB64 } from "./_util";
 
 export type Kind = "pdf" | "document" | "ebook" | "code" | "docs" | "artifact" | "reference" | "any";
 
@@ -198,7 +198,26 @@ async function loadBytesFromUrl(env: RtEnv, url: string): Promise<{ bytes: Uint8
 }
 
 export async function acquireFromUrl(env: RtEnv, url: string, as: "pdf" | "archive"): Promise<{ bytes: Uint8Array; contentType: string }> {
+	// A sux `/s/<uuid>` CAS ref (what `put`/`store`/`get{store:"r2"}` themselves return) is
+	// already a finished file, not a webpage to print — handing it to render's headless-Chromium
+	// page.pdf() has nothing real to render and comes back a near-empty PDF husk (#1380). Read it
+	// straight from KV→R2 instead, same short-circuit loadBytes already gives every other caller.
+	if (storeRefUuid(url)) return loadBytesFromUrl(env, url);
+
 	if (as === "pdf") {
+		// A non-sux URL can also already serve a raw PDF (a publisher's direct link, a CDN,
+		// ...) — sniff it via a real fetch before committing to render's headless-Chromium
+		// print pass, which has nothing to add over the bytes already on the wire and can
+		// come back an empty husk for the same reasons a store ref did (#1385). Fall through
+		// to render on any sniff failure (network error, non-PDF content) — the extra fetch
+		// only costs the common HTML-page case one wasted round trip.
+		try {
+			const sniffed = await loadBytesFromUrl(env, url);
+			if (isPdfMagic(sniffed.bytes)) return sniffed;
+		} catch {
+			// not fatal — render below gets its own shot at the URL
+		}
+
 		const renderFn = await findFn("render");
 		const r = await renderFn.run(env, { url, as: "pdf", delivery: "base64" });
 		if (r?.isError) throw new Error(r.content?.[0]?.text ?? "render failed");
