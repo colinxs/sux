@@ -209,6 +209,34 @@ describe("assimilate — phi fence (#613)", () => {
 		const docChunks = await listChunks(env, "assim:doc");
 		for (const c of docChunks) expect(c.title).toBe("toss:plain");
 	});
+
+	it("a phi-tagged image refuses Mistral's byte-OCR path — never calls ocrBytes, never mints a public handle", async () => {
+		const { env, r2 } = makeEnv();
+		await expect(
+			assimilate(env, { source: "mychart:scan.png", bytes: new Uint8Array([9, 9, 9]), kind: "image", domain: "medical", contentType: "image/png" }),
+		).rejects.toThrow(/refusing to OCR.*public.*handle/is);
+		expect(ocrMock.ocrBytes).not.toHaveBeenCalled();
+		expect([...r2.objects.keys()].filter((k) => k.startsWith("cas/"))).toHaveLength(0);
+	});
+
+	it("a phi-tagged pdf whose bytes still need OCR (no text layer) refuses the same byte-OCR path", async () => {
+		const { env, r2 } = makeEnv();
+		const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 1, 2, 3]); // %PDF…, below the oversize threshold
+		await expect(assimilate(env, { source: "mychart:lab-report.pdf", bytes, kind: "pdf", domain: "medical" })).rejects.toThrow(
+			/refusing to OCR.*public.*handle/is,
+		);
+		expect(ocrMock.ocrDocument).not.toHaveBeenCalled();
+		expect([...r2.objects.keys()].filter((k) => k.startsWith("cas/"))).toHaveLength(0);
+	});
+
+	it("a phi-tagged pdf with a pre-supplied `text` (no OCR needed) still assimilates normally — the fence only blocks the byte-OCR path", async () => {
+		const { env } = makeEnv();
+		const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 1, 2, 3]);
+		const r = await assimilate(env, { source: "mychart:already-transcribed.pdf", bytes, text: "Creatinine 1.1 mg/dL.", kind: "text", domain: "medical" });
+		expect(r.status).toBe("assimilated");
+		expect(ocrMock.ocrBytes).not.toHaveBeenCalled();
+		expect(ocrMock.ocrDocument).not.toHaveBeenCalled();
+	});
 });
 
 describe("assimilate — one leg degrading never corrupts the others", () => {
@@ -282,16 +310,17 @@ describe("assimilate — book-scale auto-route", () => {
 		expect(env.OP_WORKFLOW.create).not.toHaveBeenCalled();
 	});
 
-	it("PHI never routes durable — oversize phi input processes inline", async () => {
-		const { env } = makeEnv();
+	it("PHI never routes durable, and an oversize phi input that still needs OCR has no safe route — refuses rather than silently transcribing (#1362)", async () => {
+		const { env, r2 } = makeEnv();
 		env.OP_WORKFLOW = { create: vi.fn(async () => ({ id: "wf-never" })) };
-		const r = await assimilate(env, { source: "records.pdf", bytes: bigPdf(), kind: "pdf", domain: "medical" });
-		expect(r.status).toBe("assimilated");
+		await expect(assimilate(env, { source: "records.pdf", bytes: bigPdf(), kind: "pdf", domain: "medical" })).rejects.toThrow(
+			/refusing to OCR.*public.*handle/is,
+		);
 		expect(env.OP_WORKFLOW.create).not.toHaveBeenCalled();
-		expect(ocrMock.ocrDocument).toHaveBeenCalledOnce();
-		if (r.status !== "assimilated") return;
-		expect(r.domain).toBe("phi:medical");
-		expect(r.archived.r2_key).toMatch(/^phi\//);
+		// Refused BEFORE Mistral OCR ever ran — no bytes were handed to the byte-OCR path,
+		// and nothing was archived (the call throws before the archive/index legs run).
+		expect(ocrMock.ocrDocument).not.toHaveBeenCalled();
+		expect([...r2.objects.keys()].filter((k) => k.startsWith("cas/"))).toHaveLength(0);
 	});
 
 	it("no OP_WORKFLOW binding: oversize input degrades to inline instead of failing", async () => {

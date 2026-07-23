@@ -46,8 +46,9 @@ import { docBytesToMarkdown, resolveDocSource } from "./study";
 // rides in as a one-entry zip (exactly the input shape that op's `unzip` head expects).
 // Routing is automatic (byte threshold), never caller-picked. PHI NEVER routes durable:
 // assimilate-pdfs fans out to the r2+vault sinks and pauses on a human `ask`, none of
-// which is phi-fenced — oversize PHI processes inline instead (the distill input cap
-// bounds the model cost regardless).
+// which is phi-fenced. An oversize PHI input with an already-resolved text layer still
+// assimilates inline; one that still needs OCR has NO safe route (#1362/#613 — Mistral's
+// byte-OCR path mints a public handle) and is refused rather than silently transcribed.
 //
 // All ingested material is UNTRUSTED (a scanned letter/email can embed "ignore your
 // instructions…") — it only ever rides the guarded llm() as fenced data.
@@ -125,13 +126,31 @@ async function routeDurable(env: RtEnv, name: string, bytes: Uint8Array): Promis
 	};
 }
 
+/** #613's PHI-never-public-handle fence, applied to the extract leg (#1362): both
+ *  _ocr.ts's ocrBytes (image) and study.ts's docBytesToMarkdown (pdf bytes, via the same
+ *  engine) content-address the bytes into R2 via putBlob FIRST — minting a public /s/<uuid>
+ *  handle — before handing that URL to Mistral for third-party OCR. archiveLeg already keeps
+ *  phi bytes off putBlob (routes through putPhi instead); this is the same fence for the
+ *  extract leg, which archiveLeg's fence doesn't cover. Refuse rather than silently let phi
+ *  material ride the one path that still reaches putBlob. */
+function phiMistralByteFenceError(name: string): Error {
+	return new Error(
+		`assimilate: refusing to OCR '${name}' — phi-tagged material cannot ride Mistral's byte-OCR path ` +
+			"(it content-addresses the bytes into R2 via a public /s/ handle before sending that URL to " +
+			"Mistral, violating #613's PHI-never-public-handle fence). Provide pre-extracted `text` instead.",
+	);
+}
+
 /** EXTRACT: resolve the input to prose. Text passes through; a PDF/URL/Dropbox source rides
  *  study.ts's resolution + Mistral OCR; an image rides _ocr.ts's Mistral OCR. Book-scale PDF bytes are
  *  detected here — after resolution, before the expensive transcription — and reported for
- *  the durable route. Throws (caller wraps) when nothing extractable is found. */
+ *  the durable route. `phi` refuses the Mistral byte-OCR path entirely (#1362/#613) — an
+ *  already-textual source (no bytes-OCR needed) is unaffected. Throws (caller wraps) when
+ *  nothing extractable is found. */
 async function extractLeg(
 	env: RtEnv,
 	input: AssimilateInput,
+	phi: boolean,
 ): Promise<{ text?: string; bytes?: Uint8Array; name: string; oversize?: boolean }> {
 	const fallbackName = input.source.split("/").pop() || "document";
 	if (input.kind === "text" || typeof input.text === "string") {
@@ -141,6 +160,7 @@ async function extractLeg(
 	}
 	if (input.kind === "image") {
 		if (!input.bytes?.length) throw new Error("assimilate: kind 'image' needs `bytes`.");
+		if (phi) throw phiMistralByteFenceError(fallbackName);
 		let text: string;
 		try {
 			text = (await ocrBytes(env, input.bytes, { image: true })).trim();
@@ -156,11 +176,12 @@ async function extractLeg(
 	if (!bytes?.length) {
 		const resolved = await resolveDocSource(env, input.source);
 		name = resolved.name;
-		if (typeof resolved.text === "string") return { text: resolved.text, name }; // already textual
+		if (typeof resolved.text === "string") return { text: resolved.text, name }; // already textual — never touches OCR
 		bytes = resolved.bytes;
 	}
 	if (!bytes?.length) throw new Error(`assimilate: could not resolve bytes for '${input.source}'.`);
-	if (bytes.length > ASSIMILATE_DURABLE_BYTES) return { bytes, name, oversize: true };
+	if (bytes.length > ASSIMILATE_DURABLE_BYTES) return { bytes, name, oversize: true }; // caller decides the route
+	if (phi) throw phiMistralByteFenceError(name);
 	return { text: await docBytesToMarkdown(env, name, bytes), bytes, name };
 }
 
@@ -265,12 +286,15 @@ export async function assimilate(env: RtEnv, input: AssimilateInput): Promise<As
 	const contentType = input.contentType ?? (input.kind === "pdf" ? "application/pdf" : input.kind === "image" ? "application/octet-stream" : "text/plain");
 
 	// 1. extract (throws on failure — nothing to protect yet)
-	const ex = await extractLeg(env, input);
+	const ex = await extractLeg(env, input, phi);
 	if (ex.oversize) {
 		if (!phi && env.OP_WORKFLOW) return routeDurable(env, ex.name, ex.bytes!);
-		// PHI never rides the durable path (r2+vault sinks + ask gate aren't phi-fenced);
-		// without the Workflow binding there's no durable runtime to route to. Either way:
-		// transcribe inline — the distill cap bounds the model pass regardless.
+		// PHI never rides the durable path (r2+vault sinks + ask gate aren't phi-fenced) — but
+		// inline transcription needs Mistral's byte-OCR path too, which is exactly what #1362/
+		// #613's fence forbids for phi. There's no safe route for an oversize phi input that
+		// still needs OCR (no text layer already resolved) until a private OCR transport
+		// exists; refuse rather than silently fall through to the same public-handle leak.
+		if (phi) throw phiMistralByteFenceError(ex.name);
 		ex.text = await docBytesToMarkdown(env, ex.name, ex.bytes!);
 	}
 
