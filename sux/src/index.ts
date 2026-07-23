@@ -78,6 +78,22 @@ const MAX_ARG_BYTES = 256_000;
 // fns want it; no dispatch change needed.
 const TASK_CAPABLE_TOOLS = new Set(["pipe", "batch", "render", "crawl", "batch_fetch", "shop", "onboard", "recall", "advise", "life_wiki", "consolidate", "mychart"]);
 
+// MCP protocol version negotiation (spec: "If the server supports the requested
+// protocol version, it MUST respond with the same version. Otherwise, the server
+// MUST respond with another protocol version it supports."). Newest first — this
+// is also the default handed back when the client omits protocolVersion entirely.
+// Every capability sux advertises here (tasks, extensions) is additive: a client
+// negotiated onto an older revision just never invokes them. Some MCP clients
+// (confirmed: Raycast as of 1.104, which maps known revisions to internal
+// codenames like "jun2025" for 2025-06-18) don't yet recognize the newest
+// revision and reject a hardcoded response instead of falling back — echoing
+// back whatever the client asked for (when we support it) fixes that class of
+// client entirely instead of chasing it client-by-client.
+const SUPPORTED_MCP_PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"] as const;
+function negotiateProtocolVersion(requested: unknown): string {
+	return typeof requested === "string" && (SUPPORTED_MCP_PROTOCOL_VERSIONS as readonly string[]).includes(requested) ? requested : SUPPORTED_MCP_PROTOCOL_VERSIONS[0];
+}
+
 // Race a fn.run against a hard deadline so no fn can hang the isolate. On timeout
 // we RESOLVE (not reject) with a clean isError ToolResult and abandon the run
 // promise (it may finish in the background; its value is dropped). The timer is
@@ -168,7 +184,7 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 			jsonrpc: "2.0",
 			id,
 			result: {
-				protocolVersion: "2025-06-18",
+				protocolVersion: negotiateProtocolVersion(rpc?.params?.protocolVersion),
 				capabilities: {
 					tools: { listChanged: false },
 					prompts: { listChanged: false },
