@@ -226,10 +226,22 @@ Recorded because they are the part most easily lost, and several are seductive.
 - **The seam is `Fn`, not suxlib's `resolveLeaf`** — sux never calls it (zero grep hits);
   `LEAF_REGISTRY` governs 13 local byte-transforms. Three of four candidate architectures attached one
   layer too low.
-- **`llm()` is NOT the egress chokepoint.** `_ocr.ts:19` calls `api.mistral.ai/v1/ocr` **directly**, and
-  `ai.ts:108` falls back to `api.openai.com` via bare `fetch` on any Workers-AI failure — an
-  execution-time **operator substitution with no BAA check, invisible to `auditEgress`**. The
-  PHI-densest path bypasses the gate. **Fix before widening MyChart intake.**
+- **`llm()` is NOT the egress chokepoint.** `ai.ts:108` fell back to `api.openai.com` via bare `fetch`
+  on any Workers-AI failure — an execution-time **operator substitution invisible to `auditEgress`**,
+  and the only path handing user prompt content to a *third-party* operator (Workers AI is first-party
+  Cloudflare). **Fixed in [#1454](https://github.com/SuxOS/sux/pull/1454)**: now `smartFetch`, with
+  `api.openai.com` added to `DIRECT_HOST_RE` so the route is unchanged, plus a regression guard
+  asserting bare `fetch` stays untouched. **`smartFetch` (proxy.ts) is the real egress seam** — the
+  fabric's egress rung should attach there, not at `llm()`.
+  - ⚠️ **The `_ocr.ts` half of this finding was false and is retracted.** `_ocr.ts:77` calls
+    `smartFetch`; line 19 is only the `MISTRAL_OCR_URL` **constant**, and an agent inferred a call
+    from the constant's presence. Mistral OCR has always been audited. Generalize the lesson: *an
+    agent citing a string/URL constant's line as a "call site" is a recurring false-positive shape.*
+  - Still open, lower severity: three bare-`fetch` sites that carry **no user content** —
+    `utils.ts:62` and `grafana.ts:247` (GitHub), `index.ts:602` (Kroger OAuth).
+  - Genuinely unexamined, different axis: OCR hands Mistral a **public `/s/<uuid>` CAS handle**
+    (`putBlob`), so a PHI document is briefly fetchable at an unauthenticated URL. Not an audit gap —
+    an at-rest/exposure question, and it interacts with the "never cache `/s/<uuid>`" rule in §10.
 - **`staged()` is not a chokepoint either** — `stage.ts:52-56` deliberately excludes
   `ingest`/`dropbox`/`kv_*`/`obsidian`.
 - **Facet derivation was anti-conservative** — `registry.ts:817` `WRITE_DESTRUCTIVE` has
@@ -290,8 +302,15 @@ Recorded because they are the part most easily lost, and several are seductive.
 
 ## 12. Open
 
-- The **`llm()`/`_ocr.ts` egress hole** (§9) is the highest-priority correctness fix and gates widening
-  PHI intake.
+- ~~The **`llm()`/`_ocr.ts` egress hole** (§9) is the highest-priority correctness fix and gates widening
+  PHI intake.~~ **Closed** by [#1454](https://github.com/SuxOS/sux/pull/1454) — and it was half a
+  phantom (see §9). What it settles for this design: **`smartFetch` is the egress seam**, so the
+  policy spine's egress rung attaches there.
+- **The `/s/<uuid>` handle is the live PHI-exposure question**, and it is not the one that was being
+  asked. OCR publishes a document at an unauthenticated public URL so Mistral can fetch it. §10
+  already forbids *caching* that path (a revocable capability handle must not outlive revocation);
+  what is unanalyzed is the exposure window itself, and whether a signed/expiring handle or a
+  push-bytes upload should replace it for `phi`-tagged content.
 - MCP traffic attribution must be re-grouped **by authenticated principal**, not user-agent — the
   `claude@` bot and `m@` human present the same UA, so the earlier "one client" inference is unsupported.
   (The 405 fix stands regardless; only the cost/causal story is unresolved.)
