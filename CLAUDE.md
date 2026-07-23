@@ -437,6 +437,17 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   re-run on a clean checkout before assuming it's pre-existing-and-ignorable — if it's a date
   bomb like this one, it blocks every PR today and is worth fixing inline rather than reporting
   as unrelated noise.
+  **The same defect exists at SECOND resolution and is nastier, because it only reddens ~1 run
+  in N instead of all of them**: a test that recomputes an expected epoch-second from its own
+  `Date.now()` and compares it for exact equality against a value the code stamped from a
+  DIFFERENT `Date.now()` disagrees by exactly 1 whenever the wall clock crosses a second boundary
+  between the two reads. Confirmed on `store.test.ts`'s sub-60s `ttl_seconds` test vs.
+  `_util/store-ref.ts`'s `putBlob` (`expected 1784842528 to be 1784842529`, hit on an unrelated
+  PR; passes on a standalone re-run, which is the tell). Fix by FREEZING the clock rather than
+  loosening the assertion — `vi.useFakeTimers({ toFake: ["Date"] })` in a try/finally with
+  `vi.useRealTimers()`, deliberately faking `Date` ONLY so `setTimeout` stays real and no awaited
+  timer can hang (a blanket `vi.useFakeTimers()` fakes both). A tolerance (`±1`) merely hides the
+  race; a frozen clock makes the assertion exact and deterministic (#1461).
 - **`_capped_kv_log.ts`'s `update(mutate)` (added for #1090) skips its `save()` call when
   `mutate` returns the EXACT SAME array reference it was given — that's the deliberate no-op
   signal for "nothing changed, don't write." A `mutate` that edits the array IN PLACE and
