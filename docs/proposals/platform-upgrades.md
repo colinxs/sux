@@ -1,12 +1,31 @@
 ---
 title: Platform upgrades
-status: parked
+status: superseded
 cluster: infrastructure
 type: proposal
 summary: "Five infra upgrades as one substrate — notify/diff/job (scheduler + cron drain), mac-LLM tier, browse, Cloudflare Workflows, entity resolution."
-tags: [sux, infrastructure, parked]
+tags: [sux, infrastructure, parked, superseded]
 updated: 2026-07-09
+superseded: "2026-07-23, 1.4 brainstorm reconciliation — see pointer below"
 ---
+
+> [!warning] SUPERSEDED (2026-07-23) — three of five pillars overtaken, don't revive
+> Reconciled against Colin's 2026-07-23 "1.4 synthesis" brainstorm (unified content-router +
+> synthesis engine + three-tier compute topology; session-memory record, not an in-repo doc):
+> - **D4 mac-LLM tier** (warm Ollama on the render Mac, behind `llm()`) is doubly dead — the
+>   render Mac node was deleted (sux#742), and 1.4 assigns always-on heavy compute to
+>   metal/elk-newt (a three-tier topology: edge/metal/Mac-on-open, Mac is a local-data
+>   scheduler only) with a frontier-model **multi-model relay in sux** occupying the
+>   "think harder" slot instead of a local model.
+> - **Notify/diff/job scheduler** sections describe a design that was built differently in
+>   practice: the op-engine (`OP_WORKFLOW`), `cron-heartbeat.ts`, and the propose→gated-act
+>   kernel own this territory now; the watch/routine/timer/milestone taxonomy (2026-07-23)
+>   owns standing schedules.
+> - **D8** retrofits onto teach/ask, itself already `status: superseded` (see that doc).
+>
+> **Still live, not superseded:** the `browse` DSL section and the `_entity.ts` /
+> person-entity-extraction sections — those designs survive independent of the above.
+> Read this doc for historical context on the *reasoning*, not as current architecture.
 
 # Platform upgrades — the infrastructure under the feature verbs (FINAL)
 
