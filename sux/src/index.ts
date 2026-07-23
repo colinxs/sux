@@ -991,11 +991,68 @@ async function inferNudgeTick(env: RtEnv): Promise<unknown> {
 	return { drift, anomaly, ...(error ? { error } : {}) };
 }
 
+// Start one durable USCDI pull per CONNECTED MyChart org (#1178's `mychart-pull` op).
+// Until this existed the daily cron only kept the OAuth grant warm (`mychart_token`) and
+// nothing ever captured clinical data — every org stayed permanently "never pulled", which
+// also meant summarizeMyChart (the agenda's MyChart cue) could never fire.
+//
+// Each org gets its OWN workflow instance rather than one fanning instance: a pull is
+// dozens of serial paginated FHIR fetches, so per-org instances keep one slow/failing org
+// off another's subrequest budget, and an org that 401s can't sink the rest of the batch.
+//
+// `since` is a bounded re-pull, not a true cursor: there is no pull-to-pull timestamp
+// anywhere (hasEverPulled is an R2 existence check, not a clock), so rather than invent a
+// ledger this asks for a generous overlap window once an org has data and a full history
+// on first contact. The overlap absorbs a stretch of failed ticks, and re-fetching a
+// resource is harmless — the R2 write is keyed by resource id, so a repeat overwrites in
+// place. Orgs that ignore `_lastUpdated` simply return everything, which is also fine.
+//
+// Returns a per-org report; `error` is set only when EVERY connected org failed to start,
+// so one bad org degrades to a note instead of flipping the heartbeat red.
+const MYCHART_PULL_OVERLAP_DAYS = 90;
+
+async function mychartPullTick(env: RtEnv): Promise<unknown> {
+	const { mychartConfigured, connectedOrgs, hasEverPulledOrg } = await import("./mychart");
+	if (!mychartConfigured(env)) return { note: "mychart not configured" };
+	// A pull is durable-only and writes raw FHIR to R2 — without either binding the op
+	// would fail per-org anyway; skip cleanly instead of starting doomed instances.
+	if (!env.R2 || !env.OP_WORKFLOW) return { note: "mychart pull needs R2 + OP_WORKFLOW bound" };
+	const orgs = await connectedOrgs(env);
+	if (!orgs.length) return { note: "no connected mychart orgs" };
+
+	const since = new Date(Date.now() - MYCHART_PULL_OVERLAP_DAYS * 86_400_000).toISOString().slice(0, 10);
+	const { mychart } = await import("./fns/mychart");
+	const started: Array<{ org: string; instanceId?: string; error?: string }> = [];
+	for (const org of orgs) {
+		try {
+			const incremental = await hasEverPulledOrg(env, org);
+			const res = await mychart.run(env, { op: "pull", org, ...(incremental ? { since } : {}) });
+			const body = typeof res?.content?.[0]?.text === "string" ? res.content[0].text : "";
+			let instanceId: string | undefined;
+			try {
+				instanceId = JSON.parse(body)?.instanceId;
+			} catch {
+				// non-JSON body means the fn failed; surfaced via res.isError below
+			}
+			if (res?.isError) started.push({ org, error: body.slice(0, 200) });
+			else started.push({ org, instanceId });
+		} catch (e) {
+			started.push({ org, error: String((e as Error)?.message ?? e).slice(0, 200) });
+		}
+	}
+	const failed = started.filter((s) => s.error);
+	return { started, ...(failed.length === started.length ? { error: `all ${failed.length} org pull(s) failed to start` } : {}) };
+}
+
 async function maintenanceTick(env: RtEnv, ctx: ExecutionContext): Promise<void> {
 	await runSubJob(env, "kroger_token", () => refreshKrogerToken(env));
 	// Keep the Epic refresh grant alive (some orgs expire it on inactivity) — a pure
 	// no-op unless MyChart is configured AND a grant exists (§2b). Never throws.
 	await runSubJob(env, "mychart_token", () => refreshMychartToken(env));
+	// Capture, not just credential upkeep — the token refresh above only keeps the grant
+	// alive; this is what actually pulls clinical data into R2. Runs after it so a
+	// just-refreshed grant is used.
+	await runSubJob(env, "mychart_pull", () => mychartPullTick(env));
 	await runSubJob(env, "weekly_recall", () => weeklyRecallTick(env));
 	await runSubJob(env, "consolidate", () => consolidateTick(env));
 	await runSubJob(env, "watch_sweep", () => watchSweepTick(env));

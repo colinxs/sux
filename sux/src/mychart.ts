@@ -544,6 +544,15 @@ async function hasEverPulled(env: RtEnv, org: string, patient: string): Promise<
 	return listing.objects.length > 0;
 }
 
+/** `hasEverPulled` for callers that have an org but not its patient id (the daily
+ * `mychart_pull` cron): resolves the patient from the stored grant first. False when the
+ * org has no grant — an unconnected org has definitionally never pulled. */
+export async function hasEverPulledOrg(env: RtEnv, org: string): Promise<boolean> {
+	const grant = await readGrant(env, org);
+	if (!grant?.patient) return false;
+	return hasEverPulled(env, org, grant.patient);
+}
+
 /** True once a SPECIFIC resource label (e.g. "AllergyIntolerance") has ever been pulled for
  * this org/patient — unlike `hasEverPulled`, which only proves SOME resource type was pulled.
  * `pull()`'s `opts.types` narrowing (see `resourcePlan`) means an org can be "ever pulled" while
