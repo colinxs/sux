@@ -97,6 +97,14 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   unrelated files resolve; diff `npm test`'s failure set against the same stub on
   a clean `main` to prove your change adds nothing new, then trust real CI (which
   has the actual library) for those files' real behavior.
+- **A scratch worktree nested under `.scratch-worktrees/<name>` sits one directory level
+  deeper than the normal `~/Code/SuxOS/<repo>` layout**, so `file:../suxlib` resolves to a
+  nonexistent path (`.scratch-worktrees/suxlib`, not the real sibling) and `npm ci`/type-check
+  fail for a purely structural reason, not a code problem. Symlink `.scratch-worktrees/suxlib
+  -> ~/Code/SuxOS/suxlib` before installing, rather than debugging it as a code problem —
+  confirmed while rebasing #1375 in an interactive session's scratch worktree (distinct from
+  the bot-build-sandbox case above, which is missing/broken suxlib entirely, not a path-depth
+  mismatch).
 - **Cloudflare Workflows' `step.waitForEvent` has no typed/distinguishable error
   for "the wait timed out"** vs. any other rejection (transport error, dropped
   RPC) — even Cloudflare's own docs just wrap the whole call in one blanket
@@ -287,6 +295,15 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   drop decision, `gh pr list --state open --search "<issue-number>"` (or check recently
   merged PRs) for a sibling session that already resolved the same batch — reuse its
   reasoning instead of re-deriving it from scratch.
+- **A duplicate-build collision can surface as ONLY a type-declaration/comment-wording
+  conflict, while the actual function implementation auto-merges cleanly with zero
+  conflict** — confirmed on #1375 vs. already-merged `ac9c578`/#1383: both independently
+  built the identical `ai.ts` OpenAI-fallback feature (#1369); `ai.ts` itself rebased clean
+  with no conflict, only `registry.ts`'s duplicate `OPENAI_API_KEY` declaration (two
+  differently-worded comments for the same field) actually conflicted. Check whether the
+  underlying implementation already merged fine (`git show origin/main:<path> | grep
+  <symbol>`) before assuming a registry.ts-style conflict needs functional reconciliation —
+  it may just need one wording picked.
 - **#920 (per-request subrequest ledger / `env._budget`) has been independently dropped
   by 5 consecutive build sessions as of 2026-07-19, every time for the same reason: it's
   labeled `effort:large` and its own issue text says "genuinely large, not downscoped."**

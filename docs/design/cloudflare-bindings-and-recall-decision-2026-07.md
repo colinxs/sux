@@ -1,13 +1,27 @@
 ---
 title: Cloudflare bindings & recall-quality decision — D1 / Queues / Durable Objects / Vectorize
-status: decision
+status: overtaken
 cluster: infra
 type: decision
 summary: "Resolves the design pass the 2026-07-13 platform-audit issues (#214 D1/Queues, #217 Durable Objects, #218 Vectorize/hybrid recall) each explicitly asked for. Decision: DEFER all four bindings — KV + brute-force cosine + the daily/5-min cron loops are correct at today's scale. Records the concrete, measurable trigger that flips each decision and the migration sketch for when it does, so the next audit re-decides on evidence instead of re-litigating from scratch."
-tags: [sux, infra, cloudflare, d1, queues, durable-objects, vectorize, recall, decision]
+tags: [sux, infra, cloudflare, d1, queues, durable-objects, vectorize, recall, decision, overtaken]
 resolves: [214, 217, 218]
 updated: 2026-07-15
+overtaken: "2026-07-23, 1.4 brainstorm reconciliation — see pointer below"
 ---
+
+> [!warning] OVERTAKEN (2026-07-23) — reality flipped this decision twice, then reopened it again
+> The #218 "DEFER Vectorize" call died first: Vectorize (`sux-corpus`) AND Queues are now
+> live bindings in `sux/wrangler.jsonc` — adopted since this doc was written, not deferred.
+> The D1 flip-trigger this doc names ("relational queries over a fact index a KV prefix-scan
+> can't answer") has now arrived — per-route approval counters, usage/citation tracking, a
+> trust ledger, decay sweeps — but the candidate answer is Postgres-on-metal (elk-newt), not
+> D1, and research (2026-07-23) found Vectorize's own metadata filtering (8 comparison
+> operators, no joins, pre-declared indexes only) makes a relational store necessary
+> regardless of where vectors live. The whole substrate question — pgvector-on-metal vs
+> Vectorize — is deliberately reopened for the 1.4 arc's research/planning pass; this doc's
+> "#218 POC" is no longer the deciding instrument. Read for historical trigger-table
+> reasoning, not as a current decision.
 
 # Cloudflare bindings & recall-quality decision (2026-07)
 
