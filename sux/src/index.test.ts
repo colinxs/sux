@@ -98,6 +98,20 @@ describe("handleRpc (index.ts dispatch)", () => {
 		expect(out.result.capabilities.tools).toEqual({ listChanged: false });
 	});
 
+	it("initialize echoes back an older protocolVersion the client requested, when supported", async () => {
+		const { kv } = makeKv();
+		const { ctx } = makeCtx();
+		const out = await callRpc(makeEnv(kv), ctx, { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26" } });
+		expect(out.result.protocolVersion).toBe("2025-03-26");
+	});
+
+	it("initialize falls back to the latest supported protocolVersion for an unrecognized request", async () => {
+		const { kv } = makeKv();
+		const { ctx } = makeCtx();
+		const out = await callRpc(makeEnv(kv), ctx, { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2099-01-01" } });
+		expect(out.result.protocolVersion).toBe("2025-06-18");
+	});
+
 	it("tools/list returns only the front verbs, not every leaf", async () => {
 		const { kv } = makeKv();
 		const { ctx } = makeCtx();

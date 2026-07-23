@@ -12,7 +12,8 @@ import { recordAnalyticsEvent } from "../analytics";
 import { type RtEnv } from "../registry";
 import { errMsg } from "./_util";
 import { obsidian } from "./obsidian";
-import { hasWebPush, notify } from "./_webpush";
+import { hasWebPush, notify as webpushNotify } from "./_webpush";
+import { notify as ntfyNotify } from "./_notify";
 
 const ALERTS_NOTE_PATH = "_meta/Alerts.md";
 const NOTE_HEADER = "---\ntype: grafana_alerts\ntags: [alerts, grafana]\n---\n\n# Grafana Alerts\n\nAuto-updated by sux's `/hooks/grafana` webhook. Firing alerts are listed below; resolved alerts are removed.\n";
@@ -116,11 +117,16 @@ export async function handleGrafanaWebhook(url: URL, request: Request, env: RtEn
 		if (!w.ok) return new Response(JSON.stringify({ error: `vault write failed: ${w.error ?? "unknown"}` }), { status: 502, headers: { "content-type": "application/json" } });
 	}
 
-	if (hasWebPush(env) && firingToNotify.length > 0) {
+	if (firingToNotify.length > 0) {
 		const first = firingToNotify[0];
 		const title = firingToNotify.length === 1 ? `Grafana: ${first.labels?.alertname ?? "alert"} firing` : `Grafana: ${firingToNotify.length} alerts firing`;
 		const summaryText = first.annotations?.summary || first.annotations?.description || "";
-		await notify(env, { title, body: summaryText || (firingToNotify.length === 1 ? "" : firingToNotify.map((a) => a.labels?.alertname).filter(Boolean).join(", ")) }).catch(() => {});
+		const bodyText = summaryText || (firingToNotify.length === 1 ? "" : firingToNotify.map((a) => a.labels?.alertname).filter(Boolean).join(", "));
+		if (hasWebPush(env)) await webpushNotify(env, { title, body: bodyText }).catch(() => {});
+		// #1367 — the simpler ntfy escalation channel alongside Web Push; a firing Grafana alert
+		// (this repo's closest real analog to the issue's "drummer AMBER" health-escalation case)
+		// is exactly the kind of thing that should reach Colin faster than the alerts note.
+		await ntfyNotify(env, "grafana", title, bodyText, "high").catch(() => {});
 	}
 
 	recordAnalyticsEvent(env, "grafana_alert", { blobs: [body.status ?? null], doubles: [alerts.length, firingToNotify.length] });
