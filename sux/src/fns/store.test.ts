@@ -30,6 +30,22 @@ function mockR2() {
 }
 const mkEnv = () => ({ R2: mockR2(), OAUTH_KV: mockKV() }) as any;
 const j = (r: any) => JSON.parse(r.content[0].text);
+/**
+ * putBlob stamps `expiry` from its OWN Date.now(), so a test that recomputes the
+ * expected value from a second Date.now() disagrees by one whenever the wall clock
+ * crosses a second boundary between the two reads — an intermittent red on
+ * unrelated PRs. Freeze Date (only — setTimeout stays real, nothing here awaits a
+ * timer) so both reads see the same instant. Hands the frozen unix seconds to the
+ * body so expectations stay exact instead of merely tolerant.
+ */
+async function atFrozenClock<T>(fn: (nowSec: number) => Promise<T>): Promise<T> {
+	vi.useFakeTimers({ toFake: ["Date"] });
+	try {
+		return await fn(Math.floor(Date.now() / 1000));
+	} finally {
+		vi.useRealTimers();
+	}
+}
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/;
 
 describe("store", () => {
@@ -251,12 +267,14 @@ describe("store", () => {
 	it("put with ttl_seconds records an absolute expiry and sets KV expirationTtl; still readable before it lapses", async () => {
 		const env = mkEnv();
 		const spy = vi.spyOn(env.OAUTH_KV, "put");
-		const put = j(await store.run(env, { data: "ephemeral", ttl_seconds: 3600, force: true }));
-		expect(put.expiry).toBeGreaterThan(Math.floor(Date.now() / 1000));
-		// The handle JSON carries the same expiry, and KV self-evicts via expirationTtl.
-		expect(JSON.parse(env.OAUTH_KV._m.get(`store:${put.uuid}`)!).expiry).toBe(put.expiry);
-		expect(spy).toHaveBeenCalledWith(`store:${put.uuid}`, expect.any(String), expect.objectContaining({ expirationTtl: 3600 }));
-		expect(j(await store.run(env, { op: "get", id: put.uuid })).text).toBe("ephemeral");
+		await atFrozenClock(async (now) => {
+			const put = j(await store.run(env, { data: "ephemeral", ttl_seconds: 3600, force: true }));
+			expect(put.expiry).toBe(now + 3600);
+			// The handle JSON carries the same expiry, and KV self-evicts via expirationTtl.
+			expect(JSON.parse(env.OAUTH_KV._m.get(`store:${put.uuid}`)!).expiry).toBe(put.expiry);
+			expect(spy).toHaveBeenCalledWith(`store:${put.uuid}`, expect.any(String), expect.objectContaining({ expirationTtl: 3600 }));
+			expect(j(await store.run(env, { op: "get", id: put.uuid })).text).toBe("ephemeral");
+		});
 	});
 
 	it("rejects a non-positive ttl_seconds", async () => {
@@ -268,9 +286,11 @@ describe("store", () => {
 	it("sub-60s ttl_seconds records the expiry but skips expirationTtl (KV's 60s floor)", async () => {
 		const env = mkEnv();
 		const spy = vi.spyOn(env.OAUTH_KV, "put");
-		const put = j(await store.run(env, { data: "blink", ttl_seconds: 30, force: true }));
-		expect(put.expiry).toBe(Math.floor(Date.now() / 1000) + 30);
-		expect(spy).toHaveBeenCalledWith(`store:${put.uuid}`, expect.any(String), undefined);
+		await atFrozenClock(async (now) => {
+			const put = j(await store.run(env, { data: "blink", ttl_seconds: 30, force: true }));
+			expect(put.expiry).toBe(now + 30);
+			expect(spy).toHaveBeenCalledWith(`store:${put.uuid}`, expect.any(String), undefined);
+		});
 	});
 
 	it("get of an expired handle is not-found and best-effort deletes the handle", async () => {
