@@ -159,6 +159,37 @@ Everything is `ubuntu-latest` today; zero self-hosted. Best wins:
   author gate (the org already hardened the "#193 decoy-PR" class). Never a persistent runner
   on the NUC for public PRs.
 
+**6.1a Build/compute plane (cloud) vs data plane (home) — cache-first.**
+The biggest minute-saving lever is **not runner location — it's a warm binary cache.** A
+self-hosted **Attic** makes *every* runner (GitHub-hosted, cloud, or metal) pull pre-built
+derivations instead of rebuilding, cutting minutes on the Nix/OpenWrt jobs without moving
+anything. Do the cache first; the runner second. Then split the planes:
+- **Cloud VPC ephemeral runners for the heavy non-Claude builds** — Nix closures, OpenWrt
+  ImageBuilder (`suxrouter/image/build-asu.sh`), npm+wrangler. Cheap, reliable, burstable,
+  persistent `/nix/store` + local Attic, ephemeral machine per job (secure for fork PRs).
+- **Keep elk-newt for the private *data* plane** (OCR/embeddings/PHI/AI), **not** CI of
+  untrusted code — this **removes the fork-PR-on-the-SACRED-home-network risk from §6.1
+  entirely**. Home box = private data; cloud VPC = build/compute.
+- **OpenWrt is not Nix** — its ImageBuilder is a container, wanting a persistent Docker-layer +
+  downloaded-package cache, not Attic. Same principle, different cache.
+- Cost caveat unchanged: moving *Claude-agent* jobs to any self-hosted runner saves
+  runner-minutes but **not** the Anthropic subscription — prioritize the pure-build jobs.
+
+**6.1b Compression — compress once, at the smartest layer (no double-compression).**
+Attic/Cachix already zstd-compress NAR content; ZFS `compression=zstd` on the same dataset then
+tries to recompress already-compressed blobs. ZFS's zstd **early-abort** (tries LZ4, then
+zstd-1; if a block won't shrink ≥12.5% it stores it raw) means that second pass yields
+**near-zero extra space** for a small wasted-CPU cost — not double *savings*, just redundant
+work. Rule:
+- **Attic/Cachix blob dataset → `compression=off` (or `lz4`).** Attic already does content-
+  defined chunking + global cross-NAR dedup then zstd per chunk — that dedup is the real win and
+  beats stacking ZFS-zstd on top.
+- **Build box `/nix/store` → `compression=zstd` ON.** The live store is uncompressed, cross-file-
+  redundant data — a genuine ZFS-zstd win (metal `disko.nix` already zstd's `rpool`; carve the
+  cache blobs onto their own `off`/`lz4` dataset).
+- Cross-cutting with §5's token-packing and sux's existing KV `GZIP_MARKER` compression: one
+  deliberate compression layer per boundary, never stacked.
+
 **6.2 Model gateway (Ollama / LiteLLM) as `caps.models` sinks.**
 Serve Qwen3-8B / Gemma3-4B / a DeepSeek-R1-7B-distill via Ollama (IPEX-LLM patched for Iris Xe).
 Wire as a new `llm()` tier behind a flag. **Start with the async/PERSONAL sites** where latency
@@ -249,7 +280,7 @@ make the escalation explicit and logged. `_mail_triage`'s three-tier design is t
 ## 10. Phased roadmap (value-early, de-risked)
 
 - **Phase 0 — connectivity + consent foundation.** Tailscale on elk-newt (§7A); the 6-axis consent model + audit + retro-fix the Mistral-OCR and any un-gated egress. Prereq for all T0/T2 work; unblocks nothing user-facing alone but is small.
-- **Phase 1 — self-hosted CI runner (no AI).** Ephemeral libvirt runner for **metal + nix closure builds** only, private-repo, `isTrusted`-gated. Immediate action-minute savings, native self-build, near-zero risk.
+- **Phase 1 — warm cache + cloud build plane (no AI).** Stand up a self-hosted **Attic** first (cuts minutes on *every* runner), then **cloud VPC ephemeral runners** for the heavy non-Claude builds (Nix closures, OpenWrt ImageBuilder, npm+wrangler), private-repo + `isTrusted`-gated. Keep untrusted-code CI off the home box. Immediate action-minute savings, near-zero risk. (Compression per §6.1b: one layer per boundary.)
 - **Phase 2 — on-prem OCR.** PaddleOCR/Surya container; route `_ocr.ts` PHI paths to it; unblock PHI assimilation. Clear scope, closes a real leak.
 - **Phase 3 — on-prem embeddings + reranker.** BGE-M3 + reranker for index-build/`vectorize_backfill` (background); add reranking to `recall`/oracle. Retrieval-quality win + PHI on-prem.
 - **Phase 4 — the T0 small-model tier.** Ollama (IPEX-LLM) as a `caps.models` sink; route async/PERSONAL `llm()` sites (`_briefing`, `_infer_nudge`, `_assimilate`, oracle distill).
@@ -261,6 +292,7 @@ Each phase is independently shippable and gate-passing.
 ## 11. Open decisions for Colin
 1. **Revisit "don't chase GPU inference"?** — the plan declined it for Immich ML; small-LLM/OCR/embeddings on Iris Xe is a different, viable workload. Approve the T0 AI substrate direction?
 2. **Connectivity: Tailscale (A) vs tunnel-ingress (B)** for Worker↔box.
+2b. **Build plane: cloud VPC vs elk-newt** — recommend cloud (ephemeral, isolated from home net) for CI, home box for private data only. Approve the split, and pick a host (Hetzner/Fly/spot)? And a self-hosted **Attic** location (cheap always-on cloud node)?
 3. **RAM commitment** — a T0 model + OCR + embeddings + vector DB + homelab wants ≥32GB, realistically 64GB. Confirm fitted amount / budget.
 4. **DeepSeek** — allow as a cheap T2 for public/code work, with the vendor-axis gate keeping it off personal data? Or exclude entirely?
 5. **Consent-domain granularity** — the 5 data domains in §4, or finer (per-provider health portals, per-matter legal)?
