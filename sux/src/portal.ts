@@ -20,7 +20,10 @@
 // First slice only (#824): serves single notes + an index of portal-visible
 // notes, and resolves wikilinks. Deferred (see design doc's "Open items"):
 // folder-level tagging, and the SuxOS/vault migration/reconciliation pass
-// (blocked on colinxs/vault's GitHub archive/read-only state being repaired).
+// (blocked, as of the 2026-07-18 design doc this references, on the personal
+// vault's GitHub archive/read-only state being repaired — that vault was
+// named colinxs/vault at the time, since renamed/merged into today's
+// SuxOS/vault).
 //
 // #1191 Phase 1 (this file's audience model): the single `#portal` tag has grown
 // into N audience LABELS — a nested tag (`#portal/medical`) or a `portal: [...]`

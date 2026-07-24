@@ -269,7 +269,7 @@ missing key degrades to a clear "not configured" message; the rest keep working.
   this one is effectively required in production, not just quota-raising.
 
 **Obsidian**
-- `OBSIDIAN_VAULT_REPO` (`owner/repo`, live = `colinxs/obsidian-vault`), optional
+- `OBSIDIAN_VAULT_REPO` (`owner/repo`, live = `SuxOS/vault`), optional
   `OBSIDIAN_VAULT_BRANCH` / `OBSIDIAN_VAULT_DIR`; or the remote backend's
   `OBSIDIAN_REMOTE_URL` + `OBSIDIAN_REMOTE_KEY`.
 
