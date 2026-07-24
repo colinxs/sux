@@ -86,7 +86,12 @@ export function proxyEnabled(env: TailscaleEnv): boolean {
 // (the reason the residential exit exists) still proxy.
 // Note: RDAP (rdap.org) and CT logs (crt.sh) are intentionally NOT here — they
 // often 403/blocks datacenter IPs, so they benefit from the residential exit.
-const DIRECT_HOST_RE = /(^|\.)(?:mcp\.kagi\.com|cloudflare-dns\.com|dns\.google|ipwho\.is|ip-api\.com)$/i;
+// api.openai.com is the llm() fallback lane (ai.ts): a key-authed API in exactly
+// the class this list is for. It is listed so that moving that call off bare
+// fetch onto smartFetch buys the egress audit WITHOUT changing its route — a
+// degraded fallback (Workers AI already failed) must not also acquire a new
+// dependency on the residential node being up.
+const DIRECT_HOST_RE = /(^|\.)(?:mcp\.kagi\.com|cloudflare-dns\.com|dns\.google|ipwho\.is|ip-api\.com|api\.openai\.com)$/i;
 
 export function isDirectHost(url: string): boolean {
 	try {
