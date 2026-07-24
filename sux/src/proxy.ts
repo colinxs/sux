@@ -9,6 +9,7 @@
 import { githubAuthHeaders, isGithubHost } from "./github-auth";
 import { type EgressEvent, shipEgress } from "./grafana";
 import { errMsg } from "./prim";
+import type { RequestContext } from "./fabric/request-context";
 
 // Per-tools/call egress-audit context. handleRpc (index.ts) hangs it off a
 // PER-REQUEST env clone before the fn runs, so smartFetch — reached through ~20
@@ -19,7 +20,12 @@ import { errMsg } from "./prim";
 // `login` (the OAuth-authenticated GitHub identity) rides along too — the only
 // per-request identity signal available in this stateless-per-request server (see
 // fns/_ui.ts's client-capability negotiation, which keys off it).
-export type EgressContext = { ctx: { waitUntil(p: Promise<unknown>): void }; reqId: string; login?: string };
+// Generalized into the fabric's per-request context (Stage 0.2a, #1456). Kept as an alias so
+// the ~20 smartFetch-reached call sites and every existing importer are untouched: this widens
+// what the per-request clone CARRIES, it does not change where it lives or who reads it. There
+// is one per-request mechanism, not two — see fabric/request-context.ts for why the RtEnv field
+// is still spelled `_egress`.
+export type EgressContext = RequestContext;
 
 export type TailscaleEnv = {
 	// Public Funnel URL of the proxy node, e.g. https://box.tailnet-name.ts.net
