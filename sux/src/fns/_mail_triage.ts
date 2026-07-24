@@ -438,7 +438,10 @@ const SIGNAL_SNIPPET_MAX = 1000;
  *  Never throws into the caller: a failed embed/append must not affect triage itself.
  *  Callers MUST check isSensitiveSender themselves and skip this call entirely for a
  *  sensitive sender — this function persists (redacted) subject/preview to KV via Workers
- *  AI, so a caller that logs before checking sensitivity defeats the guard (#975). */
+ *  AI, so a caller that logs before checking sensitivity defeats the guard (#975). The
+ *  "sensitivity" this describes is still an unmodelled human promise at this call site — the
+ *  checkable type is `fabric/sensitivity.ts`'s `Sensitivity`, and the gate that will consult it
+ *  is the fabric's Stage 1 `admit()`. */
 async function logMailSignal(env: RtEnv, m: TriageMsg): Promise<void> {
 	if (!hasInferArm(env, "mail")) return;
 	try {
