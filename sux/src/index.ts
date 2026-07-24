@@ -735,6 +735,78 @@ async function mailTriagePlanTick(env: RtEnv): Promise<unknown> {
 	return JSON.parse(res.content?.[0]?.text ?? "{}");
 }
 
+// Shared dedup+auto-start helper for the durable, human-approved "plan" ops (#1136/#1542):
+// every one of these follows mail_triage_plan's exact shape above — skip if an instance of
+// the SAME op is already pending (queued/running/waiting/paused), so a 5-minute tick can't
+// pile up an unbounded queue of approval gates; a stale/terminal run never blocks a fresh
+// start. This only auto-starts the SCAN — the same inert, reversible step mail_triage_plan's
+// tick already auto-starts today. It never bypasses the op's own human-approval pause: every
+// one of these plan ops still stops and waits for a `run {action:'answer',...}` before
+// touching any data (merging notes, tagging contacts, moving files, or drafting an MyChart
+// outreach note) — auto-starting the proposal is not the same as auto-applying it.
+async function durablePlanOpTick(env: RtEnv, opId: string, run: (env: RtEnv, args: unknown) => Promise<ToolResult>): Promise<unknown> {
+	const runFns = await import("./fns/run");
+	const PENDING = new Set(["queued", "running", "waiting", "paused"]);
+	const runs = await runFns.listDurableRuns(env);
+	if (runs.some((r) => r.opId === opId && PENDING.has(r.status))) {
+		return { skipped: `a ${opId} run is already pending` };
+	}
+	const res = await run(env, {});
+	if (res.isError) throw new Error(res.content?.[0]?.text ?? `${opId} failed`);
+	return JSON.parse(res.content?.[0]?.text ?? "{}");
+}
+
+// One durable vault-consolidate-plan auto-start (#1542, generalizing #1136's pattern to the
+// remaining plan ops). FAIL-CLOSED: no-op unless CONSOLIDATE_ENABLED (same flag as
+// `consolidate` itself). Dedup + approval-gate behavior: see durablePlanOpTick above.
+async function vaultConsolidatePlanTick(env: RtEnv): Promise<unknown> {
+	const { hasConsolidate } = await import("./fns/_consolidate");
+	if (!hasConsolidate(env)) return { dormant: true };
+	const { vault_consolidate_plan } = await import("./fns/vault_consolidate_plan");
+	return durablePlanOpTick(env, "vault-consolidate-plan", vault_consolidate_plan.run);
+}
+
+// One durable contacts-consolidate-plan auto-start, same cadence/shape as above. FAIL-CLOSED:
+// no-op unless CONTACT_CONSOLIDATE_ENABLED.
+async function contactConsolidatePlanTick(env: RtEnv): Promise<unknown> {
+	const { hasContactConsolidate } = await import("./fns/_contact_consolidate");
+	if (!hasContactConsolidate(env)) return { dormant: true };
+	const { contact_consolidate_plan } = await import("./fns/contact_consolidate_plan");
+	return durablePlanOpTick(env, "contacts-consolidate-plan", contact_consolidate_plan.run);
+}
+
+// One durable files-consolidate-plan auto-start, same cadence/shape as above. FAIL-CLOSED:
+// no-op unless BOTH FILES_CONSOLIDATE_ENABLED and DROPBOX_FULL_WRITE_ENABLED — the eventual
+// archive-move needs the Mode B write arm, the same double-gate the fn itself enforces.
+async function filesConsolidatePlanTick(env: RtEnv): Promise<unknown> {
+	const { hasFilesConsolidate } = await import("./fns/_files_consolidate");
+	const { hasDropboxFullWrite } = await import("./fns/_dropbox-full");
+	if (!hasFilesConsolidate(env) || !hasDropboxFullWrite(env)) return { dormant: true };
+	const { files_consolidate_plan } = await import("./fns/files_consolidate_plan");
+	return durablePlanOpTick(env, "files-consolidate-plan", files_consolidate_plan.run);
+}
+
+// One durable mychart-reconcile-plan auto-start, same cadence/shape as above. FAIL-CLOSED:
+// no-op unless MYCHART_RECONCILE_ENABLED (which itself requires AGENDA_ENABLED — see
+// _agenda.ts's hasMychartReconcile). The most PHI-adjacent of the five: still only ever
+// DRAFTS an outreach note for human review — never sends or emails anything itself.
+async function mychartReconcilePlanTick(env: RtEnv): Promise<unknown> {
+	const { hasMychartReconcile } = await import("./fns/_agenda");
+	if (!hasMychartReconcile(env)) return { dormant: true };
+	const { mychart_reconcile_plan } = await import("./fns/mychart_reconcile_plan");
+	return durablePlanOpTick(env, "mychart-reconcile-plan", mychart_reconcile_plan.run);
+}
+
+// One durable cross-semantic-plan (vault_cross_link_plan) auto-start, same cadence/shape as
+// above. FAIL-CLOSED: no-op unless CROSS_SEMANTIC_ENABLED. Only ever appends a "Related"
+// block after human approval — never overwrites or deletes.
+async function vaultCrossLinkPlanTick(env: RtEnv): Promise<unknown> {
+	const { hasCrossSemantic } = await import("./fns/_cross_semantic");
+	if (!hasCrossSemantic(env)) return { dormant: true };
+	const { vault_cross_link_plan } = await import("./fns/vault_cross_link_plan");
+	return durablePlanOpTick(env, "cross-semantic-plan", vault_cross_link_plan.run);
+}
+
 // One Dropbox app-folder ingest sweep, riding the SAME frequent (~5min) cron as mail-triage
 // (#1355) — the poll only ever touches NEW files (a processed file is moved out of the watched
 // subtree, which is the idempotency mechanism), so a frequent cheap cadence beats a once-daily
@@ -1210,6 +1282,11 @@ export default {
 			ctx.waitUntil(shipMetricsSnapshot(env, ctx).catch((e) => console.warn(`sux scheduled metrics: snapshot push skipped: ${String((e as Error)?.message ?? e)}`)));
 			ctx.waitUntil(runSubJob(env, "mail_triage", () => mailTriageTick(env)));
 			ctx.waitUntil(runSubJob(env, "mail_triage_plan", () => mailTriagePlanTick(env)));
+			ctx.waitUntil(runSubJob(env, "vault_consolidate_plan", () => vaultConsolidatePlanTick(env)));
+			ctx.waitUntil(runSubJob(env, "contact_consolidate_plan", () => contactConsolidatePlanTick(env)));
+			ctx.waitUntil(runSubJob(env, "files_consolidate_plan", () => filesConsolidatePlanTick(env)));
+			ctx.waitUntil(runSubJob(env, "mychart_reconcile_plan", () => mychartReconcilePlanTick(env)));
+			ctx.waitUntil(runSubJob(env, "vault_cross_link_plan", () => vaultCrossLinkPlanTick(env)));
 			ctx.waitUntil(runSubJob(env, "ask_gate_reminder", () => askGateReminderTick(env)));
 			ctx.waitUntil(runSubJob(env, "agenda_reply", () => agendaReplyTick(env)));
 			ctx.waitUntil(runSubJob(env, "agenda_ask", () => agendaAskTick(env)));
