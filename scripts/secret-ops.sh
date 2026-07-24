@@ -70,7 +70,21 @@ worker_names() {
     python3 -c 'import sys,json;[print(x["name"]) for x in json.load(sys.stdin)]' 2>/dev/null || true
 }
 
-github_names() { gh secret list 2>/dev/null | awk '{print $1}' || true; }
+# -R is REQUIRED, and 2>/dev/null must NOT swallow the failure. With more than one
+# git remote (even two pointing at the SAME url) `gh secret list` refuses to guess and
+# errors on stderr — `gh repo set-default` does not satisfy it for this subcommand. The
+# old form discarded that error and returned an empty list, so the audit reported EVERY
+# GitHub secret as missing/unrecoverable while the store was actually fine. An empty
+# result now means empty; a broken query says so.
+GH_REPO="${GH_REPO:-SuxOS/sux}"
+github_names() {
+  local out
+  if ! out="$(gh secret list -R "$GH_REPO" 2>&1)"; then
+    echo "✗ gh secret list failed: ${out%%$'\n'*}" >&2
+    return 1
+  fi
+  printf '%s\n' "$out" | awk '{print $1}'
+}
 
 has() { printf '%s\n' "$2" | grep -qx "$1"; }
 
@@ -110,12 +124,17 @@ cmd_audit() {
   echo
 
   echo "== in op but never pushed =="
+  # `while read` not `for t in $titles`: op titles contain spaces ("GitHub PAT (colinxs)",
+  # "Epic FHIR sux - PROD"), and word-splitting reported each fragment as its own secret.
   local m=0
-  for t in $titles; do
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
     case "$t" in
       [A-Z]*) has "$t" "$worker" || has "$t" "$github" || { echo "  · $t"; m=$((m + 1)); } ;;
     esac
-  done
+  done <<EOF
+$titles
+EOF
   [ "$m" -eq 0 ] && echo "  ✓ none"
   echo
 
@@ -266,7 +285,9 @@ cmd_backfill() {
       continue
     fi
     printf '%s — paste value (ENTER to skip): ' "$k" >&2
-    read -rs v; echo >&2
+    # `|| true`: with no TTY (unattended run) read hits EOF and returns 1, which under
+    # `set -e` would abort the whole pass and lose the .dev.vars imports already done.
+    read -rs v || true; echo >&2
     if [ -z "$v" ]; then skipped=$((skipped + 1)); continue; fi
     op item create --vault "$VAULT" --category "API Credential" --title "$k" "credential=$v" >/dev/null
     unset v
