@@ -33,7 +33,7 @@ export const mychart: Fn = {
 		"MyChart — READ-ONLY Epic clinical records over SMART-on-FHIR (labs, vitals, conditions, meds, allergies, immunizations, procedures, notes) across multiple health systems. Ops: " +
 		"status (no org — grant presence/patient id/scopes/refresh-token age for EVERY registry org, NEVER returns token material) | " +
 		"connect ({org?} — returns the /mychart/connect URL to open in a browser — the fn can't do the interactive login itself) | " +
-		"pull ({org?, types?:[...], since?:'YYYY-MM-DD'} — starts a DURABLE sync job (pages the USCDI resource set for one org, resolves DocumentReference→Binary notes, writes raw FHIR to private R2; never values, never inline — a full sync is dozens of round-trips, so this always returns {instanceId} immediately; poll with `run{action:'status', instanceId}` for the eventual per-type counts/errors) | " +
+		"pull ({org?, types?:[...], since?:'YYYY-MM-DD', refetchBinaries?:true} — starts a DURABLE sync job (pages the USCDI resource set for one org, resolves DocumentReference→Binary notes, writes raw FHIR to private R2; never values, never inline — a full sync is dozens of round-trips, so this always returns {instanceId} immediately; poll with `run{action:'status', instanceId}` for the eventual per-type counts/errors. Repeated pulls RESUME — already-stored Binaries are skipped, so each run advances past the previous cap; pass refetchBinaries:true to force a full re-verify) | " +
 		"get ({org?, path:'Observation?category=vital-signs&date=ge2026-06-01'} — read-only FHIR passthrough against one org, path-validated against its FHIR base) | " +
 		"notes ({org?, id?, text?:true, cursor?, limit?} — read back the clinical NOTES a previous `pull` stored (DocumentReference→Binary). No id: an index of every stored note (id, date, title, type, author, size). With `text:true`: bodies too, decoded from Epic's base64/HTML, paged by a character budget — follow `nextCursor` to export the whole chart. With `id`: that one note in full. Reads R2 only — never calls Epic). " +
 		`\`org\` is one of: ${ORG_IDS.join(", ")} — omit it when exactly one org is connected (defaults to it), otherwise required. ` +
@@ -48,6 +48,7 @@ export const mychart: Fn = {
 			org: { type: "string", enum: ORG_IDS, description: "connect/pull/get/notes: which registry org. Omit when exactly one org is connected." },
 			types: { type: "array", items: { type: "string" }, description: "pull: narrow to these FHIR resource types (default the full USCDI set)." },
 			since: { type: "string", description: "pull: only resources updated on/after this date (YYYY-MM-DD), where the org honors _lastUpdated." },
+			refetchBinaries: { type: "boolean", description: "pull: re-fetch every DocumentReference Binary instead of skipping already-stored ones. The escape hatch for a note Epic amended in place under the same id." },
 			path: { type: "string", description: "get: a FHIR search/read path relative to the FHIR base (e.g. `Observation?category=laboratory`). Read-only GET; validated to stay under the base." },
 			id: { type: "string", description: "notes: read this one Binary id in full (from a prior `notes` index)." },
 			text: { type: "boolean", description: "notes: include decoded note bodies, not just the index. Paged by a character budget — follow `nextCursor`." },
@@ -148,7 +149,7 @@ export const mychart: Fn = {
 				// inline, so it can't be silently abandoned by sux's own 60s per-request deadline
 				// (index.ts's withDeadline; #1178). Returns immediately; poll with
 				// `run{action:"status", instanceId}` for the eventual counts/errors.
-				const { instanceId } = await runVerb({ op: "mychart-pull", input: { org, patient: grant.patient, types, since }, mode: "durable" }, env);
+				const { instanceId } = await runVerb({ op: "mychart-pull", input: { org, patient: grant.patient, types, since, ...(a?.refetchBinaries === true ? { refetchBinaries: true } : {}) }, mode: "durable" }, env);
 				return ok(oj({ org, patient: grant.patient, instanceId, note: "Durable pull started — poll with run{action:'status', instanceId} for counts/errors once it completes." }));
 			}
 
