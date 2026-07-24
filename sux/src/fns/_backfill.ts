@@ -4,11 +4,11 @@ import { errMsg } from "./_util";
 import { CORPUS_INDEX, hasVectorize, upsertIndexUnits } from "./_vectorize";
 
 // _backfill — the DURABLE, BATCHED, RESUMABLE job that drives `sux-corpus` to full population
-// (#1315). The synchronous `reindexCorpus` embeds/upserts a whole domain in one request and
-// TIMES OUT on the real corpus, so `vectorCount` sat at ~2 and vault/mail/files retrieval was
-// served by the cosine fallback instead of Vectorize. This converts the backfill into a job
-// that does BOUNDED work per invocation and resumes from a persisted cursor until every domain
-// is indexed.
+// (#1315). A prior synchronous one-shot driver (`reindexCorpus`, removed #1363 — see
+// `_reindex.ts`'s top comment) embedded/upserted a whole domain in one request and TIMED OUT on
+// the real corpus, so `vectorCount` sat at ~2 and vault/mail/files retrieval was served by the
+// cosine fallback instead of Vectorize. This is the job that does BOUNDED work per invocation
+// and resumes from a persisted cursor until every domain is indexed.
 //
 // DURABILITY MECHANISM: a CRON that advances a per-domain KV cursor each tick — NOT a Cloudflare
 // Workflow. The op-engine Workflow runtime (`op-engine/durable.ts`) interprets a STATIC-SHAPE
@@ -29,6 +29,18 @@ import { CORPUS_INDEX, hasVectorize, upsertIndexUnits } from "./_vectorize";
 // re-run (or a window re-processed after a mid-tick eviction) upserts in place, never duplicates.
 // FAIL-OPEN: an unreadable domain (cold cache / unavailable index) leaves its cursor and retries
 // next tick — it's never marked done on a not-ready read, and never sinks the other domains.
+//
+// VAULT-LEG CONVERGENCE DEPENDENCY (sux#1364): `enumerateVault(cached:true)` (_reindex.ts) reads
+// the READ-ONLY `vaultSemanticIndexCached` — this job never builds it. That warm cache is a side
+// effect of the daily cross-semantic sweep (`_cross_semantic.ts`'s `crossSemanticTick`, gated by
+// `CROSS_SEMANTIC_ENABLED`), a DIFFERENT flag from this file's own `VECTORIZE_BACKFILL_ENABLED`.
+// If `CROSS_SEMANTIC_ENABLED` is unset in prod, the vault cache never warms, `enumerateVault`
+// reports `ready:false` forever, and the vault domain's cursor never leaves offset 0 no matter
+// how many ticks run — a silent stall this module's own retry-next-tick contract can't distinguish
+// from "still working on it". Confirm `CROSS_SEMANTIC_ENABLED` is armed alongside this flag before
+// declaring vault backfill convergence; a bot-build sandbox has no prod secret visibility to check
+// this itself (see CLAUDE.md's arming-flag gotchas), so it's a human verification step, not one
+// this job can self-heal.
 
 export type BackfillDomain = ReindexDomain;
 export const BACKFILL_DOMAINS: BackfillDomain[] = REINDEX_DOMAINS;
@@ -169,6 +181,21 @@ async function advanceDomain(env: RtEnv, d: BackfillDomain, startedAt: number, b
 	return cur;
 }
 
+/** Post-backfill freshness (sux#1364): idempotent stable-id upserts make a full re-walk safe,
+ *  but nothing else ever nudges a `done` cursor back to work once the corpus underneath it
+ *  changes (a new/edited/deleted vault note, a new email, …) — a domain that finished once
+ *  stays "done" forever even as sux-corpus quietly drifts out of sync with its source. Any
+ *  domain still marked done after this long gets its cursor cleared so the very next tick
+ *  re-walks it from offset 0 — a periodic re-sync, not a one-shot backfill. */
+const REFRESH_AFTER_MS = 24 * 60 * 60 * 1000;
+
+async function refreshStaleDoneCursors(env: RtEnv, which: BackfillDomain[]): Promise<void> {
+	for (const d of which) {
+		const cur = await readCursor(env, d);
+		if (cur.done && Date.now() - cur.updatedAt > REFRESH_AFTER_MS) await writeCursor(env, d, emptyCursor());
+	}
+}
+
 /** One durable backfill tick: advance each requested domain within the shared budget, then
  *  report progress. Idempotent + resumable via the per-domain cursor. Throws only when the
  *  Vectorize binding is absent (nothing to populate). */
@@ -181,6 +208,7 @@ export async function backfillTick(env: RtEnv, opts: { domain?: BackfillDomain; 
 	// can cap it to a fixed number of windows for a small, deterministic nudge.
 	const maxBatches = Math.max(1, opts.maxBatches ?? Number.POSITIVE_INFINITY);
 	const which = opts.domain ? [opts.domain] : BACKFILL_DOMAINS;
+	await refreshStaleDoneCursors(env, which);
 	for (const d of which) {
 		if (Date.now() - startedAt > budgetMs) break;
 		await advanceDomain(env, d, startedAt, budgetMs, batch, maxBatches);

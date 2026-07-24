@@ -7,9 +7,9 @@ import { cosine, embed, embedOne } from "./_embed";
 import { filesSemanticIndexCached, topKFilesByCosine } from "./_files_semantic";
 import { maybeDecompressString } from "./_gzip";
 import { mailSemanticIndexCached, topKMailByCosine } from "./_mail_semantic";
-import { chunkText, listChunks, newId } from "./_source";
+import { chunkText, listChunks, listDomains, newId } from "./_source";
 import { errMsg } from "./_util";
-import { hasVectorize, queryCorpus, type VecDomain } from "./_vectorize";
+import { coarseDomain, hasVectorize, pointerForSourceChunk, queryCorpus, type VecDomain } from "./_vectorize";
 import { topKByCosine, vaultSemanticIndexCached } from "./_vault_semantic";
 import { vaultCfg } from "./obsidian";
 
@@ -81,11 +81,18 @@ export type AskDomainReport = {
 	top_score: number | null;
 	/** when this domain's index was last (re)built — the freshness bound on its answers. */
 	indexed_at: number | null;
+	/** which read path served this leg (#1364) — the soak signal the sux#1308 cosine-strip
+	 *  decision is gated on. Undefined for a degraded/skipped leg (nothing was served). */
+	served_by?: "vectorize" | "cosine";
 	detail?: string;
 };
 
 type AskPassage = { pointer: string; text: string; score: number; whitelisted?: boolean };
-type DomainGather = { passages: AskPassage[]; indexed_at: number | null; skipped?: string };
+/** `served_by` (#1364): which read path actually answered this leg — set by `withVectorize`
+ *  (vectorize on a hit, cosine on fallback/no-binding); left undefined by a leg that never
+ *  goes through it (the oracle domain's deliberate KV-only path), defaulted to "cosine" when
+ *  the report is built. The soak signal the sux#1308 strip decision is gated on. */
+type DomainGather = { passages: AskPassage[]; indexed_at: number | null; skipped?: string; served_by?: "vectorize" | "cosine" };
 
 export type AskOutcome = {
 	answer_id: string;
@@ -303,33 +310,62 @@ async function fromAssimChunks(env: RtEnv, vec: number[]): Promise<DomainGather>
 	return { passages: passages.slice(0, PER_DOMAIN_K), indexed_at };
 }
 
+/** ADVISE ingress leg (sux#1363 fast-follow, same gap as assim above): `advise.ts` ingests an
+ *  authoritative source (a therapy program, a care plan, an investment policy, …) under its own
+ *  BARE domain name — never `oracle:`/`assim:`/`phi:` prefixed — each chunk pre-embedded and
+ *  already upserted live into the Vectorize `advise` namespace, but no ask leg ever queried it
+ *  either. Sweeps every domain via `listDomains` (the same one-pass walk `_reindex.ts`'s
+ *  `enumerateSource` uses), keeping only the ones that collapse to the "advise" coarse namespace
+ *  (`coarseDomain` — i.e. everything that isn't oracle:/assim:/phi:), then reads each via
+ *  `listChunks`. Pointer uses `pointerForSourceChunk` (`advise:<domain>`) — the SAME convention
+ *  the write-path tap indexes under, so a KV-served and Vectorize-served hit cite identically. */
+async function fromAdviseChunks(env: RtEnv, vec: number[]): Promise<DomainGather> {
+	const domains = (await listDomains(env)).filter((d) => coarseDomain(d) === "advise");
+	const perDomain = await Promise.all(domains.map((d) => listChunks(env, d)));
+	const chunks = perDomain.flat().filter((c) => Array.isArray(c.embedding) && c.embedding.length > 0);
+	if (!chunks.length) return { passages: [], indexed_at: null, skipped: "no advise domains" };
+	const passages = chunks
+		.map((c) => ({ pointer: pointerForSourceChunk(c), text: c.text, score: cosine(vec, c.embedding!) }))
+		.sort((a, b) => b.score - a.score);
+	const indexed_at = chunks.reduce((m, c) => Math.max(m, c.ts || 0), 0) || null;
+	return { passages: passages.slice(0, PER_DOMAIN_K), indexed_at };
+}
+
 /** The unified-index cutover (#1290): a domain leg queries `sux-corpus`'s per-domain namespace
  *  FIRST (an out-of-band-built ANN index — no query-path rebuild, the #1298 fix), and only if
  *  Vectorize is unbound, errors, or its namespace is empty (not yet backfilled) does it fall
  *  back to the retained KV cosine core. This is the measured, parity-first cutover: Vectorize
  *  is the PRIMARY read path, the cosine cores the fail-open fallback (#1262), stripped only once
  *  prod parity is proven. A Vectorize-served leg reports indexed_at=null (Vectorize has no
- *  per-domain build timestamp); a fallback-served leg keeps the cosine core's indexed_at. */
+ *  per-domain build timestamp); a fallback-served leg keeps the cosine core's indexed_at.
+ *  Stamps `served_by` + logs one line per leg (sux#1364) — the soak signal the strip decision in
+ *  sux#1363(b) is hard-gated on: prod telemetry showing Vectorize-primary before the cosine
+ *  fallback legs are ever removed. */
 function withVectorize(domain: VecDomain, cosineLeg: (env: RtEnv, vec: number[]) => Promise<DomainGather>): (env: RtEnv, vec: number[]) => Promise<DomainGather> {
 	return async (env: RtEnv, vec: number[]): Promise<DomainGather> => {
 		if (hasVectorize(env)) {
 			try {
 				const hits = await queryCorpus(env, domain, vec, PER_DOMAIN_K);
-				if (hits.length) return { passages: hits.map((h) => ({ pointer: h.pointer, text: h.text, score: h.score })), indexed_at: null };
+				if (hits.length) {
+					console.log(`oracle ask: ${domain} leg served_by=vectorize hits=${hits.length}`);
+					return { passages: hits.map((h) => ({ pointer: h.pointer, text: h.text, score: h.score })), indexed_at: null, served_by: "vectorize" };
+				}
 			} catch (e) {
 				console.log(`oracle ask: vectorize ${domain} leg failed → cosine fallback: ${errMsg(e)}`);
 			}
 		}
-		return cosineLeg(env, vec);
+		const g = await cosineLeg(env, vec);
+		console.log(`oracle ask: ${domain} leg served_by=cosine`);
+		return { ...g, served_by: "cosine" };
 	};
 }
 
-// vault/mail/files/contacts read Vectorize-first with a cosine fallback. The oracle leg is
-// LEFT ON its KV two-tier path deliberately — #1310's Finding-2 fix (fromOracleKbs unions the
-// pre-embedded detail chunks with query-time-embedded summaries so a summary-only topic still
-// answers) is preserved verbatim; the oracle corpus is small and already within budget, and
-// its Vectorize copy (populated by the backfill) is reserved for the strip-follow-up that
-// unifies its read too (which also closes #1308's assim read-leg gap).
+// vault/mail/files/contacts/assim/advise read Vectorize-first with a cosine fallback. The oracle
+// leg is LEFT ON its KV two-tier path deliberately — #1310's Finding-2 fix (fromOracleKbs unions
+// the pre-embedded detail chunks with query-time-embedded summaries so a summary-only topic still
+// answers) is preserved verbatim; the oracle corpus is small and already within budget. `phi` has
+// NO leg here at all (deliberately) — the phi fence (#613) keeps medical material out of the
+// general ask path; that's a separate, not-yet-built gated leg (arc W7), not an oversight.
 const ASK_DOMAINS: Record<string, (env: RtEnv, vec: number[]) => Promise<DomainGather>> = {
 	vault: withVectorize("vault", fromVaultIndex),
 	mail: withVectorize("mail", fromMailIndex),
@@ -337,6 +373,7 @@ const ASK_DOMAINS: Record<string, (env: RtEnv, vec: number[]) => Promise<DomainG
 	contacts: withVectorize("contacts", fromContactsIndex),
 	oracle: fromOracleKbs,
 	assim: withVectorize("assim", fromAssimChunks),
+	advise: withVectorize("advise", fromAdviseChunks),
 };
 
 /** The ask synthesis prompt — grounded ONLY in the retrieved passages (unlike oracle's
@@ -370,7 +407,7 @@ export async function runAsk(env: RtEnv, question: string): Promise<AskOutcome> 
 		}
 		const g = r.value;
 		if (g.skipped) {
-			domains[n] = { status: "skipped", hits: 0, kept: 0, top_score: null, indexed_at: g.indexed_at, detail: g.skipped };
+			domains[n] = { status: "skipped", hits: 0, kept: 0, top_score: null, indexed_at: g.indexed_at, served_by: g.served_by ?? "cosine", detail: g.skipped };
 			return;
 		}
 		const keptHere = g.passages.filter((p) => p.score >= ASK_FLOOR);
@@ -380,6 +417,7 @@ export async function runAsk(env: RtEnv, question: string): Promise<AskOutcome> 
 			kept: keptHere.length,
 			top_score: g.passages.length ? round3(Math.max(...g.passages.map((p) => p.score))) : null,
 			indexed_at: g.indexed_at,
+			served_by: g.served_by ?? "cosine",
 		};
 		kept.push(...keptHere);
 	});

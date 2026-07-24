@@ -3,8 +3,7 @@ import { contactSemanticIndex } from "./_contact_semantic";
 import { filesSemanticIndex } from "./_files_semantic";
 import { mailSemanticIndex } from "./_mail_semantic";
 import { listChunks, listDomains } from "./_source";
-import { errMsg } from "./_util";
-import { coarseDomain, CORPUS_INDEX, hasVectorize, type IndexUnit, pointerForSourceChunk, upsertIndexUnits } from "./_vectorize";
+import { coarseDomain, type IndexUnit, pointerForSourceChunk } from "./_vectorize";
 import { purgeStaleVaultChunks, vaultSemanticIndex, vaultSemanticIndexCached } from "./_vault_semantic";
 import { vaultCfg } from "./obsidian";
 
@@ -15,22 +14,23 @@ import { vaultCfg } from "./obsidian";
 // under its per-domain namespace, REUSING each chunk's already-stored embedding (no re-embed
 // on the source-chunk domains).
 //
-// TWO drivers over ONE enumeration (#1315). `enumerateDomain` turns a domain's existing corpus
-// into a stably-ordered `IndexUnit[]` (namespace-tagged), and both consumers share it:
-//   • `reindexCorpus` (this file) — the full synchronous pass: enumerate a domain, upsert the
-//     whole list. Fine for a small domain or a test; TIMES OUT on the real corpus (the #1315
-//     root cause — one request can't embed/upsert the whole thing), so it stays the admin
-//     one-shot / small-domain path, not the production backfill.
-//   • `_backfill.ts` — the DURABLE batched job: enumerate, upsert a bounded WINDOW per tick,
-//     persist a per-domain cursor, resume next tick until every domain is done. THIS is what
-//     drives sux-corpus to full population without a timeout.
+// ONE enumeration, ONE driver (#1315, #1363). `enumerateDomain` turns a domain's existing corpus
+// into a stably-ordered `IndexUnit[]` (namespace-tagged); `_backfill.ts` is its sole consumer —
+// the DURABLE batched job: enumerate, upsert a bounded WINDOW per tick, persist a per-domain
+// cursor, resume next tick until every domain is done. This is what drives sux-corpus to full
+// population without timing out. (A prior synchronous one-shot driver, `reindexCorpus`, embedded/
+// upserted a whole domain in one request and TIMED OUT on the real corpus — the #1315 root cause
+// — and was removed once `#1330` repointed `oracle {action:"reindex"}` onto `backfillTick`,
+// leaving it with zero production callers.)
 //
-// CHEAP vs BUILDING read. The full pass reads the BUILDING semantic index (rebuilds/warms the
-// KV cosine cache as a side effect). The batched backfill passes `{cached:true}` so vault reads
-// the READ-ONLY cached blob (`vaultSemanticIndexCached`) — a single decompress, never a
-// re-embed — so a tick's cost is the bounded upsert, not a corpus rebuild. mail/files/contacts
-// have only their incremental builder (cheap when the cache is warm, which production is — the
-// cosine fallback serves those domains today, #1310), so `cached` is a no-op for them.
+// CHEAP vs BUILDING read. `enumerateDomain`'s `{cached:true}` (the only mode `_backfill.ts` ever
+// passes) reads vault's READ-ONLY cached blob (`vaultSemanticIndexCached`) — a single decompress,
+// never a re-embed — so a tick's cost is the bounded upsert, not a corpus rebuild.
+// `{cached:false}` instead reads the BUILDING semantic index (rebuilds/warms the KV cosine cache
+// as a side effect); kept as an option on the shared enumerator, but nothing in production calls
+// it that way today. mail/files/contacts have only their incremental builder (cheap when the
+// cache is warm, which production is — the cosine fallback serves those domains today, #1310),
+// so `cached` is a no-op for them.
 //
 // IDEMPOTENT + RESUMABLE: stable vector ids (_vectorize.vectorId) mean re-running upserts in
 // place, never duplicates — so a run that dies partway is safe to re-run. Each domain runs
@@ -42,9 +42,6 @@ import { vaultCfg } from "./obsidian";
  *  (oracle/assim/phi/advise), swept in one listDomains pass. */
 export type ReindexDomain = "vault" | "mail" | "files" | "contacts" | "source";
 export const REINDEX_DOMAINS: ReindexDomain[] = ["vault", "mail", "files", "contacts", "source"];
-
-export type ReindexDomainResult = { indexed: number; note?: string; error?: string };
-export type ReindexReport = { index: string; domains: Record<string, ReindexDomainResult>; total: number };
 
 /** The result of enumerating one domain's corpus into upsertable units. `ready` distinguishes
  *  "this is the authoritative (possibly empty) set" (true — the backfill may mark the domain
@@ -141,9 +138,10 @@ async function enumerateSource(env: RtEnv): Promise<EnumerateResult> {
 	return { items, ready: true, note: `${domains.length} source domain(s)` };
 }
 
-/** Turn one domain's existing corpus into a stably-ordered, namespace-tagged `IndexUnit[]`.
- *  Shared by the full reindex and the batched backfill. `cached:true` prefers the read-only
- *  cached read where one exists (vault) so a repeated per-tick enumeration never re-embeds. */
+/** Turn one domain's existing corpus into a stably-ordered, namespace-tagged `IndexUnit[]` — the
+ *  batched backfill's (`_backfill.ts`) sole enumeration source. `cached:true` prefers the
+ *  read-only cached read where one exists (vault) so a repeated per-tick enumeration never
+ *  re-embeds. */
 export async function enumerateDomain(env: RtEnv, domain: ReindexDomain, opts: { cached?: boolean } = {}): Promise<EnumerateResult> {
 	switch (domain) {
 		case "vault":
@@ -157,29 +155,4 @@ export async function enumerateDomain(env: RtEnv, domain: ReindexDomain, opts: {
 		case "source":
 			return enumerateSource(env);
 	}
-}
-
-/** Populate `sux-corpus` from the existing corpus in ONE synchronous pass per domain — the
- *  admin one-shot / small-domain path. Runs each requested domain independently, capturing
- *  (never throwing) per-domain errors so a partial pass is a valid resumable state. Throws only
- *  when the Vectorize binding is absent (nothing to populate). For the real corpus use the
- *  durable batched backfill (`_backfill.ts`) instead — a full pass here times out (#1315). */
-export async function reindexCorpus(env: RtEnv, opts: { domains?: ReindexDomain[] } = {}): Promise<ReindexReport> {
-	if (!hasVectorize(env)) throw new Error(`Vectorize binding not bound — cannot reindex ${CORPUS_INDEX}.`);
-	const which = opts.domains?.length ? opts.domains.filter((d): d is ReindexDomain => (REINDEX_DOMAINS as string[]).includes(d)) : REINDEX_DOMAINS;
-	const domains: Record<string, ReindexDomainResult> = {};
-	let total = 0;
-	for (const d of which) {
-		try {
-			const { items, note } = await enumerateDomain(env, d);
-			const indexed = await upsertIndexUnits(env, items);
-			domains[d] = note ? { indexed, note } : { indexed };
-			total += indexed;
-		} catch (e) {
-			domains[d] = { indexed: 0, error: errMsg(e) };
-			console.log(`reindex: domain=${d} failed: ${errMsg(e)}`);
-		}
-	}
-	console.log(`reindex: ${CORPUS_INDEX} total=${total} domains=${which.map((d) => `${d}:${domains[d]?.indexed ?? 0}`).join(",")}`);
-	return { index: CORPUS_INDEX, domains, total };
 }

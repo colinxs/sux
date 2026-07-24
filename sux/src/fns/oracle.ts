@@ -2,7 +2,7 @@ import { hasAI, llm } from "../ai";
 import { ORACLE_DISTILL } from "../prompts";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { ASK_LOG_KEY, type AskVerdict, recordAskFeedback, runAsk } from "./_answer";
-import { type BackfillDomain, BACKFILL_DOMAINS, backfillStatus, backfillTick, resetBackfill } from "./_backfill";
+import { type BackfillDomain, BACKFILL_DOMAINS, backfillStatus, backfillTick, hasBackfill, resetBackfill } from "./_backfill";
 import { hasVectorize } from "./_vectorize";
 import { embed, embedOne } from "./_embed";
 import { maybeCompressString, maybeDecompressString } from "./_gzip";
@@ -71,6 +71,13 @@ const DISTILL_INPUT_CAP = 24_000;
 
 /** How many chars we let the consolidated KB grow to (~8KB / ~1200 words). */
 const KB_CAP = 8_000;
+
+/** A backfill cursor not touched in this long, still `done:false`, while the backfill is armed
+ *  (sux#1364) — either it never started (a virgin cursor, `updatedAt:0`) or a tick stalled
+ *  mid-run. Surfaced in `retrieval.alerts` as `backfill:<domain>` so "is sux-corpus actually
+ *  converging?" is visible from the same status call as the KV-cap alerts, not just inferred
+ *  from silence in the logs. */
+const STALE_BACKFILL_MS = 30 * 60 * 1000;
 
 /** Target/max size (chars) of one PRE-distill piece (#1373) — a single learn's payload is split on
  *  structure before distilling, so a multi-section body (clean `## ` headings, or just a long body
@@ -310,7 +317,7 @@ export const oracle: Fn = {
 		"A learn-then-answer knowledge oracle backed by KV + Workers AI. Teach it `knowledge` and it DISTILLS the material into concise notes and remembers them (one namespaced knowledge base per `topic`); ask it a `problem` and it answers using its OWN (Workers-AI) knowledge PLUS the accumulated distilled knowledge base — preferring the KB where relevant. Pass both to learn first, then answer against the freshly-updated KB. " +
 		"`knowledge` may be raw text OR an http(s) URL (article, book, website, .txt or HTML page) — a URL is fetched (residential, capped ~40KB), reduced to readable prose for HTML, split on structure (`## ` headings, else a size-cap split), then each piece distilled into its own chunk. Each learn appends one chunk PER PIECE (last 15 kept in the rolling summary) and re-distills a single coherent KB, so the always-injected summary stays bounded and self-consistent. Every piece's distilled chunk is ALSO embedded into an unbounded per-topic retrieval store, so a whole book's worth of detail stays individually retrievable instead of getting squashed into one summary — answering retrieves the top passages for the `problem` and injects them alongside the summary. " +
 		"`topic` (default \"default\") keeps separate bodies of knowledge. `action`: get (return the topic's distilled knowledge + sources + chunk count) | list (topic names) | status (a one-shot cross-topic dashboard: every topic's chunk_count + updated_at + whitelist flag + KB size, so you can see what's in the oracle without paging get per topic — PLUS `retrieval`: per-domain KV-bet observability for every retrieval store, each domain's chunk_count + blob_size_bytes + indexed_at and a near_ceiling flag as it approaches the ~4.5k-chunk KV cap, with `retrieval.alerts` listing any domain whose retained KV cosine core is nearing the cap — Vectorize is the read path now, cores shed after the parity soak) | forget (delete the topic) — manages instead of learn/answer. " +
-		"`action: ask` answers `problem` TOPIC-FREE across everything indexed: it embeds the question, kNN-ranks the vault/mail/files/contacts semantic indices plus every oracle KB plus the assimilation spine's scanned/mail/tossed-document chunks (never the phi-fenced medical stream) in parallel (each domain on its own time budget, reported ok|degraded|skipped — partial coverage never fails the call), keeps only passages at/above the similarity floor (ASK_FLOOR), and synthesizes a CITATION-CONSTRAINED answer grounded ONLY in what it retrieved — {status: answered|no_match, answer, citations[], domains} with per-domain indexed_at freshness; below-floor retrieval is an honest no_match, never a guess from model knowledge. Every ask logs its retrieval scores; `action: feedback` (`answer_id` + `verdict` up|down, optional `note`) records a thumbs verdict against that answer — the telemetry the embedding/floor choice is judged by. " +
+		"`action: ask` answers `problem` TOPIC-FREE across everything indexed: it embeds the question, kNN-ranks the vault/mail/files/contacts semantic indices plus every oracle KB plus the assimilation spine's scanned/mail/tossed-document chunks plus every advise domain's authoritative source (never the phi-fenced medical stream) in parallel (each domain on its own time budget, reported ok|degraded|skipped — partial coverage never fails the call), keeps only passages at/above the similarity floor (ASK_FLOOR), and synthesizes a CITATION-CONSTRAINED answer grounded ONLY in what it retrieved — {status: answered|no_match, answer, citations[], domains} with per-domain indexed_at freshness and served_by (vectorize|cosine — which read path answered that leg); below-floor retrieval is an honest no_match, never a guess from model knowledge. Every ask logs its retrieval scores; `action: feedback` (`answer_id` + `verdict` up|down, optional `note`) records a thumbs verdict against that answer — the telemetry the embedding/floor choice is judged by. " +
 		"Learned material is untrusted and is fenced as data when distilled/answered. Stateful — never cached.",
 	inputSchema: {
 		type: "object",
@@ -397,7 +404,15 @@ export const oracle: Fn = {
 				// Backfill progress (#1315): the durable Vectorize-backfill cursor per domain
 				// (processed/remaining/done) + the live sux-corpus vectorCount, so 'what's in the
 				// oracle?' also answers 'is Vectorize fully populated yet?' — a pure read, no upserts.
-				return ok(oj({ action, count: topics.length, kb_cap: KB_CAP, topics, retrieval, corpus: await backfillStatus(env) }));
+				const corpus = await backfillStatus(env);
+				// Stale-cursor alert (#1364): only meaningful once the backfill is actually armed —
+				// an unarmed environment (local/test/pre-arming prod) has every cursor permanently
+				// virgin by design, which isn't a fault to alert on.
+				if (hasBackfill(env)) {
+					const staleDomains = corpus.domains.filter((d) => !d.done && Date.now() - d.updatedAt > STALE_BACKFILL_MS).map((d) => `backfill:${d.domain}`);
+					retrieval.alerts.push(...staleDomains);
+				}
+				return ok(oj({ action, count: topics.length, kb_cap: KB_CAP, topics, retrieval, corpus }));
 			}
 
 			if (action === "get") {

@@ -249,6 +249,61 @@ describe("oracle ask — assim leg reads the assimilation spine's chunks (#1289/
 	});
 });
 
+// The advise leg (#1363 fast-follow, same shape as the assim gap above): advise.ts ingests an
+// authoritative source under its own BARE domain name (never oracle:/assim:/phi: prefixed) — no
+// ask leg ever read it back either.
+describe("oracle ask — advise leg reads authoritative advise domains (#1363)", () => {
+	it("cites an advise domain chunk by its advise:<domain> pointer", async () => {
+		const { env } = makeEnv();
+		await putChunk(env, {
+			id: "adv1",
+			source_id: "s1",
+			domain: "cardiac-diet",
+			authority: "contextual",
+			title: "cardiac diet plan",
+			text: "Limit sodium to under 2000mg/day.",
+			embedding: [1, 0, 0],
+			ts: 7777,
+		});
+
+		const r = await oracle.run(env, { action: "ask", problem: "how much sodium should I have?" });
+		const j = JSON.parse(r.content[0].text);
+		expect(j.status).toBe("answered");
+		expect(j.citations).toEqual(["advise:cardiac-diet"]);
+		expect(j.domains.advise).toMatchObject({ status: "ok", hits: 1, kept: 1, indexed_at: 7777 });
+	});
+
+	it("phi:medical and oracle:<topic> chunks never leak into the advise leg", async () => {
+		const { env } = makeEnv();
+		await putChunk(env, { id: "phi1", source_id: "s1", domain: "phi:medical", authority: "contextual", title: "x", text: "Creatinine 1.1 mg/dL.", embedding: [1, 0, 0], ts: 1 });
+		await putChunk(env, { id: "or1", source_id: "s1", domain: "oracle:health", authority: "contextual", title: "y", text: "General health notes.", embedding: [1, 0, 0], ts: 1 });
+
+		const r = await oracle.run(env, { action: "ask", problem: "anything?" });
+		const j = JSON.parse(r.content[0].text);
+		expect(j.domains.advise.status).toBe("skipped");
+	});
+
+	it("no advise domains is a fast skip, not a failure", async () => {
+		const { env } = makeEnv();
+		const r = await oracle.run(env, { action: "ask", problem: "anything?" });
+		const j = JSON.parse(r.content[0].text);
+		expect(j.domains.advise).toMatchObject({ status: "skipped", detail: "no advise domains" });
+	});
+});
+
+// served_by (#1364): the soak signal the sux#1363(b) cosine-strip decision is gated on — every
+// leg's report says which read path actually answered it.
+describe("oracle ask — served_by telemetry (#1364)", () => {
+	it("reports served_by=cosine when no Vectorize binding is present", async () => {
+		const { env } = makeEnv();
+		await seedKbChunk(env);
+		const r = await oracle.run(env, { action: "ask", problem: "creatinine?" });
+		const j = JSON.parse(r.content[0].text);
+		expect(j.domains.vault.served_by).toBe("cosine");
+		expect(j.domains.oracle.served_by).toBe("cosine"); // oracle stays deliberately cosine-only
+	});
+});
+
 // Finding 1 (#1298): the large-corpus domains rebuild their index synchronously on the query
 // path and can never finish within a request, so every ask burned the full 8s per-domain budget
 // and degraded. ask now reads cached-only — a cold index skips FAST (the cheap-correct degrade

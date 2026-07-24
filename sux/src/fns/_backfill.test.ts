@@ -172,4 +172,26 @@ describe("backfillTick (#1315 durable batched backfill)", () => {
 		expect(s.domains[0].done).toBe(false);
 		expect(s.domains[0].total).toBeNull();
 	});
+
+	// Post-backfill freshness (#1364): a DONE cursor never got a second look once the corpus
+	// underneath it changed — a daily-scale refresh re-arms it instead of leaving it done forever.
+	it("a DONE cursor older than the refresh window is reset and re-walked to completion within the SAME tick", async () => {
+		const { env, vx, kv } = makeEnv();
+		vaultCached.mockResolvedValue(vaultIndex(3));
+		kv.store.set("sux:corpus:backfill:vault", JSON.stringify({ offset: 3, processed: 3, total: 3, done: true, updatedAt: Date.now() - 25 * 60 * 60 * 1000 }));
+		const r = await backfillTick(env, { domain: "vault" });
+		const vault = r.domains.find((d) => d.domain === "vault")!;
+		expect(vault.done).toBe(true);
+		expect(vault.processed).toBe(3);
+		expect(vx.store.size).toBe(3); // idempotent stable ids — re-walk upserts in place, no duplicates
+	});
+
+	it("a DONE cursor within the refresh window is left alone — no re-walk attempted", async () => {
+		const { env, kv } = makeEnv();
+		kv.store.set("sux:corpus:backfill:vault", JSON.stringify({ offset: 3, processed: 3, total: 3, done: true, updatedAt: Date.now() - 60 * 1000 }));
+		const callsBefore = vaultCached.mock.calls.length;
+		const r = await backfillTick(env, { domain: "vault" });
+		expect(vaultCached.mock.calls.length).toBe(callsBefore); // advanceDomain never re-entered enumeration
+		expect(r.domains.find((d) => d.domain === "vault")!.offset).toBe(3);
+	});
 });

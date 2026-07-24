@@ -258,7 +258,8 @@ export async function sourceStats(env: RtEnv): Promise<SourceDomainStat[]> {
 /** Delete exactly the chunks belonging to one source document — the per-document undo. Returns
  *  how many were removed. Non-atomic (scan then delete), the acceptable race _examples.ts documents.
  *  Also purges each removed chunk's mirror vector from the unified Vectorize index (#1371) —
- *  otherwise a forgotten chunk keeps citing from `oracle ask` until a full reindexCorpus rebuild. */
+ *  otherwise a forgotten chunk keeps citing from `oracle ask` until the durable backfill (or a
+ *  cursor reset) re-sweeps the domain. */
 export async function deleteSource(env: RtEnv, domain: string, source_id: string): Promise<number> {
 	const all = await listChunks(env, domain);
 	const removed = all.filter((c) => c.source_id === source_id);
