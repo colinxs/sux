@@ -16,8 +16,8 @@
 // Matching is by the FROM address domain: apex + any subdomain (email.chase.com and order.amazon.com
 // match alongside the bare apex). Education is HIERARCHICAL (stacked tiers, most-specific first):
 //   cs.uw.edu -> edu + uw + cs   ·   uw.edu -> edu + uw   ·   mit.edu -> edu
-// The dept flag (cs, ece, …) is captured from a single-label UW subdomain; a multi-level UW subdomain
-// (mail.cs.uw.edu) stays edu + uw (no messy compound dept). gov/mil match by TLD suffix.
+// The dept flag comes from the UW_DEPTS allowlist below; any other UW subdomain (infrastructure like
+// u.washington.edu, or a multi-level one like mail.cs.uw.edu) stays edu + uw. gov/mil match by TLD.
 //
 // Ported verbatim from the audited generator scripts/gen-sieve source — the data + `labelsFor`
 // semantics are byte-for-byte the same, so the emitted Sieve and the JS predicate always agree.
@@ -111,12 +111,30 @@ export const GROUPS: DomainGroup[] = [
 ];
 
 // ── Education is HIERARCHICAL — stacked tiers, matched most-specific first (if/elsif):
-//      cs.uw.edu -> edu + uw + cs   (dept captured from ${1} via the `variables` extension)
+//      cs.uw.edu -> edu + uw + cs   (dept from the UW_DEPTS allowlist below)
 //      uw.edu    -> edu + uw
 //      mit.edu   -> edu
-//    A guard for multi-level UW subdomains (a.b.uw.edu) sits AHEAD of the single-level rule, so
-//    ${1} only ever captures a clean single-label department (never "mail.cs").
 export const UW_APEX = ["uw.edu", "washington.edu"]; // University of Washington (apex forms)
+
+// ── UW departments — an ALLOWLIST, deliberately, not an infra blocklist (#1417 defect 1).
+//    This rule used to treat ANY single-label UW subdomain as a department, so infrastructure hosts
+//    minted garbage labels: measured against the newest 2000 real messages, u.washington.edu produced
+//    a bogus `u` on 158 of them and lists.uw.edu a bogus `lists` on 4, indistinguishable from the
+//    legitimate `cs` (137).
+//
+//    Allowlist over blocklist because the two fail in opposite directions. UW's infrastructure
+//    subdomains are unbounded and unknowable, so a blocklist is permanently incomplete — every host
+//    nobody thought of still emits a garbage department. An allowlist fails BENIGNLY: an unrecognized
+//    subdomain simply degrades to `edu` + `uw`, which is still CORRECT, only less specific. It can
+//    never invent a label. That is this codebase's conservative-by-construction doctrine.
+//
+//    ADDING A DEPARTMENT IS A ONE-LINE CHANGE — append its subdomain label here and both consumers
+//    (labelsFor and the emitted Sieve) pick it up. Omission costs specificity, never correctness, so
+//    only add a department you have actually confirmed; do not seed this from a remembered org chart.
+export const UW_DEPTS = [
+	"cs", // Paul G. Allen School of Computer Science & Engineering (cs.uw.edu / cs.washington.edu)
+	"ece", // Department of Electrical & Computer Engineering (ece.uw.edu / ece.washington.edu)
+];
 export const EDU_GENERIC = [ // generic .edu + international academic TLDs (non-UW)
 	"*.edu", "*.ac.uk", "*.edu.au", "*.ac.nz", "*.ac.jp", "*.edu.cn", "*.edu.sg", "*.ac.in", "*.edu.hk",
 ];
@@ -146,12 +164,14 @@ const matchesAny = (domain: string, patterns: string[]): boolean => patterns.som
 export function labelsFor(fromAddress: string): string[] {
 	const domain = String(fromAddress).toLowerCase().split("@").pop() ?? "";
 	const flags: string[] = [];
-	// Education — HIERARCHICAL, most-specific first (mirrors the emitted if/elsif chain + ${1}).
-	if (matchesAny(domain, UW_APEX.map((d) => `*.*.${d}`))) flags.push("edu", "uw");
-	else if (matchesAny(domain, UW_APEX.map((d) => `*.${d}`))) {
-		flags.push("edu", "uw");
-		for (const d of UW_APEX) if (domain.endsWith(`.${d}`)) { flags.push(domain.slice(0, -d.length - 1)); break; }
-	} else if (UW_APEX.includes(domain)) flags.push("edu", "uw");
+	// Education — HIERARCHICAL, most-specific first (mirrors the emitted if/elsif chain). The dept tier
+	// is the UW_DEPTS allowlist: an exact `<dept>.<apex>` match, so no other subdomain — infrastructure
+	// (u.washington.edu) or multi-level (mail.cs.uw.edu) — can mint one. Both fall through to edu + uw,
+	// which is why the old explicit deep-subdomain guard is no longer needed.
+	if (UW_DEPTS.some((dept) => UW_APEX.some((d) => domain === `${dept}.${d}`))) {
+		flags.push("edu", "uw", domain.slice(0, domain.indexOf(".")));
+	} else if (matchesAny(domain, UW_APEX.map((d) => `*.${d}`))) flags.push("edu", "uw");
+	else if (UW_APEX.includes(domain)) flags.push("edu", "uw");
 	else if (matchesAny(domain, EDU_GENERIC)) flags.push("edu");
 	for (const g of INDEP_TLD) if (matchesAny(domain, g.patterns)) flags.push(g.label);
 	for (const g of GROUPS) {
@@ -188,7 +208,7 @@ export function compileHighConfidenceSieve(categories?: readonly string[]): { sc
 	const want = new Set(cats);
 
 	const out: string[] = [];
-	out.push('require ["imap4flags", "variables"];');
+	out.push('require ["imap4flags"];');
 	out.push("");
 	out.push("# ─────────────────────────────────────────────────────────────────────────────");
 	out.push("# High-confidence sender-domain labels for Fastmail — generated, addflag-ONLY.");
@@ -197,7 +217,7 @@ export function compileHighConfidenceSieve(categories?: readonly string[]): { sc
 	out.push("# no discard, no reject. Sieve's implicit keep still delivers every message to the");
 	out.push("# inbox, so a false positive costs a stray keyword, never a hidden email.");
 	out.push("#");
-	out.push("# HIERARCHICAL education labels (stacked tiers via ${1} capture, variables ext):");
+	out.push("# HIERARCHICAL education labels (stacked tiers, most-specific first):");
 	out.push("#   cs.uw.edu -> edu + uw + cs   ·   uw.edu -> edu + uw   ·   mit.edu -> edu");
 	out.push("#");
 	out.push("# Matching is by the FROM address domain (:domain), apex + any subdomain. ESP/relay");
@@ -209,21 +229,27 @@ export function compileHighConfidenceSieve(categories?: readonly string[]): { sc
 	let rule_count = 0;
 	let brand_domains = 0;
 
-	// Education — HIERARCHICAL cascade, most-specific first. ${1} (variables ext) turns a single-label
-	// UW subdomain into its own department flag: cs.uw.edu -> "cs". The deep-subdomain guard runs first
-	// so ${1} never captures a compound like "mail.cs".
+	// Education — HIERARCHICAL cascade, most-specific first. The department tier is emitted as one
+	// EXPLICIT `:is` block per allowlisted dept, ahead of the general UW-subdomain block. Sieve's `${1}`
+	// capture cannot be conditionally allowlisted — it would tag whatever the wildcard happened to eat
+	// (u.washington.edu -> "u") — so the concrete domains are spelled out instead (#1417 defect 1).
+	// With no capture left to protect, the old *.*.uw.edu deep-subdomain guard is redundant: the general
+	// *.uw.edu block already matches a.b.uw.edu and yields the same edu + uw.
 	if (want.has("education")) {
-		const uwDeep = UW_APEX.map((d) => `*.*.${d}`);
 		const uwSub = UW_APEX.map((d) => `*.${d}`);
 		out.push("");
-		out.push("# UW multi-level subdomains (a.b.uw.edu) — edu + uw (dept too nested to capture cleanly)");
-		out.push(`if address :domain :matches "from" [${list(uwDeep)}] {`);
-		out.push('    addflag ["edu", "uw"];');
-		out.push("}");
+		out.push("# UW department subdomains — HIERARCHICAL: edu + uw + dept. Explicit per-department");
+		out.push("# blocks (an allowlist), so an infrastructure subdomain can never mint a bogus dept.");
+		UW_DEPTS.forEach((dept, i) => {
+			const domains = UW_APEX.map((d) => `${dept}.${d}`);
+			out.push(`${i === 0 ? "if" : "elsif"} address :domain :is "from" [${list(domains)}] {`);
+			out.push(`    addflag ["edu", "uw", ${q(dept)}];`);
+			out.push("}");
+		});
 		out.push("");
-		out.push("# UW department subdomains (cs.uw.edu) — HIERARCHICAL: edu + uw + dept(${1})");
-		out.push(`elsif address :domain :matches "from" [${list(uwSub)}] {`);
-		out.push('    addflag ["edu", "uw", "${1}"];');
+		out.push("# Any other UW subdomain (u.washington.edu, lists.uw.edu, mail.cs.uw.edu) — edu + uw only");
+		out.push(`${UW_DEPTS.length ? "elsif" : "if"} address :domain :matches "from" [${list(uwSub)}] {`);
+		out.push('    addflag ["edu", "uw"];');
 		out.push("}");
 		out.push("");
 		out.push("# UW apex (uw.edu / washington.edu) — edu + uw");
@@ -235,7 +261,7 @@ export function compileHighConfidenceSieve(categories?: readonly string[]): { sc
 		out.push(`elsif address :domain :matches "from" [${list(EDU_GENERIC)}] {`);
 		out.push('    addflag "edu";');
 		out.push("}");
-		rule_count += 4;
+		rule_count += UW_DEPTS.length + 3;
 	}
 
 	// Independent institutional TLDs (gov, mil — no overlap, so plain ifs).
