@@ -534,6 +534,76 @@ describe("buildPullPlan / pullType / reconcilePull — the durable `mychart-pull
 		expect([...env.R2.map.keys()].filter((k: string) => k.includes("/Binary/")).length).toBe(MAX_BINARIES_PER_TYPE);
 	});
 
+	it("pullType FOLLOWS a next link under the org's declared linkBases — UW's proxy drops the /UWM segment, which stalled 7 types at page 1 (#1365 Fix 2)", async () => {
+		const env = baseEnv();
+		await env.OAUTH_KV.put(`sux:mychart:token:${ORG}`, "AT");
+		// The exact shape observed live 2026-07-24: same host, same scheme, but the bundle's own
+		// link path is /FHIR-Proxy/api/FHIR/R4/... while the configured base is
+		// /FHIR-Proxy/UWM/api/FHIR/R4. 490 Conditions existed; 100 were being pulled.
+		const proxyNext = "https://fhir.epic.medical.washington.edu/FHIR-Proxy/api/FHIR/R4/Condition?patient=P1&page=2";
+		const page1 = { resourceType: "Bundle", total: 2, link: [{ relation: "next", url: proxyNext }], entry: [{ resource: { resourceType: "Condition", id: "c1" } }] };
+		const page2 = { resourceType: "Bundle", total: 2, entry: [{ resource: { resourceType: "Condition", id: "c2" } }] };
+		vi.stubGlobal("fetch", fetchRouter({ "page=2": () => new Response(JSON.stringify(page2), { status: 200 }), "/Condition": () => new Response(JSON.stringify(page1), { status: 200 }) }));
+		const result = await pullType(env, { type: "Condition", label: "Condition", query: "patient=P1&_count=100", org: ORG, patient: "P1", stamp: "STAMP" });
+		expect(result.pages).toBe(2);
+		expect(result.count).toBe(2);
+		expect(result.status).toBe("ok");
+	});
+
+	it("linkBases widen the PATH only — a link on another host is still refused even if an org declared it", () => {
+		expect(isUnderFhirBase(ORG, "https://fhir.epic.medical.washington.edu/FHIR-Proxy/api/FHIR/R4/Condition?x=1")).toBe(true);
+		expect(isUnderFhirBase(ORG, "https://evil.example/FHIR-Proxy/api/FHIR/R4/Condition")).toBe(false);
+		// Segment-boundary discipline survives the widening.
+		expect(isUnderFhirBase(ORG, "https://fhir.epic.medical.washington.edu/FHIR-Proxy/api/FHIR/R4x/Condition")).toBe(false);
+		// An org with no linkBases is unchanged.
+		expect(isUnderFhirBase(ORG2, `${BASE2}/Condition`)).toBe(true);
+		expect(isUnderFhirBase(ORG2, "https://haikuwa.providence.org/elsewhere/Condition")).toBe(false);
+	});
+
+	it("pullType resolves a ROOT-RELATIVE next link per RFC 3986, not by base concatenation — concatenation would DOUBLE the base path and 404", async () => {
+		const env = baseEnv();
+		await env.OAUTH_KV.put(`sux:mychart:token:${ORG}`, "AT");
+		const page1 = { resourceType: "Bundle", link: [{ relation: "next", url: "/FHIR-Proxy/UWM/api/FHIR/R4/Condition?patient=P1&page=2" }], entry: [{ resource: { resourceType: "Condition", id: "c1" } }] };
+		const page2 = { resourceType: "Bundle", entry: [{ resource: { resourceType: "Condition", id: "c2" } }] };
+		const urls: string[] = [];
+		vi.stubGlobal("fetch", async (u: any) => {
+			urls.push(String(u));
+			return new Response(JSON.stringify(String(u).includes("page=2") ? page2 : page1), { status: 200 });
+		});
+		const result = await pullType(env, { type: "Condition", label: "Condition", query: "patient=P1&_count=100", org: ORG, patient: "P1", stamp: "STAMP" });
+		expect(result.pages).toBe(2);
+		// The EXACT URL is the assertion — a doubled `/FHIR-Proxy/UWM/api/FHIR/R4` would still
+		// pass isUnderFhirBase, so only comparing the literal catches the concatenation bug.
+		expect(urls[1]).toBe(`${BASE}/Condition?patient=P1&page=2`);
+	});
+
+	it("pullType resolves a QUERY-ONLY next link without dropping the resource segment — the Epic/HAPI _getpages continuation shape", async () => {
+		const env = baseEnv();
+		await env.OAUTH_KV.put(`sux:mychart:token:${ORG}`, "AT");
+		const page1 = { resourceType: "Bundle", link: [{ relation: "next", url: "?_getpages=abc&_getpagesoffset=100" }], entry: [{ resource: { resourceType: "Condition", id: "c1" } }] };
+		const page2 = { resourceType: "Bundle", entry: [{ resource: { resourceType: "Condition", id: "c2" } }] };
+		const urls: string[] = [];
+		vi.stubGlobal("fetch", async (u: any) => {
+			urls.push(String(u));
+			return new Response(JSON.stringify(String(u).includes("_getpages") ? page2 : page1), { status: 200 });
+		});
+		await pullType(env, { type: "Condition", label: "Condition", query: "patient=P1&_count=100", org: ORG, patient: "P1", stamp: "STAMP" });
+		expect(urls[1]).toBe(`${BASE}/Condition?_getpages=abc&_getpagesoffset=100`);
+	});
+
+	it("pullType's loop guard stops a next link that points back at an already-fetched page — otherwise count inflates past Bundle.total on duplicated data", async () => {
+		const env = baseEnv();
+		await env.OAUTH_KV.put(`sux:mychart:token:${ORG}`, "AT");
+		const selfRef = `${BASE}/Condition?patient=P1&_count=100`;
+		const page = { resourceType: "Bundle", link: [{ relation: "next", url: selfRef }], entry: [{ resource: { resourceType: "Condition", id: "c1" } }] };
+		vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(page), { status: 200 })));
+		const result = await pullType(env, { type: "Condition", label: "Condition", query: "patient=P1&_count=100", org: ORG, patient: "P1", stamp: "STAMP" });
+		expect(result.pages).toBe(1);
+		expect(result.status).toBe("truncated");
+		expect(result.reason).toMatch(/loop guard/);
+		expect([...env.R2.map.keys()].filter((k: string) => k.includes("/Condition/")).length).toBe(1);
+	});
+
 	it("pullType RESUMES past the binary cap — the cap bounds NEW fetches, so repeated pulls advance instead of refetching the same chunk forever (#1365)", async () => {
 		const env = baseEnv();
 		await env.OAUTH_KV.put(`sux:mychart:token:${ORG}`, "AT");

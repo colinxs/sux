@@ -27,8 +27,22 @@ export const PHI_PREFIX = "phi/";
 // Distribution, so adding an org is a one-line PR, never a new Epic app registration.
 // The client SECRET is per-org, not shared (see tokenAuthHeaders below). Base URLs are
 // public directory data, never secrets.
-export const MYCHART_ORGS: Record<string, { name: string; fhirBase: string }> = {
-	uwmedicine: { name: "UW Medicine (WA)", fhirBase: "https://fhir.epic.medical.washington.edu/FHIR-Proxy/UWM/api/FHIR/R4" },
+export const MYCHART_ORGS: Record<string, { name: string; fhirBase: string; linkBases?: string[] }> = {
+	// `linkBases` — additional path prefixes on the SAME ORIGIN under which this org's
+	// `Bundle.link` continuation URLs are accepted (#1365 Fix 2). Every org here is a
+	// reverse-proxied Epic Interconnect, and a proxy that doesn't rewrite `Bundle.link`
+	// emits a path that doesn't match the base we were told to call. Verified live at UW
+	// 2026-07-24: the configured base is `/FHIR-Proxy/UWM/api/FHIR/R4` but the bundle's own
+	// self/next links come back under `/FHIR-Proxy/api/FHIR/R4` — the `/UWM` segment is
+	// missing — so isUnderFhirBase refused every continuation and SEVEN resource types
+	// stopped dead at page 1 (490 Conditions available, 100 pulled).
+	// Same-origin is ENFORCED below, not merely conventional: this widens which PATH is
+	// followable, never which HOST, so a bad edit here cannot reach a new operator.
+	uwmedicine: {
+		name: "UW Medicine (WA)",
+		fhirBase: "https://fhir.epic.medical.washington.edu/FHIR-Proxy/UWM/api/FHIR/R4",
+		linkBases: ["https://fhir.epic.medical.washington.edu/FHIR-Proxy/api/FHIR/R4"],
+	},
 	swedish: { name: "Providence Swedish (WA)", fhirBase: "https://haikuwa.providence.org/fhirproxy/api/FHIR/R4" },
 	bozeman: { name: "Bozeman Health (MT)", fhirBase: "https://revproxy.bh.bozemanhealth.org/Interconnect-Oauth2-PRD/api/FHIR/R4" },
 	evergreen: { name: "EvergreenHealth (WA)", fhirBase: "https://epicproxy.et1270.epichosted.com/apiproxyprd/api/FHIR/R4" },
@@ -256,8 +270,22 @@ export function isUnderFhirBase(org: string, u: string): boolean {
 		// Same origin AND the path is at/below the base path — prefix on a path segment
 		// boundary so `/api/FHIR/R4x` can't masquerade as `/api/FHIR/R4`.
 		if (target.origin !== b.origin) return false;
-		const basePath = b.pathname.replace(/\/+$/, "");
-		return target.pathname === basePath || target.pathname.startsWith(`${basePath}/`);
+		// An org's declared linkBases widen which PATH prefix is acceptable, never which
+		// host: each one is re-checked against the base origin here rather than trusted from
+		// the registry, so a mistaken or malicious entry pointing at another host is inert
+		// instead of being an SSRF hole reached with a live Epic bearer token.
+		const prefixes = [b.pathname, ...(MYCHART_ORGS[org]?.linkBases ?? []).flatMap((lb) => {
+			try {
+				const l = new URL(lb);
+				return l.origin === b.origin ? [l.pathname] : [];
+			} catch {
+				return [];
+			}
+		})];
+		return prefixes.some((p) => {
+			const basePath = p.replace(/\/+$/, "");
+			return target.pathname === basePath || target.pathname.startsWith(`${basePath}/`);
+		});
 	} catch {
 		return false;
 	}
@@ -473,6 +501,11 @@ export async function pullType(env: RtEnv, item: PullPlanItem): Promise<PullType
 	// Epic's ordering is untrusted, and a cursor that assumes it would skip real notes. One
 	// prefix list is ceil(K/1000) subrequests; a head-per-attachment would be up to 5000, the
 	// entire budget the whole 17-type pull shares.
+	// A mis-resolved next link that re-yields an already-fetched page would inflate `count`
+	// past Bundle.total (so the completeness gate would pass on duplicated data) AND write
+	// duplicate -pN.json objects that latestPulledResources concatenates into summarize/
+	// timeline/allergy-gap. Cheap insurance now that previously-refused links are followed.
+	const fetched = new Set<string>();
 	const have = item.type === "DocumentReference" && !item.refetchBinaries ? new Set(await storedBinaryIds(env, item.org, item.patient, { nonEmptyOnly: true })) : new Set<string>();
 
 	while (url) {
@@ -550,7 +583,23 @@ export async function pullType(env: RtEnv, item: PullPlanItem): Promise<PullType
 				reason = `${failed} Binary fetch(es) failed`;
 			}
 		}
+		fetched.add(url);
 		const next = nextLink(bundle);
+		// Resolve against the URL of the PAGE THAT CARRIED THE LINK, per RFC 3986 — NOT
+		// resolveFhirPath's `${base}/${path}` concatenation, which exists for a caller-supplied
+		// base-relative path. Against the real UW base that concatenation turns a root-relative
+		// next link into a DOUBLED base path, and a query-only one (`?_getpages=…`, a common
+		// Epic/HAPI continuation shape) into a DROPPED resource segment — and both would still
+		// satisfy isUnderFhirBase, so the guard could not catch the mistake; the 404 would just
+		// land in the truncated arm looking like an upstream problem.
+		let resolved: string | null = null;
+		if (next) {
+			try {
+				resolved = new URL(next, url).toString();
+			} catch {
+				resolved = null;
+			}
+		}
 		if (!next) {
 			// Only an UNCLASSIFIED pull earns "ok" here. The binary cap breaks its own labeled
 			// loop and lets pagination continue, so a plain assignment would overwrite the
@@ -558,17 +607,19 @@ export async function pullType(env: RtEnv, item: PullPlanItem): Promise<PullType
 			// the silent-partial this whole change exists to remove.
 			if (!status) status = "ok";
 			url = null;
-		} else if (isUnderFhirBase(item.org, next)) {
-			url = next;
-		} else {
-			// A refused next link IS an incomplete sync. Today it collapses into the same silent
-			// `url = null` as "no next link" and is the one incompleteness reported clean. Only
-			// the honesty changes here: how relative/off-base links RESOLVE is deliberately
-			// untouched, since relaxing the wrong axis of an untrusted-input guard reached with a
-			// live Epic bearer token is an SSRF regression. The URL stays out of `reason` — a
-			// paging URL's query string carries the patient id, and reason reaches the MCP client.
+		} else if (resolved && fetched.has(resolved)) {
 			status = "truncated";
-			reason = "next link refused (not under the org's FHIR base)";
+			reason = "next link points at an already-fetched page (loop guard)";
+			url = null;
+		} else if (resolved && isUnderFhirBase(item.org, resolved)) {
+			url = resolved;
+		} else {
+			// Still refused after RFC-3986 resolution and the org's declared linkBases — a real
+			// incompleteness, and before #1365 it was the one incompleteness reported CLEAN. The
+			// URL stays out of `reason`: a paging URL's query string carries the patient id, and
+			// reason reaches the MCP client.
+			status = "truncated";
+			reason = "next link refused (not under the org's FHIR base or its declared link bases)";
 			url = null;
 		}
 	}
