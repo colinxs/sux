@@ -424,6 +424,13 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   a call site of the changed function, invisible to a grep for `sink.fanout`. When a suxlib
   signature/type changes, `npm run type-check` after the named fix (not just editing the named
   lines) is what catches the rest — don't assume the issue's file list is exhaustive.
+- **A bug an audit issue names in ONE projection can have an identical sibling bug in another
+  projection right next to it in the same file** — #1407 named only `put.ts`'s Dropbox
+  projection (its filename kept the source URL's extension after a pdf/gzip transform), but
+  `r2_path` (#1382, added later in the same `processUrl`) derives its filename from the exact
+  same `urlBasename(url)` call and had the identical bug, unmentioned by the issue. Grep the
+  file for other call sites of whatever helper the named bug traces to before considering an
+  issue like this fully fixed — see `applyTransformExt()`'s two call sites for the shared fix.
 - **#1078 (enable `noUncheckedIndexedAccess`) is blocked, not just large** — flipping it in
   `sux/tsconfig.json` surfaces 92 errors inside `../suxlib`'s own `.ts` sources too (the `file:`
   dep's raw sources share sux's one global `compilerOptions` block; `skipLibCheck` only exempts
