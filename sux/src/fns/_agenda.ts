@@ -950,7 +950,8 @@ export function detectMyChartDrops(labFlags: MyChartLabFlagRef[], refillsDue: My
  *  idea org A's PCP started a medication that textually overlaps an allergy only org B's chart
  *  carries. mychart.ts's crossOrgMedicationAllergyConflicts does the deliberately conservative
  *  (name/substance-string only, never dosage/severity/diagnostic) matching; this only turns
- *  each hit into a drop at the same sensitivity level as the other mychart_* kinds (a
+ *  each hit into a drop carrying the same `phi` sensitivity tag (fabric/sensitivity.ts) as the
+ *  other mychart_* kinds (a
  *  medication name + a generic org label, never a diagnosis) — always phrased as "may overlap"
  *  / "verify with your provider", never a claim. Dedupe is the med+allergy resource-id pair, so
  *  — like every other mychart_* kind — a given pair proposes once ever. */
@@ -972,7 +973,7 @@ export function detectMychartConflictDrops(conflicts: MyChartConflictRef[]): Dro
  *  on file at one org with NO matching record at all at another connected org — distinct from
  *  detectMychartConflictDrops's med↔allergy overlap, and arguably higher continuity-of-care value
  *  (a provider with zero visibility into a known allergy, not just a textual overlap to verify).
- *  Same sensitivity level as the other mychart_* kinds (a generic org label, never the allergy's
+ *  Same `phi` sensitivity tag (fabric/sensitivity.ts) as the other mychart_* kinds (a generic org label, never the allergy's
  *  clinical detail beyond the substance name already on file at the SOURCE org). Dedupe is the
  *  allergy+missing-org pair, so — like mychart_conflict — a given pair proposes once ever. */
 export function detectMychartAllergyGapDrops(gaps: MyChartAllergyGapRef[]): Drop[] {

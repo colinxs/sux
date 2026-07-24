@@ -111,7 +111,8 @@ export const OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions";
  *  this worker does — it is the one place egress is recorded (auditEgress), SSRF targets are
  *  refused, and CR/LF header injection is caught. This lane is the ONLY path that hands a
  *  user's prompt content to a third-party operator (Workers AI is first-party Cloudflare), so
- *  an unaudited fetch here meant the single highest-sensitivity egress in the worker was also
+ *  an unaudited fetch here meant the single highest-sensitivity egress in the worker (every
+ *  fabric/sensitivity.ts tag can reach it) was also
  *  the one invisible to the egress ledger. api.openai.com is in proxy.ts's DIRECT_HOST_RE, so
  *  the route is byte-for-byte the direct fetch it was before — audit, not rerouting. */
 async function openAiComplete(env: AiEnv, messages: ChatMessage[], maxTokens: number): Promise<string> {

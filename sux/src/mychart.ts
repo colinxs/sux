@@ -968,7 +968,8 @@ async function summarizeOrgSnapshot(env: RtEnv, org: string, patient: string, re
 /** Summarize the LAST pulled FHIR snapshot(s) into a REDACTED, agenda-ready form (W6) —
  * never raw lab values or diagnosis names, only enough to prompt "go check MyChart":
  * out-of-range lab/vital flags (direction only, no value/test name), medication
- * refill-due windows (name + due date — the same sensitivity level the mail-based
+ * refill-due windows (name + due date — the same `phi` sensitivity tag (fabric/sensitivity.ts)
+ * the mail-based
  * rx_ready cue in fns/_agenda.ts already surfaces from pharmacy email subjects), and
  * bare ids for new Condition/DocumentReference entries (DocumentReference keeps only
  * its generic type, e.g. "After Visit Summary" — never a Condition's diagnosis name).
