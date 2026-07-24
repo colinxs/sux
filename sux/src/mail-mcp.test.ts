@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { handleMailPushWebhook, MAIL_TOOLS } from "./mail-mcp";
+import { encryptPayload } from "./fns/_webpush";
 
 // Reuse the jmap.test mocking approach: a Map-backed KV + a URL-routed fetch that
 // answers Session discovery and the JMAP api endpoint. The mail_* tools compile to
@@ -724,12 +725,20 @@ describe("mail_* ergonomic tools", () => {
 		expect(out).toMatchObject({ unsubscribed: true });
 	});
 
+	// Fastmail now sends every push aes128gcm-encrypted (#1408) — encrypt each test payload
+	// with the subscription's OWN receiver keys (persisted at subscribe time) exactly like
+	// a real push service would, so handleMailPushWebhook exercises its real decrypt path.
+	async function encryptedPush(e: any, payload: unknown): Promise<Uint8Array> {
+		const subState = JSON.parse(e.OAUTH_KV.map.get("sux:mailpush:sub"));
+		return encryptPayload(new TextEncoder().encode(JSON.stringify(payload)), subState.p256dh, subState.authSecret);
+	}
+
 	it("handleMailPushWebhook: wrong/unknown token doesn't match (index.ts 404s on false)", async () => {
 		installFetch();
 		const e = env();
 		await tool("mail_push").run(e, { action: "subscribe" });
 		const trigger = vi.fn();
-		const matched = await handleMailPushWebhook(e, "wrong-token", "{}", trigger);
+		const matched = await handleMailPushWebhook(e, "wrong-token", new Uint8Array(), trigger);
 		expect(matched).toBe(false);
 		expect(trigger).not.toHaveBeenCalled();
 	});
@@ -740,7 +749,8 @@ describe("mail_* ergonomic tools", () => {
 		await tool("mail_push").run(e, { action: "subscribe" });
 		const subState = JSON.parse(e.OAUTH_KV.map.get("sux:mailpush:sub"));
 		const trigger = vi.fn();
-		const matched = await handleMailPushWebhook(e, subState.token, JSON.stringify({ "@type": "PushVerification", pushSubscriptionId: "push-1", verificationCode: "abc123" }), trigger);
+		const body = await encryptedPush(e, { "@type": "PushVerification", pushSubscriptionId: "push-1", verificationCode: "abc123" });
+		const matched = await handleMailPushWebhook(e, subState.token, body, trigger);
 		expect(matched).toBe(true);
 		expect(trigger).not.toHaveBeenCalled();
 		const status = parse(await tool("mail_push").run(e, { action: "status" }));
@@ -755,24 +765,24 @@ describe("mail_* ergonomic tools", () => {
 		const trigger = vi.fn();
 
 		// Before verification: a StateChange push matches (200s) but does NOT trigger.
-		const early = await handleMailPushWebhook(e, subState.token, JSON.stringify({ "@type": "StateChange", changed: {} }), trigger);
+		const early = await handleMailPushWebhook(e, subState.token, await encryptedPush(e, { "@type": "StateChange", changed: {} }), trigger);
 		expect(early).toBe(true);
 		expect(trigger).not.toHaveBeenCalled();
 
 		// Verify, then a StateChange push DOES trigger.
-		await handleMailPushWebhook(e, subState.token, JSON.stringify({ "@type": "PushVerification", pushSubscriptionId: "push-1", verificationCode: "abc123" }), trigger);
-		const after = await handleMailPushWebhook(e, subState.token, JSON.stringify({ "@type": "StateChange", changed: {} }), trigger);
+		await handleMailPushWebhook(e, subState.token, await encryptedPush(e, { "@type": "PushVerification", pushSubscriptionId: "push-1", verificationCode: "abc123" }), trigger);
+		const after = await handleMailPushWebhook(e, subState.token, await encryptedPush(e, { "@type": "StateChange", changed: {} }), trigger);
 		expect(after).toBe(true);
 		expect(trigger).toHaveBeenCalledTimes(1);
 	});
 
-	it("handleMailPushWebhook: a malformed body still acks (matches) but never throws or triggers", async () => {
+	it("handleMailPushWebhook: an undecryptable body still acks (matches) but never throws or triggers", async () => {
 		installFetch();
 		const e = env();
 		await tool("mail_push").run(e, { action: "subscribe" });
 		const subState = JSON.parse(e.OAUTH_KV.map.get("sux:mailpush:sub"));
 		const trigger = vi.fn();
-		const matched = await handleMailPushWebhook(e, subState.token, "not json{{{", trigger);
+		const matched = await handleMailPushWebhook(e, subState.token, new Uint8Array([1, 2, 3]), trigger);
 		expect(matched).toBe(true);
 		expect(trigger).not.toHaveBeenCalled();
 	});

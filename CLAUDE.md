@@ -648,6 +648,22 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   linked PRs' diffs don't obviously touch the area it describes (an extension of the existing
   "closed issue doesn't guarantee it shipped" gotcha above) — check the actual diff.
 
+- **A bot-build sandbox has no usable outbound network access to third-party sites** —
+  `curl https://www.amazon.com/...` 503s here even though the same request works from
+  production (a Cloudflare Worker with residential-proxy egress). An issue asking to fix
+  a scraper's stale DOM selectors (#1398) can't be verified — or even correctly
+  diagnosed — without a real captured HTML sample of the CURRENT layout; guessing new
+  selectors blind is worse than not touching the code. Drop issues of this shape rather
+  than ship an unverifiable guess.
+
+- **`_mail_triage.ts`'s autonomous auto-act loop deliberately excludes delete/junk-move/
+  send from `TriageOp` — its own comments call this "structurally unrepresentable," not
+  an oversight** (see `AUTO_ACT_OPS`'s doc comment and `opRecord`'s). An issue asking to
+  wire the loop's `spam` classification straight to `mail_move(role:'junk')` (#1418) is
+  asking to reverse a documented safety invariant (autonomous mail hiding/moving stays
+  human-gated), not just call an existing primitive — that's a policy decision for a
+  human, not a routine wiring fix a batch PR should make unilaterally.
+
 ## Version coherence (#1238)
 
 Bump `package.json`'s `version` and `plugins/sux/.claude-plugin/plugin.json`'s

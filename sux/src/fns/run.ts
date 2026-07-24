@@ -310,6 +310,17 @@ export const run: Fn = {
 		const opId = a?.op ? String(a.op) : "";
 		if (!opId) return failWith("bad_input", "run requires an `op` (a registered op id).");
 		if (!registry[opId]) return failWith("not_found", `run: unknown op '${opId}'. Known ops: ${Object.keys(registry).join(", ") || "(none)"}.`);
+		// A `map`/`mapField` node's `items.length` throws a bare, uninformative TypeError deep
+		// inside the interpreter (durable.ts) when `input` is omitted entirely — for a durable
+		// run that surfaces as an instantly-`errored` instance, never reaching the `ask` gate
+		// `describe` promised (#1421). Catch the missing-input case synchronously, before ever
+		// starting a Workflow instance, with a message that points at the fix.
+		if (a?.input === undefined) {
+			return failWith(
+				"bad_input",
+				`run: op '${opId}' requires \`input\` (the op tree's input value — call {action:'describe', op:'${opId}'} to see its expected shape). If a dedicated entrypoint fn exists for this op (e.g. mail_triage_plan for mail-triage-plan), prefer it over calling run() directly — it fetches and shapes the input for you.`,
+			);
+		}
 		const mode = a?.mode ? String(a.mode) : "auto";
 		if (mode !== "inline" && mode !== "durable" && mode !== "auto") return failWith("bad_input", `run: mode must be inline|durable|auto (got '${mode}').`);
 		try {

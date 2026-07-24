@@ -327,6 +327,12 @@ export interface PlanItem {
 // Observation search is rejected/over-broad). Appointment is deliberately absent —
 // it is not USCDI and selecting it forfeits auto client-ID distribution (§1).
 const OBSERVATION_CATEGORIES = ["laboratory", "vital-signs", "social-history"];
+// US Core's CarePlan profile requires a `category` — Epic rejects a bare
+// `CarePlan?patient=…` with a non-retryable 4xx on all three connected orgs (#1402).
+// `assess-plan` (http://hl7.org/fhir/us/core/CodeSystem/careplan-category) is the one
+// US Core actually mandates every CarePlan carry, mirroring how Observation above is
+// already category-scoped rather than queried bare.
+const CAREPLAN_CATEGORY = "assess-plan";
 const SIMPLE_TYPES = ["Condition", "MedicationRequest", "AllergyIntolerance", "Immunization", "Procedure", "DiagnosticReport", "DocumentReference", "Encounter", "CarePlan", "CareTeam", "Goal", "Device", "Provenance"];
 
 /** Build the per-type search plan for a patient. `types` narrows to the given
@@ -343,7 +349,9 @@ export function resourcePlan(patientId: string, types?: string[], since?: string
 		for (const cat of OBSERVATION_CATEGORIES) plan.push({ type: "Observation", label: `Observation.${cat}`, query: `patient=${pid}&category=${cat}&_count=100${dateParam}` });
 	}
 	for (const t of SIMPLE_TYPES) {
-		if (wants(t)) plan.push({ type: t, label: t, query: `patient=${pid}&_count=100${dateParam}` });
+		if (!wants(t)) continue;
+		const categoryParam = t === "CarePlan" ? `&category=${CAREPLAN_CATEGORY}` : "";
+		plan.push({ type: t, label: t, query: `patient=${pid}&_count=100${categoryParam}${dateParam}` });
 	}
 	return plan;
 }

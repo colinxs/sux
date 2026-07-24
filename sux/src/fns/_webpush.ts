@@ -246,3 +246,65 @@ export async function notify(env: RtEnv, message: PushMessage, ttlSeconds = 60):
 	}
 	return { sent, failed };
 }
+
+// ── RFC 8291 receiver role (#1408) — sux as the SUBSCRIBER of a JMAP PushSubscription ──
+//
+// Everything above assumes sux is the sender (encryptPayload uses the OTHER side's
+// p256dh/auth). A JMAP PushSubscription (mail-mcp.ts's mail_push) runs the opposite
+// direction: Fastmail is the application server, sux's webhook is the subscriber, and
+// since Fastmail now enforces RFC 8291 encryption unconditionally (no `keys` ⇒ create
+// rejected), sux must mint its OWN receiver keypair + auth secret and decrypt what
+// Fastmail sends.
+
+/** Mint a fresh ECDH P-256 keypair + 16-byte auth secret for sux to register as a Web
+ *  Push SUBSCRIBER (RFC 8291 §4's "keys" object). The private key is exported as an
+ *  extractable JWK so it round-trips through KV — a Worker isolate holds no live
+ *  CryptoKey between the subscribe call and a later webhook delivery. */
+export async function generateReceiverKeys(): Promise<{ p256dh: string; auth: string; privateKeyJwk: JsonWebKey }> {
+	const kp = await generateEcKeyPair("P-256", ["deriveBits"]);
+	const publicRaw = await exportRawKey(kp.publicKey);
+	const privateKeyJwk = (await crypto.subtle.exportKey("jwk", kp.privateKey)) as JsonWebKey;
+	const auth = crypto.getRandomValues(new Uint8Array(16));
+	return { p256dh: bytesToB64url(publicRaw), auth: bytesToB64url(auth), privateKeyJwk };
+}
+
+/** Decrypt an inbound RFC 8291 aes128gcm push body — the mirror of encryptPayload with
+ *  sux playing the SUBSCRIBER (UA) role: the sender's ephemeral public key travels in the
+ *  aes128gcm body's own header (RFC 8188 §2.1 keyid) instead of being generated locally.
+ *  `p256dhB64`/`privateKeyJwk`/`authB64` are this subscription's own receiver keys, as
+ *  minted by generateReceiverKeys and persisted at subscribe time. */
+export async function decryptPayload(body: Uint8Array, p256dhB64: string, privateKeyJwk: JsonWebKey, authB64: string): Promise<Uint8Array> {
+	if (body.length < 21) throw new Error("aes128gcm body too short for its fixed header");
+	const salt = body.slice(0, 16);
+	const idlen = body[20];
+	const headerLen = 21 + idlen;
+	if (body.length < headerLen) throw new Error("aes128gcm body too short for its keyid");
+	const asPublicRaw = body.slice(21, headerLen);
+	const ciphertext = body.slice(headerLen);
+
+	const uaPublicRaw = b64urlToBytes(p256dhB64); // sux's own registered public key
+	const authSecret = b64urlToBytes(authB64);
+	const uaPrivateKey = await crypto.subtle.importKey("jwk", privateKeyJwk, { name: "ECDH", namedCurve: "P-256" }, false, ["deriveBits"]);
+	const asPublicKey = await crypto.subtle.importKey("raw", asPublicRaw, { name: "ECDH", namedCurve: "P-256" }, false, []);
+	const ecdhSecret = await ecdhDeriveBits(asPublicKey, uaPrivateKey);
+
+	// Same §3.3/RFC 8188 §2 derivation as encryptPayload, roles swapped: "ua" is sux's own
+	// static key here (not the ephemeral one), "as" is the sender's ephemeral key from the header.
+	const prkKey = await hmacSha256(authSecret, ecdhSecret);
+	const keyInfo = concatBytes(textEncoder.encode("WebPush: info"), new Uint8Array([0]), uaPublicRaw, asPublicRaw, new Uint8Array([1]));
+	const ikm = await hmacSha256(prkKey, keyInfo);
+
+	const prk = await hmacSha256(salt, ikm);
+	const cek = (await hmacSha256(prk, concatBytes(textEncoder.encode("Content-Encoding: aes128gcm"), new Uint8Array([0, 1])))).slice(0, 16);
+	const nonce = (await hmacSha256(prk, concatBytes(textEncoder.encode("Content-Encoding: nonce"), new Uint8Array([0, 1])))).slice(0, 12);
+
+	const cekKey = await crypto.subtle.importKey("raw", cek, { name: "AES-GCM" }, false, ["decrypt"]);
+	const decrypted = new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: nonce }, cekKey, ciphertext));
+
+	// RFC 8188 §2: strip trailing zero PADDING back to the 1-byte delimiter (0x01 = more
+	// records follow, 0x02 = last — a JMAP push is always exactly one record).
+	let end = decrypted.length;
+	while (end > 0 && decrypted[end - 1] === 0) end--;
+	if (end === 0) throw new Error("aes128gcm record has no padding delimiter");
+	return decrypted.slice(0, end - 1);
+}

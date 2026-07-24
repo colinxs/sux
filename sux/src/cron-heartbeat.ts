@@ -117,6 +117,63 @@ export async function runSubJob(env: RtEnv, name: CronJob, fn: () => Promise<unk
 }
 
 type KVLike = { get(key: string): Promise<string | null> };
+type ListableKVLike = KVLike & { list(opts: { prefix: string }): Promise<{ keys: Array<{ name: string }> }> };
+
+// Local `watch` scheduled tasks (deterministic check.sh probes) are namespaced
+// separately from CRON_JOBS above — an open-ended set of names, not a fixed const
+// list, so heartbeats are looked up by KV `list()` over the prefix rather than a
+// known-names map (#1414). Default staleAfter mirrors CRON_STALE_MS; a poster may
+// override it per name (its own cadence).
+const WATCH_PREFIX = "sux:watch:heartbeat:";
+export const WATCH_STALE_MS_DEFAULT = CRON_STALE_MS;
+
+export type WatchHeartbeat = { ok: boolean; at: number; error?: string; staleAfterMs?: number };
+
+/** Stamp a named watch's outcome. Best-effort, same posture as recordHeartbeat: a KV
+ * write failure never throws — the ingest route's caller must never see its pass fail
+ * just because observability couldn't persist. */
+export async function recordWatchHeartbeat(env: RtEnv, name: string, ok: boolean, error?: string, staleAfterMs?: number): Promise<void> {
+	try {
+		const beat: WatchHeartbeat = { ok, at: Date.now() };
+		if (error) beat.error = error.slice(0, 300);
+		else if (!ok) beat.error = "failed with no error text recorded";
+		if (staleAfterMs && staleAfterMs > 0) beat.staleAfterMs = staleAfterMs;
+		await env.OAUTH_KV?.put(WATCH_PREFIX + name, JSON.stringify(beat));
+	} catch {
+		// heartbeat is observability-only; never let it fail the poster's pass.
+	}
+}
+
+/** Read every posted watch heartbeat and derive its staleness at `now`, per-watch
+ * cadence honored via each beat's own `staleAfterMs` (falls back to the cron default).
+ * Mirrors readHeartbeats' never-throws contract; an empty/failed list degrades to {}. */
+export async function readWatchHeartbeats(kv: ListableKVLike | undefined, now = Date.now()): Promise<Record<string, unknown>> {
+	if (!kv) return {};
+	try {
+		const { keys } = await kv.list({ prefix: WATCH_PREFIX });
+		const entries = await Promise.all(
+			keys.map(async ({ name: key }) => {
+				const name = key.slice(WATCH_PREFIX.length);
+				try {
+					const raw = await kv.get(key);
+					const beat = raw ? (JSON.parse(raw) as Partial<WatchHeartbeat>) : null;
+					if (!beat || typeof beat.at !== "number") return [name, { seen: false }] as const;
+					const age_ms = now - beat.at;
+					const staleAfterMs = beat.staleAfterMs ?? WATCH_STALE_MS_DEFAULT;
+					return [
+						name,
+						{ seen: true, ok: Boolean(beat.ok), at: beat.at, age_ms, stale: age_ms > staleAfterMs, ...(beat.error ? { error: beat.error } : {}) },
+					] as const;
+				} catch {
+					return [name, { seen: false }] as const;
+				}
+			}),
+		);
+		return Object.fromEntries(entries);
+	} catch {
+		return {};
+	}
+}
 
 /** Read every sub-job heartbeat and derive its staleness at `now`. Pure over a
  * KV-like reader so it's testable; a missing/unparseable beat degrades to

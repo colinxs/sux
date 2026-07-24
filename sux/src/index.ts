@@ -17,7 +17,7 @@ const SUMMARIZE_MIN_CHARS = 400;
 import { FUNCTIONS } from "./fns";
 import { LIFE_SKILL_DESCRIPTION, LIFE_SKILL_PROMPT, SUX_SKILL_DESCRIPTION, SUX_SKILL_PROMPT } from "./skill-prompt";
 import { selfImproveTick } from "./fns/_self_improve";
-import { CRON_JOBS, readHeartbeats, runSubJob } from "./cron-heartbeat";
+import { CRON_JOBS, readHeartbeats, recordWatchHeartbeat, runSubJob } from "./cron-heartbeat";
 import { recordAnalyticsEvent } from "./analytics";
 import { recordCall } from "./metrics";
 import { shipGithubBillingSnapshot, shipMetricsSnapshot, shipToLoki } from "./grafana";
@@ -1436,6 +1436,36 @@ export default {
 			}
 		}
 
+		// Authenticated ingest for local `watch` scheduled tasks (deterministic check.sh
+		// probes, e.g. the retired mychart-doors pattern) to post an external staleness
+		// signal — POST /watch/heartbeat {name, ok, error?, staleAfterMs?}, same auth as
+		// /mychart/connect / /admin/tick (bearer SUX_CRON_TOKEN, unset ⇒ 404, feature off).
+		// gatherHealth surfaces these under `watch`, namespaced separately from CRON_JOBS
+		// (#1414) — a watch dying is distinguishable from its condition never tripping.
+		{
+			const u = new URL(request.url);
+			if (request.method === "POST" && u.pathname === "/watch/heartbeat") {
+				const token = env.SUX_CRON_TOKEN;
+				if (!token) return new Response("not found", { status: 404 });
+				const auth = request.headers.get("authorization") ?? "";
+				const presented = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+				if (!presented || !timingSafeEqual(token, presented)) return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: { "content-type": "application/json" } });
+				let body: any;
+				try {
+					body = await request.json();
+				} catch {
+					return new Response(JSON.stringify({ error: "invalid JSON body" }), { status: 400, headers: { "content-type": "application/json" } });
+				}
+				const name = typeof body?.name === "string" ? body.name.trim() : "";
+				if (!name) return new Response(JSON.stringify({ error: "`name` is required" }), { status: 400, headers: { "content-type": "application/json" } });
+				const ok = body?.ok !== false;
+				const error = typeof body?.error === "string" ? body.error : undefined;
+				const staleAfterMs = typeof body?.staleAfterMs === "number" && body.staleAfterMs > 0 ? body.staleAfterMs : undefined;
+				await recordWatchHeartbeat(env, name, ok, error, staleAfterMs);
+				return new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json" } });
+			}
+		}
+
 		// JMAP push webhook — Fastmail POSTs here the moment new mail arrives (once
 		// mail({action:'push_subscribe'}) is armed), letting mail_triage react in
 		// seconds instead of waiting for the next ~5min cron tick. The URL's <token>
@@ -1447,10 +1477,12 @@ export default {
 			const u = new URL(request.url);
 			const m = request.method === "POST" && u.pathname.match(/^\/push\/jmap\/([^/]+)$/);
 			if (m) {
-				const body = await request.text();
-				if (body.length > 16_000) return new Response("payload too large", { status: 413 });
+				// Fastmail now sends every push as an aes128gcm-encrypted binary body (#1408) —
+				// raw bytes, not text; handleMailPushWebhook decrypts before touching JSON.
+				const buf = await request.arrayBuffer();
+				if (buf.byteLength > 16_000) return new Response("payload too large", { status: 413 });
 				const mod = await import("./mail-mcp");
-				const matched = await mod.handleMailPushWebhook(env, m[1], body, () => mailTriageTick(env));
+				const matched = await mod.handleMailPushWebhook(env, m[1], new Uint8Array(buf), () => mailTriageTick(env));
 				return matched ? new Response(null, { status: 200 }) : new Response("not found", { status: 404 });
 			}
 		}
