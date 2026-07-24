@@ -30,6 +30,7 @@
 //     by construction: the executor calls mail_draft (draftOrSend with send=false); no
 //     EmailSubmission / send op is representable anywhere in this module.
 import { hasAI, llm } from "../ai";
+import { MAIL_TRIAGE_SPAM } from "../prompts";
 import type { RtEnv } from "../registry";
 import { ledger } from "../ledger";
 import { type AssimilateInput, type AssimilateResult, assimilate, hasAssimilate } from "./_assimilate";
@@ -285,9 +286,6 @@ export function classifyMessage(msg: TriageMsg): Classification {
 	return { label: "unknown", confidence: 0.2, reason: "no rule matched" };
 }
 
-const SPAM_AI_SYSTEM =
-	"You classify a single email as promotional/marketing SPAM or NOT. Reply with exactly one word: SPAM or NOT_SPAM. SPAM means a sales pitch, marketing blast, or promotional offer; a real person's message, a receipt/transaction/service notification, or an on-topic reply is NOT_SPAM.";
-
 /** Ambiguous-case AI classifier: fires ONLY when the sync rules fell all the way through to
  *  `unknown` AND a weak/borderline promotional cue is present — mirrors summarize.ts's
  *  best-effort Workers-AI tier (cheap rung first, model only for the genuinely unclear
@@ -299,7 +297,7 @@ async function classifySpamAmbiguous(env: RtEnv, msg: TriageMsg, base: Classific
 	if (!SPAM_WEAK_CUE.test(hay)) return base;
 	try {
 		const material = `From: ${msg.from ?? "?"}\nSubject: ${msg.subject ?? "(no subject)"}\n\n${(msg.preview ?? "").slice(0, 500)}`;
-		const verdict = (await llm(env, SPAM_AI_SYSTEM, material, 8, "classify spam")).trim().toUpperCase();
+		const verdict = (await llm(env, MAIL_TRIAGE_SPAM.system, material, MAIL_TRIAGE_SPAM.maxTokens, MAIL_TRIAGE_SPAM.task)).trim().toUpperCase();
 		if (verdict.startsWith("SPAM")) return { label: "spam", confidence: 0.78, reason: "AI-classified promotional spam (ambiguous rule signal)" };
 	} catch {
 		// Best-effort: any model/transport failure just falls back to the base result below.

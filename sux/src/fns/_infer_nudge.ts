@@ -21,6 +21,7 @@
 import type { RtEnv } from "../registry";
 import { fingerprint, ledger } from "../ledger";
 import { hasAI, llm } from "../ai";
+import { INFER_NUDGE_PHRASING } from "../prompts";
 import { appendInferInference, deleteInferInference, hasInferArm, isInferKilled, readInferSignals, type InferDomain, type InferSignal } from "./_infer";
 import { detectCentroidDrift, type DriftCandidate, type DriftOptions } from "./_infer_drift";
 import { ANOMALY_RECIPES, detectScalarAnomaly, type AnomalyCandidate, type AnomalyOptions, type AnomalyRecipe } from "./_infer_anomaly";
@@ -295,12 +296,6 @@ export async function runInferNudge(env: RtEnv, opts: { domains?: InferDomain[] 
 // configured, so the nudge surface degrades to a plain template rather than failing closed.
 const fallbackPhrasing = (cluster: string): string => `A lot about ${cluster} lately — start a note/project for it?`;
 
-const PHRASING_SYSTEM_PROMPT =
-	"You turn redacted evidence lines into exactly ONE short, warm suggestion sentence in the form " +
-	"'I noticed <plain evidence> — want me to <gentle action>?'. Output ONLY that one sentence: no preamble, " +
-	"no markdown, no extra commentary. Never invent a fact that isn't present in the evidence, and never name " +
-	"a medical condition or diagnosis.";
-
 /** The one LLM touch every nudge-recipe path makes (design doc §1's "rules-then-LLM ladder") —
  *  phrasing only, fed redacted evidence lines, never the raw candidate/decision. Degrades to a
  *  static template when Workers-AI isn't configured or there's no evidence to phrase from.
@@ -308,7 +303,7 @@ const PHRASING_SYSTEM_PROMPT =
  *  contract doesn't depend on which detector produced the candidate. */
 async function phraseEvidence(env: RtEnv, evidenceLines: string, cluster: string): Promise<string> {
 	if (!hasAI(env) || !evidenceLines.trim()) return fallbackPhrasing(cluster);
-	const out = await llm(env, PHRASING_SYSTEM_PROMPT, evidenceLines, 120, "phrasing a proactive nudge from redacted signal evidence");
+	const out = await llm(env, INFER_NUDGE_PHRASING.system, evidenceLines, INFER_NUDGE_PHRASING.maxTokens, INFER_NUDGE_PHRASING.task);
 	return out.trim() || fallbackPhrasing(cluster);
 }
 
