@@ -5,7 +5,7 @@ import { kagiTool } from "../kagi";
 import type { Route } from "../proxy";
 import { type Fn, fail, ok } from "../registry";
 import type { RtEnv, ToolResult } from "../registry";
-import { AUTO_REF_THRESHOLD_BYTES, deliverBytes, fromB64, inlineB64, loadBytes, putBlob, sha256Hex, storeRefUuid, toB64 } from "./_util";
+import { deliverBytes, fromB64, inlineB64, loadBytes, putBlob, storeRefUuid, toB64 } from "./_util";
 
 export type Kind = "pdf" | "document" | "ebook" | "code" | "docs" | "artifact" | "reference" | "any";
 
@@ -141,45 +141,12 @@ async function findFn(name: string): Promise<{ run: (env: any, args: any) => Pro
 
 const isPdfMagic = (b: Uint8Array): boolean => b.length >= 4 && b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46;
 
-// Content headless Chromium can actually lay out and print. Anything else — a
-// docx/epub/zip/image download, any opaque binary — has no renderer here, and
-// handing it to render's page.pdf() yields a blank-page husk that LOOKS like a
-// valid result (#1479, same failure shape as #1380/#1385). A NUL byte in the
-// first block is the deterministic binary tell; the content-type is only
-// consulted when the bytes themselves are ambiguous.
-const BINARY_SNIFF_WINDOW = 1024;
-export function isPrintableSource(bytes: Uint8Array, contentType: string): boolean {
-	if (/^(?:text\/|application\/(?:xhtml\+xml|xml|json|javascript|x-ndjson))/i.test(contentType) || /\bhtml\b/i.test(contentType)) return true;
-	if (/^(?:image|audio|video|font)\//i.test(contentType)) return false;
-	if (contentType && !/^application\/(?:octet-stream)?$/i.test(contentType.split(";")[0].trim())) {
-		// A declared, non-generic type we don't recognize as textual (docx, epub, zip, …).
-		if (!/\+(?:xml|json)\b/i.test(contentType)) return false;
-		return true;
-	}
-	return !bytes.subarray(0, BINARY_SNIFF_WINDOW).includes(0);
-}
-
-/** The delivery envelope deliverBytes mints for a ref, reusing a ref the caller already holds. */
-async function deliverExistingRef(bytes: Uint8Array, contentType: string, url: string): Promise<ToolResult> {
-	return { content: [{ type: "text", text: JSON.stringify({ url, sha256: await sha256Hex(bytes), size: bytes.length, content_type: contentType }) }] };
-}
-
-type NormalizeOpts = {
-	/** False for bytes that are already a finished artifact (a /s/<uuid> CAS ref): re-saving a
-	 *  stored PDF through pdf-lib copies the page tree only, silently dropping embedded files,
-	 *  AcroForm fields and outlines — a 1.2MB document comes back an 865-byte husk (#1479). */
-	recompressPdf?: boolean;
-	/** Hand this ref back instead of minting a second, TTL'd copy of identical bytes. */
-	passthroughRef?: string;
-};
-
 async function normalizeBytes(
 	env: RtEnv,
 	bytes: Uint8Array,
 	contentType: string,
 	convertToPdf: boolean,
 	deliver: "inline" | "url" | undefined,
-	opts: NormalizeOpts = {},
 ): Promise<{ result: ToolResult; converted: boolean; bytes: Uint8Array; contentType: string }> {
 	const ct = contentType ?? "";
 	const deliverUrl = deliver === "url" ? "url" : undefined;
@@ -191,7 +158,7 @@ async function normalizeBytes(
 		contentType: normContentType,
 	});
 
-	if (isPdfMagic(bytes) && opts.recompressPdf !== false) {
+	if (isPdfMagic(bytes)) {
 		const pdfFn = await findFn("pdf");
 		const r = await pdfFn.run(env, { data: toB64(bytes), compress: true, as: "base64" });
 		if (r?.isError) return { result: r, converted: false, bytes, contentType: ct };
@@ -212,12 +179,6 @@ async function normalizeBytes(
 
 	// No converter for this content — deliver the fetched bytes as-is, respecting `deliver`.
 	const mime = ct || "application/octet-stream";
-	// Delivering a CAS ref's own bytes: reuse the caller's permanent handle rather than
-	// content-addressing an identical copy behind a fresh 7-day handle (a silent TTL
-	// downgrade of the very ref they passed in).
-	if (opts.passthroughRef && deliver !== "inline" && (deliver === "url" || bytes.length > AUTO_REF_THRESHOLD_BYTES)) {
-		return { result: await deliverExistingRef(bytes, mime, opts.passthroughRef), converted: false, bytes, contentType: mime };
-	}
 	return { result: await deliverBytes(env, bytes, mime, deliverUrl, () => inlineB64(bytes, mime)), converted: false, bytes, contentType: mime };
 }
 
@@ -253,10 +214,6 @@ export async function acquireFromUrl(env: RtEnv, url: string, as: "pdf" | "archi
 		try {
 			const sniffed = await loadBytesFromUrl(env, url);
 			if (isPdfMagic(sniffed.bytes)) return sniffed;
-			// A binary with no renderer (docx/epub/zip/image/…) is what `get`'s own contract
-			// already promises to return as-is — printing it in headless Chromium produces a
-			// plausible blank-page husk instead of an error (#1479).
-			if (sniffed.bytes.length && !isPrintableSource(sniffed.bytes, sniffed.contentType)) return sniffed;
 		} catch {
 			// not fatal — render below gets its own shot at the URL
 		}
@@ -266,10 +223,7 @@ export async function acquireFromUrl(env: RtEnv, url: string, as: "pdf" | "archi
 		if (r?.isError) throw new Error(r.content?.[0]?.text ?? "render failed");
 		const parsed = JSON.parse(r.content?.[0]?.text ?? "{}") as { mime?: string; base64?: string };
 		if (!parsed.base64) throw new Error("render did not return pdf bytes");
-		const rendered = fromB64(parsed.base64);
-		// Never pass a non-PDF render result off as one — that is the silent-stub shape.
-		if (!isPdfMagic(rendered)) throw new Error(`render returned ${rendered.length} bytes that are not a PDF for ${url}`);
-		return { bytes: rendered, contentType: parsed.mime ?? "application/pdf" };
+		return { bytes: fromB64(parsed.base64), contentType: parsed.mime ?? "application/pdf" };
 	}
 
 	const waybackFn = await findFn("wayback");
@@ -305,8 +259,8 @@ export const get: Fn = {
 	description:
 		"Universal 'get me a file'. `input` is either an absolute http(s) URL (URL mode) or a search query (query mode), optionally using file(kind, subquery) clauses to run several typed searches at once, e.g. file(pdf, textbook) file(code, react hooks). " +
 		"Query mode fans out over Kagi: free session-scrape operator strategies (filetype:/site: — needs KAGI_SESSION) plus <=2 bounded metered lens strategies per kind (needs KAGI_API_KEY) — see `kind`. Hits are deduped into unique editions (same title+filetype mirrored across hosts collapses to one; a different filetype or a genuinely different title stays separate), the top edition is downloaded and normalized, and every unique edition is returned so a caller can re-pick. " +
-		"URL mode turns the page into a durable artifact: `as:'pdf'` (default) renders it to PDF; `as:'archive'` prefers a Wayback snapshot, falling back to a live scrape. A sux `/s/<uuid>` store ref (what `put`/`store` hand back) round-trips BYTE-FOR-BYTE — it's already a finished artifact, so it is neither re-rendered nor re-compressed, and the same permanent ref comes back rather than an expiring copy. " +
-		"Normalize: a PDF fetched from the open web is compressed (object streams + stripped metadata). `convert:'pdf'` additionally converts html/plain-text results to PDF before compressing — docx/epub and other binary formats have no converter today and are returned as-is (`converted:false` in the result either way that happens). " +
+		"URL mode turns the page into a durable artifact: `as:'pdf'` (default) renders it to PDF; `as:'archive'` prefers a Wayback snapshot, falling back to a live scrape. " +
+		"Normalize: a PDF result is always compressed (object streams + stripped metadata). `convert:'pdf'` additionally converts html/plain-text results to PDF before compressing — docx/epub and other binary formats have no converter today and are returned as-is (`converted:false` in the result either way that happens). " +
 		"`store` delegates to `ingest` (vault/dropbox/r2 blob routing); `summarize` (vault store only) adds an AI summary via the existing `summarize` fn's cost-conscious path. " +
 		"`download:false` (query mode only) returns just the ranked editions, skipping the fetch/normalize/store steps entirely.",
 	inputSchema: {
@@ -338,14 +292,9 @@ export const get: Fn = {
 		try {
 			if (isUrlInput(input)) {
 				const as = args?.as === "archive" ? "archive" : "pdf";
-				// A /s/<uuid> CAS ref is a finished artifact sux itself minted, not a source to
-				// normalize — hand its bytes back verbatim. Re-saving one through pdf-lib drops
-				// everything outside the page tree (#1479); rendering one yields a husk (#1380).
-				const storedRef = storeRefUuid(input) ? input : undefined;
 				const { bytes, contentType } = await acquireFromUrl(env, input, as);
 				if (!bytes.length) return fail(`Fetched 0 bytes from ${input} — the source is empty or the fetch was blocked; nothing to return.`);
-				const { result: normalized, converted, bytes: normBytes, contentType: normContentType } = await normalizeBytes(env, bytes, contentType, convertToPdf, deliver, { recompressPdf: !storedRef, passthroughRef: storedRef });
-				if (normalized.isError) return normalized;
+				const { result: normalized, converted, bytes: normBytes, contentType: normContentType } = await normalizeBytes(env, bytes, contentType, convertToPdf, deliver);
 				const out: Record<string, unknown> = { file: JSON.parse(normalized.content?.[0]?.text ?? "{}"), converted };
 				if (args?.store && args.store !== "none") out.stored = await storeResult(env, normBytes, normContentType, args.store, args?.summarize === true);
 				return ok(JSON.stringify(out));
@@ -364,7 +313,6 @@ export const get: Fn = {
 			const { bytes, contentType } = await loadBytesFromUrl(env, top.url);
 			if (!bytes.length) return fail(`Downloaded 0 bytes from the top edition (${top.url}) — it's empty or the fetch was blocked. Retry, or use download:false to pick another edition.`);
 			const { result: normalized, converted, bytes: normBytes, contentType: normContentType } = await normalizeBytes(env, bytes, contentType, convertToPdf, deliver);
-			if (normalized.isError) return normalized;
 			const out: Record<string, unknown> = { file: JSON.parse(normalized.content?.[0]?.text ?? "{}"), editions, picked: 0, converted };
 			if (args?.store && args.store !== "none") out.stored = await storeResult(env, normBytes, normContentType, args.store, args?.summarize === true);
 			return ok(JSON.stringify(out));
