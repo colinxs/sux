@@ -83,7 +83,7 @@ frontmatter, so the discipline reduces to: *when reality moves, flip the
 
 ## This wiki and the runtime vault (the seam, now decided)
 
-This repo's own `ingest` / `obsidian` fns write to the `colinxs/obsidian-vault`
+This repo's own `ingest` / `obsidian` fns write to the `SuxOS/vault`
 store, not here — two corpora with different authorities (public code-docs vs
 Colin's private KB). The stance is now **decided, not parked**: unify the *view*,
 never copy the *content*. A gitignored symlink mounts this public `docs/` *into*

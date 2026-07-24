@@ -3,6 +3,13 @@
 **Date:** 2026-07-18
 **Status:** approved (design), not yet implemented
 
+> **Note (added 2026-07-23):** This design's two-repo model is a point-in-time snapshot and
+> predates the actual org consolidation. The `colinxs/vault` named below was the personal-account
+> repo that has since been renamed/moved into the org as `SuxOS/vault` — a *different* entity from
+> the portal-only `SuxOS/vault` this doc describes as the second repo. Don't read `colinxs/vault`
+> anywhere below as a current live location. What actually happened instead: a separate `suxvault`
+> repo was merged into `SuxOS/vault` (vault#15, 2026-07-23).
+
 ## Problem
 
 The vault currently splits across two repos: `colinxs/vault` (Colin's full private record)

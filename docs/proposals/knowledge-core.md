@@ -12,7 +12,7 @@ updated: 2026-07-09
 
 # Getting the knowledge core right
 
-The core spec for a personal-knowledge store on `colinxs/vault`. Decisions only — no feature/tool design. Each section is a call plus the reasoning and the strongest source behind it.
+The core spec for a personal-knowledge store on `SuxOS/vault`. Decisions only — no feature/tool design. Each section is a call plus the reasoning and the strongest source behind it.
 
 ---
 
@@ -176,7 +176,7 @@ Converged from the `community-workflows` 6-verb set and the `claude-skills` capt
 1. **Both transports first-class** (Open Decision #1) — cloud/mobile via the sux worker prefers the live vault through the Funnel'd Local REST API (full ops when the Mac is up), git backend only when the Mac is asleep. Not a fallback; a graceful degrade.
 2. **Two skills** — a cheap capture/remember skill + a separate consolidate (GC) skill. Clean lifecycle separation.
 3. **Plugin-light, no Dataview** — Claude generates structured views on demand via the Local REST API's server-side DQL; the vault stays plugin-light.
-4. **Claude fully unblocked on writes** — no per-write approval, no confirm-on-delete, no `@generated` sentinel regions. Claude creates/edits/deletes freely. **The safety net is git**: every change is a revertible commit in `colinxs/vault` (obsidian-git auto-syncs), so "undo" = `git revert`. Surgical `/patch` edits are still PREFERRED for cleanliness (don't reprint whole notes), but not gated.
+4. **Claude fully unblocked on writes** — no per-write approval, no confirm-on-delete, no `@generated` sentinel regions. Claude creates/edits/deletes freely. **The safety net is git**: every change is a revertible commit in `SuxOS/vault` (obsidian-git auto-syncs), so "undo" = `git revert`. Surgical `/patch` edits are still PREFERRED for cleanliness (don't reprint whole notes), but not gated.
 
 Build order (deferred until Colin says go): capture/remember skill → consolidate skill → wire the retrieval ladder + the both-transports routing.
 

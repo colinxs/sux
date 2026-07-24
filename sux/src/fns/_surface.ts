@@ -15,8 +15,8 @@ export const DOMAINS: DomainSpec[] = [
 	{ key: "search", blurb: "Web search across engines (Kagi, Google, Brave, DDG, Tavily, Exa).", leaves: ["search", "web_search", "tavily"] },
 	{
 		key: "fetch",
-		blurb: "Retrieve & render pages through a residential proxy, with the scrape → render escalation ladder for bot-walled sites; snapshots, redirects, robots, crawl, and the `get`/`put` download verbs.",
-		leaves: ["scrape", "render", "proxy", "crawl", "wayback", "redirects", "robots", "get", "put"],
+		blurb: "Retrieve & render pages through a residential proxy, with the scrape → render escalation ladder for bot-walled sites; snapshots, redirects, robots, crawl.",
+		leaves: ["scrape", "render", "proxy", "crawl", "wayback", "redirects", "robots"],
 	},
 	{
 		key: "extract",
@@ -50,8 +50,8 @@ export const DOMAINS: DomainSpec[] = [
 	},
 	{
 		key: "storage",
-		blurb: "R2 content-addressed blob store (`store`, and the bulk download-and-shelve pair `put`/`get`), KV, the Dropbox app-folder, and the `files` namespace verb (whole-Dropbox on the one /mcp connector).",
-		leaves: ["store", "put", "get", "kv_get", "kv_put", "kv_list", "kv_delete", "dropbox", "files"],
+		blurb: "R2 content-addressed blob store, KV, the Dropbox app-folder, and the `files` namespace verb (whole-Dropbox on the one /mcp connector).",
+		leaves: ["store", "kv_get", "kv_put", "kv_list", "kv_delete", "dropbox", "files"],
 	},
 	{
 		key: "recall",

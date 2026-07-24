@@ -35,7 +35,7 @@ import {
 // dispatch into these handlers now.
 //
 // The source of truth is in the cloud: tools read and write the git store
-// (GitHub colinxs/vault — every write a revertible commit, KV-cached) and work
+// (GitHub SuxOS/vault — every write a revertible commit, KV-cached) and work
 // with NO box awake. The live vault (remote/vpc backend) is used only where git
 // cannot serve: full-text search (GitHub code search is dead on private repos).
 //

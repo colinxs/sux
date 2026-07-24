@@ -37,8 +37,16 @@ jobs:
       # impossible, at zero practical cost at trickle backlog — efficiency (CI minutes /
       # tokens per landed issue) is strictly best at 1 lane. Wall-clock parallelism only
       # matters during hot drains, which may temporarily re-raise these (as #1237 did).
-      max-issues: 8
-      effort-budget: 14
+      #
+      # 2026-07-24 HOT-DRAIN (operator: ~90 open issues here, 70% of the org backlog; drain
+      # it quickly, but "we hate stuck/held builds even more than wasted work"). So widen M
+      # (max-issues) ONLY — up to the operator-proven v4-push value of 12 — and hold N
+      # (parallel-batches) at 1. M-up processes more issues per hourly run *sequentially
+      # within the lane*, so it never creates coincident-sibling PRs; N>1 is the knob that
+      # manufactures DIRTY conflicts → held builds, so it stays at 1. effort-budget scales
+      # with M (14→22, ~constant per-issue). REVERT to 8/14/1 once this backlog is < ~20.
+      max-issues: 12
+      effort-budget: 22
       parallel-batches: 1
       needs-suxlib: true  # package.json depends on "@suxos/lib": "file:../suxlib" (see CLAUDE.md's Known gotcha) — the reusable clones it before npm ci when this is set
       gates-summary: |
