@@ -17,7 +17,7 @@ describe("facebook", () => {
 
 	it("fetches a graph node with fields + limit and returns the JSON", async () => {
 		const fetchMock = vi.fn(async (u: string | URL) => {
-			expect(String(u)).toContain("/v21.0/me?");
+			expect(String(u)).toContain("/v25.0/me?");
 			expect(String(u)).toContain("fields=id%2Cname");
 			expect(String(u)).toContain("access_token=t");
 			return new Response(JSON.stringify({ id: "1", name: "Page" }), { status: 200 });

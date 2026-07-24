@@ -5,7 +5,10 @@ import { oj } from "./_util";
 // API access token with the scopes for whatever you're reading (pages, posts,
 // public profile). graph.facebook.com is an authenticated API, so it egresses
 // direct (like SerpAPI/Kroger); bounded with a timeout.
-const GRAPH = "https://graph.facebook.com/v21.0";
+// Meta enforces a 2-year version lifespan; keep this bumped to a live version
+// (developers.facebook.com/docs/graph-api/changelog/versions) — v21.0 stopped
+// accepting new requests 2025-09-09 (#1518).
+const GRAPH = "https://graph.facebook.com/v25.0";
 
 export const facebook: Fn = {
 	name: "facebook",
