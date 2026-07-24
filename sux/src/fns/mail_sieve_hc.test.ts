@@ -10,7 +10,7 @@ describe("mail_sieve_hc (front verb)", () => {
 		expect(r.isError).toBeUndefined();
 		const out = parse(r);
 		expect(out.categories.sort()).toEqual([...ALL_DOMAIN_CATEGORIES].sort());
-		expect(out.script).toContain('require ["imap4flags", "variables"];');
+		expect(out.script).toContain('require ["imap4flags"];');
 		expect(out.rule_count).toBeGreaterThan(0);
 		expect(out.note).toMatch(/paste/i);
 	});
@@ -22,7 +22,7 @@ describe("mail_sieve_hc (front verb)", () => {
 		expect(out.script).toContain('addflag "gov"');
 		expect(out.script).toContain('addflag "mil"');
 		expect(out.script).not.toContain('addflag "finance"');
-		expect(out.script).not.toMatch(/UW multi-level subdomains/); // education cascade excluded
+		expect(out.script).not.toMatch(/UW department subdomains/); // education cascade excluded
 	});
 
 	it("the education category compiles the hierarchical UW cascade, not just a flat 'edu' flag", async () => {
@@ -30,7 +30,10 @@ describe("mail_sieve_hc (front verb)", () => {
 		const out = parse(r);
 		expect(out.categories).toEqual(["education"]);
 		expect(out.script).toMatch(/UW department subdomains/);
-		expect(out.script).toContain('addflag ["edu", "uw", "${1}"]');
+		// #1417 defect 1: the dept tier is explicit per-department blocks, NOT a `${1}` wildcard capture
+		// (which tagged u.washington.edu as a "u" department on 158 of the newest 2000 real messages).
+		expect(out.script).toContain('addflag ["edu", "uw", "cs"]');
+		expect(out.script).not.toContain("${1}");
 	});
 
 	it("a brand group (finance) tags apex + wildcard subdomains under one label", async () => {

@@ -8,7 +8,7 @@ import { oj } from "./_util";
 // nothing (Sieve/rule writes are a gated, lasting-effect class; docs/proposals/jmap.md D5). It tags
 // mail at Fastmail delivery time by FROM domain with addflag only (never fileinto/discard/reject, so
 // every message still reaches the inbox), covering brand groups (finance/shopping/travel/…),
-// hierarchical education (edu + uw + dept via the ${1} capture), and gov/mil. Paste the output into
+// hierarchical education (edu + uw + dept, from an explicit allowlist), and gov/mil. Paste the output into
 // Fastmail Settings → Rules → Edit custom Sieve code by hand; mail_domain_backfill applies the
 // IDENTICAL rules to mail that already exists.
 export const mail_sieve_hc: Fn = {
@@ -16,7 +16,7 @@ export const mail_sieve_hc: Fn = {
 	surface: "leaf",
 	annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
 	description:
-		`Generate a high-confidence sender-domain Sieve script that tags mail at Fastmail delivery time by FROM domain — addflag only (never fileinto/discard/reject, so every message still reaches the inbox). Covers curated FIRST-PARTY brand groups (finance, shopping, travel, shipping, dev, tech, social, news, health — ESP/relay infra deliberately excluded), HIERARCHICAL education (edu + uw + department, e.g. cs.uw.edu → edu,uw,cs, via the \${1} variables capture), and gov/mil. Pass \`categories\` to narrow it (default: all — ${ALL_DOMAIN_CATEGORIES.join(", ")}). Output is TEXT ONLY: this fn never calls JMAP or installs anything — copy the script into Fastmail Settings → Rules → Edit custom Sieve code yourself. To label mail that ALREADY exists (a live Sieve only tags new deliveries), use mail_domain_backfill, which applies the identical rules.`,
+		`Generate a high-confidence sender-domain Sieve script that tags mail at Fastmail delivery time by FROM domain — addflag only (never fileinto/discard/reject, so every message still reaches the inbox). Covers curated FIRST-PARTY brand groups (finance, shopping, travel, shipping, dev, tech, social, news, health — ESP/relay infra deliberately excluded), HIERARCHICAL education (edu + uw + department, e.g. cs.uw.edu → edu,uw,cs, from an explicit department allowlist — an unrecognized UW subdomain degrades to edu,uw rather than inventing a department), and gov/mil. Pass \`categories\` to narrow it (default: all — ${ALL_DOMAIN_CATEGORIES.join(", ")}). Output is TEXT ONLY: this fn never calls JMAP or installs anything — copy the script into Fastmail Settings → Rules → Edit custom Sieve code yourself. To label mail that ALREADY exists (a live Sieve only tags new deliveries), use mail_domain_backfill, which applies the identical rules.`,
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
