@@ -689,6 +689,16 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   this session dropped its own #1460/#1356 diffs rather than risk landing a duplicate/
   conflicting fix, since another open PR already carried the same shape.
 
+## Mail-triage's junk-move exclusion is deliberate, not an oversight (#1418)
+
+`_mail_triage.ts`/`mail_triage.ts` document, in three separate places, that a hiding/
+attention-reducing move — junk-move, delete, label-remove — is structurally excluded from
+`AUTO_ACT_OPS`/`TriageOp` by design (spam auto-labels in place, it never files into real
+Junk). An issue asking to "wire spam to `mail_move(role:'junk')`" as a small self-contained
+fix is asking to reverse that documented safety invariant, not to close a gap — treat it as
+a policy question for a human (what confidence bar, whether it belongs on the allow-list at
+all), not a wiring task, and don't build it silently (#1418, dropped for this reason).
+
 ## Version coherence (#1238)
 
 Bump `package.json`'s `version` and `plugins/sux/.claude-plugin/plugin.json`'s
