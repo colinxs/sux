@@ -33,20 +33,21 @@ jobs:
           node-version: 22
           cache: npm
 
-      # package.json depends on "@suxos/lib": "file:../suxlib" — a PRIVATE sibling
-      # repo, not a submodule of this one, so a clean runner has no ../suxlib and
-      # `npm ci` fails resolving the file: dep. Mint a token scoped to just that
-      # repo (read-only) from the same App identity automerge.yml already uses.
-      - name: Mint app token for suxlib (private sibling dependency)
-        id: suxlib-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          app-id: ${{ secrets.SUX_BOT_APP_ID }}
-          private-key: ${{ secrets.SUX_BOT_PRIVATE_KEY }}
-          owner: SuxOS
-          repositories: suxlib
-          permission-contents: read
-
+      # suxlib is PUBLIC today (`gh api repos/SuxOS/suxlib` → private=false), so no
+      # App-token mint is needed to read it — the old "private sibling dependency"
+      # comment here was stale (sux#1491). GITHUB_TOKEN's default read scope (declared
+      # explicitly above) is sufficient. This also unblocks Dependabot: GitHub never
+      # exposes Actions secrets (SUX_BOT_APP_ID/SUX_BOT_PRIVATE_KEY) to a
+      # Dependabot-triggered run, so the old mint step failed there with an empty app-id.
+      #
+      # If suxlib becomes PRIVATE again: GITHUB_TOKEN is scoped to this repo only and
+      # will 404 on it. Restore the `actions/create-github-app-token` mint this step
+      # replaced (see git blame on this file, or sux#1491, for the exact shape) rather
+      # than chasing the symptom — an un-annotated GITHUB_TOKEN clone against a private
+      # suxlib otherwise fails as an opaque `npm ci` error resolving `file:../suxlib`
+      # several steps downstream of the real cause, which is exactly the misdiagnosis
+      # that produced the stale comment this replaces.
+      #
       # $GITHUB_WORKSPACE is .../work/sux/sux, so ../suxlib lands at .../work/sux/suxlib
       # — exactly where npm's file:../suxlib resolution looks.
       #
@@ -56,12 +57,15 @@ jobs:
       # the SAME sux commit). Advance the pin deliberately via bump-suxlib.yml
       # (scheduled, or `gh workflow run bump-suxlib.yml`) rather than editing this
       # step.
-      - name: Clone suxlib (private sibling dependency)
+      - name: Clone suxlib (public sibling dependency)
         env:
-          SUXLIB_TOKEN: ${{ steps.suxlib-token.outputs.token }}
+          SUXLIB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           SUXLIB_REF="$(cat .suxlib-ref)"
-          git clone "https://x-access-token:${SUXLIB_TOKEN}@github.com/SuxOS/suxlib.git" ../suxlib
+          if ! git clone "https://x-access-token:${SUXLIB_TOKEN}@github.com/SuxOS/suxlib.git" ../suxlib; then
+            echo "::error::Failed to clone SuxOS/suxlib with GITHUB_TOKEN. suxlib is public today, so this should always succeed — the likely cause is that suxlib has been made PRIVATE, and GITHUB_TOKEN (scoped to this repo only) can no longer see it. Restore the App-token mint this step replaced — see sux#1491."
+            exit 1
+          fi
           git -C ../suxlib checkout "$SUXLIB_REF"
           npm --prefix ../suxlib ci --omit=dev   # install suxlib's own deps (fflate) so sux's tsc can resolve them through the file: dep
 

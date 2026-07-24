@@ -39,33 +39,37 @@ jobs:
         with:
           token: ${{ steps.sux-token.outputs.token }}
 
-      # Same read-only, suxlib-scoped App identity ci.yml/deploy.yml/e2e-mcp.yml use
-      # to clone suxlib — here only to resolve main's current tip SHA.
-      - name: Mint app token for suxlib (private sibling dependency)
-        id: suxlib-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          app-id: ${{ secrets.SUX_BOT_APP_ID }}
-          private-key: ${{ secrets.SUX_BOT_PRIVATE_KEY }}
-          owner: SuxOS
-          repositories: suxlib
-          permission-contents: read
-
+      # suxlib is PUBLIC today (`gh api repos/SuxOS/suxlib` → private=false), so no
+      # App-token mint is needed to read it — the old "private sibling dependency"
+      # comment here was stale (sux#1491). GITHUB_TOKEN's default read scope
+      # (declared at workflow level above) is sufficient, and this also unblocks
+      # Dependabot (GitHub never exposes Actions secrets to a Dependabot-triggered
+      # run, so the old mint would have failed there with an empty app-id — moot
+      # for this schedule/workflow_dispatch-only trigger, but keeps the pattern
+      # consistent with ci.yml/deploy.yml/e2e-mcp.yml).
+      #
+      # If suxlib becomes PRIVATE again: GITHUB_TOKEN is scoped to this repo only
+      # and will 404 on it. Restore the `actions/create-github-app-token` mint this
+      # replaced (see git blame on this file, or sux#1491, for the exact shape)
+      # rather than chasing the symptom — the fail-fast below names the cause
+      # directly instead of letting it surface as an opaque failure further on.
+      #
       # -c http.<url>.extraheader= (empty) is load-bearing: the checkout step above
       # persisted the SUX-scoped token as an Authorization extraheader in this repo's
       # local git config, and ls-remote (unlike clone) honors the enclosing checkout's
       # config — the persisted header then overrides the URL credential and 404s on
       # suxlib, which that token can't see. Clearing it for this one call lets the
-      # suxlib-scoped token in the URL actually authenticate. (Why ci.yml never hit
-      # this: git clone ignores the enclosing repo's local config.)
+      # token in the URL actually authenticate. (Why ci.yml never hit this: git clone
+      # ignores the enclosing repo's local config.)
       - name: Resolve current suxlib main SHA
         id: resolve
         env:
-          SUXLIB_TOKEN: ${{ steps.suxlib-token.outputs.token }}
+          SUXLIB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           SHA="$(git -c "http.https://github.com/.extraheader=" ls-remote "https://x-access-token:${SUXLIB_TOKEN}@github.com/SuxOS/suxlib.git" refs/heads/main | cut -f1)"
           if [ -z "$SHA" ]; then
-            echo "::error::failed to resolve suxlib main's tip SHA" && exit 1
+            echo "::error::Failed to resolve suxlib main's tip SHA with GITHUB_TOKEN. suxlib is public today, so this should always succeed — the likely cause is that suxlib has been made PRIVATE, and GITHUB_TOKEN (scoped to this repo only) can no longer see it. Restore the App-token mint this step replaced — see sux#1491."
+            exit 1
           fi
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
