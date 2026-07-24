@@ -468,6 +468,11 @@ describe("buildPullPlan / pullType / reconcilePull — the durable `mychart-pull
 		expect(items).toEqual([{ type: "DocumentReference", label: "DocumentReference", query: "patient=P1&_count=100", org: ORG, patient: "P1", stamp: "STAMP" }]);
 	});
 
+	it("buildPullPlan's CarePlan query carries the US Core assess-plan category Epic requires (#1402)", () => {
+		const items = buildPullPlan({ org: ORG, patient: "P1", types: ["CarePlan"] }, "STAMP");
+		expect(items).toEqual([{ type: "CarePlan", label: "CarePlan", query: "patient=P1&_count=100&category=assess-plan", org: ORG, patient: "P1", stamp: "STAMP" }]);
+	});
+
 	it("pullType pages a searchset, resolves DocumentReference→Binary, writes raw FHIR under org-scoped phi/ — same key shape the old synchronous pull() wrote", async () => {
 		const env = baseEnv();
 		await env.OAUTH_KV.put(`sux:mychart:token:${ORG}`, "AT");

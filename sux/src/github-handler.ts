@@ -11,7 +11,7 @@ import {
 } from "./workers-oauth-utils";
 import { hmacHex, isTailscaleConfigured, proxyEnabled, smartFetch, type TailscaleEnv } from "./proxy";
 import { deriveMetrics, readMetrics } from "./metrics";
-import { readHeartbeats } from "./cron-heartbeat";
+import { readHeartbeats, readWatchHeartbeats } from "./cron-heartbeat";
 import { readNodeStatus } from "./recovery";
 import { githubAuthHeaders } from "./github-auth";
 import type { RtEnv } from "./registry";
@@ -227,6 +227,10 @@ async function gatherHealth(env: HandlerEnv): Promise<Record<string, unknown>> {
 	// Last {ok,at,error?} + staleness per unattended cron sub-job. Best-effort: a KV
 	// miss degrades to { seen: false } and never fails the health page.
 	const cron = await readHeartbeats((env as unknown as RtEnv).OAUTH_KV).catch(() => ({}));
+	// Local `watch` scheduled-task heartbeats (#1414) — a separate namespace from the
+	// fixed CRON_JOBS list above, so "watch died" is distinguishable from "condition not
+	// tripped yet" for e.g. the retired mychart-doors check.sh pattern.
+	const watch = await readWatchHeartbeats((env as unknown as RtEnv).OAUTH_KV as any).catch(() => ({}));
 
 	const configured = isTailscaleConfigured(env);
 	let proxyUrlValid = false;
@@ -265,7 +269,7 @@ async function gatherHealth(env: HandlerEnv): Promise<Record<string, unknown>> {
 	}
 
 	const ok = config.kagiKey && config.githubClient && upstream.reachable && bindingsOk(bindings);
-	return { status: ok ? "ok" : "degraded", config, tailscale, upstream, metrics, cron, bindings, router, bots };
+	return { status: ok ? "ok" : "degraded", config, tailscale, upstream, metrics, cron, watch, bindings, router, bots };
 }
 
 function renderHealthHtml(h: any): string {

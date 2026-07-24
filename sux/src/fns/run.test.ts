@@ -293,6 +293,15 @@ test("run fn's describe action requires an op and rejects an unknown one", async
 	expect(unknown.content[0].text).toMatch(/unknown op/);
 });
 
+test("run fn rejects starting an op with `input` omitted (#1421) rather than starting a Workflow that instantly errors", async () => {
+	const env = { OP_WORKFLOW: { create: vi.fn() } } as any;
+	const res = await run.run(env, { op: "mail-triage-plan", mode: "durable" });
+	expect(res.isError).toBe(true);
+	expect(res.content[0].text).toContain("mail-triage-plan");
+	expect(res.content[0].text).toContain("input");
+	expect(env.OP_WORKFLOW.create).not.toHaveBeenCalled();
+});
+
 test("run fn's status action round-trips through the Fn surface", async () => {
 	const env = { OP_WORKFLOW: { get: async () => fakeInstance({ status: "complete", output: 42 }, { events: [], terminated: false }) } } as any;
 	const res = await run.run(env, { action: "status", instanceId: "instance-1" });

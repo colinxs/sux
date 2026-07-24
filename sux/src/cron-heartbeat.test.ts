@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { CRON_STALE_MS, readHeartbeats, recordHeartbeat, runSubJob } from "./cron-heartbeat";
+import { CRON_STALE_MS, readHeartbeats, readWatchHeartbeats, recordHeartbeat, recordWatchHeartbeat, runSubJob } from "./cron-heartbeat";
 
 const fakeKV = (init: Record<string, string> = {}) => {
 	const store = new Map(Object.entries(init));
 	return { store, get: async (k: string) => store.get(k) ?? null, put: async (k: string, v: string) => void store.set(k, v) };
+};
+
+const fakeListableKV = (init: Record<string, string> = {}) => {
+	const kv = fakeKV(init);
+	return { ...kv, list: async ({ prefix }: { prefix: string }) => ({ keys: [...kv.store.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name })) }) };
 };
 
 const K = (name: string) => `sux:cron:heartbeat:${name}`;
@@ -123,5 +128,37 @@ describe("readHeartbeats (staleness reader)", () => {
 		const kv = fakeKV({ [K("adblock")]: "not json" });
 		const cron: any = await readHeartbeats(kv, 1_000_000);
 		expect(cron.adblock).toEqual({ seen: false });
+	});
+});
+
+describe("recordWatchHeartbeat / readWatchHeartbeats (#1414: local `watch` scheduled-task ingest)", () => {
+	it("recordWatchHeartbeat then readWatchHeartbeats round-trips an ok beat, namespaced apart from CRON_JOBS", async () => {
+		const kv = fakeListableKV();
+		await recordWatchHeartbeat({ OAUTH_KV: kv } as any, "mychart-doors", true);
+		const watch: any = await readWatchHeartbeats(kv);
+		expect(watch["mychart-doors"]).toMatchObject({ seen: true, ok: true });
+		expect(watch.mail_triage).toBeUndefined(); // never pollutes the CRON_JOBS const list
+	});
+
+	it("honors a per-watch staleAfterMs instead of the cron default", async () => {
+		const now = 10_000_000;
+		const kv = fakeListableKV();
+		await recordWatchHeartbeat({ OAUTH_KV: kv } as any, "fast-watch", true, undefined, 1000);
+		// Monkey-patch `at` into the past via a direct KV overwrite (recordWatchHeartbeat stamps `now`).
+		const raw = JSON.parse(kv.store.get("sux:watch:heartbeat:fast-watch")!);
+		kv.store.set("sux:watch:heartbeat:fast-watch", JSON.stringify({ ...raw, at: now - 2000 }));
+		const watch: any = await readWatchHeartbeats(kv, now);
+		expect(watch["fast-watch"]).toMatchObject({ seen: true, stale: true, age_ms: 2000 });
+	});
+
+	it("a failing watch stamps ok=false with the error text, never fails the poster's pass", async () => {
+		const kv = fakeListableKV();
+		await expect(recordWatchHeartbeat({ OAUTH_KV: kv } as any, "flaky-watch", false, "condition check timed out")).resolves.toBeUndefined();
+		const watch: any = await readWatchHeartbeats(kv);
+		expect(watch["flaky-watch"]).toMatchObject({ ok: false, error: "condition check timed out" });
+	});
+
+	it("readWatchHeartbeats degrades to {} without a KV binding, never throws", async () => {
+		await expect(readWatchHeartbeats(undefined)).resolves.toEqual({});
 	});
 });
