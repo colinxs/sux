@@ -7,9 +7,9 @@ import { cosine, embed, embedOne } from "./_embed";
 import { filesSemanticIndexCached, topKFilesByCosine } from "./_files_semantic";
 import { maybeDecompressString } from "./_gzip";
 import { mailSemanticIndexCached, topKMailByCosine } from "./_mail_semantic";
-import { chunkText, listChunks, newId } from "./_source";
+import { chunkText, listChunks, listDomains, newId } from "./_source";
 import { errMsg } from "./_util";
-import { hasVectorize, queryCorpus, type VecDomain } from "./_vectorize";
+import { coarseDomain, hasVectorize, queryCorpus, type VecDomain } from "./_vectorize";
 import { topKByCosine, vaultSemanticIndexCached } from "./_vault_semantic";
 import { vaultCfg } from "./obsidian";
 
@@ -303,6 +303,27 @@ async function fromAssimChunks(env: RtEnv, vec: number[]): Promise<DomainGather>
 	return { passages: passages.slice(0, PER_DOMAIN_K), indexed_at };
 }
 
+/** ADVISE ingress leg (#1308/#1363's remaining half of part (a) — assim closed above, `phi`
+ *  stays out per the #613 fence, a separate not-yet-built gated leg, arc W7). Unlike assim's
+ *  fixed `assim:<stream>` prefix, an advise domain is a bare caller-chosen string ("therapy",
+ *  "cardiac-diet", …) — `coarseDomain` (`_vectorize.ts`) is what collapses every one of those
+ *  onto the single `advise` Vectorize namespace, so the cosine fallback has to walk
+ *  `listDomains` and pick out exactly the domains that collapse the same way (excluding the
+ *  reserved `oracle:`/`assim:`/`phi:` prefixes) rather than a single fixed-prefix `listChunks`
+ *  call. Same pointer/scoring shape as `fromAssimChunks` so a KV- and Vectorize-served hit read
+ *  identically. */
+async function fromAdviseChunks(env: RtEnv, vec: number[]): Promise<DomainGather> {
+	const domains = (await listDomains(env)).filter((d) => coarseDomain(d) === "advise");
+	if (!domains.length) return { passages: [], indexed_at: null, skipped: "no advise knowledge bases" };
+	const chunks = (await Promise.all(domains.map((d) => listChunks(env, d)))).flat().filter((c) => Array.isArray(c.embedding) && c.embedding.length > 0);
+	if (!chunks.length) return { passages: [], indexed_at: null, skipped: "no advise knowledge bases" };
+	const passages = chunks
+		.map((c) => ({ pointer: c.title || c.domain, text: c.text, score: cosine(vec, c.embedding!) }))
+		.sort((a, b) => b.score - a.score);
+	const indexed_at = chunks.reduce((m, c) => Math.max(m, c.ts || 0), 0) || null;
+	return { passages: passages.slice(0, PER_DOMAIN_K), indexed_at };
+}
+
 /** The unified-index cutover (#1290): a domain leg queries `sux-corpus`'s per-domain namespace
  *  FIRST (an out-of-band-built ANN index — no query-path rebuild, the #1298 fix), and only if
  *  Vectorize is unbound, errors, or its namespace is empty (not yet backfilled) does it fall
@@ -329,7 +350,9 @@ function withVectorize(domain: VecDomain, cosineLeg: (env: RtEnv, vec: number[])
 // pre-embedded detail chunks with query-time-embedded summaries so a summary-only topic still
 // answers) is preserved verbatim; the oracle corpus is small and already within budget, and
 // its Vectorize copy (populated by the backfill) is reserved for the strip-follow-up that
-// unifies its read too (which also closes #1308's assim read-leg gap).
+// unifies its read too. `assim` and `advise` close out #1308's read-leg gap (#1363); `phi` is
+// deliberately still absent — the #613 fence keeps medical material out of the general ask
+// path pending its own gated leg (arc W7), not a one-line addition.
 const ASK_DOMAINS: Record<string, (env: RtEnv, vec: number[]) => Promise<DomainGather>> = {
 	vault: withVectorize("vault", fromVaultIndex),
 	mail: withVectorize("mail", fromMailIndex),
@@ -337,6 +360,7 @@ const ASK_DOMAINS: Record<string, (env: RtEnv, vec: number[]) => Promise<DomainG
 	contacts: withVectorize("contacts", fromContactsIndex),
 	oracle: fromOracleKbs,
 	assim: withVectorize("assim", fromAssimChunks),
+	advise: withVectorize("advise", fromAdviseChunks),
 };
 
 /** The ask synthesis prompt — grounded ONLY in the retrieved passages (unlike oracle's

@@ -29,6 +29,30 @@
 //     appears for review) at its own higher confidence bar, and NEVER sends. It is send-proof
 //     by construction: the executor calls mail_draft (draftOrSend with send=false); no
 //     EmailSubmission / send op is representable anywhere in this module.
+//
+// OWNERSHIP (#1356): this worker-side classify→act loop, cron-driven (`mail_triage` in
+// cron-heartbeat.ts's CRON_JOBS, ticked by index.ts's mailTriageTick), is the shipped,
+// authoritative ONGOING labeling mechanism — it is what runs continuously against NEW mail,
+// independent of whether the separate, hand-installed Fastmail Sieve rungs (`mail_sieve` /
+// `mail_sieve_hc` — coarse pre-filters a human pastes into Fastmail Settings → Rules) have
+// ever actually been activated on the account. The two are complementary, not redundant: the
+// Sieve rungs tag at delivery time even if this cron tick is ever delayed/down; this loop adds
+// smarter (LLM/kNN-classified) labels and reversible actions on its own cadence. Its
+// last-run/staleness is already surfaced generically for every cron sub-job via
+// cron-heartbeat.ts's heartbeat + gatherHealth (#1278) — no separate observability needed here.
+//
+// KNOWN GAP: `act`'s `label:add`/`label:remove` ops call `mail.labelMessages` (mail-mcp.ts),
+// which patches a JMAP `keywords/<kw>` — the SAME invisible-in-Fastmail's-UI mechanism #1196
+// already fixed for the one-time backfills (mail_domain_backfill.ts / mail_sieve_backfill.ts
+// now correctly add real mailbox MEMBERSHIP, `mailboxIds/<id>`, into a per-label folder nested
+// under Inbox). This ongoing loop was missed by that fix, so a label this loop applies to new
+// mail is real (queryable, undoable) but NOT visibly rendered in Fastmail the way a backfilled
+// label is — "kept visible" above is the design intent, not yet the delivered behavior.
+// Closing this needs `labelMessages` itself (also used by the direct `mail({action:"label"})`
+// verb, `_mail_triage_log.ts`'s undo path, and `op-engine/caps.ts`'s durable `mailLabelsSink`)
+// to switch to the same resolve-or-create-nested-mailbox + `mailboxIds` pattern, which is a
+// shared-primitive change across all of those call sites, not a local one — scoped out of this
+// pass deliberately rather than rushed.
 import { hasAI, llm } from "../ai";
 import { MAIL_TRIAGE_SPAM } from "../prompts";
 import type { RtEnv } from "../registry";

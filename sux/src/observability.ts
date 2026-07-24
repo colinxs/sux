@@ -2,7 +2,8 @@
 // engine:
 //   GET /metrics  — usage metrics as JSON (?format=prometheus for scraping)
 //   GET /logs     — rolling call log with metric fields (JSON; ?tool= / ?limit= )
-//   GET /feedback — server-side issue/suggest backlog (JSON; ?type= / ?tool= / ?limit= )
+//   GET /feedback — server-side issue/suggest backlog (JSON; ?type= / ?tool= / ?limit= /
+//                   ?resolved=all — default view hides entries `feedback_resolve` marked resolved)
 //   GET /llms.txt — the capability map as markdown (CDN-cacheable, no secrets)
 // `/health` is intentionally NOT handled here: it falls through to the richer
 // browsable page in github-handler.ts (residential-egress stats). Returns null
@@ -160,12 +161,22 @@ export async function handleObservability(url: URL, request: Request, env: RtEnv
 		const t = url.searchParams.get("type");
 		const kind: FeedbackKind | undefined = t === "issue" || t === "suggest" ? t : undefined;
 		const limit = Math.min(Number(url.searchParams.get("limit")) || 50, 500);
-		const items = await readFeedback(env, kind, limit, url.searchParams.get("tool") ?? undefined);
+		// Default view is unresolved-only (`feedback_resolve` marks an entry once it's been
+		// reconciled into an external tracker) — `?resolved=all` opts into seeing everything.
+		const includeResolved = url.searchParams.get("resolved") === "all";
+		const items = await readFeedback(env, kind, limit, url.searchParams.get("tool") ?? undefined, { unresolvedOnly: !includeResolved });
 		// Explicit allowlist, NOT a spread — same policy as /logs above, so any future
 		// FeedbackEntry field can't silently leak to this unauthenticated view.
 		return json({
 			count: items.length,
-			items: items.map((e) => ({ kind: e.kind, text: e.text, at: new Date(e.at).toISOString(), ...(e.tool ? { tool: e.tool } : {}) })),
+			items: items.map((e) => ({
+				kind: e.kind,
+				text: e.text,
+				at: new Date(e.at).toISOString(),
+				...(e.tool ? { tool: e.tool } : {}),
+				...(e.resolved ? { resolved: true } : {}),
+				...(e.tracked_by ? { tracked_by: e.tracked_by } : {}),
+			})),
 		});
 	}
 

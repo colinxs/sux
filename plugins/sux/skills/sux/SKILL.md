@@ -52,7 +52,7 @@ doesn't pull in categories the task doesn't touch.
 
 Leaf index (semantics + args in `references/capability-tables.md`; call any via
 `fn({name, args})`): `ace`, `advise`, `agenda`, `amazon`, `audit_log`, `autonomy_status`, `batch_fetch`,
-`briefing`, `citation`, `consensus`, `consolidate`, `contact_consolidate_plan`, `costco`, `dropbox`, `evidence_packet`, `feed`,
+`briefing`, `citation`, `consensus`, `consolidate`, `contact_consolidate_plan`, `costco`, `dropbox`, `evidence_packet`, `feed`, `feedback_resolve`,
 `files_consolidate_plan`, `fontcase`, `get`, `homedepot`, `imessage`, `jmap`, `kv_get`, `kv_put`, `kv_list`, `kv_delete`,
 `learn`, `life_wiki`, `linkedin`, `lowes`, `lunchmoney`, `mail_domain_backfill`, `mail_sieve`, `mail_sieve_hc`, `mail_sieve_backfill`,
 `mail_triage`, `mail_triage_plan`, `medical_timeline_plan`, `mychart`, `mychart_reconcile_plan`, `obsidian`, `onboard`, `people_finder`, `put`,

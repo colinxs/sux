@@ -4,10 +4,11 @@ import { errMsg } from "./_util";
 import { CORPUS_INDEX, hasVectorize, upsertIndexUnits } from "./_vectorize";
 
 // _backfill — the DURABLE, BATCHED, RESUMABLE job that drives `sux-corpus` to full population
-// (#1315). The synchronous `reindexCorpus` embeds/upserts a whole domain in one request and
-// TIMES OUT on the real corpus, so `vectorCount` sat at ~2 and vault/mail/files retrieval was
-// served by the cosine fallback instead of Vectorize. This converts the backfill into a job
-// that does BOUNDED work per invocation and resumes from a persisted cursor until every domain
+// (#1315). A synchronous one-shot pass (embed/upsert a whole domain in one request) TIMES OUT
+// on the real corpus, so `vectorCount` sat at ~2 and vault/mail/files retrieval was served by
+// the cosine fallback instead of Vectorize (that one-shot path, `reindexCorpus`, had zero
+// production callers by the time #1363 removed it — `backfillTick` below is the sole driver).
+// This does BOUNDED work per invocation and resumes from a persisted cursor until every domain
 // is indexed.
 //
 // DURABILITY MECHANISM: a CRON that advances a per-domain KV cursor each tick — NOT a Cloudflare

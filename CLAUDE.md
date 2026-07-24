@@ -532,12 +532,30 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   `Email/set`: add that mailbox's membership; also drop the Inbox mailbox to skip-inbox,
   `fileinto :copy` to keep it). This is the root cause of the keyword sieve/backfill appearing
   to "do nothing" (#1196) — any new labeling path must set mailbox membership, never a keyword.
+  **#1196's fix only reached the one-time backfills** (`mail_domain_backfill.ts`/
+  `mail_sieve_backfill.ts`, switched to `mailboxIds/<id>` membership) — the shared
+  `mail-mcp.ts` `labelMessages()` primitive itself (used by the direct `mail({action:"label"})`
+  verb, the ONGOING `_mail_triage.ts` cron classifier, `_mail_triage_log.ts`'s undo path, and
+  `op-engine/caps.ts`'s durable `mailLabelsSink`) still patches `keywords/<kw>` and was missed
+  (confirmed live, #1356). A label the continuous triage loop applies to new mail today is real
+  and undoable but NOT visible in Fastmail's UI. Fixing it means converting `labelMessages`
+  itself to the resolve-or-create-nested-mailbox + `mailboxIds` pattern — a shared-primitive
+  change across all of those call sites at once, sized for its own session, not a quick patch.
 - **A front verb's unknown arg is silently DROPPED, degrading `mail({action:'search'})` to
   match-all** — the dispatcher must be `additionalProperties:true` to pass per-action args
   through, so a wrong key (`q:` — the real free-text key is `query`) filters nothing and
   returns the whole mailbox with a plausible shape and no error (observed live 2026-07-22;
   same match-all symptom as #1263/#1271's `label:"edu"`, different cause — hardening tracked
   in #1312). Sanity-check `total` actually shrank before trusting any filtered search.
+- **#1455's "one `invokeFn()` boundary for every fn invocation" is labeled `effort:medium` but
+  the real dispatch-site count is `~164` call sites across `~50` files** (`grep -rn '\.run(env'
+  sux/src --include=*.ts`, confirmed 2026-07-24) — registry `tools/call`, `batch.ts`, `pipe.ts`,
+  and dozens of fn→fn internal calls, not the handful the label implies. A few of those matches
+  aren't real `Fn.run(env,args)` calls at all (e.g. `web_search.ts`'s `ENGINES[name].run(env,
+  query, limit, route)` — a 4-arg adapter interface, not the 2-arg `Fn` shape) and must be
+  excluded from the sweep rather than mechanically wrapped. #1456 (per-request context) depends
+  on #1455 landing first. Both deserve a dedicated session per the `#920` precedent above, not a
+  shared batch slot — don't re-derive this scope from scratch on a future attempt.
 
 ## House style
 
