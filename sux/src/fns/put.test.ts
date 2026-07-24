@@ -231,6 +231,18 @@ describe("put", () => {
 			expect(out[0].dropbox_path).toBeUndefined();
 			expect(dropboxPut).not.toHaveBeenCalled();
 		});
+
+		it("rewrites the dropbox_path extension for a pdf/gzip transform instead of keeping the source URL's (#1407)", async () => {
+			const env = mkEnv();
+			const gz = await put.run(env, { urls: ["https://a.com/data.csv"], gzip: true, dropbox: "/Downloads", force: true });
+			expect(JSON.parse(gz.content[0].text)[0].dropbox_path).toBe("/Downloads/data.csv.gz");
+
+			const pdfOut = await put.run(env, { urls: ["https://ex.com/photo.png"], pdf: true, dropbox: "/Downloads", force: true });
+			expect(JSON.parse(pdfOut.content[0].text)[0].dropbox_path).toBe("/Downloads/photo.pdf");
+
+			const both = await put.run(env, { urls: ["https://ex.com/page.html"], pdf: true, gzip: true, dropbox: "/Downloads", force: true });
+			expect(JSON.parse(both.content[0].text)[0].dropbox_path).toBe("/Downloads/page.pdf.gz");
+		});
 	});
 
 	describe("r2_path named projection (#1382)", () => {
@@ -275,6 +287,15 @@ describe("put", () => {
 			const empty = await put.run(mkEnv(), { urls: ["https://a.com"], r2_path: "   " });
 			expect(empty.isError).toBe(true);
 			expect(empty.content[0].text).toMatch(/non-empty folder path/);
+		});
+
+		it("rewrites the r2_path extension for a pdf/gzip transform instead of keeping the source URL's (#1407)", async () => {
+			const env = mkEnv();
+			const gz = await put.run(env, { urls: ["https://a.com/data.csv"], gzip: true, r2_path: "library", force: true });
+			expect(JSON.parse(gz.content[0].text)[0].r2_path).toBe("files/library/data.csv.gz");
+
+			const pdfOut = await put.run(env, { urls: ["https://ex.com/photo.png"], pdf: true, r2_path: "library", force: true });
+			expect(JSON.parse(pdfOut.content[0].text)[0].r2_path).toBe("files/library/photo.pdf");
 		});
 	});
 });

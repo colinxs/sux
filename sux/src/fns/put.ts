@@ -52,6 +52,20 @@ function urlBasename(u: string): string {
 	}
 }
 
+/** Rewrite a basename's extension to match a put transform chain (#1407): the projected
+ *  filename must reflect the bytes actually WRITTEN, not the source URL's original
+ *  extension. pdf replaces the extension outright (the bytes become a PDF); gzip appends
+ *  `.gz` on top of whatever precedes it (so pdf+gzip chains to e.g. "report.pdf.gz"). */
+function applyTransformExt(name: string, applied: string[]): string {
+	let out = name;
+	if (applied.includes("pdf")) {
+		const dot = out.lastIndexOf(".");
+		out = (dot > 0 ? out.slice(0, dot) : out) + ".pdf";
+	}
+	if (applied.includes("gzip")) out += ".gz";
+	return out;
+}
+
 /** Disambiguate a filename against every name already assigned in this batch (-2, -3, …)
  *  so two URLs sharing a basename never race to overwrite each other's Dropbox projection. */
 function dedupeName(used: Set<string>, name: string): string {
@@ -141,7 +155,7 @@ async function processUrl(env: any, rawUrl: unknown, opts: Opts, budget: ByteBud
 		const ref = await putBlob(env, bytes, contentType, opts.ttlSeconds !== undefined ? { ttlSeconds: opts.ttlSeconds } : undefined);
 		let dropboxPath: string | undefined;
 		if (opts.dropboxFolder !== undefined) {
-			const name = dedupeName(dropboxNames, urlBasename(url));
+			const name = dedupeName(dropboxNames, applyTransformExt(urlBasename(url), applied));
 			dropboxPath = opts.dropboxFolder ? `${opts.dropboxFolder}/${name}` : `/${name}`;
 			projectToDropbox(env, dropboxPath, bytes);
 		}
@@ -150,7 +164,7 @@ async function processUrl(env: any, rawUrl: unknown, opts: Opts, budget: ByteBud
 			// A SEPARATE dedup Set from dropboxNames: these are independent projections
 			// (files/ vs. the Dropbox app folder) that could collide differently, so one
 			// batch's name choices for one must never be influenced by the other's.
-			const name = dedupeName(r2Names, urlBasename(url));
+			const name = dedupeName(r2Names, applyTransformExt(urlBasename(url), applied));
 			try {
 				r2Path = await writeNamedProjection(env, `${opts.r2Path}/${name}`, bytes, contentType);
 			} catch (e) {
