@@ -77,13 +77,38 @@ worker_names() {
 # GitHub secret as missing/unrecoverable while the store was actually fine. An empty
 # result now means empty; a broken query says so.
 GH_REPO="${GH_REPO:-SuxOS/sux}"
+
+# The same "narrower set than the runtime resolves" trap as the -R note above, one scope
+# out: `gh secret list -R` returns ONLY repo-level secrets, but Actions resolves org-level
+# secrets identically at runtime. SuxOS keeps CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY /
+# CLOUDFLARE_* / SUX_BOT_* at org scope, so a repo-only listing reported every one of them
+# as missing-from-GitHub — a live secret flagged unrecoverable. Union both scopes.
+#
+# Only `all`/`private` visibility is counted. A `selected` org secret is scoped to an
+# explicit repo list this query does not expand, so counting it could mark a secret present
+# that this repo cannot actually read; leaving it out preserves the old (over-reporting)
+# behaviour for that case, which is the safe direction for an audit.
+#
+# The org query is best-effort: it needs `admin:org` on the token, which the repo-scoped
+# bot token does not carry. A failure degrades to the repo-only list (today's behaviour)
+# rather than aborting the audit — but it says so, so an under-report is never silent.
+org_names() {
+  local owner="${GH_REPO%%/*}" out
+  if ! out="$(gh secret list --org "$owner" --json name,visibility 2>&1)"; then
+    echo "· org-level secrets not queried (${out%%$'\n'*}) — org-scoped secrets may read as missing" >&2
+    return 0
+  fi
+  printf '%s\n' "$out" |
+    python3 -c 'import sys,json;[print(x["name"]) for x in json.load(sys.stdin) if x.get("visibility") in ("all","private")]' 2>/dev/null || true
+}
+
 github_names() {
   local out
   if ! out="$(gh secret list -R "$GH_REPO" 2>&1)"; then
     echo "✗ gh secret list failed: ${out%%$'\n'*}" >&2
     return 1
   fi
-  printf '%s\n' "$out" | awk '{print $1}'
+  { printf '%s\n' "$out" | awk 'NF {print $1}'; org_names; } | sort -u
 }
 
 has() { printf '%s\n' "$2" | grep -qx "$1"; }
