@@ -4,6 +4,7 @@ import { cacheKey, extractRpcFromText, type JsonRpc } from "./mcp-util";
 import { FUNCTIONS } from "./fns";
 import worker, { handleRpc, oauthErrorResponse, rtServer } from "./index";
 import { readMetrics } from "./metrics";
+import { CRON_STALE_MS } from "./cron-heartbeat";
 
 // scheduled() wiring tests spy on shipMetricsSnapshot (never actually reaches the
 // network without GRAFANA_PROM_* secrets, but the spy lets us assert it was called on
@@ -994,6 +995,17 @@ const METRICS_CRON = "*/5 * * * *";
 const DAILY_CRON = "0 13 * * *";
 const heartbeatKey = (job: string) => `sux:cron:heartbeat:${job}`;
 
+// Drain deferred to a fixed point: since #1478 fanned the daily maintenance tick's
+// tail sub-jobs out via NESTED ctx.waitUntil calls (fired from inside the already-
+// deferred maintenanceTick promise, not from scheduled() itself), a single
+// `Promise.all(deferred)` only awaits whatever was already in the array at call
+// time — it can settle before the tail's own nested promises even land in it. Loop
+// until the array stops growing, same pattern as the stale-while-revalidate suite's
+// background-refresh drain below.
+const drainScheduled = async (deferred: Promise<unknown>[]) => {
+	while (deferred.length) await Promise.all(deferred.splice(0));
+};
+
 describe("scheduled (cron-dispatch wiring)", () => {
 	it("METRICS_CRON fires shipMetricsSnapshot + mail_triage, not the daily maintenance jobs", async () => {
 		const { kv, store } = makeKv();
@@ -1020,7 +1032,7 @@ describe("scheduled (cron-dispatch wiring)", () => {
 		vi.mocked(shipMetricsSnapshot).mockClear();
 
 		await worker.scheduled({ cron: DAILY_CRON } as unknown as ScheduledController, makeEnv(kv), ctx);
-		await Promise.all(deferred);
+		await drainScheduled(deferred);
 
 		expect(shipMetricsSnapshot).toHaveBeenCalledTimes(1);
 		expect(store.has(heartbeatKey("self_improve"))).toBe(true);
@@ -1032,6 +1044,94 @@ describe("scheduled (cron-dispatch wiring)", () => {
 		// runInferNudge itself no-ops (dormant, not an error) with no INFER_ARM_* set, so this
 		// only proves the sub-job was reached, not that it fired a nudge.
 		expect(store.has(heartbeatKey("infer_nudge"))).toBe(true);
+		// The whole tail (#1478) actually reaches every position, not just the ones
+		// already covered above — the original bug's signature was a clean cut at
+		// position 10 (adblock), never reaching 11-15.
+		expect(store.has(heartbeatKey("life_wiki"))).toBe(true);
+		expect(store.has(heartbeatKey("learning_folder"))).toBe(true);
+		expect(store.has(heartbeatKey("web_search_selftest"))).toBe(true);
+		expect(store.has(heartbeatKey("gh_actions_billing"))).toBe(true);
+	});
+
+	it("#1478 regression: maintenanceTick's own promise settles WITHOUT waiting for the tail sub-jobs to finish", async () => {
+		// Before the fix, the entire 15-job chain was one sequential `await` sequence,
+		// so maintenanceTick's promise couldn't resolve until every job — including the
+		// tail — had run. After the fix, the tail is fired via ctx.waitUntil instead of
+		// awaited, so maintenanceTick's own promise resolves as soon as the head chain
+		// finishes and the tail is *fired*, not once the tail is *done*. Simulate a tail
+		// job that never resolves and confirm maintenanceTick still settles.
+		const { kv, store } = makeKv();
+		const { ctx, deferred } = makeCtx();
+		const { runWebSearchSelftest } = await import("./fns/_web_search_selftest");
+		vi.mocked(runWebSearchSelftest).mockImplementationOnce(() => new Promise(() => {})); // never resolves
+
+		await worker.scheduled({ cron: DAILY_CRON } as unknown as ScheduledController, makeEnv(kv), ctx);
+		// deferred[0] is maintenanceTick's own top-level promise (deferred[1] is
+		// selfImproveTick, fired alongside it by scheduled() itself) — it must settle
+		// even though a tail job it fired is permanently pending.
+		await expect(deferred[0]).resolves.toBeUndefined();
+
+		// The rest of the tail — fired via nested ctx.waitUntil calls from inside
+		// maintenanceTick — must ALSO still land, proving the hung web_search_selftest
+		// doesn't starve its siblings the way the old serial chain would have.
+		const stillPending = deferred.slice(2).filter((_, i) => i !== 3); // skip the hung web_search_selftest slot
+		await Promise.all(stillPending);
+		expect(store.has(heartbeatKey("life_wiki"))).toBe(true);
+		expect(store.has(heartbeatKey("infer_nudge"))).toBe(true);
+		expect(store.has(heartbeatKey("learning_folder"))).toBe(true);
+		expect(store.has(heartbeatKey("gh_actions_billing"))).toBe(true);
+		// The hung job itself never got a chance to stamp a heartbeat within this test.
+		expect(store.has(heartbeatKey("web_search_selftest"))).toBe(false);
+	});
+
+	it("#1478: a THROWING tail sub-job does not prevent a later tail sub-job from running", async () => {
+		const { kv, store } = makeKv();
+		const { ctx, deferred } = makeCtx();
+		const { runWebSearchSelftest } = await import("./fns/_web_search_selftest");
+		vi.mocked(runWebSearchSelftest).mockRejectedValueOnce(new Error("selftest probe exploded"));
+
+		await worker.scheduled({ cron: DAILY_CRON } as unknown as ScheduledController, makeEnv(kv), ctx);
+		await drainScheduled(deferred);
+
+		const webSearchBeat = JSON.parse(store.get(heartbeatKey("web_search_selftest"))!);
+		expect(webSearchBeat).toMatchObject({ ok: false, error: "selftest probe exploded" });
+		// Sub-jobs positioned after the throwing one (in tick order, and in wall-clock
+		// terms now that they're fanned out concurrently) still ran and stamped ok.
+		expect(store.has(heartbeatKey("gh_actions_billing"))).toBe(true);
+	});
+
+	it("#1478: assertCronFreshness flags an already-stale heartbeat with a loud console.error + a queryable analytics event", async () => {
+		const { kv, store } = makeKv();
+		const { ctx, deferred } = makeCtx();
+		const now = Date.now();
+		store.set(heartbeatKey("life_wiki"), JSON.stringify({ ok: true, at: now - CRON_STALE_MS - 1000 }));
+		const writeDataPoint = vi.fn();
+		const env = { ...makeEnv(kv), ANALYTICS: { writeDataPoint } } as unknown as RtEnv;
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		await worker.scheduled({ cron: DAILY_CRON } as unknown as ScheduledController, env, ctx);
+		await drainScheduled(deferred);
+
+		expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("life_wiki"));
+		expect(writeDataPoint).toHaveBeenCalledWith(expect.objectContaining({ indexes: ["cron_stale"], blobs: ["life_wiki"] }));
+		errSpy.mockRestore();
+	});
+
+	it("#1478: assertCronFreshness stays silent for a fresh heartbeat", async () => {
+		const { kv, store } = makeKv();
+		const { ctx, deferred } = makeCtx();
+		const now = Date.now();
+		store.set(heartbeatKey("life_wiki"), JSON.stringify({ ok: true, at: now - 1000 }));
+		const writeDataPoint = vi.fn();
+		const env = { ...makeEnv(kv), ANALYTICS: { writeDataPoint } } as unknown as RtEnv;
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		await worker.scheduled({ cron: DAILY_CRON } as unknown as ScheduledController, env, ctx);
+		await drainScheduled(deferred);
+
+		expect(errSpy).not.toHaveBeenCalled();
+		expect(writeDataPoint).not.toHaveBeenCalledWith(expect.objectContaining({ indexes: ["cron_stale"] }));
+		errSpy.mockRestore();
 	});
 
 	it("a rejected shipMetricsSnapshot on the frequent path is swallowed, not thrown (#579)", async () => {
