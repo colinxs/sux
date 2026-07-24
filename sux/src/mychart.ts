@@ -531,6 +531,236 @@ async function latestPulledResources(env: RtEnv, org: string, patient: string, l
 	return resources;
 }
 
+// ---------------- notes: reading stored Binaries back out (#1462) ----------------
+//
+// `pullType` writes every DocumentReference attachment to `phi/mychart/{org}/{patient}/
+// Binary/{id}.json`, and until #1462 NOTHING read those objects back — the note bodies were
+// write-only, so a fully converged pull still surfaced zero readable notes. Everything below
+// is that missing read half: a stored-note reader (the primitive) plus the join back to the
+// DocumentReference that referenced each Binary (the metadata a human needs to tell two notes
+// apart), consumed by the `mychart` fn's `notes` op (the export path).
+//
+// PHI: note bodies are the most sensitive thing this file touches. They may be returned to the
+// authenticated MCP caller — the same channel `op:get` already returns raw FHIR PHI on — but
+// they must never reach the KV result cache (the fn is `cacheable:false`), a /s/ share link
+// (the handler refuses `phi/`), or a log line.
+
+/** One stored note: the decoded Binary body plus whatever the referencing DocumentReference
+ * knows about it. `text` is empty and `binary` true for a content type we can't render as
+ * text (a PDF/TIFF scan) — the caller is told what it is rather than handed base64. */
+export interface StoredNote {
+	id: string;
+	contentType?: string;
+	bytes: number;
+	binary: boolean;
+	text: string;
+	docId?: string;
+	date?: string;
+	title?: string;
+	type?: string;
+	author?: string;
+}
+
+// Epic answers `GET Binary/{id}` under our `Accept: application/fhir+json` (mychartFetch) with
+// a FHIR Binary RESOURCE — {resourceType:"Binary", contentType, data:<base64>} — not the note
+// text, so a reader that just returns the stored object's text hands back base64 and LOOKS like
+// it worked. Servers that ignore the Accept header return the raw document instead, so both
+// shapes have to be handled.
+const TEXTUAL_CONTENT_TYPES = /^(text\/|application\/(xhtml\+xml|xml|json|rtf))/i;
+
+/** Decode one stored `Binary/{id}.json` object into readable text. Pure — the R2 read and the
+ * DocumentReference join live in their callers, so the decode (the part with all the format
+ * guesswork) is unit-testable on its own. */
+export function decodeStoredBinary(stored: string): { contentType?: string; bytes: number; binary: boolean; text: string } {
+	const res = safeParseJson<any>(stored, null);
+	let contentType: string | undefined;
+	let raw: string;
+	if (res?.resourceType === "Binary" && typeof res.data === "string") {
+		contentType = typeof res.contentType === "string" ? res.contentType : undefined;
+		raw = decodeBase64Utf8(res.data);
+	} else {
+		// Not a Binary resource — the server returned the document itself. JSON.stringify'ing a
+		// parsed object back would be lossy for the non-JSON case, so use the stored text as-is.
+		raw = stored;
+	}
+	const bytes = new TextEncoder().encode(raw).length;
+	const ct = contentType?.split(";")[0].trim().toLowerCase();
+	if (ct && !TEXTUAL_CONTENT_TYPES.test(ct)) return { contentType, bytes, binary: true, text: "" };
+	return { contentType, bytes, binary: false, text: toPlainText(raw, ct) };
+}
+
+/** base64 → UTF-8 string. `atob` yields one char per BYTE (latin1), so a multi-byte UTF-8
+ * sequence has to be reassembled through TextDecoder — decoding `atob`'s output directly
+ * mojibakes every non-ASCII character in a clinical note. */
+function decodeBase64Utf8(b64: string): string {
+	try {
+		const bin = atob(b64.replace(/\s+/g, ""));
+		const bytes = new Uint8Array(bin.length);
+		for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+		return new TextDecoder().decode(bytes);
+	} catch {
+		return "";
+	}
+}
+
+/** Render a note body as plain text. Epic serves clinical notes as HTML far more often than
+ * anything else; RTF shows up occasionally. Anything already plain passes through. */
+function toPlainText(raw: string, contentType?: string): string {
+	if (contentType === "text/rtf" || contentType === "application/rtf") return rtfToText(raw);
+	if (contentType && !/html|xml/.test(contentType)) return raw.trim();
+	// No content type is the ambiguous case: sniff, because an untagged HTML note stripped as
+	// plain text is a wall of markup and an untagged plain note "stripped" is unchanged anyway.
+	if (!contentType && !/<[a-z!/]/i.test(raw)) return raw.trim();
+	return htmlToText(raw);
+}
+
+const HTML_ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", "#39": "'", "#160": " " };
+
+/** Minimal HTML → text for clinical notes: block tags become newlines, everything else is
+ * dropped, entities are decoded. Deliberately not a parser — these are Epic-generated note
+ * bodies, and the goal is legibility for a human/model reader, not fidelity. */
+export function htmlToText(html: string): string {
+	return html
+		.replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, "")
+		.replace(/<!--[\s\S]*?-->/g, "")
+		.replace(/<br\s*\/?>/gi, "\n")
+		.replace(/<\/(p|div|li|tr|h[1-6]|blockquote|section|article)\s*>/gi, "\n")
+		.replace(/<(li|tr)\b[^>]*>/gi, "\n")
+		.replace(/<\/t[dh]\s*>/gi, "\t")
+		.replace(/<[^>]+>/g, "")
+		.replace(/&(#?\w+);/g, (m, e: string) => {
+			const key = e.toLowerCase();
+			if (key in HTML_ENTITIES) return HTML_ENTITIES[key];
+			if (/^#\d+$/.test(key)) return String.fromCodePoint(Number(key.slice(1)));
+			if (/^#x[0-9a-f]+$/.test(key)) return String.fromCodePoint(Number.parseInt(key.slice(2), 16));
+			return m;
+		})
+		.replace(/[ \t]+\n/g, "\n")
+		.replace(/\n{3,}/g, "\n\n")
+		.trim();
+}
+
+/** Minimal RTF → text: drop control groups and control words, unescape hex escapes. Same
+ * legibility-not-fidelity bar as htmlToText. */
+export function rtfToText(rtf: string): string {
+	return rtf
+		.replace(/\{\\\*[^{}]*\}/g, "")
+		.replace(/\\(par[d]?|line)\b ?/g, "\n")
+		.replace(/\\'([0-9a-fA-F]{2})/g, (_m, h: string) => String.fromCharCode(Number.parseInt(h, 16)))
+		// RFC-spec RTF delimits a control word with a single SPACE — matching `\s?` here would
+		// also swallow the newline the `\par` rewrite above just produced, welding paragraphs
+		// together.
+		.replace(/\\[a-zA-Z]+-?\d*[ ]?/g, "")
+		.replace(/[{}]/g, "")
+		.replace(/\n{3,}/g, "\n\n")
+		.trim();
+}
+
+/** The Binary ids a DocumentReference points at, with the URL each was fetched from. Shared by
+ * the note join and resolveBinaries so both agree on what counts as a resolvable attachment —
+ * the original absolute `attachment.url` is preserved deliberately (the regex only anchors on a
+ * trailing `Binary/<id>`, so rebuilding `${base}/Binary/${id}` would change the request). */
+export function binaryIdsOf(org: string, base: string, doc: any): Array<{ id: string; url: string }> {
+	const out: Array<{ id: string; url: string }> = [];
+	const contents: any[] = Array.isArray(doc?.content) ? doc.content : [];
+	for (const c of contents) {
+		const attUrl = c?.attachment?.url;
+		if (typeof attUrl !== "string" || !attUrl) continue;
+		const m = /Binary\/([A-Za-z0-9\-.]+)$/.exec(attUrl);
+		if (!m) continue;
+		const abs = /^https?:\/\//i.test(attUrl) ? attUrl : `${base}/Binary/${m[1]}`;
+		if (!isUnderFhirBase(org, abs)) continue;
+		out.push({ id: m[1], url: abs });
+	}
+	return out;
+}
+
+/** Every Binary id currently stored for this org/patient, ascending. Paged with the same
+ * 50-page backstop as latestPulledResources — a note-heavy chart passes 1000 objects, and an
+ * unpaginated list() would silently return only the first page. */
+export async function storedBinaryIds(env: RtEnv, org: string, patient: string): Promise<string[]> {
+	if (!env.R2) return [];
+	const prefix = `${PHI_PREFIX}mychart/${org}/${patient}/Binary/`;
+	const ids: string[] = [];
+	let cursor: string | undefined;
+	for (let i = 0; i < 50; i++) {
+		const listing = await env.R2.list({ prefix, cursor, limit: 1000 });
+		for (const o of listing.objects) {
+			const m = /\/([^/]+)\.json$/.exec(o.key);
+			if (m) ids.push(m[1]);
+		}
+		if (!listing.truncated || !listing.cursor) break;
+		cursor = listing.cursor;
+	}
+	return ids;
+}
+
+/** Binary id → the referencing DocumentReference's human-facing metadata, from the most recent
+ * pulled DocumentReference pages. A Binary with no surviving DocumentReference still reads back
+ * fine (the join is enrichment, not a filter) — page bundles and Binaries expire independently
+ * because the Binary key is unstamped. */
+async function noteMetaByBinaryId(env: RtEnv, org: string, patient: string): Promise<Map<string, Omit<StoredNote, "id" | "bytes" | "binary" | "text" | "contentType">>> {
+	const base = fhirBase(org);
+	const meta = new Map<string, Omit<StoredNote, "id" | "bytes" | "binary" | "text" | "contentType">>();
+	for (const doc of await latestPulledResources(env, org, patient, "DocumentReference")) {
+		const entry = {
+			docId: typeof doc?.id === "string" ? doc.id : undefined,
+			date: typeof doc?.date === "string" ? doc.date : typeof doc?.context?.period?.start === "string" ? doc.context.period.start : undefined,
+			title: typeof doc?.description === "string" ? doc.description : undefined,
+			type: doc?.type?.text ?? doc?.type?.coding?.[0]?.display,
+			author: doc?.author?.[0]?.display,
+		};
+		for (const { id } of binaryIdsOf(org, base, doc)) meta.set(id, entry);
+	}
+	return meta;
+}
+
+/** Read ONE stored note back, decoded and joined to its DocumentReference. null when the
+ * Binary was never pulled. */
+export async function readStoredNote(env: RtEnv, org: string, patient: string, id: string): Promise<StoredNote | null> {
+	if (!env.R2) return null;
+	const obj = await env.R2.get(`${PHI_PREFIX}mychart/${org}/${patient}/Binary/${id}.json`);
+	if (!obj) return null;
+	const decoded = decodeStoredBinary(await obj.text());
+	const meta = (await noteMetaByBinaryId(env, org, patient)).get(id);
+	return { id, ...decoded, ...meta };
+}
+
+// A whole-chart note export is the deliverable, but note bodies run to tens of KB each and the
+// MCP response is one string — so the text-bearing listing walks a character budget and hands
+// back a cursor instead of truncating silently or blowing the response size.
+export const NOTE_EXPORT_CHAR_BUDGET = 100_000;
+
+/** List stored notes for one org/patient. Metadata-only by default (the index a human scans);
+ * with `text`, bodies are included until NOTE_EXPORT_CHAR_BUDGET is spent and `nextCursor`
+ * points at the first note NOT included — resume from there to export the whole chart. */
+export async function listStoredNotes(
+	env: RtEnv,
+	org: string,
+	patient: string,
+	opts: { text?: boolean; cursor?: string; limit?: number } = {},
+): Promise<{ total: number; notes: StoredNote[]; nextCursor?: string }> {
+	const ids = await storedBinaryIds(env, org, patient);
+	const meta = await noteMetaByBinaryId(env, org, patient);
+	const start = Math.max(0, Number(opts.cursor ?? 0) || 0);
+	const limit = Math.min(Math.max(1, opts.limit ?? (opts.text ? 25 : 500)), 1000);
+	const notes: StoredNote[] = [];
+	let spent = 0;
+	let i = start;
+	for (; i < ids.length && notes.length < limit; i++) {
+		const id = ids[i];
+		const obj = env.R2 ? await env.R2.get(`${PHI_PREFIX}mychart/${org}/${patient}/Binary/${id}.json`) : null;
+		if (!obj) continue;
+		const decoded = decodeStoredBinary(await obj.text());
+		// Budget is checked AFTER the first note so a single over-budget note still comes back
+		// (otherwise the cursor never advances past it and the export deadlocks).
+		if (opts.text && notes.length > 0 && spent + decoded.text.length > NOTE_EXPORT_CHAR_BUDGET) break;
+		spent += decoded.text.length;
+		notes.push({ id, ...decoded, ...(opts.text ? {} : { text: "" }), ...meta.get(id) });
+	}
+	return { total: ids.length, notes, ...(i < ids.length ? { nextCursor: String(i) } : {}) };
+}
+
 /** True once ANY resource page has ever been pulled for this org/patient — a connected-but-
  * never-pulled org (grant exists the instant OAuth completes, independent of `pull` ever
  * running) must NOT count toward summarizeMyChart's "2+ orgs contributing" prefixing decision
@@ -967,17 +1197,10 @@ export async function crossOrgAllergyGaps(env: RtEnv): Promise<MyChartAllergyGap
  * or off-base attachment URLs. */
 async function resolveBinaries(env: RtEnv, org: string, base: string, doc: any): Promise<Array<{ id: string; body: string }>> {
 	const out: Array<{ id: string; body: string }> = [];
-	const contents: any[] = Array.isArray(doc?.content) ? doc.content : [];
-	for (const c of contents) {
-		const attUrl = c?.attachment?.url;
-		if (typeof attUrl !== "string" || !attUrl) continue;
-		const m = /Binary\/([A-Za-z0-9\-.]+)$/.exec(attUrl);
-		if (!m) continue;
-		const abs = /^https?:\/\//i.test(attUrl) ? attUrl : `${base}/Binary/${m[1]}`;
-		if (!isUnderFhirBase(org, abs)) continue;
-		const resp = await mychartFetch(env, org, abs);
+	for (const { id, url } of binaryIdsOf(org, base, doc)) {
+		const resp = await mychartFetch(env, org, url);
 		if (resp.status >= 400) continue;
-		out.push({ id: m[1], body: await resp.text() });
+		out.push({ id, body: await resp.text() });
 	}
 	return out;
 }

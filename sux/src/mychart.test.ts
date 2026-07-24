@@ -2,21 +2,27 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	MAX_BINARIES_PER_TYPE,
 	MYCHART_ORGS,
+	NOTE_EXPORT_CHAR_BUDGET,
 	buildPullPlan,
 	connectedOrgs,
 	crossOrgAllergyGaps,
 	crossOrgMedicationAllergyConflicts,
+	decodeStoredBinary,
 	gatherMedicalTimelineEvents,
 	handleAppleHealth,
 	handleMychartRoutes,
 	isUnderFhirBase,
+	listStoredNotes,
 	mintAccessToken,
 	mychartFetch,
 	pullType,
 	readGrant,
+	readStoredNote,
 	reconcilePull,
 	resolveFhirPath,
 	resolveOrg,
+	rtfToText,
+	storedBinaryIds,
 	substancesOverlap,
 	summarizeMyChart,
 	throttledPullType,
@@ -883,5 +889,114 @@ describe("crossOrgAllergyGaps — one-sided allergy continuity gap (#1009)", () 
 			{ resourceType: "AllergyIntolerance", id: "al2", code: { text: "Penicillin" }, clinicalStatus: { coding: [{ code: "resolved" }] } },
 		]);
 		expect(await crossOrgAllergyGaps(env)).toEqual([]);
+	});
+});
+
+describe("stored-note reader — the read half of pull's Binary writes (#1462)", () => {
+	const b64 = (s: string) => btoa(String.fromCharCode(...new TextEncoder().encode(s)));
+	const binaryResource = (contentType: string, body: string) => JSON.stringify({ resourceType: "Binary", contentType, data: b64(body) });
+	const noteEnv = async (bodies: Record<string, string>, docs?: any[]) => {
+		const env = baseEnv();
+		for (const [id, html] of Object.entries(bodies)) {
+			await env.R2.put(`phi/mychart/${ORG}/P1/Binary/${id}.json`, binaryResource("text/html", html), { httpMetadata: { contentType: "application/fhir+json" } });
+		}
+		if (docs) {
+			await env.R2.put(`phi/mychart/${ORG}/P1/DocumentReference/STAMP-p1.json`, JSON.stringify({ resourceType: "Bundle", entry: docs.map((resource) => ({ resource })) }), {
+				httpMetadata: { contentType: "application/fhir+json" },
+			});
+		}
+		return env;
+	};
+
+	it("decodeStoredBinary turns Epic's base64 Binary resource into readable text — a reader returning the raw stored object would hand back base64", () => {
+		const stored = binaryResource("text/html", "<html><body><p>Chief complaint:</p><p>knee&nbsp;pain &amp; swelling</p></body></html>");
+		const out = decodeStoredBinary(stored);
+		expect(out.binary).toBe(false);
+		expect(out.contentType).toBe("text/html");
+		expect(out.text).toBe("Chief complaint:\nknee pain & swelling");
+		expect(out.text).not.toMatch(/PGh0bWw|base64/);
+	});
+
+	it("decodeStoredBinary reassembles multi-byte UTF-8 — atob alone yields one char per byte and mojibakes every accented name", () => {
+		expect(decodeStoredBinary(binaryResource("text/plain", "Müller — 38°C")).text).toBe("Müller — 38°C");
+	});
+
+	it("decodeStoredBinary flags a non-textual attachment instead of dumping base64 as 'text'", () => {
+		const out = decodeStoredBinary(binaryResource("application/pdf", "%PDF-1.7 binary junk"));
+		expect(out).toMatchObject({ binary: true, text: "", contentType: "application/pdf" });
+		expect(out.bytes).toBeGreaterThan(0);
+	});
+
+	it("decodeStoredBinary falls through to the stored body when the server ignored Accept and returned the document itself", () => {
+		expect(decodeStoredBinary("Plain discharge summary.").text).toBe("Plain discharge summary.");
+		expect(decodeStoredBinary("<div>Wrapped <b>note</b></div>").text).toBe("Wrapped note");
+	});
+
+	it("rtfToText strips control words and unescapes hex escapes", () => {
+		expect(rtfToText(String.raw`{\rtf1\ansi{\*\generator Epic}\b Assessment:\b0\par Stable\'2e}`)).toBe("Assessment:\nStable.");
+	});
+
+	it("listStoredNotes returns every stored Binary with its id and decoded body — an empty result on a populated bucket is the #1462 bug", async () => {
+		const env = await noteEnv({ b1: "<p>note one</p>", b2: "<p>note two</p>", b3: "<p>note three</p>" });
+		const out = await listStoredNotes(env, ORG, "P1", { text: true });
+		expect(out.total).toBe(3);
+		expect(out.notes.map((n) => n.id)).toEqual(["b1", "b2", "b3"]);
+		expect(out.notes.map((n) => n.text)).toEqual(["note one", "note two", "note three"]);
+		expect(out.nextCursor).toBeUndefined();
+	});
+
+	it("listStoredNotes joins each Binary back to the DocumentReference that referenced it", async () => {
+		const env = await noteEnv({ b1: "<p>body</p>" }, [
+			{
+				resourceType: "DocumentReference",
+				id: "d1",
+				date: "2026-03-04T10:00:00Z",
+				description: "Progress Note",
+				type: { text: "Progress Notes" },
+				author: [{ display: "Dr. Ada Lovelace" }],
+				content: [{ attachment: { url: `${BASE}/Binary/b1` } }],
+			},
+		]);
+		expect((await listStoredNotes(env, ORG, "P1", { text: true })).notes[0]).toMatchObject({
+			id: "b1",
+			docId: "d1",
+			date: "2026-03-04T10:00:00Z",
+			title: "Progress Note",
+			type: "Progress Notes",
+			author: "Dr. Ada Lovelace",
+			text: "body",
+		});
+	});
+
+	it("listStoredNotes without `text` is an index — ids and metadata, no bodies", async () => {
+		const env = await noteEnv({ b1: "<p>secret body</p>" });
+		const out = await listStoredNotes(env, ORG, "P1");
+		expect(out.notes[0].text).toBe("");
+		expect(out.notes[0].bytes).toBeGreaterThan(0);
+	});
+
+	it("listStoredNotes pages a text export by character budget and resumes from nextCursor — a whole chart never lands in one response", async () => {
+		const big = "x".repeat(NOTE_EXPORT_CHAR_BUDGET);
+		const env = await noteEnv({ b1: big, b2: big, b3: "<p>tail</p>" });
+		const first = await listStoredNotes(env, ORG, "P1", { text: true });
+		expect(first.notes.map((n) => n.id)).toEqual(["b1"]);
+		expect(first.nextCursor).toBe("1");
+		const second = await listStoredNotes(env, ORG, "P1", { text: true, cursor: first.nextCursor });
+		expect(second.notes.map((n) => n.id)).toEqual(["b2"]);
+		const third = await listStoredNotes(env, ORG, "P1", { text: true, cursor: second.nextCursor });
+		expect(third.notes.map((n) => n.id)).toEqual(["b3"]);
+		expect(third.nextCursor).toBeUndefined();
+	});
+
+	it("storedBinaryIds walks past R2's 1000-object page — a single unpaginated list() would silently hide every note after the first page", async () => {
+		const env = baseEnv();
+		for (let i = 0; i < 1001; i++) await env.R2.put(`phi/mychart/${ORG}/P1/Binary/b${String(i).padStart(4, "0")}.json`, binaryResource("text/plain", "n"), {});
+		expect((await storedBinaryIds(env, ORG, "P1")).length).toBe(1001);
+	});
+
+	it("readStoredNote returns one note in full, and null for an id that was never pulled", async () => {
+		const env = await noteEnv({ b1: "<p>full body</p>" });
+		expect((await readStoredNote(env, ORG, "P1", "b1"))?.text).toBe("full body");
+		expect(await readStoredNote(env, ORG, "P1", "nope")).toBeNull();
 	});
 });

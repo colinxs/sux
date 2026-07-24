@@ -1,6 +1,6 @@
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { errMsg, oj } from "./_util";
-import { MYCHART_ORGS, mychartConfigured, mychartFetch, readGrant, redirectUri, resolveFhirPath, resolveOrg } from "../mychart";
+import { listStoredNotes, MYCHART_ORGS, mychartConfigured, mychartFetch, readGrant, readStoredNote, redirectUri, resolveFhirPath, resolveOrg } from "../mychart";
 import { runVerb } from "./run";
 
 // MyChart — Epic SMART-on-FHIR clinical records, read-only. The interactive OAuth
@@ -34,7 +34,8 @@ export const mychart: Fn = {
 		"status (no org — grant presence/patient id/scopes/refresh-token age for EVERY registry org, NEVER returns token material) | " +
 		"connect ({org?} — returns the /mychart/connect URL to open in a browser — the fn can't do the interactive login itself) | " +
 		"pull ({org?, types?:[...], since?:'YYYY-MM-DD'} — starts a DURABLE sync job (pages the USCDI resource set for one org, resolves DocumentReference→Binary notes, writes raw FHIR to private R2; never values, never inline — a full sync is dozens of round-trips, so this always returns {instanceId} immediately; poll with `run{action:'status', instanceId}` for the eventual per-type counts/errors) | " +
-		"get ({org?, path:'Observation?category=vital-signs&date=ge2026-06-01'} — read-only FHIR passthrough against one org, path-validated against its FHIR base). " +
+		"get ({org?, path:'Observation?category=vital-signs&date=ge2026-06-01'} — read-only FHIR passthrough against one org, path-validated against its FHIR base) | " +
+		"notes ({org?, id?, text?:true, cursor?, limit?} — read back the clinical NOTES a previous `pull` stored (DocumentReference→Binary). No id: an index of every stored note (id, date, title, type, author, size). With `text:true`: bodies too, decoded from Epic's base64/HTML, paged by a character budget — follow `nextCursor` to export the whole chart. With `id`: that one note in full. Reads R2 only — never calls Epic). " +
 		`\`org\` is one of: ${ORG_IDS.join(", ")} — omit it when exactly one org is connected (defaults to it), otherwise required. ` +
 		"PHI never enters the response cache or public share links. " +
 		"Needs EPIC_CLIENT_ID/EPIC_CLIENT_SECRET + a one-time /mychart/connect?org=<id> login per org; absent → not_configured.",
@@ -43,11 +44,15 @@ export const mychart: Fn = {
 		additionalProperties: false,
 		required: ["op"],
 		properties: {
-			op: { type: "string", enum: ["status", "connect", "pull", "get"] },
-			org: { type: "string", enum: ORG_IDS, description: "connect/pull/get: which registry org. Omit when exactly one org is connected." },
+			op: { type: "string", enum: ["status", "connect", "pull", "get", "notes"] },
+			org: { type: "string", enum: ORG_IDS, description: "connect/pull/get/notes: which registry org. Omit when exactly one org is connected." },
 			types: { type: "array", items: { type: "string" }, description: "pull: narrow to these FHIR resource types (default the full USCDI set)." },
 			since: { type: "string", description: "pull: only resources updated on/after this date (YYYY-MM-DD), where the org honors _lastUpdated." },
 			path: { type: "string", description: "get: a FHIR search/read path relative to the FHIR base (e.g. `Observation?category=laboratory`). Read-only GET; validated to stay under the base." },
+			id: { type: "string", description: "notes: read this one Binary id in full (from a prior `notes` index)." },
+			text: { type: "boolean", description: "notes: include decoded note bodies, not just the index. Paged by a character budget — follow `nextCursor`." },
+			cursor: { type: "string", description: "notes: resume from a previous call's `nextCursor`." },
+			limit: { type: "number", description: "notes: max notes per call (default 25 with `text`, 500 without)." },
 		},
 	},
 	run: async (env: RtEnv, a: any) => {
@@ -147,7 +152,45 @@ export const mychart: Fn = {
 				return ok(oj({ org, patient: grant.patient, instanceId, note: "Durable pull started — poll with run{action:'status', instanceId} for counts/errors once it completes." }));
 			}
 
-			return failWith("bad_input", `mychart: unknown op '${op}'. Use status | connect | pull | get.`);
+			// The read half of `pull` (#1462). Everything `pull` wrote under
+			// phi/mychart/{org}/{patient}/Binary/ was unreadable until this op existed, so a
+			// converged pull produced zero readable notes. R2-only: no Epic call, no grant needed
+			// beyond knowing which patient id the notes were filed under.
+			if (op === "notes") {
+				const resolved = await resolveOrg(env, a?.org);
+				if ("error" in resolved) return failWith("bad_input", resolved.error);
+				const { org } = resolved;
+				const grant = await readGrant(env, org);
+				if (!grant?.patient) return failWith("not_configured", `MyChart not connected for org '${org}' — open /mychart/connect?org=${org} once.`);
+				if (!env.R2) return failWith("not_configured", "op=notes needs the R2 bucket bound (notes are read back from the private phi/ prefix).");
+				const id = typeof a?.id === "string" && a.id.trim() ? a.id.trim() : undefined;
+				if (id) {
+					const note = await readStoredNote(env, org, grant.patient, id);
+					// The id is caller-supplied and echoed back — keep it to the charset the Binary
+					// key regex accepts so a crafted value can't smuggle anything into the message.
+					if (!note) return failWith("not_found", `mychart notes: no stored note '${id.replace(/[^A-Za-z0-9\-.]/g, "").slice(0, 64)}' for org '${org}'. Run op=pull first, or list with op=notes.`);
+					return ok(oj({ org, ...note }));
+				}
+				const wantText = a?.text === true;
+				const listing = await listStoredNotes(env, org, grant.patient, {
+					text: wantText,
+					cursor: typeof a?.cursor === "string" ? a.cursor : undefined,
+					limit: typeof a?.limit === "number" ? a.limit : undefined,
+				});
+				return ok(
+					oj({
+						org,
+						...listing,
+						...(listing.total === 0
+							? { note: "No notes stored yet for this org — run op=pull (DocumentReference→Binary is what populates them)." }
+							: wantText
+								? {}
+								: { note: "Index only. Re-run with text:true for bodies, or id:'<id>' for one note in full." }),
+					}),
+				);
+			}
+
+			return failWith("bad_input", `mychart: unknown op '${op}'. Use status | connect | pull | get | notes.`);
 		} catch (e) {
 			return failWith("upstream_error", `mychart ${op} failed: ${errMsg(e)}`);
 		}
