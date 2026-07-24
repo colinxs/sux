@@ -1,4 +1,5 @@
 import { hasAI, llm } from "../ai";
+import { ORACLE_DISTILL } from "../prompts";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { ASK_LOG_KEY, type AskVerdict, recordAskFeedback, runAsk } from "./_answer";
 import { type BackfillDomain, BACKFILL_DOMAINS, backfillStatus, backfillTick, resetBackfill } from "./_backfill";
@@ -126,8 +127,7 @@ function sizeCapSplit(text: string, target = PIECE_TARGET, max = PIECE_MAX): str
 /** Distill a single body of material into concise notes (trusted system role). Exported for the
  *  assimilation spine (_assimilate.ts, #1283), which reuses this exact distill instruction rather
  *  than reinventing it — the two paths' distillates stay stylistically interchangeable. */
-export const DISTILL_SYSTEM =
-	"Extract and condense the KEY KNOWLEDGE (facts, definitions, concepts, relationships, procedures, rules) from the material into concise, self-contained notes that can answer future questions on this topic. Omit fluff, examples-for-flavor, and boilerplate. Output only the notes, <= ~500 words.";
+export const DISTILL_SYSTEM = ORACLE_DISTILL.system;
 
 /** Consolidate all distilled chunks into one coherent knowledge base (trusted system role). */
 const REDISTILL_SYSTEM =
