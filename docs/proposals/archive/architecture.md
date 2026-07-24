@@ -28,7 +28,7 @@ The visual companion to [domains.md](../domains.md) (the nine-domain mapping) an
 
 ## 1. System topology — the vault is the hub
 
-One assistant surface reaches Colin's data estate through a handful of conduit fns on one Cloudflare Worker; the intelligence lives in skills, not in a pile of per-domain tools. Two client paths reach the same store: **local Claude** talks to the live vault directly over Tailscale (the near surface); **cloud/mobile Claude** goes through the sux Worker. GitHub (`colinxs/vault`) is the single source of truth — the live vault syncs to it via obsidian-git, and the Worker's git backend reads/writes it directly. Blobs split by audience: R2 is machine-facing, the Dropbox app folder is human-facing.
+One assistant surface reaches Colin's data estate through a handful of conduit fns on one Cloudflare Worker; the intelligence lives in skills, not in a pile of per-domain tools. Two client paths reach the same store: **local Claude** talks to the live vault directly over Tailscale (the near surface); **cloud/mobile Claude** goes through the sux Worker. GitHub (`SuxOS/vault`) is the single source of truth — the live vault syncs to it via obsidian-git, and the Worker's git backend reads/writes it directly. Blobs split by audience: R2 is machine-facing, the Dropbox app folder is human-facing.
 
 ```mermaid
 flowchart TB
@@ -50,7 +50,7 @@ flowchart TB
         VAULT[("Live vault")]
     end
 
-    GH[("GitHub · colinxs/vault<br/>SOURCE OF TRUTH")]
+    GH[("GitHub · SuxOS/vault<br/>SOURCE OF TRUTH")]
     DROP[("Dropbox /Apps/sux<br/>human-facing blobs")]
     R2[("R2<br/>machine-facing blobs")]
     WEB(("Open web"))

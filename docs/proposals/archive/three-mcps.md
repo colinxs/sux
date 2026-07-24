@@ -28,7 +28,7 @@ updated: 2026-07-09
 All behind the same `workers-oauth-provider` flow, so each appears as its own connector in claude.ai with zero new public surface / zero new infra. Plugins auto-register connectors in **Claude Code**; the claude.ai web/mobile app still needs a manual connector add.
 
 **Transports for the vault** (both first-class, different endpoints — not one router):
-- **Cloud** = `/vault/mcp`, git store (`colinxs/vault`, every write a revertible commit, KV-cached). Works with no box awake. This is v1.
+- **Cloud** = `/vault/mcp`, git store (`colinxs/vault`, now `SuxOS/vault`, every write a revertible commit, KV-cached). Works with no box awake. This is v1.
 - **Local/desktop** = the live vault (Local REST API) via the **mcp-gate** wrapper on the tailnet — used where git can't serve (full-text search: GitHub code search is dead on private repos).
 - **Tier-2** = a `vpc` backend (CF Workers VPC → live vault privately) is the planned path to give the *cloud* endpoint live-vault search too. See [[workers-vpc-vault-path]].
 

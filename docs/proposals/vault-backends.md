@@ -70,7 +70,7 @@ of **four** implementations and refactors the enum accordingly.
 ### Impl 1 — Stateless Worker → git (GitHub API, cloud, no box)
 
 - **Transport:** GitHub REST (contents / trees / search-code) from the Worker.
-- **Store:** `colinxs/vault` git repo @ `main`. Truth = git; read-through KV cache
+- **Store:** `SuxOS/vault` git repo @ `main`. Truth = git; read-through KV cache
   (`OAUTH_KV`) keyed `cache:vault:git:{repo}@{branch}:…`, validated against HEAD sha
   (rechecked ≤1×/60s, trusted ≤10min on ref-fetch failure).
 - **Latency:** GitHub API round-trips (~100-400ms), cache hits sub-10ms.
@@ -94,7 +94,7 @@ of **four** implementations and refactors the enum accordingly.
   `env.OBSIDIAN_HOME.fetch(...)`. Strictly better than Funnel: no public hostname,
   built-in SSRF pinning, no 3-port ceiling. Bearer still rides as
   `Authorization: Bearer` (per-box `OBSIDIAN_HOME_KEY` / `OBSIDIAN_CLOUD_KEY`).
-- **Store:** node-local vault clone; git `colinxs/vault` stays source of truth;
+- **Store:** node-local vault clone; git `SuxOS/vault` stays source of truth;
   obsidian-git commits/pulls on the box; Obsidian Sync added for device convergence.
 - **Latency:** low, cloud-side (Worker↔VPC intra-CF), full server-side search + DQL.
 - **Availability:** ALWAYS-ON (that is the whole point) — home box primary (x86_64),
@@ -116,7 +116,7 @@ of **four** implementations and refactors the enum accordingly.
   (`tailscale serve :9443` → `127.0.0.1:27126`, identity via `Tailscale-User-Login`,
   enforced against `ALLOW_LOGINS`) so tailnet devices carry zero client secrets.
 - **Store:** the Mac's live vault (81 dailies today), obsidian-git committing to
-  `colinxs/vault`.
+  `SuxOS/vault`.
 - **Latency:** LAN/tailnet fast when the Mac is awake; unavailable when asleep.
 - **Availability:** desktop-only, best-effort (Mac sleeps).
 - **Egress:** private (tailnet).
@@ -127,7 +127,7 @@ of **four** implementations and refactors the enum accordingly.
 ### Impl 4 — Local git (filesystem clone, direct)
 
 - **Transport:** direct filesystem access to a local clone (no network).
-- **Store:** the on-disk `colinxs/vault` working copy.
+- **Store:** the on-disk `SuxOS/vault` working copy.
 - **Latency:** instant (local FS).
 - **Availability:** wherever the clone lives (desktop/dev box).
 - **Egress:** none.
@@ -235,7 +235,7 @@ Key moves:
 
 ## 1.6 Sync topology — git is the BUS (Colin LOCKED)
 
-**git (`colinxs/vault`) = single authoritative source of truth + undo.** Three engines
+**git (`SuxOS/vault`) = single authoritative source of truth + undo.** Three engines
 coexist on the vault, with strict roles so we never run three bidirectional writers on
 one folder:
 

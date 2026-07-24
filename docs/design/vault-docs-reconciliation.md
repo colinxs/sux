@@ -26,7 +26,7 @@ The two corpora have genuinely different authorities and must keep them:
 
 | | (A) repo docs | (B) runtime vault |
 |---|---|---|
-| Home | `SuxOS/sux` (**PUBLIC**) — `docs/` + `Home.md` + `llms.txt` | `colinxs/obsidian-vault` (**PRIVATE**) + live Mac |
+| Home | `SuxOS/sux` (**PUBLIC**) — `docs/` + `Home.md` + `llms.txt` | `SuxOS/vault` (**PRIVATE**) + live Mac |
 | Gate | CI (`check:wiki`, type-check, deploy dry-run), `gen-wiki`, pre-commit hook | git history = undo; KV cache; 409 optimistic-concurrency |
 | Co-versioned with | the sux Worker code | Colin's life, mail digests, `vault_capture` |
 | Conventions | `status/cluster/type/summary` frontmatter, MOCs | `Daily/ Inbox/ Templates/`, no such frontmatter |
@@ -49,7 +49,7 @@ gets it through the *already-built* sux vault MCP — not a filesystem symlink.
 
 1. **Repo docs → editable in Obsidian.** One gitignored symlink mounts the
    public repo's docs into the private personal vault as a folder:
-   `…/obsidian-vault/sux` → symlink → `…/Code/sux-mcp/docs`.
+   `…/SuxOS/vault/sux` → symlink → `…/Code/sux-mcp/docs`.
    Obsidian follows symlinks and indexes the real files, so `sux/` shows up in
    Colin's daily-driver vault with working backlinks/search across both corpora —
    **same inodes, zero copy**. Add `sux/` to the *vault repo's* `.gitignore` so
@@ -68,7 +68,7 @@ gets it through the *already-built* sux vault MCP — not a filesystem symlink.
 
 3. **Cloud leg (park by default).** Making the sux *design docs* searchable from
    claude.ai mobile's sux connector (the `vault_*` verbs) would require them inside the
-   private `obsidian-vault` repo (the vault backend reads that repo, not the public
+   private `SuxOS/vault` repo (the vault backend reads that repo, not the public
    one). Only do this if the want is real, and only as a **one-way generated
    projection** (docs → a `sux-docs/` folder in the vault repo, driven by CI on
    the public repo, marked generated/read-only) — an *output* like `llms.txt`, so
@@ -83,7 +83,7 @@ gets it through the *already-built* sux vault MCP — not a filesystem symlink.
   [[Functions-MOC]] / [[Status-Dashboard]] / `llms.txt`). The vault repo never
   sees it (gitignored). One copy, one git home → no conflict.
 - **Edit a personal note** (Obsidian, or the sux vault MCP) → committed to
-  `colinxs/obsidian-vault` (MCP writes carry read-time sha → 409 instead of
+  `SuxOS/vault` (MCP writes carry read-time sha → 409 instead of
   silent clobber on races). The public repo never sees it. One copy, one git home.
 - `gen-wiki.mjs` only walks the sux repo's `docs/` and only counts notes with
   `status:` frontmatter, so the mounted personal notes (different repo, no such
@@ -98,16 +98,16 @@ gets it through the *already-built* sux vault MCP — not a filesystem symlink.
   impossible. No behavior change, fully reversible.
 - **Phase 1 — the local mount.** Add an idempotent, local-only
   `scripts/mount-docs-in-obsidian.sh` that creates the
-  `obsidian-vault/sux → sux-mcp/docs` symlink and appends `sux/` to the *vault
+  `SuxOS/vault/sux → sux-mcp/docs` symlink and appends `sux/` to the *vault
   repo's* `.gitignore`. Runs on the Mac, no-ops in CI. Colin runs it once. This
   delivers "docs editable in Obsidian, unified graph."
 - **Phase 2 — verify + document the repo-side path.** Confirm the sux vault MCP
   is the sanctioned way to touch the vault from the repo; add a short "editing the
   personal vault from the repo" note. Fix the `colinxs/vault` →
-  `colinxs/obsidian-vault` naming drift in `docs/proposals/archive/architecture.md` +
+  `SuxOS/vault` naming drift in `docs/proposals/archive/architecture.md` +
   `vault-backends.md`.
 - **Phase 3 — (park) one-way cloud projection** of the public wiki into
-  `obsidian-vault/sux-docs/` via CI, only if Colin wants sux docs reachable through the mobile
+  `SuxOS/vault/sux-docs/` via CI, only if Colin wants sux docs reachable through the mobile
   sux connector's `vault_*` verbs. Generated/read-only; never hand-edited.
 
 ## Guardrail (this PR)
