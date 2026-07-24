@@ -4,7 +4,7 @@
 <dict>
   <key>Label</key><string>com.sux.imessage</string>
   <key>ProgramArguments</key>
-  <array><string>/bin/sh</string><string>/Users/colinxs/Claude/sux-mcp/sux/imessage-service/run.sh</string></array>
+  <array><string>/bin/sh</string><string>__RUN_SH_PATH__</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>/tmp/sux-imessage.log</string>
