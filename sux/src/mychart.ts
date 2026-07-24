@@ -363,13 +363,17 @@ export interface PullPlanItem extends PlanItem {
 	org: string;
 	patient: string;
 	stamp: string;
+	/** Bypass the already-stored skip set and re-fetch every Binary. The escape hatch for the
+	 * one hazard set-difference resume can't cover: Epic amending a note in place under the
+	 * same Binary id, which the skip set would otherwise freeze silently forever. */
+	refetchBinaries?: boolean;
 }
 
 /** Build the org/patient-scoped plan for a durable pull — `resourcePlan` unchanged, just
  * carrying `org`/`patient`/`stamp` on every item so each fanned-out `pullType` leaf is
  * self-contained (a `map` leaf only ever sees its own item, never the tree's original input). */
-export function buildPullPlan(input: { org: string; patient: string; types?: string[]; since?: string }, stamp: string): PullPlanItem[] {
-	return resourcePlan(input.patient, input.types, input.since).map((p) => ({ ...p, org: input.org, patient: input.patient, stamp }));
+export function buildPullPlan(input: { org: string; patient: string; types?: string[]; since?: string; refetchBinaries?: boolean }, stamp: string): PullPlanItem[] {
+	return resourcePlan(input.patient, input.types, input.since).map((p) => ({ ...p, org: input.org, patient: input.patient, stamp, ...(input.refetchBinaries ? { refetchBinaries: true } : {}) }));
 }
 
 export interface PullTypeResult {
@@ -386,6 +390,14 @@ export interface PullTypeResult {
 	 * client via reconcilePull's `errors`, so it must never carry a query string — Epic paging
 	 * URLs embed `patient=<opaque id>`. */
 	reason?: string;
+	/** DocumentReference→Binary accounting (#1365 Fix 3). All optional and omitted when zero,
+	 * so a clean non-DocumentReference result stays a bare literal. `binariesSeen` is only
+	 * accurate AT CONVERGENCE — the cap still stops the walk — so it is not a remaining-work
+	 * denominator. */
+	binariesSeen?: number;
+	binariesSkipped?: number;
+	binariesFailed?: number;
+	binariesUnresolvable?: number;
 }
 
 /** A searchset entry that counts toward `count`. Epic appends an OperationOutcome entry
@@ -416,6 +428,10 @@ export async function pullType(env: RtEnv, item: PullPlanItem): Promise<PullType
 	let count = 0;
 	let binaries = 0;
 	let keys = 0;
+	let seen = 0;
+	let skipped = 0;
+	let failed = 0;
+	let unresolvable = 0;
 	let status: PullTypeResult["status"] | null = null;
 	let reason: string | undefined;
 	let total: number | undefined;
@@ -436,8 +452,28 @@ export async function pullType(env: RtEnv, item: PullPlanItem): Promise<PullType
 			resolved = "truncated";
 			why = `count ${count} < Bundle.total ${total}`;
 		}
-		return { org: item.org, patient: item.patient, label: item.label, count, pages: page, binaries, keys, status: resolved, ...(why ? { reason: why } : {}) };
+		return {
+			org: item.org,
+			patient: item.patient,
+			label: item.label,
+			count,
+			pages: page,
+			binaries,
+			keys,
+			status: resolved,
+			...(why ? { reason: why } : {}),
+			...(seen ? { binariesSeen: seen } : {}),
+			...(skipped ? { binariesSkipped: skipped } : {}),
+			...(failed ? { binariesFailed: failed } : {}),
+			...(unresolvable ? { binariesUnresolvable: unresolvable } : {}),
+		};
 	};
+
+	// Resume by SET DIFFERENCE against what R2 already holds, rather than a persisted cursor:
+	// Epic's ordering is untrusted, and a cursor that assumes it would skip real notes. One
+	// prefix list is ceil(K/1000) subrequests; a head-per-attachment would be up to 5000, the
+	// entire budget the whole 17-type pull shares.
+	const have = item.type === "DocumentReference" && !item.refetchBinaries ? new Set(await storedBinaryIds(env, item.org, item.patient, { nonEmptyOnly: true })) : new Set<string>();
 
 	while (url) {
 		if (page >= MAX_PAGES_PER_TYPE) {
@@ -480,21 +516,38 @@ export async function pullType(env: RtEnv, item: PullPlanItem): Promise<PullType
 		await putPhi(env, `mychart/${item.org}/${item.patient}/${item.label}/${item.stamp}-p${page}.json`, JSON.stringify(bundle), "application/fhir+json");
 		if (item.type === "DocumentReference") {
 			docs: for (const doc of resources) {
-				if (binaries >= MAX_BINARIES_PER_TYPE) {
-					status = "truncated";
-					reason = `binary cap ${MAX_BINARIES_PER_TYPE} reached`;
-					break;
-				}
-				for (const bin of await resolveBinaries(env, item.org, base, doc)) {
+				const { resolved, unresolvable: bad } = binaryIdsOf(item.org, base, doc);
+				unresolvable += bad;
+				for (const { id, url } of resolved) {
+					seen++;
+					// The cap now bounds NEW fetches only, so repeated pulls advance instead of
+					// re-downloading the same first chunk forever — convergence in ceil(N/cap) pulls.
+					if (have.has(id)) {
+						skipped++;
+						continue;
+					}
 					if (binaries >= MAX_BINARIES_PER_TYPE) {
 						status = "truncated";
 						reason = `binary cap ${MAX_BINARIES_PER_TYPE} reached`;
 						break docs;
 					}
-					await putPhi(env, `mychart/${item.org}/${item.patient}/Binary/${bin.id}.json`, bin.body, "application/fhir+json");
+					// Fetched one at a time inside the cap check: resolving a whole document's
+					// attachments up front downloaded the last document's over-cap Binaries and threw
+					// them away.
+					const body = await fetchBinary(env, item.org, url);
+					if (body === null) {
+						failed++;
+						continue;
+					}
+					await putPhi(env, `mychart/${item.org}/${item.patient}/Binary/${id}.json`, body, "application/fhir+json");
+					have.add(id);
 					binaries++;
 					keys++;
 				}
+			}
+			if (failed > 0 && !status) {
+				status = "truncated";
+				reason = `${failed} Binary fetch(es) failed`;
 			}
 		}
 		const next = nextLink(bundle);
@@ -737,25 +790,36 @@ export function rtfToText(rtf: string): string {
  * the note join and resolveBinaries so both agree on what counts as a resolvable attachment —
  * the original absolute `attachment.url` is preserved deliberately (the regex only anchors on a
  * trailing `Binary/<id>`, so rebuilding `${base}/Binary/${id}` would change the request). */
-export function binaryIdsOf(org: string, base: string, doc: any): Array<{ id: string; url: string }> {
-	const out: Array<{ id: string; url: string }> = [];
+export function binaryIdsOf(org: string, base: string, doc: any): { resolved: Array<{ id: string; url: string }>; unresolvable: number } {
+	const resolved: Array<{ id: string; url: string }> = [];
+	let unresolvable = 0;
 	const contents: any[] = Array.isArray(doc?.content) ? doc.content : [];
 	for (const c of contents) {
 		const attUrl = c?.attachment?.url;
 		if (typeof attUrl !== "string" || !attUrl) continue;
+		// An attachment URL that isn't `.../Binary/{id}` (an Epic `$binary`-style or
+		// query-suffixed URL), or one that escapes the org's FHIR base, yields no note. That was
+		// a silent drop with no counter and no log — it is counted now so a chart losing notes
+		// this way is visible instead of just looking small.
 		const m = /Binary\/([A-Za-z0-9\-.]+)$/.exec(attUrl);
-		if (!m) continue;
+		if (!m) {
+			unresolvable++;
+			continue;
+		}
 		const abs = /^https?:\/\//i.test(attUrl) ? attUrl : `${base}/Binary/${m[1]}`;
-		if (!isUnderFhirBase(org, abs)) continue;
-		out.push({ id: m[1], url: abs });
+		if (!isUnderFhirBase(org, abs)) {
+			unresolvable++;
+			continue;
+		}
+		resolved.push({ id: m[1], url: abs });
 	}
-	return out;
+	return { resolved, unresolvable };
 }
 
 /** Every Binary id currently stored for this org/patient, ascending. Paged with the same
  * 50-page backstop as latestPulledResources — a note-heavy chart passes 1000 objects, and an
  * unpaginated list() would silently return only the first page. */
-export async function storedBinaryIds(env: RtEnv, org: string, patient: string): Promise<string[]> {
+export async function storedBinaryIds(env: RtEnv, org: string, patient: string, opts: { nonEmptyOnly?: boolean } = {}): Promise<string[]> {
 	if (!env.R2) return [];
 	const prefix = `${PHI_PREFIX}mychart/${org}/${patient}/Binary/`;
 	const ids: string[] = [];
@@ -763,6 +827,12 @@ export async function storedBinaryIds(env: RtEnv, org: string, patient: string):
 	for (let i = 0; i < 50; i++) {
 		const listing = await env.R2.list({ prefix, cursor, limit: 1000 });
 		for (const o of listing.objects) {
+			// `nonEmptyOnly` is the resume set's requirement, not the reader's: the Binary key is
+			// unstamped and therefore idempotent, so a zero-length body written from a 200 today
+			// self-heals on the next pull. A skip set that admitted it would freeze that empty
+			// object forever. The notes reader deliberately still lists it — an empty note the
+			// caller can see beats one silently missing from the index.
+			if (opts.nonEmptyOnly && !(o.size > 0)) continue;
 			const m = /\/([^/]+)\.json$/.exec(o.key);
 			if (m) ids.push(m[1]);
 		}
@@ -787,7 +857,7 @@ async function noteMetaByBinaryId(env: RtEnv, org: string, patient: string): Pro
 			type: doc?.type?.text ?? doc?.type?.coding?.[0]?.display,
 			author: doc?.author?.[0]?.display,
 		};
-		for (const { id } of binaryIdsOf(org, base, doc)) meta.set(id, entry);
+		for (const { id } of binaryIdsOf(org, base, doc).resolved) meta.set(id, entry);
 	}
 	return meta;
 }
@@ -1273,14 +1343,13 @@ export async function crossOrgAllergyGaps(env: RtEnv): Promise<MyChartAllergyGap
 /** Resolve a DocumentReference's Binary attachments (content[].attachment.url →
  * Binary/{id}). Returns the raw fetched bodies keyed by Binary id. Skips non-Binary
  * or off-base attachment URLs. */
-async function resolveBinaries(env: RtEnv, org: string, base: string, doc: any): Promise<Array<{ id: string; body: string }>> {
-	const out: Array<{ id: string; body: string }> = [];
-	for (const { id, url } of binaryIdsOf(org, base, doc)) {
-		const resp = await mychartFetch(env, org, url);
-		if (resp.status >= 400) continue;
-		out.push({ id, body: await resp.text() });
-	}
-	return out;
+async function fetchBinary(env: RtEnv, org: string, url: string): Promise<string | null> {
+	const resp = await mychartFetch(env, org, url);
+	// A failed Binary fetch used to be dropped with no error, no counter and no retry — unlike
+	// the page loop, which throws so the durable step retries. Still non-fatal (one bad note
+	// must not sink the type), but the caller counts it and downgrades `status`.
+	if (resp.status >= 400) return null;
+	return await resp.text();
 }
 
 // ---------------- Public routes ----------------
