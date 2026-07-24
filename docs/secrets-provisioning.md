@@ -672,16 +672,18 @@ Worker-store, all required for the Worker to serve anything.
 ## `HEALTH_INGEST_TOKEN`
 - **Service / where**: a **shared bearer you invent** (e.g. `openssl rand -hex 32`)
   for the health-ingest route — the same value is entered into the **Health Auto
-  Export** iOS app's REST automation that POSTs vitals to sux. (The one op item that
-  currently exists; the ingest route is per the health-integrations design.)
+  Export** iOS app's REST automation that POSTs vitals to sux.
 - **Scopes**: n/a — a self-minted bearer, timing-safe-compared server-side;
   missing/empty ⇒ fail-closed (401).
 - **Store**: Tier-1. `op item create … --title "HEALTH_INGEST_TOKEN" credential="…"`
-  → `scripts/secret-sync.sh HEALTH_INGEST_TOKEN --worker`. **Convention note**: the
-  existing op item is titled `sux HEALTH_INGEST_TOKEN`; rename it to
-  `HEALTH_INGEST_TOKEN` (`op item edit "sux HEALTH_INGEST_TOKEN" --vault Secrets
-  --title "HEALTH_INGEST_TOKEN"`) so the default `secret-sync.sh` lookup resolves.
-  (Audit finding 11.)
+  → `scripts/secret-sync.sh HEALTH_INGEST_TOKEN --worker`. **This secret is live on
+  the Worker but has NO op item at all** (verified 2026-07-23 against a full
+  `op item list`; an earlier note here claimed one existed as `sux
+  HEALTH_INGEST_TOKEN` and told you to rename it — that item does not exist and the
+  rename fails). Since Cloudflare never returns secret values, the live value is
+  unrecoverable: rotate rather than hunt for it. Nothing consumes it yet, so
+  rotation is free — `scripts/secret-ops.sh create HEALTH_INGEST_TOKEN --generate
+  --worker`.
 - **Unset**: the health-ingest route rejects all posts (fail-closed) / is off.
 - **Rotate**: pick a new bearer, update the phone automation + op, `--worker`.
 

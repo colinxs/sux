@@ -47,10 +47,12 @@ REDDIT_CLIENT_SECRET         op://Private/Reddit sux app/client_secret
 EBAY_CLIENT_ID               op://Private/eBay sux keyset/app_id
 EBAY_CLIENT_SECRET           op://Private/eBay sux keyset/cert_id
 FACEBOOK_TOKEN               op://Private/Facebook sux token/token
-EPIC_CLIENT_ID               op://Secrets/Epic FHIR sux/client_id_sandbox
-EPIC_CLIENT_SECRET           op://Secrets/Epic FHIR sux/client_secret_sandbox
-EPIC_FHIR_BASE               op://Secrets/Epic FHIR sux/fhir_base_sandbox
-HEALTH_INGEST_TOKEN          op://Secrets/Epic FHIR sux/health_ingest_token
+EPIC_CLIENT_ID               op://Secrets/EPIC_CLIENT_ID/credential
+EPIC_CLIENT_SECRET           op://Secrets/EPIC_CLIENT_SECRET/credential
+EPIC_CLIENT_SECRET_BOZEMAN   op://Secrets/EPIC_CLIENT_SECRET_BOZEMAN/credential
+EPIC_CLIENT_SECRET_EVERGREEN op://Secrets/EPIC_CLIENT_SECRET_EVERGREEN/credential
+EPIC_CLIENT_SECRET_SWEDISH   op://Secrets/EPIC_CLIENT_SECRET_SWEDISH/credential
+HEALTH_INGEST_TOKEN          op://Secrets/HEALTH_INGEST_TOKEN/credential
 APPLE_HEALTH_TOKEN           op://Private/Apple Health sux/token
 MONARCH_TOKEN                op://Private/Monarch sux/token
 EOF
