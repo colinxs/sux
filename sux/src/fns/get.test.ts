@@ -350,18 +350,19 @@ describe("get.run", () => {
 		expect(parsed.file.base64).toBe("JVBR");
 	});
 
-	it("url mode: a sux /s/<uuid> ref round-trips its full bytes without ever calling render (#1380)", async () => {
+	it("url mode: a sux /s/<uuid> ref round-trips its full bytes, re-rendered by neither render nor pdf (#1380, #1479)", async () => {
 		const ref = "https://suxos.net/s/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 		const pdfBytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 1, 2, 3, 4, 5]);
 		loadBytesMock.mockResolvedValueOnce({ bytes: pdfBytes, contentType: "application/pdf" });
-		pdfRun.mockResolvedValueOnce({ content: [{ text: `{"mime":"application/pdf","size":${pdfBytes.length},"base64":"${Buffer.from(pdfBytes).toString("base64")}"}` }] });
 
 		const r = await get.run({} as any, { input: ref });
 		expect(r.isError).toBeFalsy();
 		expect(renderRun).not.toHaveBeenCalled();
+		expect(pdfRun).not.toHaveBeenCalled();
 		expect(loadBytesMock).toHaveBeenCalledWith({}, { url: ref });
 		const parsed = JSON.parse(r.content[0].text);
 		expect(parsed.file.size).toBe(pdfBytes.length);
+		expect(parsed.file.base64).toBe(Buffer.from(pdfBytes).toString("base64"));
 	});
 
 	it("stores the result when store is requested", async () => {

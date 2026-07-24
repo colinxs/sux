@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { firstSentence } from "./_surface";
+import { DOMAINS, domainKeys, firstSentence, renderDomain } from "./_surface";
+import { FUNCTIONS } from "./index";
 
 describe("_surface firstSentence", () => {
 	it("takes the first sentence and trims", () => {
@@ -21,5 +22,31 @@ describe("_surface firstSentence", () => {
 		const out = firstSentence(long);
 		expect(out.length).toBe(140);
 		expect(out.endsWith("…")).toBe(true);
+	});
+});
+
+// A leaf reachable only through the overview's "other" bucket has no discovery path at
+// all: "other" is not a domain key, so sux({domain:"other"}) errors (#1479 — `put`/`get`
+// were undiscoverable, and a prior session wrongly concluded the capability didn't exist).
+describe("_surface domain placement", () => {
+	it("puts the store's download verbs in a real, zoomable domain", () => {
+		const covered = new Set(DOMAINS.flatMap((d) => d.leaves));
+		for (const name of ["put", "get"]) expect(covered.has(name)).toBe(true);
+		const storage = renderDomain(FUNCTIONS, "storage") ?? "";
+		expect(storage).toContain("`put`");
+		expect(storage).toContain("`get`");
+	});
+
+	it("never lists a leaf under a domain key sux() cannot zoom into", () => {
+		const keys = new Set(domainKeys());
+		expect(keys.has("other")).toBe(false);
+		for (const d of DOMAINS) expect(keys.has(d.key)).toBe(true);
+	});
+
+	it("only names leaves that are actually registered", () => {
+		const registered = new Set(FUNCTIONS.map((f) => f.name));
+		const namespaceVerbs = new Set(["vault", "mail", "files", "calendar", "contact"]);
+		const missing = DOMAINS.flatMap((d) => d.leaves).filter((n) => !registered.has(n) && !namespaceVerbs.has(n));
+		expect(missing).toEqual([]);
 	});
 });
