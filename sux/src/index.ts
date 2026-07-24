@@ -80,18 +80,29 @@ const TASK_CAPABLE_TOOLS = new Set(["pipe", "batch", "render", "crawl", "batch_f
 
 // MCP protocol version negotiation (spec: "If the server supports the requested
 // protocol version, it MUST respond with the same version. Otherwise, the server
-// MUST respond with another protocol version it supports."). Newest first — this
-// is also the default handed back when the client omits protocolVersion entirely.
+// MUST respond with another protocol version it supports."). Newest first.
 // Every capability sux advertises here (tasks, extensions) is additive: a client
-// negotiated onto an older revision just never invokes them. Some MCP clients
-// (confirmed: Raycast as of 1.104, which maps known revisions to internal
-// codenames like "jun2025" for 2025-06-18) don't yet recognize the newest
-// revision and reject a hardcoded response instead of falling back — echoing
-// back whatever the client asked for (when we support it) fixes that class of
-// client entirely instead of chasing it client-by-client.
+// negotiated onto an older revision just never invokes them, so responding with
+// an older revision costs nothing functionally.
+//
+// #1413 made this echo the client's requested version instead of hardcoding one,
+// which fixed clients that ask for a revision they understand. It left the
+// FALLBACK pointed at the newest revision, and that is the case Raycast actually
+// hits: Raycast 1.104 maps wire versions to internal codenames, does not
+// recognize 2025-06-18 (its codename "jun2025"), and hard-errors
+// `Unsupported protocol version: jun2025` rather than negotiating down. Any
+// client that omits protocolVersion or sends a string we don't recognise was
+// therefore handed the one revision most likely to be rejected — the exact
+// failure #1413's own comment describes, reached by the other branch.
+//
+// So the fallback is the most broadly-supported revision, not the newest. This
+// deliberately does NOT try to alias codenames like "jun2025" back to a date: a
+// client that calls 2025-06-18 by that name is precisely the client that cannot
+// speak it, so resolving the alias would hand it the version it just rejected.
 const SUPPORTED_MCP_PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"] as const;
+const FALLBACK_MCP_PROTOCOL_VERSION = "2025-03-26";
 function negotiateProtocolVersion(requested: unknown): string {
-	return typeof requested === "string" && (SUPPORTED_MCP_PROTOCOL_VERSIONS as readonly string[]).includes(requested) ? requested : SUPPORTED_MCP_PROTOCOL_VERSIONS[0];
+	return typeof requested === "string" && (SUPPORTED_MCP_PROTOCOL_VERSIONS as readonly string[]).includes(requested) ? requested : FALLBACK_MCP_PROTOCOL_VERSION;
 }
 
 // Race a fn.run against a hard deadline so no fn can hang the isolate. On timeout

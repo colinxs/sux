@@ -26,6 +26,17 @@ describe("smart routing", () => {
 		expect(isDirectHost("not a url")).toBe(false);
 	});
 
+	it("routes the OpenAI fallback lane direct, even with the proxy on", () => {
+		// llm()'s fallback (ai.ts) moved from bare fetch onto smartFetch to gain the egress
+		// audit. That must buy the audit WITHOUT changing the route: the lane only ever runs
+		// because Workers AI already failed, so it must not also start depending on the
+		// residential node being reachable.
+		expect(isDirectHost("https://api.openai.com/v1/chat/completions")).toBe(true);
+		expect(willProxy(ON, "https://api.openai.com/v1/chat/completions")).toBe(false);
+		// A lookalike registered elsewhere is NOT the API host.
+		expect(isDirectHost("https://api.openai.com.evil.test/v1/chat/completions")).toBe(false);
+	});
+
 	it("routes GitHub (token-authed JSON API) direct, never through the residential proxy", () => {
 		// A home-node interstitial reaching ghJson as an unparseable 200 body made the
 		// vault MCP read a healthy repo as empty — GitHub must bypass the proxy entirely.
