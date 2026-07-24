@@ -23,11 +23,49 @@ export type CronJob = (typeof CRON_JOBS)[number];
 
 export type Heartbeat = { ok: boolean; at: number; error?: string };
 
-/** Stamp a sub-job's outcome. Best-effort: swallows KV errors so it can't fail the tick. */
+/** Coerce any thrown or reported error value into a NON-EMPTY string (#1480).
+ *
+ * Every caller here has the same requirement — a red heartbeat must carry text a human can
+ * act on — and every caller previously got it slightly wrong in a different way. The two
+ * live holes this closes:
+ *   • `String((e as Error)?.message ?? e)` yields "" for `new Error("")`, because "" is not
+ *     nullish so `??` never falls through to `e`. recordHeartbeat's `if (error)` then drops
+ *     it, producing the ok=false-with-no-error beat observed in prod for mail_triage.
+ *   • A report carrying `error` as an Error/object (not a string) fell through the old
+ *     string-only check and was recorded as ok=TRUE — a failure logged as a success.
+ * Falsy inputs are the caller's business (they mean "no error"); this only runs once the
+ * caller has decided an error exists, so an empty result here is always a bug to name, not
+ * a state to pass through. */
+function errorText(value: unknown, fallback: string): string {
+	if (typeof value === "string" && value.length > 0) return value;
+	if (value instanceof Error) {
+		if (typeof value.message === "string" && value.message.length > 0) return value.message;
+		// An Error with no message still tells us its constructor — strictly better than nothing.
+		return value.name ? `${value.name} (no message)` : fallback;
+	}
+	if (value && typeof value === "object") {
+		try {
+			const json = JSON.stringify(value);
+			if (json && json !== "{}") return json;
+		} catch {
+			// circular / non-serializable — fall through to the fallback
+		}
+		return fallback;
+	}
+	const s = String(value);
+	return s.length > 0 ? s : fallback;
+}
+
+/** Stamp a sub-job's outcome. Best-effort: swallows KV errors so it can't fail the tick.
+ *
+ * Enforces the invariant `ok === false` implies `error` is present (#1480). Callers are
+ * expected to supply the text, but the guarantee lives HERE rather than in each caller so a
+ * future call site cannot silently reintroduce an undiagnosable red beat. */
 export async function recordHeartbeat(env: RtEnv, name: CronJob, ok: boolean, error?: string): Promise<void> {
 	try {
 		const beat: Heartbeat = { ok, at: Date.now() };
 		if (error) beat.error = error.slice(0, 300);
+		else if (!ok) beat.error = "failed with no error text recorded";
 		await env.OAUTH_KV?.put(PREFIX + name, JSON.stringify(beat));
 		// Queryable analytics (#220): "which cron sub-job fails most often" over time,
 		// not just the latest scalar heartbeat this KV key holds.
@@ -48,7 +86,10 @@ export async function recordHeartbeat(env: RtEnv, name: CronJob, ok: boolean, er
 export function subJobError(report: unknown): string | undefined {
 	if (report && typeof report === "object") {
 		const err = (report as { error?: unknown }).error;
-		if (typeof err === "string" && err.length > 0) return err;
+		// Falsy (absent/null/false/""/0) is the benign "no error" case and must stay ok=true.
+		// Anything truthy is a failure regardless of its TYPE — an Error or a structured
+		// object used to slip through the old string-only check and be recorded as ok=true.
+		if (err) return errorText(err, "sub-job reported a non-descriptive error");
 	}
 	return undefined;
 }
@@ -69,7 +110,7 @@ export async function runSubJob(env: RtEnv, name: CronJob, fn: () => Promise<unk
 			await recordHeartbeat(env, name, true);
 		}
 	} catch (e) {
-		const msg = String((e as Error)?.message ?? e);
+		const msg = errorText(e, `${name} threw a non-descriptive error`);
 		console.warn(`sux scheduled ${name} skipped: ${msg}`);
 		await recordHeartbeat(env, name, false, msg);
 	}

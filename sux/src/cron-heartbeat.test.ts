@@ -43,6 +43,51 @@ describe("recordHeartbeat / runSubJob (writer)", () => {
 		expect(JSON.parse(kv.store.get(K("weekly_recall"))!)).toMatchObject({ ok: true });
 	});
 
+	// #1480: the live heartbeat showed mail_triage as { ok: false } with NO `error` key,
+	// which runSubJob is the only writer for. An Error whose `.message` is "" lands on the
+	// throw path as `String("" ?? e)` — `??` does not fall through, because "" is not
+	// nullish — so recordHeartbeat's `if (error)` drops it. The result is a red sub-job
+	// that is undiagnosable from outside: ok=false and nothing saying why.
+	it("records a diagnosable error when the thrown Error has an empty message", async () => {
+		const kv = fakeKV();
+		const env = { OAUTH_KV: kv } as any;
+		await runSubJob(env, "mail_triage", async () => { throw new Error(""); });
+		const beat = JSON.parse(kv.store.get(K("mail_triage"))!);
+		expect(beat.ok).toBe(false);
+		expect(beat.error).toBeTruthy();
+	});
+
+	it("records a diagnosable error when a non-Error falsy value is thrown", async () => {
+		const kv = fakeKV();
+		const env = { OAUTH_KV: kv } as any;
+		// eslint-disable-next-line no-throw-literal
+		await runSubJob(env, "adblock", async () => { throw ""; });
+		const beat = JSON.parse(kv.store.get(K("adblock"))!);
+		expect(beat.ok).toBe(false);
+		expect(beat.error).toBeTruthy();
+	});
+
+	// The mirror-image hole on the soft path: subJobError only accepts a string, so a tick
+	// reporting `error` as an Error/object silently takes the success branch. A failure
+	// recorded as ok=true is strictly worse than one recorded without its text.
+	it("stamps ok=false when a report carries a non-string truthy `error`", async () => {
+		const kv = fakeKV();
+		const env = { OAUTH_KV: kv } as any;
+		await runSubJob(env, "briefing", async () => ({ error: new Error("upstream 503") }));
+		const beat = JSON.parse(kv.store.get(K("briefing"))!);
+		expect(beat.ok).toBe(false);
+		expect(beat.error).toBeTruthy();
+	});
+
+	it("stamps ok=false when a report carries a structured `error` object", async () => {
+		const kv = fakeKV();
+		const env = { OAUTH_KV: kv } as any;
+		await runSubJob(env, "agenda", async () => ({ error: { code: 503, detail: "upstream" } }));
+		const beat = JSON.parse(kv.store.get(K("agenda"))!);
+		expect(beat.ok).toBe(false);
+		expect(beat.error).toBeTruthy();
+	});
+
 	it("truncates long error text to keep the heartbeat bounded", async () => {
 		const kv = fakeKV();
 		await recordHeartbeat({ OAUTH_KV: kv } as any, "adblock", false, "x".repeat(1000));

@@ -17,7 +17,8 @@ const SUMMARIZE_MIN_CHARS = 400;
 import { FUNCTIONS } from "./fns";
 import { LIFE_SKILL_DESCRIPTION, LIFE_SKILL_PROMPT, SUX_SKILL_DESCRIPTION, SUX_SKILL_PROMPT } from "./skill-prompt";
 import { selfImproveTick } from "./fns/_self_improve";
-import { runSubJob } from "./cron-heartbeat";
+import { CRON_JOBS, readHeartbeats, runSubJob } from "./cron-heartbeat";
+import { recordAnalyticsEvent } from "./analytics";
 import { recordCall } from "./metrics";
 import { shipGithubBillingSnapshot, shipMetricsSnapshot, shipToLoki } from "./grafana";
 import { handleObservability } from "./observability";
@@ -1056,7 +1057,28 @@ async function mychartPullTick(env: RtEnv): Promise<unknown> {
 	return { started, ...(failed.length === started.length ? { error: `all ${failed.length} org pull(s) failed to start` } : {}) };
 }
 
+// Read every registered cron sub-job's heartbeat (both crons' jobs — CRON_JOBS
+// covers the frequent */5 tick too) and loudly flag anything already stale
+// walking INTO this tick (#1478). readHeartbeats' per-job `stale` flag only ever
+// surfaced passively on the /health JSON page — nothing looked at it unless a
+// human happened to check, which is exactly how the tail sub-jobs went quiet for
+// 2.6 days before anyone noticed. console.error lands in Workers Observability
+// logs, and the analytics event is durable + queryable (`WHERE index1 =
+// 'cron_stale'`), so a starved job trips a signal instead of silence. Read-only:
+// never writes a heartbeat itself, so it can't mask a job's own ok/fail record.
+async function assertCronFreshness(env: RtEnv): Promise<void> {
+	const heartbeats = await readHeartbeats(env.OAUTH_KV);
+	for (const name of CRON_JOBS) {
+		const beat = heartbeats[name] as { seen?: boolean; stale?: boolean; age_ms?: number } | undefined;
+		if (!beat?.stale) continue;
+		const ageHours = Math.round((beat.age_ms ?? 0) / 3_600_000);
+		console.error(`sux cron staleness: '${name}' hasn't reported a heartbeat in ~${ageHours}h (see #1478)`);
+		recordAnalyticsEvent(env, "cron_stale", { blobs: [name], doubles: [beat.age_ms ?? 0] });
+	}
+}
+
 async function maintenanceTick(env: RtEnv, ctx: ExecutionContext): Promise<void> {
+	await assertCronFreshness(env);
 	await runSubJob(env, "kroger_token", () => refreshKrogerToken(env));
 	// Keep the Epic refresh grant alive (some orgs expire it on inactivity) — a pure
 	// no-op unless MyChart is configured AND a grant exists (§2b). Never throws.
@@ -1077,32 +1099,47 @@ async function maintenanceTick(env: RtEnv, ctx: ExecutionContext): Promise<void>
 		const { refreshAdblockEngine } = await import("./fns/_adblock");
 		await refreshAdblockEngine(env);
 	});
-	await runSubJob(env, "life_wiki", () => lifeWikiTick(env));
-	await runSubJob(env, "infer_nudge", () => inferNudgeTick(env));
+
+	// Tail (#1478): these five (plus the metrics/billing pushes below) are independent
+	// of the head chain above and of each other, so fan them out via ctx.waitUntil
+	// instead of chaining more sequential awaits — the same pattern the METRICS_CRON
+	// branch below already uses. The all-serial chain that used to run here let the
+	// head alone exhaust the tick's wall-clock/CPU budget, so positions 11-15 silently
+	// never ran — a clean cut at the position-10 boundary, not five independent bugs.
+	// Fanning out means the tail's total wall time is bounded by its slowest member
+	// instead of their sum, and one hung/slow member can no longer starve the rest.
+	// runSubJob's try/catch + heartbeat semantics are unchanged; only the
+	// await→waitUntil scheduling changed.
+	ctx.waitUntil(runSubJob(env, "life_wiki", () => lifeWikiTick(env)));
+	ctx.waitUntil(runSubJob(env, "infer_nudge", () => inferNudgeTick(env)));
 	// Learning-folder reconciliation (#433): dormant unless LEARNING_FOLDER_ENABLED is set.
-	await runSubJob(env, "learning_folder", async () => {
-		const { runLearningFolderSync } = await import("./fns/_learning_folder");
-		return runLearningFolderSync(env);
-	});
+	ctx.waitUntil(
+		runSubJob(env, "learning_folder", async () => {
+			const { runLearningFolderSync } = await import("./fns/_learning_folder");
+			return runLearningFolderSync(env);
+		}),
+	);
 	// Markup-drift probe (#545): run a known-good query through web_search's cheap
 	// scraped engines (ddg, kagi_session) and flag a 0-hit response as a soft
 	// failure — same silent-failure mode #537 fixed for a live merge, caught here
 	// proactively instead of waiting for someone to notice thin results.
-	await runSubJob(env, "web_search_selftest", async () => {
-		const { runWebSearchSelftest } = await import("./fns/_web_search_selftest");
-		return runWebSearchSelftest(env);
-	});
-	try {
-		// Push the pre-aggregated metrics snapshot to Grafana Cloud Prometheus. Self-
-		// contained + idempotent: a pure no-op unless the GRAFANA_PROM_* secrets are set,
-		// and a push error is swallowed so it never fails the tick.
-		await shipMetricsSnapshot(env, ctx);
-	} catch (e) {
-		console.warn(`sux scheduled maintenance: metrics snapshot push skipped: ${String((e as Error)?.message ?? e)}`);
-	}
+	ctx.waitUntil(
+		runSubJob(env, "web_search_selftest", async () => {
+			const { runWebSearchSelftest } = await import("./fns/_web_search_selftest");
+			return runWebSearchSelftest(env);
+		}),
+	);
+	// Push the pre-aggregated metrics snapshot to Grafana Cloud Prometheus. Self-
+	// contained + idempotent: a pure no-op unless the GRAFANA_PROM_* secrets are set,
+	// and a push error is swallowed so it never fails the tick.
+	ctx.waitUntil(
+		shipMetricsSnapshot(env, ctx).catch((e) =>
+			console.warn(`sux scheduled maintenance: metrics snapshot push skipped: ${String((e as Error)?.message ?? e)}`),
+		),
+	);
 	// GitHub Actions billing gauge (spend-observability-plan.md's plumbing step 1) — rides
 	// the same daily tick, dormant unless GRAFANA_PROM_* + GITHUB_TOKEN are all set.
-	await runSubJob(env, "gh_actions_billing", () => shipGithubBillingSnapshot(env, ctx));
+	ctx.waitUntil(runSubJob(env, "gh_actions_billing", () => shipGithubBillingSnapshot(env, ctx)));
 }
 
 // An OAuthError-shaped exception: both the library's own (@cloudflare/workers-
