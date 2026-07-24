@@ -526,6 +526,75 @@ describe("buildPullPlan / pullType / reconcilePull — the durable `mychart-pull
 		expect([...env.R2.map.keys()].filter((k: string) => k.includes("/Binary/")).length).toBe(MAX_BINARIES_PER_TYPE);
 	});
 
+	it("pullType flags count < Bundle.total as truncated — !next alone is not proof of completeness (#1365)", async () => {
+		const env = baseEnv();
+		await env.OAUTH_KV.put(`sux:mychart:token:${ORG}`, "AT");
+		const page = { resourceType: "Bundle", total: 250, entry: Array.from({ length: 100 }, (_, i) => ({ resource: { resourceType: "Condition", id: `c${i}` } })) };
+		vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(page), { status: 200 })));
+		const result = await pullType(env, { type: "Condition", label: "Condition", query: "patient=P1&_count=100", org: ORG, patient: "P1", stamp: "STAMP" });
+		expect(result.status).toBe("truncated");
+		expect(result.reason).toMatch(/total/);
+	});
+
+	it("pullType counts MATCH entries only — Epic's trailing OperationOutcome is what pinned six types at exactly 101 (#1365)", async () => {
+		const env = baseEnv();
+		await env.OAUTH_KV.put(`sux:mychart:token:${ORG}`, "AT");
+		const page = {
+			resourceType: "Bundle",
+			entry: [
+				...Array.from({ length: 100 }, (_, i) => ({ search: { mode: "match" }, resource: { resourceType: "Condition", id: `c${i}` } })),
+				{ search: { mode: "outcome" }, resource: { resourceType: "OperationOutcome", issue: [{ severity: "warning", code: "informational" }] } },
+			],
+		};
+		vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(page), { status: 200 })));
+		const result = await pullType(env, { type: "Condition", label: "Condition", query: "patient=P1&_count=100", org: ORG, patient: "P1", stamp: "STAMP" });
+		expect(result.count).toBe(100);
+		expect(result.status).toBe("ok");
+		// The outcome entry must still be on disk — it is Epic's only disclosure of suppressed sub-types.
+		expect(String(env.R2.map.get(`phi/mychart/${ORG}/P1/Condition/STAMP-p1.json`).body)).toContain("OperationOutcome");
+	});
+
+	it("pullType reports a MID-pagination 404 as truncated, not 'unsupported' — a broken continuation is not an unsupported type (#1365)", async () => {
+		const env = baseEnv();
+		await env.OAUTH_KV.put(`sux:mychart:token:${ORG}`, "AT");
+		const page1 = { resourceType: "Bundle", link: [{ relation: "next", url: `${BASE}/Condition?patient=P1&page=2` }], entry: [{ resource: { resourceType: "Condition", id: "c1" } }] };
+		vi.stubGlobal("fetch", fetchRouter({ "page=2": () => new Response("", { status: 404 }), "/Condition": () => new Response(JSON.stringify(page1), { status: 200 }) }));
+		const result = await pullType(env, { type: "Condition", label: "Condition", query: "patient=P1&_count=100", org: ORG, patient: "P1", stamp: "STAMP" });
+		expect(result.status).toBe("truncated");
+		expect(reconcilePull([result]).errors).toHaveProperty("Condition");
+	});
+
+	it("pullType carries a 4xx's specific reason all the way into reconcilePull's errors — CarePlan's arm, previously a generic literal (#1365)", async () => {
+		const env = baseEnv();
+		await env.OAUTH_KV.put(`sux:mychart:token:${ORG}`, "AT");
+		vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 400 })));
+		const result = await pullType(env, { type: "CarePlan", label: "CarePlan", query: "patient=P1&_count=100", org: ORG, patient: "P1", stamp: "STAMP" });
+		expect(reconcilePull([result]).errors!.CarePlan).toMatch(/HTTP 400/);
+	});
+
+	it("pullType flags a REFUSED next link as truncated instead of silently reporting ok — and never echoes the URL into `reason` (#1365)", async () => {
+		const env = baseEnv();
+		await env.OAUTH_KV.put(`sux:mychart:token:${ORG}`, "AT");
+		const page1 = { resourceType: "Bundle", link: [{ relation: "next", url: "https://evil.example/FHIR/R4/Condition?patient=SECRETID" }], entry: [{ resource: { resourceType: "Condition", id: "c1" } }] };
+		vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(page1), { status: 200 })));
+		const result = await pullType(env, { type: "Condition", label: "Condition", query: "patient=P1&_count=100", org: ORG, patient: "P1", stamp: "STAMP" });
+		expect(result.status).toBe("truncated");
+		expect(result.reason).not.toMatch(/SECRETID|evil\.example/);
+	});
+
+	it("reconcilePull treats a status it has never seen as incomplete, not clean — the default arm is the point (#1365)", () => {
+		const rogue = { org: ORG, patient: "P1", label: "Future", count: 3, pages: 1, binaries: 0, keys: 1, status: "surprise" as any };
+		const out = reconcilePull([rogue]);
+		expect(out.truncated).toBe(true);
+		expect(out.errors!.Future).toMatch(/unclassified/);
+	});
+
+	it("reconcilePull still waves through an unsupported type that landed zero pages", () => {
+		const out = reconcilePull([{ org: ORG, patient: "P1", label: "Goal", count: 0, pages: 0, binaries: 0, keys: 0, status: "unsupported" as const }]);
+		expect(out.truncated).toBeUndefined();
+		expect(out.errors).toBeUndefined();
+	});
+
 	it("throttledPullType degrades a retry-exhausted type to status:'throttled', and reconcilePull surfaces it in `errors` — one bad type never sinks the pull", () => {
 		const item = { type: "Condition", label: "Condition", query: "patient=P1&_count=100", org: ORG, patient: "P1", stamp: "STAMP" };
 		const throttled = throttledPullType(item);

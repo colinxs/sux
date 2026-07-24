@@ -381,6 +381,22 @@ export interface PullTypeResult {
 	binaries: number;
 	keys: number;
 	status: "ok" | "unsupported" | "truncated" | "throttled";
+	/** Why this type isn't `ok`, set at every non-ok exit. Omitted entirely when the pull was
+	 * clean, so a strict equality assertion on a clean result stays literal. Reaches the MCP
+	 * client via reconcilePull's `errors`, so it must never carry a query string — Epic paging
+	 * URLs embed `patient=<opaque id>`. */
+	reason?: string;
+}
+
+/** A searchset entry that counts toward `count`. Epic appends an OperationOutcome entry
+ * (`search.mode:"outcome"`) disclosing suppressed sub-types, which inflates a naive entry
+ * tally by exactly one per page — that is the "pinned at exactly 101" symptom, and it also
+ * makes the tally incomparable to `Bundle.total`, which is match-only by spec. Filter by
+ * EXCLUDING outcome rather than requiring `mode === "match"`: a server that omits
+ * `search.mode` would otherwise be silently zeroed. Safe because resourcePlan issues no
+ * `_include`/`_revinclude`. */
+function isMatchEntry(e: any): boolean {
+	return Boolean(e?.resource) && e.search?.mode !== "outcome" && e.resource?.resourceType !== "OperationOutcome";
 }
 
 /** Page through ONE resource type's searchset, resolve DocumentReference → Binary
@@ -400,42 +416,79 @@ export async function pullType(env: RtEnv, item: PullPlanItem): Promise<PullType
 	let count = 0;
 	let binaries = 0;
 	let keys = 0;
-	let status: PullTypeResult["status"] = "ok";
+	let status: PullTypeResult["status"] | null = null;
+	let reason: string | undefined;
+	let total: number | undefined;
+
+	// The ONE exit. Both the mid-loop breaks and the natural end route through it, so the
+	// completeness gate can't be bypassed the way an assertion at a single `return` was by the
+	// old early-return 404 path.
+	const done = (): PullTypeResult => {
+		let resolved = status ?? "truncated";
+		let why = status === null ? "unclassified loop exit" : reason;
+		// `!next` is NOT proof of completeness — nextLink returns null both for a genuine last
+		// page and for a link array it didn't understand, so treating it as the sole earn point
+		// for "ok" just moves the not-disproven default down one line. `Bundle.total` (match-only
+		// by spec) against the accumulated match count is the only deterministic predicate
+		// available. Guarded on the type so an org that omits `total` degrades to the old
+		// behavior instead of false-flagging every pull.
+		if (resolved === "ok" && typeof total === "number" && count < total) {
+			resolved = "truncated";
+			why = `count ${count} < Bundle.total ${total}`;
+		}
+		return { org: item.org, patient: item.patient, label: item.label, count, pages: page, binaries, keys, status: resolved, ...(why ? { reason: why } : {}) };
+	};
 
 	while (url) {
 		if (page >= MAX_PAGES_PER_TYPE) {
 			status = "truncated";
+			reason = `page cap ${MAX_PAGES_PER_TYPE} reached`;
 			break;
 		}
 		const resp = await mychartFetch(env, item.org, url);
 		if (resp.status === 429 || resp.status >= 500) {
 			throw new Error(`MyChart pull: HTTP ${resp.status} fetching ${item.label} (org ${item.org}, page ${page + 1})`);
 		}
-		if (resp.status === 404) return { org: item.org, patient: item.patient, label: item.label, count, pages: page, binaries, keys, status: "unsupported" };
+		if (resp.status === 404) {
+			// A 404 on the FIRST request means the org doesn't carry this type. A 404 part-way
+			// through pagination means pagination itself broke — a partial sync, not an
+			// unsupported type, and reconcilePull must not wave it through as clean.
+			status = page === 0 ? "unsupported" : "truncated";
+			if (page > 0) reason = `HTTP 404 on continuation page ${page + 1}`;
+			break;
+		}
 		if (resp.status >= 400) {
 			status = "truncated";
+			reason = `HTTP ${resp.status} on page ${page + 1}`;
 			break;
 		}
 		const bundle: any = await resp.json().catch(() => null);
 		if (!bundle) {
 			status = "truncated";
+			reason = `unparseable bundle on page ${page + 1}`;
 			break;
 		}
 		page++;
+		if (page === 1 && typeof bundle.total === "number") total = bundle.total;
 		const entries: any[] = Array.isArray(bundle.entry) ? bundle.entry : [];
-		const resources = entries.map((e) => e?.resource).filter(Boolean);
+		const resources = entries.filter(isMatchEntry).map((e) => e.resource);
 		count += resources.length;
 		keys += 1;
+		// The FULL raw bundle still lands on disk, outcome entry included — that entry is Epic's
+		// only channel for disclosing suppressed sub-types, so it must survive even though it
+		// must not be counted.
 		await putPhi(env, `mychart/${item.org}/${item.patient}/${item.label}/${item.stamp}-p${page}.json`, JSON.stringify(bundle), "application/fhir+json");
 		if (item.type === "DocumentReference") {
 			docs: for (const doc of resources) {
 				if (binaries >= MAX_BINARIES_PER_TYPE) {
 					status = "truncated";
+					reason = `binary cap ${MAX_BINARIES_PER_TYPE} reached`;
 					break;
 				}
 				for (const bin of await resolveBinaries(env, item.org, base, doc)) {
 					if (binaries >= MAX_BINARIES_PER_TYPE) {
 						status = "truncated";
+						reason = `binary cap ${MAX_BINARIES_PER_TYPE} reached`;
 						break docs;
 					}
 					await putPhi(env, `mychart/${item.org}/${item.patient}/Binary/${bin.id}.json`, bin.body, "application/fhir+json");
@@ -445,9 +498,28 @@ export async function pullType(env: RtEnv, item: PullPlanItem): Promise<PullType
 			}
 		}
 		const next = nextLink(bundle);
-		url = next && isUnderFhirBase(item.org, next) ? next : null;
+		if (!next) {
+			// Only an UNCLASSIFIED pull earns "ok" here. The binary cap breaks its own labeled
+			// loop and lets pagination continue, so a plain assignment would overwrite the
+			// `truncated` it just set the moment a later page has no next link — re-introducing
+			// the silent-partial this whole change exists to remove.
+			if (!status) status = "ok";
+			url = null;
+		} else if (isUnderFhirBase(item.org, next)) {
+			url = next;
+		} else {
+			// A refused next link IS an incomplete sync. Today it collapses into the same silent
+			// `url = null` as "no next link" and is the one incompleteness reported clean. Only
+			// the honesty changes here: how relative/off-base links RESOLVE is deliberately
+			// untouched, since relaxing the wrong axis of an untrusted-input guard reached with a
+			// live Epic bearer token is an SSRF regression. The URL stays out of `reason` — a
+			// paging URL's query string carries the patient id, and reason reaches the MCP client.
+			status = "truncated";
+			reason = "next link refused (not under the org's FHIR base)";
+			url = null;
+		}
 	}
-	return { org: item.org, patient: item.patient, label: item.label, count, pages: page, binaries, keys, status };
+	return done();
 }
 
 /** The `pull-type` leaf's retry-exhaustion fallback (design §3.1): when a type's
@@ -476,13 +548,15 @@ export function reconcilePull(results: PullTypeResult[]): PullResult {
 		pages += r.pages;
 		binaries += r.binaries;
 		keys += r.keys;
-		if (r.status === "truncated") {
-			truncated = true;
-			errors[r.label] = "truncated (page/binary cap or non-retryable HTTP error)";
-		} else if (r.status === "throttled") {
-			truncated = true;
-			errors[r.label] = "throttled (retry budget exhausted on a transient HTTP error)";
-		}
+		// Structured as "clean is the narrow case, everything else is an error" so a status
+		// added later can't slip through as clean by default (#1365). `unsupported` only counts
+		// as clean when NO page landed — a mid-pagination 404 arrives here as `unsupported`'s
+		// louder sibling `truncated`, but the pages>0 guard is what makes the clean path a
+		// provable claim rather than a status-name coincidence.
+		if (r.status === "ok") continue;
+		if (r.status === "unsupported" && r.pages === 0) continue;
+		truncated = true;
+		errors[r.label] = r.reason ?? (r.status === "throttled" ? "throttled (retry budget exhausted on a transient HTTP error)" : "incomplete (unclassified)");
 	}
 	const org = results[0]?.org ?? "";
 	const patient = results[0]?.patient ?? "";
@@ -526,7 +600,10 @@ async function latestPulledResources(env: RtEnv, org: string, patient: string, l
 		if (!obj) continue;
 		const bundle = safeParseJson<any>(await obj.text(), null);
 		const entries: any[] = Array.isArray(bundle?.entry) ? bundle.entry : [];
-		for (const e of entries) if (e?.resource) resources.push(e.resource);
+		// Same match-only filter pullType counts with — without it summarizeMyChart, the timeline
+		// mapper and the cross-org allergy-gap reconciler ingest Epic's OperationOutcome as if it
+		// were a clinical resource.
+		for (const e of entries) if (isMatchEntry(e)) resources.push(e.resource);
 	}
 	return resources;
 }
