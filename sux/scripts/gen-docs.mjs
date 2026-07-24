@@ -26,7 +26,7 @@ const CATEGORIES = [
 	["Research / reference", ["consensus", "arxiv", "pubmed", "openalex", "crossref", "semantic_scholar", "clinical_trials", "stackexchange", "reddit", "coingecko", "youtube", "zotero"]],
 	["People / places / social", ["people", "people_finder", "places", "linkedin", "facebook", "uw"]],
 	["Notes / knowledge / vault", ["obsidian", "ingest", "citation", "consolidate", "vault_consolidate_plan", "vault_cross_link_plan"]],
-	["Knowledge / learning", ["recall", "oracle", "study", "advise", "learn", "preferences", "life_wiki", "agenda", "onboard"]],
+	["Knowledge / learning", ["recall", "oracle", "study", "advise", "learn", "preferences", "life_wiki", "agenda", "onboard", "expert_draft"]],
 	["Mail (JMAP)", ["jmap", "mail_triage", "mail_triage_plan", "mail_sieve", "mail_sieve_hc", "mail_sieve_backfill", "mail_domain_backfill", "briefing"]],
 	["Personal namespaces (one /mcp)", ["vault", "mail", "files", "calendar", "contact", "contact_consolidate_plan", "files_consolidate_plan", "imessage"]],
 	["Agent / autonomy", ["proposals", "webpush"]],
