@@ -93,7 +93,7 @@ describe("handleRpc (index.ts dispatch)", () => {
 		const { kv } = makeKv();
 		const { ctx } = makeCtx();
 		const out = await callRpc(makeEnv(kv), ctx, { jsonrpc: "2.0", id: 1, method: "initialize" });
-		expect(out.result.protocolVersion).toBe("2025-06-18");
+		expect(out.result.protocolVersion).toBe("2025-03-26");
 		expect(out.result.serverInfo).toEqual({ name: "research-tools", version: "0.1.0" });
 		expect(out.result.capabilities.tools).toEqual({ listChanged: false });
 	});
@@ -105,11 +105,30 @@ describe("handleRpc (index.ts dispatch)", () => {
 		expect(out.result.protocolVersion).toBe("2025-03-26");
 	});
 
-	it("initialize falls back to the latest supported protocolVersion for an unrecognized request", async () => {
+	it("initialize still echoes the newest revision when the client explicitly asks for it", async () => {
+		const { kv } = makeKv();
+		const { ctx } = makeCtx();
+		const out = await callRpc(makeEnv(kv), ctx, { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
+		expect(out.result.protocolVersion).toBe("2025-06-18");
+	});
+
+	it("initialize falls back to the broadly-supported revision, NOT the newest, for an unrecognized request", async () => {
 		const { kv } = makeKv();
 		const { ctx } = makeCtx();
 		const out = await callRpc(makeEnv(kv), ctx, { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2099-01-01" } });
-		expect(out.result.protocolVersion).toBe("2025-06-18");
+		expect(out.result.protocolVersion).toBe("2025-03-26");
+	});
+
+	// Raycast 1.104 sends its internal codename rather than a wire date, and hard-errors
+	// `Unsupported protocol version: jun2025` on being handed 2025-06-18 back. The fallback
+	// must not resolve the codename to the date it names — that is the one answer this
+	// client cannot accept.
+	it("initialize does not hand 2025-06-18 back to a client that sent a codename for it", async () => {
+		const { kv } = makeKv();
+		const { ctx } = makeCtx();
+		const out = await callRpc(makeEnv(kv), ctx, { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "jun2025" } });
+		expect(out.result.protocolVersion).toBe("2025-03-26");
+		expect(out.result.protocolVersion).not.toBe("2025-06-18");
 	});
 
 	it("tools/list returns only the front verbs, not every leaf", async () => {

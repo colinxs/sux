@@ -99,13 +99,24 @@ function buildMessages(system: string, user: string, task: string): ChatMessage[
 	];
 }
 
+export const OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions";
+
 /** One completion via OpenAI's chat completions API, same fenced `messages` shape llm() sends
  *  Workers-AI. Throws on any non-2xx/network failure — the caller decides what to do with that
  *  (llm() below always re-surfaces the ORIGINAL Workers-AI error, never this one, per the
  *  issue's fail-open contract: a fallback failing must never look scarier than the outage it
- *  was covering for). */
+ *  was covering for).
+ *
+ *  Goes through smartFetch, not bare fetch, for the same reason every other outbound call in
+ *  this worker does — it is the one place egress is recorded (auditEgress), SSRF targets are
+ *  refused, and CR/LF header injection is caught. This lane is the ONLY path that hands a
+ *  user's prompt content to a third-party operator (Workers AI is first-party Cloudflare), so
+ *  an unaudited fetch here meant the single highest-sensitivity egress in the worker (every
+ *  fabric/sensitivity.ts tag can reach it) was also
+ *  the one invisible to the egress ledger. api.openai.com is in proxy.ts's DIRECT_HOST_RE, so
+ *  the route is byte-for-byte the direct fetch it was before — audit, not rerouting. */
 async function openAiComplete(env: AiEnv, messages: ChatMessage[], maxTokens: number): Promise<string> {
-	const res = await fetch("https://api.openai.com/v1/chat/completions", {
+	const res = await smartFetch(env, OPENAI_CHAT_URL, {
 		method: "POST",
 		headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
 		body: JSON.stringify({ model: OPENAI_FALLBACK_MODEL, messages, max_tokens: maxTokens }),

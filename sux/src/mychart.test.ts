@@ -2,21 +2,27 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	MAX_BINARIES_PER_TYPE,
 	MYCHART_ORGS,
+	NOTE_EXPORT_CHAR_BUDGET,
 	buildPullPlan,
 	connectedOrgs,
 	crossOrgAllergyGaps,
 	crossOrgMedicationAllergyConflicts,
+	decodeStoredBinary,
 	gatherMedicalTimelineEvents,
 	handleAppleHealth,
 	handleMychartRoutes,
 	isUnderFhirBase,
+	listStoredNotes,
 	mintAccessToken,
 	mychartFetch,
 	pullType,
 	readGrant,
+	readStoredNote,
 	reconcilePull,
 	resolveFhirPath,
 	resolveOrg,
+	rtfToText,
+	storedBinaryIds,
 	substancesOverlap,
 	summarizeMyChart,
 	throttledPullType,
@@ -68,7 +74,15 @@ function r2Stub() {
 			const start = opts?.cursor ? Number(opts.cursor) : 0;
 			const page = all.slice(start, start + limit);
 			const truncated = start + limit < all.length;
-			return { objects: page.map((key) => ({ key, size: 0, uploaded: new Date() })), truncated, cursor: truncated ? String(start + limit) : undefined };
+			// Real byte length, not a 0 placeholder — pullType's resume skip set filters on
+			// `size > 0` so a zero-length body written from a 200 gets re-fetched, and a stub
+			// reporting 0 for everything makes that filter untestable (it would look like it
+			// skips nothing).
+			const sizeOf = (k: string) => {
+				const o = map.get(k)!;
+				return typeof o.body === "string" ? new TextEncoder().encode(o.body).length : new Uint8Array(o.body).length;
+			};
+			return { objects: page.map((key) => ({ key, size: sizeOf(key), uploaded: new Date() })), truncated, cursor: truncated ? String(start + limit) : undefined };
 		}),
 	};
 }
@@ -473,7 +487,7 @@ describe("buildPullPlan / pullType / reconcilePull — the durable `mychart-pull
 		);
 		const item = { type: "DocumentReference", label: "DocumentReference", query: "patient=P1&_count=100", org: ORG, patient: "P1", stamp: "STAMP" };
 		const result = await pullType(env, item);
-		expect(result).toEqual({ org: ORG, patient: "P1", label: "DocumentReference", count: 2, pages: 2, binaries: 1, keys: 3, status: "ok" });
+		expect(result).toEqual({ org: ORG, patient: "P1", label: "DocumentReference", count: 2, pages: 2, binaries: 1, keys: 3, status: "ok", binariesSeen: 1 });
 		const keys = [...env.R2.map.keys()];
 		expect(keys.every((k: string) => k.startsWith(`phi/mychart/${ORG}/P1/`))).toBe(true);
 		expect(keys.some((k: string) => k.includes("/Binary/b1.json"))).toBe(true);
@@ -518,6 +532,184 @@ describe("buildPullPlan / pullType / reconcilePull — the durable `mychart-pull
 		expect(result.status).toBe("truncated");
 		expect(result.count).toBe(overCap);
 		expect([...env.R2.map.keys()].filter((k: string) => k.includes("/Binary/")).length).toBe(MAX_BINARIES_PER_TYPE);
+	});
+
+	it("pullType RESUMES past the binary cap — the cap bounds NEW fetches, so repeated pulls advance instead of refetching the same chunk forever (#1365)", async () => {
+		const env = baseEnv();
+		await env.OAUTH_KV.put(`sux:mychart:token:${ORG}`, "AT");
+		// Everything the previous pull already landed.
+		for (let i = 0; i < MAX_BINARIES_PER_TYPE; i++) {
+			await env.R2.put(`phi/mychart/${ORG}/P1/Binary/b${i}.json`, JSON.stringify({ resourceType: "Binary", contentType: "text/plain", data: "aGk=" }), {});
+		}
+		const attachments = MAX_BINARIES_PER_TYPE + 5;
+		const page = {
+			resourceType: "Bundle",
+			entry: Array.from({ length: attachments }, (_, i) => ({ resource: { resourceType: "DocumentReference", id: `d${i}`, content: [{ attachment: { url: `${BASE}/Binary/b${i}` } }] } })),
+		};
+		vi.stubGlobal(
+			"fetch",
+			fetchRouter({
+				"/Binary/": () => new Response(JSON.stringify({ resourceType: "Binary", contentType: "text/plain", data: "aGk=" }), { status: 200 }),
+				"/DocumentReference": () => new Response(JSON.stringify(page), { status: 200 }),
+			}),
+		);
+		const result = await pullType(env, { type: "DocumentReference", label: "DocumentReference", query: "patient=P1&_count=100", org: ORG, patient: "P1", stamp: "STAMP" });
+		expect(result.binaries).toBe(5);
+		expect(result.binariesSkipped).toBe(MAX_BINARIES_PER_TYPE);
+		expect(result.binariesSeen).toBe(attachments);
+		expect(result.status).toBe("ok");
+		for (let i = MAX_BINARIES_PER_TYPE; i < attachments; i++) expect(env.R2.map.has(`phi/mychart/${ORG}/P1/Binary/b${i}.json`)).toBe(true);
+	});
+
+	it("pullType's resume skip set re-fetches a ZERO-length stored body — the unstamped key self-heals it today and a naive skip set would freeze it forever (#1365)", async () => {
+		const env = baseEnv();
+		await env.OAUTH_KV.put(`sux:mychart:token:${ORG}`, "AT");
+		await env.R2.put(`phi/mychart/${ORG}/P1/Binary/b1.json`, "", {});
+		const page = { resourceType: "Bundle", entry: [{ resource: { resourceType: "DocumentReference", id: "d1", content: [{ attachment: { url: `${BASE}/Binary/b1` } }] } }] };
+		vi.stubGlobal(
+			"fetch",
+			fetchRouter({
+				"/Binary/": () => new Response(JSON.stringify({ resourceType: "Binary", contentType: "text/plain", data: "aGk=" }), { status: 200 }),
+				"/DocumentReference": () => new Response(JSON.stringify(page), { status: 200 }),
+			}),
+		);
+		const result = await pullType(env, { type: "DocumentReference", label: "DocumentReference", query: "patient=P1&_count=100", org: ORG, patient: "P1", stamp: "STAMP" });
+		expect(result.binaries).toBe(1);
+		expect(result.binariesSkipped).toBeUndefined();
+		expect(String(env.R2.map.get(`phi/mychart/${ORG}/P1/Binary/b1.json`).body)).toContain("Binary");
+	});
+
+	it("pullType honors refetchBinaries — the escape hatch for a note Epic amended under the same id (#1365)", async () => {
+		const env = baseEnv();
+		await env.OAUTH_KV.put(`sux:mychart:token:${ORG}`, "AT");
+		await env.R2.put(`phi/mychart/${ORG}/P1/Binary/b1.json`, JSON.stringify({ resourceType: "Binary", contentType: "text/plain", data: "b2xk" }), {});
+		const page = { resourceType: "Bundle", entry: [{ resource: { resourceType: "DocumentReference", id: "d1", content: [{ attachment: { url: `${BASE}/Binary/b1` } }] } }] };
+		vi.stubGlobal(
+			"fetch",
+			fetchRouter({
+				"/Binary/": () => new Response(JSON.stringify({ resourceType: "Binary", contentType: "text/plain", data: "bmV3" }), { status: 200 }),
+				"/DocumentReference": () => new Response(JSON.stringify(page), { status: 200 }),
+			}),
+		);
+		const base = { type: "DocumentReference", label: "DocumentReference", query: "patient=P1&_count=100", org: ORG, patient: "P1", stamp: "STAMP" };
+		expect((await pullType(env, base)).binariesSkipped).toBe(1);
+		const forced = await pullType(env, { ...base, refetchBinaries: true });
+		expect(forced.binaries).toBe(1);
+		expect(forced.binariesSkipped).toBeUndefined();
+		expect(String(env.R2.map.get(`phi/mychart/${ORG}/P1/Binary/b1.json`).body)).toContain("bmV3");
+	});
+
+	it("pullType fetches an absolute attachment URL VERBATIM — rebuilding `${base}/Binary/${id}` would change the request and 4xx into a silent per-note drop (#1365)", async () => {
+		const env = baseEnv();
+		await env.OAUTH_KV.put(`sux:mychart:token:${ORG}`, "AT");
+		const attUrl = `${BASE}/SomePath/Binary/b1`;
+		const page = { resourceType: "Bundle", entry: [{ resource: { resourceType: "DocumentReference", id: "d1", content: [{ attachment: { url: attUrl } }] } }] };
+		const seenUrls: string[] = [];
+		vi.stubGlobal("fetch", async (u: any) => {
+			seenUrls.push(String(u));
+			if (String(u).includes("/Binary/")) return new Response(JSON.stringify({ resourceType: "Binary", contentType: "text/plain", data: "aGk=" }), { status: 200 });
+			return new Response(JSON.stringify(page), { status: 200 });
+		});
+		await pullType(env, { type: "DocumentReference", label: "DocumentReference", query: "patient=P1&_count=100", org: ORG, patient: "P1", stamp: "STAMP" });
+		expect(seenUrls).toContain(attUrl);
+	});
+
+	it("pullType counts a failed Binary fetch and an unresolvable attachment instead of dropping both silently (#1365)", async () => {
+		const env = baseEnv();
+		await env.OAUTH_KV.put(`sux:mychart:token:${ORG}`, "AT");
+		const page = {
+			resourceType: "Bundle",
+			entry: [
+				{ resource: { resourceType: "DocumentReference", id: "d1", content: [{ attachment: { url: `${BASE}/Binary/b1` } }] } },
+				{ resource: { resourceType: "DocumentReference", id: "d2", content: [{ attachment: { url: `${BASE}/DocumentReference/$binary?id=zz` } }] } },
+			],
+		};
+		vi.stubGlobal(
+			"fetch",
+			fetchRouter({
+				"/Binary/b1": () => new Response("", { status: 403 }),
+				"/DocumentReference": () => new Response(JSON.stringify(page), { status: 200 }),
+			}),
+		);
+		const result = await pullType(env, { type: "DocumentReference", label: "DocumentReference", query: "patient=P1&_count=100", org: ORG, patient: "P1", stamp: "STAMP" });
+		expect(result.binariesFailed).toBe(1);
+		expect(result.binariesUnresolvable).toBe(1);
+		expect(result.status).toBe("truncated");
+		expect(reconcilePull([result]).errors!.DocumentReference).toMatch(/Binary fetch/);
+	});
+
+	it("buildPullPlan carries refetchBinaries onto every item, and omits it when unset", () => {
+		expect(buildPullPlan({ org: ORG, patient: "P1", types: ["DocumentReference"], refetchBinaries: true }, "S")[0].refetchBinaries).toBe(true);
+		expect(buildPullPlan({ org: ORG, patient: "P1", types: ["DocumentReference"] }, "S")[0]).not.toHaveProperty("refetchBinaries");
+	});
+
+	it("pullType flags count < Bundle.total as truncated — !next alone is not proof of completeness (#1365)", async () => {
+		const env = baseEnv();
+		await env.OAUTH_KV.put(`sux:mychart:token:${ORG}`, "AT");
+		const page = { resourceType: "Bundle", total: 250, entry: Array.from({ length: 100 }, (_, i) => ({ resource: { resourceType: "Condition", id: `c${i}` } })) };
+		vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(page), { status: 200 })));
+		const result = await pullType(env, { type: "Condition", label: "Condition", query: "patient=P1&_count=100", org: ORG, patient: "P1", stamp: "STAMP" });
+		expect(result.status).toBe("truncated");
+		expect(result.reason).toMatch(/total/);
+	});
+
+	it("pullType counts MATCH entries only — Epic's trailing OperationOutcome is what pinned six types at exactly 101 (#1365)", async () => {
+		const env = baseEnv();
+		await env.OAUTH_KV.put(`sux:mychart:token:${ORG}`, "AT");
+		const page = {
+			resourceType: "Bundle",
+			entry: [
+				...Array.from({ length: 100 }, (_, i) => ({ search: { mode: "match" }, resource: { resourceType: "Condition", id: `c${i}` } })),
+				{ search: { mode: "outcome" }, resource: { resourceType: "OperationOutcome", issue: [{ severity: "warning", code: "informational" }] } },
+			],
+		};
+		vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(page), { status: 200 })));
+		const result = await pullType(env, { type: "Condition", label: "Condition", query: "patient=P1&_count=100", org: ORG, patient: "P1", stamp: "STAMP" });
+		expect(result.count).toBe(100);
+		expect(result.status).toBe("ok");
+		// The outcome entry must still be on disk — it is Epic's only disclosure of suppressed sub-types.
+		expect(String(env.R2.map.get(`phi/mychart/${ORG}/P1/Condition/STAMP-p1.json`).body)).toContain("OperationOutcome");
+	});
+
+	it("pullType reports a MID-pagination 404 as truncated, not 'unsupported' — a broken continuation is not an unsupported type (#1365)", async () => {
+		const env = baseEnv();
+		await env.OAUTH_KV.put(`sux:mychart:token:${ORG}`, "AT");
+		const page1 = { resourceType: "Bundle", link: [{ relation: "next", url: `${BASE}/Condition?patient=P1&page=2` }], entry: [{ resource: { resourceType: "Condition", id: "c1" } }] };
+		vi.stubGlobal("fetch", fetchRouter({ "page=2": () => new Response("", { status: 404 }), "/Condition": () => new Response(JSON.stringify(page1), { status: 200 }) }));
+		const result = await pullType(env, { type: "Condition", label: "Condition", query: "patient=P1&_count=100", org: ORG, patient: "P1", stamp: "STAMP" });
+		expect(result.status).toBe("truncated");
+		expect(reconcilePull([result]).errors).toHaveProperty("Condition");
+	});
+
+	it("pullType carries a 4xx's specific reason all the way into reconcilePull's errors — CarePlan's arm, previously a generic literal (#1365)", async () => {
+		const env = baseEnv();
+		await env.OAUTH_KV.put(`sux:mychart:token:${ORG}`, "AT");
+		vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 400 })));
+		const result = await pullType(env, { type: "CarePlan", label: "CarePlan", query: "patient=P1&_count=100", org: ORG, patient: "P1", stamp: "STAMP" });
+		expect(reconcilePull([result]).errors!.CarePlan).toMatch(/HTTP 400/);
+	});
+
+	it("pullType flags a REFUSED next link as truncated instead of silently reporting ok — and never echoes the URL into `reason` (#1365)", async () => {
+		const env = baseEnv();
+		await env.OAUTH_KV.put(`sux:mychart:token:${ORG}`, "AT");
+		const page1 = { resourceType: "Bundle", link: [{ relation: "next", url: "https://evil.example/FHIR/R4/Condition?patient=SECRETID" }], entry: [{ resource: { resourceType: "Condition", id: "c1" } }] };
+		vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(page1), { status: 200 })));
+		const result = await pullType(env, { type: "Condition", label: "Condition", query: "patient=P1&_count=100", org: ORG, patient: "P1", stamp: "STAMP" });
+		expect(result.status).toBe("truncated");
+		expect(result.reason).not.toMatch(/SECRETID|evil\.example/);
+	});
+
+	it("reconcilePull treats a status it has never seen as incomplete, not clean — the default arm is the point (#1365)", () => {
+		const rogue = { org: ORG, patient: "P1", label: "Future", count: 3, pages: 1, binaries: 0, keys: 1, status: "surprise" as any };
+		const out = reconcilePull([rogue]);
+		expect(out.truncated).toBe(true);
+		expect(out.errors!.Future).toMatch(/unclassified/);
+	});
+
+	it("reconcilePull still waves through an unsupported type that landed zero pages", () => {
+		const out = reconcilePull([{ org: ORG, patient: "P1", label: "Goal", count: 0, pages: 0, binaries: 0, keys: 0, status: "unsupported" as const }]);
+		expect(out.truncated).toBeUndefined();
+		expect(out.errors).toBeUndefined();
 	});
 
 	it("throttledPullType degrades a retry-exhausted type to status:'throttled', and reconcilePull surfaces it in `errors` — one bad type never sinks the pull", () => {
@@ -883,5 +1075,114 @@ describe("crossOrgAllergyGaps — one-sided allergy continuity gap (#1009)", () 
 			{ resourceType: "AllergyIntolerance", id: "al2", code: { text: "Penicillin" }, clinicalStatus: { coding: [{ code: "resolved" }] } },
 		]);
 		expect(await crossOrgAllergyGaps(env)).toEqual([]);
+	});
+});
+
+describe("stored-note reader — the read half of pull's Binary writes (#1462)", () => {
+	const b64 = (s: string) => btoa(String.fromCharCode(...new TextEncoder().encode(s)));
+	const binaryResource = (contentType: string, body: string) => JSON.stringify({ resourceType: "Binary", contentType, data: b64(body) });
+	const noteEnv = async (bodies: Record<string, string>, docs?: any[]) => {
+		const env = baseEnv();
+		for (const [id, html] of Object.entries(bodies)) {
+			await env.R2.put(`phi/mychart/${ORG}/P1/Binary/${id}.json`, binaryResource("text/html", html), { httpMetadata: { contentType: "application/fhir+json" } });
+		}
+		if (docs) {
+			await env.R2.put(`phi/mychart/${ORG}/P1/DocumentReference/STAMP-p1.json`, JSON.stringify({ resourceType: "Bundle", entry: docs.map((resource) => ({ resource })) }), {
+				httpMetadata: { contentType: "application/fhir+json" },
+			});
+		}
+		return env;
+	};
+
+	it("decodeStoredBinary turns Epic's base64 Binary resource into readable text — a reader returning the raw stored object would hand back base64", () => {
+		const stored = binaryResource("text/html", "<html><body><p>Chief complaint:</p><p>knee&nbsp;pain &amp; swelling</p></body></html>");
+		const out = decodeStoredBinary(stored);
+		expect(out.binary).toBe(false);
+		expect(out.contentType).toBe("text/html");
+		expect(out.text).toBe("Chief complaint:\nknee pain & swelling");
+		expect(out.text).not.toMatch(/PGh0bWw|base64/);
+	});
+
+	it("decodeStoredBinary reassembles multi-byte UTF-8 — atob alone yields one char per byte and mojibakes every accented name", () => {
+		expect(decodeStoredBinary(binaryResource("text/plain", "Müller — 38°C")).text).toBe("Müller — 38°C");
+	});
+
+	it("decodeStoredBinary flags a non-textual attachment instead of dumping base64 as 'text'", () => {
+		const out = decodeStoredBinary(binaryResource("application/pdf", "%PDF-1.7 binary junk"));
+		expect(out).toMatchObject({ binary: true, text: "", contentType: "application/pdf" });
+		expect(out.bytes).toBeGreaterThan(0);
+	});
+
+	it("decodeStoredBinary falls through to the stored body when the server ignored Accept and returned the document itself", () => {
+		expect(decodeStoredBinary("Plain discharge summary.").text).toBe("Plain discharge summary.");
+		expect(decodeStoredBinary("<div>Wrapped <b>note</b></div>").text).toBe("Wrapped note");
+	});
+
+	it("rtfToText strips control words and unescapes hex escapes", () => {
+		expect(rtfToText(String.raw`{\rtf1\ansi{\*\generator Epic}\b Assessment:\b0\par Stable\'2e}`)).toBe("Assessment:\nStable.");
+	});
+
+	it("listStoredNotes returns every stored Binary with its id and decoded body — an empty result on a populated bucket is the #1462 bug", async () => {
+		const env = await noteEnv({ b1: "<p>note one</p>", b2: "<p>note two</p>", b3: "<p>note three</p>" });
+		const out = await listStoredNotes(env, ORG, "P1", { text: true });
+		expect(out.total).toBe(3);
+		expect(out.notes.map((n) => n.id)).toEqual(["b1", "b2", "b3"]);
+		expect(out.notes.map((n) => n.text)).toEqual(["note one", "note two", "note three"]);
+		expect(out.nextCursor).toBeUndefined();
+	});
+
+	it("listStoredNotes joins each Binary back to the DocumentReference that referenced it", async () => {
+		const env = await noteEnv({ b1: "<p>body</p>" }, [
+			{
+				resourceType: "DocumentReference",
+				id: "d1",
+				date: "2026-03-04T10:00:00Z",
+				description: "Progress Note",
+				type: { text: "Progress Notes" },
+				author: [{ display: "Dr. Ada Lovelace" }],
+				content: [{ attachment: { url: `${BASE}/Binary/b1` } }],
+			},
+		]);
+		expect((await listStoredNotes(env, ORG, "P1", { text: true })).notes[0]).toMatchObject({
+			id: "b1",
+			docId: "d1",
+			date: "2026-03-04T10:00:00Z",
+			title: "Progress Note",
+			type: "Progress Notes",
+			author: "Dr. Ada Lovelace",
+			text: "body",
+		});
+	});
+
+	it("listStoredNotes without `text` is an index — ids and metadata, no bodies", async () => {
+		const env = await noteEnv({ b1: "<p>secret body</p>" });
+		const out = await listStoredNotes(env, ORG, "P1");
+		expect(out.notes[0].text).toBe("");
+		expect(out.notes[0].bytes).toBeGreaterThan(0);
+	});
+
+	it("listStoredNotes pages a text export by character budget and resumes from nextCursor — a whole chart never lands in one response", async () => {
+		const big = "x".repeat(NOTE_EXPORT_CHAR_BUDGET);
+		const env = await noteEnv({ b1: big, b2: big, b3: "<p>tail</p>" });
+		const first = await listStoredNotes(env, ORG, "P1", { text: true });
+		expect(first.notes.map((n) => n.id)).toEqual(["b1"]);
+		expect(first.nextCursor).toBe("1");
+		const second = await listStoredNotes(env, ORG, "P1", { text: true, cursor: first.nextCursor });
+		expect(second.notes.map((n) => n.id)).toEqual(["b2"]);
+		const third = await listStoredNotes(env, ORG, "P1", { text: true, cursor: second.nextCursor });
+		expect(third.notes.map((n) => n.id)).toEqual(["b3"]);
+		expect(third.nextCursor).toBeUndefined();
+	});
+
+	it("storedBinaryIds walks past R2's 1000-object page — a single unpaginated list() would silently hide every note after the first page", async () => {
+		const env = baseEnv();
+		for (let i = 0; i < 1001; i++) await env.R2.put(`phi/mychart/${ORG}/P1/Binary/b${String(i).padStart(4, "0")}.json`, binaryResource("text/plain", "n"), {});
+		expect((await storedBinaryIds(env, ORG, "P1")).length).toBe(1001);
+	});
+
+	it("readStoredNote returns one note in full, and null for an id that was never pulled", async () => {
+		const env = await noteEnv({ b1: "<p>full body</p>" });
+		expect((await readStoredNote(env, ORG, "P1", "b1"))?.text).toBe("full body");
+		expect(await readStoredNote(env, ORG, "P1", "nope")).toBeNull();
 	});
 });

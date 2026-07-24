@@ -19,7 +19,19 @@ function kvStub(seed: Record<string, string> = {}) {
 }
 function r2Stub() {
 	const map = new Map<string, any>();
-	return { map, put: vi.fn(async (k: string, b: any) => void map.set(k, b)) };
+	return {
+		map,
+		put: vi.fn(async (k: string, b: any) => void map.set(k, b)),
+		get: vi.fn(async (k: string) => (map.has(k) ? { text: async () => String(map.get(k)) } : null)),
+		list: vi.fn(async (opts?: { prefix?: string; limit?: number }) => ({
+			objects: [...map.keys()]
+				.filter((k) => k.startsWith(opts?.prefix ?? ""))
+				.sort()
+				.slice(0, opts?.limit ?? 1000)
+				.map((key) => ({ key, size: 1 })),
+			truncated: false,
+		})),
+	};
 }
 
 const smartCfg = () => new Response(JSON.stringify({ authorization_endpoint: `${BASE}/authorize`, token_endpoint: TOKEN }), { status: 200 });
@@ -157,5 +169,53 @@ describe("mychart fn", () => {
 		expect(r.errorCode).toBe("not_configured");
 		expect(env.OP_WORKFLOW.create).not.toHaveBeenCalled();
 		expect(env.R2.map.size).toBe(0);
+	});
+});
+
+describe("mychart op=notes — the export path for stored clinical notes (#1462)", () => {
+	const b64 = (s: string) => btoa(String.fromCharCode(...new TextEncoder().encode(s)));
+	const storeNote = async (env: any, id: string, html: string) =>
+		env.R2.put(`phi/mychart/${ORG}/PatientA/Binary/${id}.json`, JSON.stringify({ resourceType: "Binary", contentType: "text/html", data: b64(html) }));
+
+	it("exports a stored note's actual text to the caller — before #1462 the bodies were write-only and nothing could read them back", async () => {
+		const env = connectedEnv();
+		await storeNote(env, "b1", "<p>Assessment: post-op knee, healing well.</p>");
+		await storeNote(env, "b2", "<p>Follow-up in six weeks.</p>");
+		await env.R2.put(
+			`phi/mychart/${ORG}/PatientA/DocumentReference/STAMP-p1.json`,
+			JSON.stringify({
+				resourceType: "Bundle",
+				entry: [{ resource: { resourceType: "DocumentReference", id: "d1", description: "Ortho Note", content: [{ attachment: { url: `${BASE}/Binary/b1` } }] } }],
+			}),
+		);
+		const out = parse(await mychart.run(env, { op: "notes", text: true }));
+		expect(out.org).toBe(ORG);
+		expect(out.total).toBe(2);
+		expect(out.notes.map((n: any) => n.text)).toEqual(["Assessment: post-op knee, healing well.", "Follow-up in six weeks."]);
+		expect(out.notes[0].title).toBe("Ortho Note");
+	});
+
+	it("indexes without bodies by default, and says so rather than looking like an empty chart", async () => {
+		const env = connectedEnv();
+		await storeNote(env, "b1", "<p>body</p>");
+		const out = parse(await mychart.run(env, { op: "notes" }));
+		expect(out.total).toBe(1);
+		expect(out.notes[0]).toMatchObject({ id: "b1", text: "" });
+		expect(out.note).toMatch(/text:true/);
+	});
+
+	it("reads one note by id, and 404s an id that was never pulled without echoing it raw", async () => {
+		const env = connectedEnv();
+		await storeNote(env, "b1", "<p>single</p>");
+		expect(parse(await mychart.run(env, { op: "notes", id: "b1" })).text).toBe("single");
+		const missing = await mychart.run(env, { op: "notes", id: "<script>x</script>" });
+		expect(missing.isError).toBe(true);
+		expect(missing.content[0].text).not.toMatch(/<script>/);
+	});
+
+	it("an empty bucket reports total:0 with a pointer at pull — never a silent empty list", async () => {
+		const out = parse(await mychart.run(connectedEnv(), { op: "notes", text: true }));
+		expect(out).toMatchObject({ total: 0, notes: [] });
+		expect(out.note).toMatch(/op=pull/);
 	});
 });
