@@ -807,6 +807,39 @@ export type Fn = {
 	run: (env: RtEnv, args: any) => Promise<ToolResult>;
 };
 
+// Stage 0.1 of the placement fabric (docs/design/2026-07-23-placement-fabric-architecture.md
+// §11, sux#1455) — "the unblock": route every fn invocation through ONE boundary so later
+// stages (per-request context, the sensitivity/provenance join, placement resolution, the
+// `Served` provenance record) have exactly one seam to attach to instead of needing to thread
+// through every fn module individually. Named `invokeFn`, NOT `callFn` — `callFn` already
+// exists as an unrelated local helper in fns/people_finder.ts (a fan-out over sibling fns),
+// and reusing the name would send future readers to the wrong function.
+//
+// For now this does EXACTLY what a bare `fn.run(env, args)` did — a seam, not a feature; no
+// behavior change.
+//
+// SCOPE (read before adding a new call site, and before assuming this is universal): this
+// stage migrates the actual DISPATCH layer — the registry's own tools/call handling
+// (index.ts), the fns that dynamically select a target fn by name (batch/pipe/
+// product_search's retailer fan-out, oracle's embedded readability call), and index.ts's own
+// cron-triggered top-level fn invocations. It deliberately does NOT migrate the ~150 fixed,
+// hardcoded fn-to-fn composition calls scattered across ~90 other fn modules (e.g.
+// vault-mcp.ts calling obsidian.run, mail-mcp.ts calling jmap.run, recall.ts calling
+// webSearch.run) — those are internal implementation reuse, not caller-driven dispatch of a
+// caller-chosen target, and migrating every one of them mechanically is a much larger
+// follow-up than this "no behavior change" seam. `fns/run.ts` (the durable/inline op runner)
+// has NO fn.run() call site of its own to migrate — its op-engine leaves receive `caps`, never
+// call a sibling Fn's `.run()` directly (see the op-engine leaf-shape gotcha in CLAUDE.md).
+// `people_finder.ts`'s local `callFn` is untouched, per the issue's own explicit carve-out.
+//
+// registry-lint.test.ts asserts (by source grep, the norm in this repo for a structural check
+// like this) that the migrated dispatch files never call `<ident>.run(` directly outside this
+// function — so a NEW bypass at one of those specific sites fails CI, even though the wider
+// internal-composition surface isn't covered yet.
+export function invokeFn(fn: Fn, env: RtEnv, args: any): Promise<ToolResult> {
+	return fn.run(env, args);
+}
+
 // Central behavior-hint map, keyed by fn name. A fn's own `annotations` field wins;
 // this is the default tagging so the obvious buckets are declared in one auditable
 // place instead of sprinkled across ~95 files. Only the clearly-classifiable fns are

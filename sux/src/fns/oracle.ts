@@ -1,6 +1,6 @@
 import { hasAI, llm } from "../ai";
 import { ORACLE_DISTILL } from "../prompts";
-import { type Fn, failWith, ok, type RtEnv } from "../registry";
+import { type Fn, failWith, invokeFn, ok, type RtEnv } from "../registry";
 import { ASK_LOG_KEY, type AskVerdict, recordAskFeedback, runAsk } from "./_answer";
 import { type BackfillDomain, BACKFILL_DOMAINS, backfillStatus, backfillTick, resetBackfill } from "./_backfill";
 import { hasVectorize } from "./_vectorize";
@@ -186,7 +186,7 @@ function looksLikeHtml(text: string, contentType?: string | null): boolean {
 /** Reduce HTML to readable prose via the readability extractor; fall back to a plain strip. */
 async function htmlToText(env: RtEnv, html: string): Promise<string> {
 	try {
-		const r = await readability.run(env, { html });
+		const r = await invokeFn(readability, env, { html });
 		if (!r.isError) {
 			const j = JSON.parse(r.content?.[0]?.text ?? "{}") as { text?: string };
 			if (j?.text) return String(j.text);

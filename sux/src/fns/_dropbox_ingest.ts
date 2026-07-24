@@ -2,9 +2,12 @@
 // cron trigger, per the issue) — lists the app folder's ingest/ subtree, routes each file
 // through the shared _ingest_route.ts routing layer, then moves it to ingest/processed/<date>/
 // so a re-poll never re-processes it (the move IS the idempotency mechanism — there is no
-// separate seen-ledger). A per-file failure moves the file to ingest/failed/ instead and appends
-// a note to the ingest ledger's existing error surface, rather than leaving it stuck retrying
-// forever in the watched subtree.
+// separate seen-ledger). A per-file failure moves the file to ingest/failed/<date>/ instead and
+// appends a note to the ingest ledger's existing error surface, rather than leaving it stuck
+// retrying forever in the watched subtree. Both destinations carry a random uniqueness suffix
+// (#1405) — dropbox.ts's move op hardcodes autorename:false, so two same-named files landing on
+// the same date would otherwise collide, 409, and (since the failed-move sits behind a swallowed
+// .catch) leave the source stuck in the watched subtree, re-processing it forever.
 //
 // Subfolder = explicit mode override (ingest/extract/, ingest/summarize/, ingest/archive/);
 // files dropped at ingest/ root fall through to _ingest_route.ts's smart-detect.
@@ -36,6 +39,7 @@ export type DropboxIngestOps = {
 	getBytes: (env: RtEnv, path: string) => Promise<Uint8Array>;
 	share: (env: RtEnv, path: string) => Promise<string | undefined>;
 	move: (env: RtEnv, from: string, to: string) => Promise<void>;
+	delete: (env: RtEnv, path: string) => Promise<void>;
 };
 
 async function dbxList(env: RtEnv, path: string): Promise<DbxFileEntry[]> {
@@ -76,8 +80,54 @@ async function dbxMove(env: RtEnv, from: string, to: string): Promise<void> {
 	if (r.isError) throw new Error(r.content?.[0]?.text ?? `dropbox move failed: ${from} -> ${to}`);
 }
 
+// force:true skips dropbox.ts's op=delete staging gate (dropbox_delete is `irreversible:true`
+// in STAGE_KINDS) — this call site is an internal best-effort cleanup sweep, not a user-facing
+// delete, so there is no human around to hand back a commit_token to.
+async function dbxDelete(env: RtEnv, path: string): Promise<void> {
+	const r = await dropbox.run(env, { op: "delete", path, force: true });
+	if (r.isError) throw new Error(r.content?.[0]?.text ?? `dropbox delete failed: ${path}`);
+}
+
 export function defaultDropboxIngestOps(): DropboxIngestOps {
-	return { list: dbxList, getBytes: dbxGetBytes, share: dbxShare, move: dbxMove };
+	return { list: dbxList, getBytes: dbxGetBytes, share: dbxShare, move: dbxMove, delete: dbxDelete };
+}
+
+/** A short random suffix so two moves to the same destination directory never collide —
+ *  dropbox.ts's move op hardcodes autorename:false, so a same-basename collision throws
+ *  rather than auto-renaming (#1405). Not a security-sensitive ID; just uniqueness. */
+function uniqueMoveSuffix(): string {
+	return Math.random().toString(36).slice(2, 8);
+}
+
+/** Insert `suffix` right before the file's extension (`report.pdf` -> `report-ab12cd.pdf`),
+ *  or append it if the name has no extension (a leading-dot dotfile counts as "no extension"). */
+function withSuffix(name: string, suffix: string): string {
+	const dot = name.lastIndexOf(".");
+	return dot > 0 ? `${name.slice(0, dot)}-${suffix}${name.slice(dot)}` : `${name}-${suffix}`;
+}
+
+const FAILED_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Best-effort prune of dated ingest/failed/<date>/ subfolders older than 30 days. Unlike
+ * processed/ (nobody prunes that either, but it's at least a useful record of what ran),
+ * failed/ has no other cleanup path and would otherwise grow forever (#1405). Never throws —
+ * a listing/delete hiccup here must not block the real ingest sweep in dropboxIngestTick.
+ */
+async function pruneOldFailedFolders(env: RtEnv, ops: DropboxIngestOps): Promise<void> {
+	let entries: DbxFileEntry[];
+	try {
+		entries = await ops.list(env, `${ROOT}/failed`);
+	} catch {
+		return; // failed/ doesn't exist yet — nothing to prune
+	}
+	const cutoff = Date.now() - FAILED_RETENTION_MS;
+	for (const entry of entries) {
+		if (entry.kind === "file" || !entry.name || !entry.path) continue; // only dated subfolders
+		const parsed = /^\d{4}-\d{2}-\d{2}$/.test(entry.name) ? Date.parse(`${entry.name}T00:00:00Z`) : NaN;
+		if (Number.isNaN(parsed) || parsed >= cutoff) continue;
+		await ops.delete(env, entry.path).catch((e) => console.warn(`dropbox-ingest: could not prune stale failed/ folder ${entry.path} — ${errMsg(e)}`));
+	}
 }
 
 export type DropboxIngestReport = { scanned: number; processed: number; failed: number };
@@ -92,6 +142,7 @@ export async function dropboxIngestTick(env: RtEnv, ops: DropboxIngestOps = defa
 	const report: DropboxIngestReport = { scanned: 0, processed: 0, failed: 0 };
 	if (!hasDropboxIngest(env)) return report;
 	const date = vaultToday(env.VAULT_TZ);
+	await pruneOldFailedFolders(env, ops).catch(() => {});
 
 	for (const sub of MODE_SUBDIRS) {
 		const dir = `${ROOT}${sub}`;
@@ -119,7 +170,7 @@ export async function dropboxIngestTick(env: RtEnv, ops: DropboxIngestOps = defa
 					},
 					routeDeps,
 				);
-				await ops.move(env, entry.path, `${ROOT}/processed/${date}/${entry.name}`);
+				await ops.move(env, entry.path, `${ROOT}/processed/${date}/${withSuffix(entry.name, uniqueMoveSuffix())}`);
 				report.processed++;
 			} catch (e) {
 				report.failed++;
@@ -128,7 +179,9 @@ export async function dropboxIngestTick(env: RtEnv, ops: DropboxIngestOps = defa
 				await ledger(env, "dropbox_ingest_failed")
 					.mark(entry.path, reason)
 					.catch(() => {});
-				await ops.move(env, entry.path, `${ROOT}/failed/${entry.name}`).catch((moveErr) => console.warn(`dropbox-ingest: could not move failed file ${entry.path} — ${errMsg(moveErr)}`));
+				await ops
+					.move(env, entry.path, `${ROOT}/failed/${date}/${withSuffix(entry.name, uniqueMoveSuffix())}`)
+					.catch((moveErr) => console.warn(`dropbox-ingest: could not move failed file ${entry.path} — ${errMsg(moveErr)}`));
 			}
 		}
 	}

@@ -1,7 +1,7 @@
 import { type Fn, fail, ok } from "../registry";
 import { staged } from "../stage";
 import { maybeDecompress } from "./_gzip";
-import { extractStoreId, fromB64, isExpired, putBlob, STORE_KV_PREFIX, storeBase, toB64, oj } from "./_util";
+import { errMsg, extractStoreId, fromB64, isExpired, putBlob, STORE_KV_PREFIX, storeBase, toB64, oj, writeNamedProjection } from "./_util";
 import { PHI_PREFIX } from "../mychart";
 
 // Object storage in sux's R2. Bytes are content-addressed (key = sha256, so
@@ -21,7 +21,7 @@ export const store: Fn = {
 	name: "store",
 	description:
 		"Store and retrieve arbitrary content in sux's R2. Bytes are content-addressed (sha256 — identical content dedupes; Nix-store style); each put also mints a short uuid handle (kept in KV) and returns a resolvable URL ending in that uuid — GET /s/<uuid> streams the object back. " +
-		"`op`: put (default) | get | list | delete. put takes `data` (utf-8 text) or `base64` (binary) + optional `content_type` and optional `ttl_seconds` (positive int — the uuid handle self-expires after that many seconds, for ephemeral artifacts; omit for a permanent handle); returns { uuid, url, key, sha256, size, expiry? }. put mints a world-readable URL, so a FRESH put STAGES A PREVIEW BY DEFAULT (nothing written) — re-call with the returned commit_token to write, or pass force:true to write in one shot. get takes `id` (uuid or url) or `key`; returns text for textual types else base64 (an expired/absent handle is not-found). delete takes the uuid `id` (removes the handle; the deduped blob is retained). list takes `prefix`/`limit` over raw R2 keys and returns { objects, truncated, cursor }; when truncated, pass the returned `cursor` back to page through the rest.",
+		"`op`: put (default) | get | list | delete. put takes `data` (utf-8 text) or `base64` (binary) + optional `content_type`, optional `ttl_seconds` (positive int — the uuid handle self-expires after that many seconds, for ephemeral artifacts; omit for a permanent handle), and optional `r2_path` (also write the bytes under a browsable files/<r2_path> R2 key for S3-client browsing — the CAS ref stays canonical); returns { uuid, url, key, sha256, size, expiry?, r2_path? }. put mints a world-readable URL, so a FRESH put STAGES A PREVIEW BY DEFAULT (nothing written) — re-call with the returned commit_token to write, or pass force:true to write in one shot. get takes `id` (uuid or url) or `key`; returns text for textual types else base64 (an expired/absent handle is not-found). delete takes the uuid `id` (removes the handle; the deduped blob is retained). list takes `prefix`/`limit` over raw R2 keys and returns { objects, truncated, cursor }; when truncated, pass the returned `cursor` back to page through the rest.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -31,6 +31,7 @@ export const store: Fn = {
 			base64: { type: "string", description: "put: base64 bytes to store (binary)." },
 			content_type: { type: "string", description: "put: MIME type (default text/plain or application/octet-stream)." },
 			ttl_seconds: { type: "integer", minimum: 1, description: "put: optional seconds until the uuid handle self-expires (ephemeral artifacts); omit for a permanent handle." },
+			r2_path: { type: "string", description: "Also write this object under a browsable files/<r2_path> R2 key (exact path, e.g. 'library/notes.txt') alongside the canonical CAS ref — for browsing via an S3 client (Cyberduck/Mountain Duck/rclone). Collisions are suffixed (-2, -3, ...), never overwritten." },
 			id: { type: "string", description: "get/delete: the uuid handle or the /s/<uuid> URL." },
 			key: { type: "string", description: "get: a raw R2 object key (alternative to id)." },
 			prefix: { type: "string", description: "list: R2 key prefix filter." },
@@ -68,10 +69,24 @@ export const store: Fn = {
 				// Mints a world-readable /s/<uuid> URL for whatever bytes it's given — the
 				// one concrete egress channel here, so it stages by default (STAGE_KINDS)
 				// rather than writing on the first call.
-				const payload = { data: args?.data, base64: args?.base64, content_type: args?.content_type, ttl_seconds: args?.ttl_seconds };
-				const preview = { action: "store put", content_type: ct, size: bytes.length, ...(ttlSeconds !== undefined ? { ttl_seconds: ttlSeconds } : {}) };
+				const payload = { data: args?.data, base64: args?.base64, content_type: args?.content_type, ttl_seconds: args?.ttl_seconds, r2_path: args?.r2_path };
+				const preview = { action: "store put", content_type: ct, size: bytes.length, ...(ttlSeconds !== undefined ? { ttl_seconds: ttlSeconds } : {}), ...(typeof args?.r2_path === "string" && args.r2_path.trim() ? { r2_path: args.r2_path } : {}) };
 				const gateArgs = { stage: args?.stage === true, commit_token: args?.commit_token ? String(args.commit_token) : undefined, force: args?.force === true };
-				const out = await staged(env, "store_put", gateArgs, payload, preview, () => putBlob(env, bytes, ct, ttlSeconds !== undefined ? { ttlSeconds } : undefined));
+				const mutate = async () => {
+					const ref = await putBlob(env, bytes, ct, ttlSeconds !== undefined ? { ttlSeconds } : undefined);
+					if (typeof args?.r2_path === "string" && args.r2_path.trim()) {
+						try {
+							const finalPath = await writeNamedProjection(env, args.r2_path, bytes, ct);
+							return { ...ref, r2_path: finalPath };
+						} catch (e) {
+							// projection is best-effort — a failed named-zone write must never fail the canonical store
+							console.warn(`store: r2_path projection failed for '${args.r2_path}' — ${errMsg(e)}`);
+							return ref;
+						}
+					}
+					return ref;
+				};
+				const out = await staged(env, "store_put", gateArgs, payload, preview, mutate);
 				return ok(oj("stageResult" in out ? out.stageResult : out.result));
 			}
 

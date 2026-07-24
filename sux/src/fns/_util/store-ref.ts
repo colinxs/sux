@@ -108,6 +108,51 @@ export async function putBlob(env: RtEnv, bytes: Uint8Array, contentType: string
 	return { uuid, url: `${storeBase(env)}/s/${uuid}`, key, sha256, size: bytes.length, content_type: contentType, ...(expiry ? { expiry } : {}) };
 }
 
+/** App-managed browsable zone for writeNamedProjection — kept separate from cas/
+ * (opaque CAS keys), kv-export/ and backup/ (existing R2 prefixes elsewhere in
+ * this codebase) so a Finder-grade S3-client browse of files/ never collides
+ * with or shadows those. */
+const NAMED_PROJECTION_PREFIX = "files/";
+
+/**
+ * Write `bytes` ALSO under a browsable `files/<path>` R2 key (#1382) — a named-path
+ * PROJECTION alongside the canonical CAS write, never a replacement for it (the /s/<uuid>
+ * ref stays the authoritative handle). Collision-safe: if the exact key is already taken,
+ * suffix with -2, -3, ... before the extension rather than silently overwriting. Writes the
+ * ORIGINAL (uncompressed) bytes with the real content-type, unlike the CAS object which may be
+ * transparently gzip-framed — an S3 client downloading files/<path> must get back valid,
+ * directly-usable bytes. Returns the final key actually used (e.g. "files/library/foo-2.pdf").
+ * Best-effort at the CALLER's discretion — this function itself throws on a genuine R2 failure
+ * (not swallowed here), letting each call site decide whether a projection failure should fail
+ * the whole op or just be logged (see put.ts's existing fire-and-forget dropbox projection for
+ * the "log and continue" precedent if you want that shape instead).
+ */
+export async function writeNamedProjection(env: RtEnv, path: string, bytes: Uint8Array, contentType: string): Promise<string> {
+	if (!env.R2) throw new Error("R2 is not available (bucket binding missing).");
+	// Strip leading/trailing slashes and drop any empty/"."/".." segment so `path`
+	// can never escape (or write outside) the files/ zone via a path-traversal or
+	// double-slash trick — rejoin what's left with single slashes.
+	const clean = String(path)
+		.split("/")
+		.filter((seg) => seg && seg !== "." && seg !== "..")
+		.join("/");
+	const full = `${NAMED_PROJECTION_PREFIX}${clean}`;
+	const dot = full.lastIndexOf(".");
+	// Only treat a dot as an extension separator if it falls after the last slash
+	// (a dotted directory segment earlier in the path isn't an extension).
+	const slash = full.lastIndexOf("/");
+	const base = dot > slash ? full.slice(0, dot) : full;
+	const ext = dot > slash ? full.slice(dot) : "";
+	let key = full;
+	let n = 2;
+	// Collision check is against ALL previously-stored objects (a live R2.head per
+	// candidate), not just this call's own batch — mirror put.ts's dedupeName shape
+	// (suffix -2, -3, ...) but backed by the bucket itself rather than an in-memory Set.
+	while (await env.R2.head(key)) key = `${base}-${n++}${ext}`;
+	await env.R2.put(key, bytes, { httpMetadata: { contentType } });
+	return key;
+}
+
 /**
  * Above this size, deliverBytes auto-promotes to the R2 ref even when the caller
  * didn't ask for `as:"url"` — an inlined base64 payload this big both bloats the

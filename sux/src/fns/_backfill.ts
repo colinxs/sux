@@ -65,7 +65,7 @@ export type DomainCursor = { offset: number; processed: number; total: number | 
 
 const emptyCursor = (): DomainCursor => ({ offset: 0, processed: 0, total: null, done: false, updatedAt: 0 });
 
-async function readCursor(env: RtEnv, d: BackfillDomain): Promise<DomainCursor> {
+export async function readCursor(env: RtEnv, d: BackfillDomain): Promise<DomainCursor> {
 	const raw = await env.OAUTH_KV?.get(cursorKey(d));
 	if (!raw) return emptyCursor();
 	try {

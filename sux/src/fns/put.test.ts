@@ -42,6 +42,10 @@ function mockR2() {
 			if (!o) return null;
 			return { size: o.bytes.length, httpMetadata: { contentType: o.ct }, customMetadata: o.meta, arrayBuffer: async () => o.bytes.buffer };
 		},
+		head: async (key: string) => {
+			const o = m.get(key);
+			return o ? { size: o.bytes.length, httpMetadata: { contentType: o.ct }, customMetadata: o.meta } : null;
+		},
 	};
 }
 const mkEnv = () => ({ R2: mockR2(), OAUTH_KV: mockKV() }) as any;
@@ -226,6 +230,51 @@ describe("put", () => {
 			const out = JSON.parse(r.content[0].text);
 			expect(out[0].dropbox_path).toBeUndefined();
 			expect(dropboxPut).not.toHaveBeenCalled();
+		});
+	});
+
+	describe("r2_path named projection (#1382)", () => {
+		it("writes each stored file under files/<r2_path>/<name> and returns r2_path, ref unaffected", async () => {
+			const env = mkEnv();
+			const r = await put.run(env, { urls: ["https://ex.com/report.pdf"], r2_path: "library", force: true });
+			const out = JSON.parse(r.content[0].text);
+			expect(out[0].ref).toMatch(UUID);
+			expect(out[0].r2_path).toBe("files/library/report.pdf");
+			const proj = env.R2._m.get("files/library/report.pdf");
+			expect(proj).toBeTruthy();
+			expect(new TextDecoder().decode(proj.bytes)).toBe("body of https://ex.com/report.pdf");
+			expect(proj.ct).toBe("text/plain");
+		});
+
+		it("suffixes a collision (-2) against an object already at that files/ path", async () => {
+			const env = mkEnv();
+			env.R2._m.set("files/library/report.pdf", { bytes: new TextEncoder().encode("existing"), ct: "text/plain" });
+			const r = await put.run(env, { urls: ["https://ex.com/report.pdf"], r2_path: "library", force: true });
+			const out = JSON.parse(r.content[0].text);
+			expect(out[0].r2_path).toBe("files/library/report-2.pdf");
+			expect(new TextDecoder().decode(env.R2._m.get("files/library/report.pdf")!.bytes)).toBe("existing");
+		});
+
+		it("de-duplicates a basename collision within the same batch under the same r2_path folder", async () => {
+			const env = mkEnv();
+			const r = await put.run(env, { urls: ["https://a.com/report.pdf", "https://b.com/report.pdf"], r2_path: "library", force: true });
+			const out = JSON.parse(r.content[0].text);
+			const paths = out.map((o: any) => o.r2_path).sort();
+			expect(paths).toEqual(["files/library/report-2.pdf", "files/library/report.pdf"]);
+		});
+
+		it("omits r2_path when the param isn't set — byte-identical to today", async () => {
+			const env = mkEnv();
+			const r = await put.run(env, { urls: ["https://a.com"], force: true });
+			const out = JSON.parse(r.content[0].text);
+			expect(out[0].r2_path).toBeUndefined();
+			expect([...env.R2._m.keys()].some((k) => k.startsWith("files/"))).toBe(false);
+		});
+
+		it("rejects an empty r2_path", async () => {
+			const empty = await put.run(mkEnv(), { urls: ["https://a.com"], r2_path: "   " });
+			expect(empty.isError).toBe(true);
+			expect(empty.content[0].text).toMatch(/non-empty folder path/);
 		});
 	});
 });

@@ -205,6 +205,11 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   reports the whole doc as "data", and a plain `grep`/`grep -n` over it silently returns ZERO
   matches for anything, even unrelated terms, with no error. Don't take that as "this isn't
   documented here"; use `grep -a` against this specific file (confirmed while building #803).
+  **`sux/src/fns/_vectorize.ts` has the same property** (`file` reports it as "data" too;
+  `grep -n "export"` silently returns nothing) — confirmed while building #1406. This is
+  evidently not a one-off; `grep -a` (or `rg -a`) is the safe default for any `.ts` source file
+  in this repo when a plain grep returns a suspiciously-empty result, not just for the one
+  doc file above.
 - **`fns/obsidian.ts`'s `readVaultIndexBlob`/`writeVaultIndexBlob` are a SINGLE KV key per vault
   repo+branch (`cache:vault:git:{repo}@{branch}:index`), single-owned by `vault-mcp.ts`'s
   `scanVault`/`buildVaultIndex` (the derived {path,fm,tags,links,...} scan behind backlinks/
@@ -647,6 +652,35 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   #N" or similar instead. And don't trust a CLOSED/COMPLETED issue at face value when its own
   linked PRs' diffs don't obviously touch the area it describes (an extension of the existing
   "closed issue doesn't guarantee it shipped" gotcha above) — check the actual diff.
+
+## Placement-fabric Stage 0 status (#1455/#1456) — check before rebuilding
+
+- **#1456 (per-request context, generalizing `EgressContext`) is ALREADY MERGED to `main`** —
+  under PR #1476 (`feat(fabric): per-request context...`), not under an obviously-#1456-named
+  PR title, and the tracker issue can still show OPEN. `src/fabric/request-context.ts` +
+  `request-context.test.ts` (the latter has the exact "two overlapping requests never observe
+  each other's context" concurrency test the issue demanded) already exist on `main` — check
+  for that file before re-implementing; it also depends on `src/fabric/sensitivity.ts` (#1469,
+  same story, already merged).
+- **#1455 (`invokeFn` boundary)'s real scope is ~150 `<fn>.run(env, args)` call sites across
+  ~90 fn modules, not the handful its `effort:medium` label implies.** Only a small subset —
+  the registry's own `tools/call` dispatch (`index.ts`), plus the fns that dynamically select a
+  target by NAME (`batch.ts`, `pipe.ts`, `shop.ts`, `_namespace.ts`, `product_search.ts`,
+  `oracle.ts`'s embedded `readability` call) — were migrated as of the #1455 build that added
+  `invokeFn` to `registry.ts`; a `registry-lint.test.ts` grep-test enforces the invariant on
+  exactly those files, not repo-wide. The other ~150 sites are FIXED, hardcoded fn-to-fn
+  composition calls (e.g. `vault-mcp.ts` calling `obsidian.run`, `mail-mcp.ts` calling
+  `jmap.run`) — migrating literally all of them is a separate, much larger follow-up; don't
+  assume `invokeFn` already covers them just because the seam exists.
+- **A concurrent build session can independently reach the same two findings above and push a
+  CLAUDE.md note about them on an unmerged branch** — confirmed 2026-07-24: this session found
+  `bot/issue-build-30075998014` (open PR #1556) had already built near-identical fixes for
+  #1460 (mychart grant R2 backup) and #1356 (mail-triage doc + the same keyword-vs-mailbox-
+  membership labeling gap this session also found), plus a docs commit recording this same
+  #1455/#1456 scope finding — none of it merged yet at build time. `git log --all --oneline`
+  and `gh pr list --state open` (per the existing duplicate-build gotchas above) surfaced it;
+  this session dropped its own #1460/#1356 diffs rather than risk landing a duplicate/
+  conflicting fix, since another open PR already carried the same shape.
 
 ## Version coherence (#1238)
 

@@ -4,7 +4,7 @@ import { newRequestContext } from "./fabric/request-context";
 import { isAllowedLogin } from "./utils";
 import { type CacheMeta, cacheKey, deferCacheWrite, type JsonRpc, parseJsonRpc, sseResponse } from "./mcp-util";
 import { unpackFromCache } from "./cache-codec";
-import { failWith, findFn, frontToolList, type RtEnv, type ToolResult, unwrapFnCall, validateInputSchema } from "./registry";
+import { failWith, findFn, frontToolList, invokeFn, type RtEnv, type ToolResult, unwrapFnCall, validateInputSchema } from "./registry";
 import { MCP_UI_MIME, recordClientUiSupport } from "./fns/_ui";
 import { buildManifest, CONNECTOR_PATHS } from "./connectors";
 import { singleFlight } from "./single-flight";
@@ -107,12 +107,12 @@ function negotiateProtocolVersion(requested: unknown): string {
 	return typeof requested === "string" && (SUPPORTED_MCP_PROTOCOL_VERSIONS as readonly string[]).includes(requested) ? requested : FALLBACK_MCP_PROTOCOL_VERSION;
 }
 
-// Race a fn.run against a hard deadline so no fn can hang the isolate. On timeout
-// we RESOLVE (not reject) with a clean isError ToolResult and abandon the run
-// promise (it may finish in the background; its value is dropped). The timer is
-// always cleared so a fast fn doesn't hold the isolate open. A rejection or a
-// resolve from run that arrives first wins the race unchanged, so the normal path
-// is byte-for-byte identical to a bare `await fn.run(...)`.
+// Race a fn's run (reached through invokeFn — see registry.ts) against a hard deadline so
+// no fn can hang the isolate. On timeout we RESOLVE (not reject) with a clean isError
+// ToolResult and abandon the run promise (it may finish in the background; its value is
+// dropped). The timer is always cleared so a fast fn doesn't hold the isolate open. A
+// rejection or a resolve from run that arrives first wins the race unchanged, so the normal
+// path is byte-for-byte identical to a bare `await invokeFn(fn, env, args)`.
 export function withDeadline(name: string, ms: number, run: Promise<ToolResult>): Promise<ToolResult> {
 	let timer: ReturnType<typeof setTimeout>;
 	const timeout = new Promise<ToolResult>((resolve) => {
@@ -325,7 +325,7 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 			const rtEnv: RtEnv = { ...env, _egress: newRequestContext(ctx, { reqId: crypto.randomUUID().slice(0, 8), login, deadlineMs: FN_DEADLINE_MS, now: Date.now() }) };
 			const taskField = rpc.params.task as { ttl?: unknown } | null;
 			const rec = createTask(env, ctx, name, taskField && typeof taskField === "object" ? taskField.ttl : undefined, async () => {
-				const ran = await withDeadline(name, FN_DEADLINE_MS, fn.run(rtEnv, args));
+				const ran = await withDeadline(name, FN_DEADLINE_MS, invokeFn(fn, rtEnv, args));
 				if (!fn.raw && !ran.isError && Array.isArray(ran.content)) {
 					for (const part of ran.content) {
 						if (part?.type === "text" && typeof part.text === "string") part.text = normalizeText(part.text);
@@ -455,7 +455,7 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 		};
 		// Each fn.run is wrapped in a hard per-fn deadline so a hung fn resolves to a
 		// clean isError result instead of stalling the isolate (and the group).
-		const runGuarded = () => withDeadline(name, FN_DEADLINE_MS, fn.run(rtEnv, args));
+		const runGuarded = () => withDeadline(name, FN_DEADLINE_MS, invokeFn(fn, rtEnv, args));
 		// One expensive run plus its close path. Coalesce concurrent same-key runs
 		// (cacheable fns only, keyed by the content-addressed cache key) so a burst of
 		// identical calls — or a foreground miss racing a background stale refresh —
@@ -730,7 +730,7 @@ async function mailTriagePlanTick(env: RtEnv): Promise<unknown> {
 	if (runs.some((r) => r.opId === "mail-triage-plan" && PENDING.has(r.status))) {
 		return { skipped: "a mail-triage-plan run is already pending" };
 	}
-	const res = await mail_triage_plan.run(env, { max: 25 });
+	const res = await invokeFn(mail_triage_plan, env, { max: 25 });
 	if (res.isError) throw new Error(res.content?.[0]?.text ?? "mail_triage_plan failed");
 	return JSON.parse(res.content?.[0]?.text ?? "{}");
 }
@@ -1111,7 +1111,7 @@ async function mychartPullTick(env: RtEnv): Promise<unknown> {
 	for (const org of orgs) {
 		try {
 			const incremental = await hasEverPulledOrg(env, org);
-			const res = await mychart.run(env, { op: "pull", org, ...(incremental ? { since } : {}) });
+			const res = await invokeFn(mychart, env, { op: "pull", org, ...(incremental ? { since } : {}) });
 			const body = typeof res?.content?.[0]?.text === "string" ? res.content[0].text : "";
 			let instanceId: string | undefined;
 			try {

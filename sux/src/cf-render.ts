@@ -282,6 +282,23 @@ function pdfLooksEmpty(bytes: Uint8Array): boolean {
 	return lengths.length > 0 && lengths.every((n) => n === 0);
 }
 
+// A blank/solid-color screenshot — the same CDP Fetch-interception race documented
+// above (screenshot and pdf share the identical setRequestInterception(false) call
+// before capture), plus a JS-heavy SPA that hasn't finished rendering, an auth wall,
+// or a blocked resource leaving a mostly-empty viewport — compresses to an
+// implausibly small PNG: PNG's DEFLATE encoder crushes a solid/near-solid color
+// down to a couple hundred bytes, while even a simple real page's screenshot is
+// well above this. An absolute byte-count floor is therefore a cheap,
+// reliable-enough signal without decoding any pixels, chosen conservatively so a
+// real rendered page essentially never dips this low — same "under-flag rather
+// than false-positive" philosophy as pdfLooksEmpty above: the fallback is
+// "deliver anyway", not "block a real image".
+const SCREENSHOT_MIN_BYTES = 1200;
+
+function screenshotLooksEmpty(bytes: Uint8Array): boolean {
+	return bytes.length < SCREENSHOT_MIN_BYTES;
+}
+
 // For html/text the payload is the string `body`; for screenshot/pdf it is the raw
 // `bytes` (the caller decides delivery). On any failure: `{ ok:false, error }`.
 export type CfRenderResult =
@@ -364,8 +381,18 @@ export async function cfRender(env: RtEnv, spec: CfRenderSpec): Promise<CfRender
 		}
 
 		if (as === "screenshot") {
-			const shot = await page.screenshot({ fullPage });
-			const bytes = shot instanceof Uint8Array ? shot : new Uint8Array(shot as ArrayBuffer);
+			const takeShot = async () => {
+				const shot = await page.screenshot({ fullPage });
+				return shot instanceof Uint8Array ? shot : new Uint8Array(shot as ArrayBuffer);
+			};
+			let bytes = await takeShot();
+			if (screenshotLooksEmpty(bytes)) {
+				// Same intermittent-race rationale as the pdf branch below — one retry often just works.
+				bytes = await takeShot();
+			}
+			if (screenshotLooksEmpty(bytes)) {
+				return { ok: false, error: "render produced an implausibly small screenshot (near-empty after retry) — the page may be JS-heavy, auth-walled, or blocking a needed resource" };
+			}
 			return { ok: true, contentType: "image/png", bytes };
 		}
 		if (as === "pdf") {

@@ -1,4 +1,4 @@
-import { failWith, type Fn, type RtEnv, type ToolResult } from "../registry";
+import { failWith, type Fn, invokeFn, type RtEnv, type ToolResult } from "../registry";
 
 // A namespace tool (element of VAULT_TOOLS/MAIL_TOOLS/FILES_TOOLS) is shaped exactly
 // like a leaf Fn's dispatch surface: a name + a run(env, args). We depend only on that.
@@ -71,7 +71,7 @@ export function namespaceFn(o: { name: string; description: string; tools: () =>
 			const known = knownArgs(tool.inputSchema);
 			const badKeys = Object.keys(rest).filter((k) => !known.has(k));
 			if (badKeys.length) return failWith("bad_input", `${o.name}: unknown arg(s) ${badKeys.join(", ")} for action "${action}" — ${toolName} accepts: ${[...known].join(", ") || "(no args)"}.`);
-			return tool.run(env, { ...rest, ...inject }); // inject re-adds the inner action for masked/vacation/operate
+			return invokeFn(tool, env, { ...rest, ...inject }); // inject re-adds the inner action for masked/vacation/operate
 		},
 	};
 }

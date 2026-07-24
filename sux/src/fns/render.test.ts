@@ -21,7 +21,9 @@ const stubs = vi.hoisted(() => ({
 		if (src.includes("modelContext")) return args.length > 0 ? webmcp.call : webmcp.detection;
 		return "rendered text";
 	}),
-	screenshot: vi.fn(async (_opts: any) => new Uint8Array([0x89, 0x50, 0x4e, 0x47])),
+	// >1200 bytes so it reads as a plausible screenshot, not a near-empty one (#1391's
+	// screenshotLooksEmpty parity check in cf-render.ts).
+	screenshot: vi.fn(async (_opts: any) => new Uint8Array([0x89, 0x50, 0x4e, 0x47, ...new Array(2000).fill(0)])),
 	pdf: vi.fn(async (_opts: any) => new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d])),
 	setRequestInterception: vi.fn(async (_on: boolean) => {}),
 	on: vi.fn((_evt: string, _handler: any) => {}),
@@ -117,7 +119,7 @@ describe("render", () => {
 		});
 		webmcp.detection = { detected: false, tools: [] };
 		webmcp.call = { ok: false };
-		stubs.screenshot.mockClear().mockResolvedValue(new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
+		stubs.screenshot.mockClear().mockResolvedValue(new Uint8Array([0x89, 0x50, 0x4e, 0x47, ...new Array(2000).fill(0)]));
 		stubs.pdf.mockClear().mockResolvedValue(new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]));
 		stubs.setRequestInterception.mockClear().mockResolvedValue(undefined as any);
 		stubs.on.mockClear();
@@ -239,7 +241,7 @@ describe("render", () => {
 		const ref = JSON.parse(r.content[0].text);
 		expect(ref.url).toMatch(/\/s\/[0-9a-f-]{36}$/);
 		expect(ref.content_type).toBe("image/png");
-		expect(ref.size).toBe(4); // the mocked PNG-magic bytes
+		expect(ref.size).toBe(2004); // the mocked (padded, >1200-byte) PNG bytes
 		expect(stubs.close).toHaveBeenCalled();
 	});
 
@@ -248,7 +250,7 @@ describe("render", () => {
 		expect(r.isError).toBeFalsy();
 		const out = JSON.parse(r.content[0].text);
 		expect(out.mime).toBe("image/png");
-		expect(out.size).toBe(4);
+		expect(out.size).toBe(2004);
 		expect(typeof out.base64).toBe("string");
 	});
 

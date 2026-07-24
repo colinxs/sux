@@ -1,5 +1,5 @@
 import { normalizeArgs, normalizeText } from "../normalize";
-import { type Fn, fail, ok } from "../registry";
+import { type Fn, fail, invokeFn, ok } from "../registry";
 import { clampBytes, dig, FANOUT_BUDGET_MS, oj } from "./_util";
 
 // Compose: chain sux tools so each step's text output feeds the next step's args
@@ -136,7 +136,7 @@ export const pipe: Fn = {
 			const filled = fillArgs(step.args, prev);
 			const callArgs = target.raw ? filled : normalizeArgs(filled);
 			try {
-				const r = await target.run(env, callArgs);
+				const r = await invokeFn(target, env, callArgs);
 				let text = r.content?.[0]?.text ?? "";
 				if (r.isError) {
 					results.push({ step: i, tool: toolName, ok: false, error: text });

@@ -1,6 +1,6 @@
 import { hasAI, llm } from "../ai";
 import { normalizeArgs, normalizeText } from "../normalize";
-import { type Fn, fail, ok } from "../registry";
+import { type Fn, fail, invokeFn, ok } from "../registry";
 import { dig, FANOUT_BUDGET_MS, pool, oj } from "./_util";
 
 // Map-reduce: MAP one sux tool over many argument sets, then optionally REDUCE
@@ -189,7 +189,7 @@ export const batch: Fn = {
 			try {
 				// Per-call boundary parity with index.ts: non-raw targets get
 				// normalized args in and normalized text out; raw ones stay byte-exact.
-				const r = await target.run(env, target.raw ? callArgs : normalizeArgs(callArgs));
+				const r = await invokeFn(target, env, target.raw ? callArgs : normalizeArgs(callArgs));
 				const text = r.content?.[0]?.text ?? "";
 				return r.isError ? { ok: false, error: text } : { ok: true, text: target.raw ? text : normalizeText(text) };
 			} catch (e) {
@@ -214,7 +214,7 @@ export const batch: Fn = {
 			const items = results.filter((r) => r?.ok && r.text).map((r) => r.text as string);
 			const filled = fillItemsTokens((reduceWith!.args as Record<string, unknown>) ?? {}, items) as Record<string, unknown>;
 			try {
-				const rr = await rFound.run(env, rFound.raw ? filled : normalizeArgs(filled));
+				const rr = await invokeFn(rFound, env, rFound.raw ? filled : normalizeArgs(filled));
 				const text = rr.content?.[0]?.text ?? "";
 				if (rr.isError) return fail(`reduce_with '${rTool}' failed: ${text}`);
 				const reduced = rFound.raw ? text : normalizeText(text);

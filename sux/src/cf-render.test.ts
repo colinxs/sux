@@ -9,7 +9,7 @@ const stubs = vi.hoisted(() => ({
 	goto: vi.fn(async (_url: string, _opts: any) => {}),
 	content: vi.fn(async () => "<html>rendered</html>"),
 	evaluate: vi.fn(async (_fn: any) => "rendered text"),
-	screenshot: vi.fn(async (_opts: any) => new Uint8Array([0x89, 0x50, 0x4e, 0x47])),
+	screenshot: vi.fn(async (_opts: any) => new Uint8Array(2000).fill(1)),
 	pdf: vi.fn(async (_opts: any) => new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d])),
 	setRequestInterception: vi.fn(async (_on: boolean) => {}),
 	on: vi.fn((_evt: string, _handler: any) => {}),
@@ -82,7 +82,7 @@ describe("cfRender", () => {
 		stubs.goto.mockClear().mockResolvedValue(undefined as any);
 		stubs.content.mockClear().mockResolvedValue("<html>rendered</html>");
 		stubs.evaluate.mockClear().mockResolvedValue("rendered text");
-		stubs.screenshot.mockClear().mockResolvedValue(new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
+		stubs.screenshot.mockClear().mockResolvedValue(new Uint8Array(2000).fill(1));
 		stubs.pdf.mockClear().mockResolvedValue(new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]));
 		stubs.setRequestInterception.mockClear().mockResolvedValue(undefined as any);
 		stubs.on.mockClear();
@@ -143,8 +143,28 @@ describe("cfRender", () => {
 		expect(r.ok).toBe(true);
 		if (!r.ok || !("bytes" in r)) throw new Error("expected bytes result");
 		expect(r.contentType).toBe("image/png");
-		expect(Array.from(r.bytes)).toEqual([0x89, 0x50, 0x4e, 0x47]);
+		expect(r.bytes.length).toBe(2000);
 		expect(stubs.screenshot).toHaveBeenCalledWith({ fullPage: false });
+		expect(stubs.screenshot).toHaveBeenCalledTimes(1);
+	});
+
+	it("screenshot: an implausibly tiny buffer on the first shot retries once and returns the good second result (#1391)", async () => {
+		const tiny = new Uint8Array(50);
+		const normal = new Uint8Array(2000).fill(1);
+		stubs.screenshot.mockClear().mockResolvedValueOnce(tiny).mockResolvedValueOnce(normal);
+		const r = await cfRender(BROWSER_ENV, { url: "https://example.com", as: "screenshot" });
+		expect(stubs.screenshot).toHaveBeenCalledTimes(2);
+		expect(r.ok).toBe(true);
+		if (!r.ok || !("bytes" in r)) throw new Error("expected bytes result");
+		expect(r.bytes).toEqual(normal);
+	});
+
+	it("screenshot: still implausibly tiny after the retry surfaces ok:false instead of delivering a blank image (#1391)", async () => {
+		const tiny = new Uint8Array(50);
+		stubs.screenshot.mockClear().mockResolvedValue(tiny);
+		const r = await cfRender(BROWSER_ENV, { url: "https://example.com", as: "screenshot" });
+		expect(stubs.screenshot).toHaveBeenCalledTimes(2);
+		expect(r).toEqual({ ok: false, error: expect.stringMatching(/implausibly small screenshot/) });
 	});
 
 	it("pdf: returns raw PDF bytes as-is when the content stream isn't empty", async () => {

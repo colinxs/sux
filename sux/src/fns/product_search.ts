@@ -1,4 +1,4 @@
-import { type Fn, failWith, ok, type RtEnv, type ToolResult } from "../registry";
+import { type Fn, failWith, invokeFn, ok, type RtEnv, type ToolResult } from "../registry";
 import { oj } from "./_util";
 import type { RetailProduct } from "./_retail";
 import { clientDeclaredUiSupport, escapeHtml, uiMeta, withUiResource } from "./_ui";
@@ -136,7 +136,7 @@ export const product_search: Fn = {
 			retailers.map(async (retailer) => {
 				const fn = FUNCTIONS.find((f) => f.name === retailer);
 				if (!fn) throw new Error(`retailer fn '${retailer}' not found in registry.`);
-				const r = await fn.run(env, argsFor(retailer, term, zip, limit));
+				const r = await invokeFn(fn, env, argsFor(retailer, term, zip, limit));
 				const text = r.content?.[0]?.text ?? "";
 				if (r.isError) throw new Error(text || `${retailer} failed.`);
 				return { retailer, products: parseProducts(retailer, text) };

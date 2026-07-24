@@ -19,7 +19,10 @@ function mockR2() {
 			if (!o) return null;
 			return { size: o.bytes.length, httpMetadata: { contentType: o.ct }, customMetadata: o.meta, text: async () => new TextDecoder().decode(o.bytes), arrayBuffer: async () => o.bytes.buffer };
 		},
-		head: async () => null,
+		head: async (key: string) => {
+			const o = m.get(key);
+			return o ? { size: o.bytes.length, httpMetadata: { contentType: o.ct }, customMetadata: o.meta } : null;
+		},
 		delete: async (key: string) => void m.delete(key),
 		list: async (opts?: any) => {
 			let keys = [...m.keys()];
@@ -373,5 +376,49 @@ describe("store", () => {
 		expect(all.objects.every((o: any) => o.key.startsWith("cas/"))).toBe(true);
 		const phi = j(await store.run(env, { op: "list", prefix: "phi/" }));
 		expect(phi.objects).toHaveLength(0);
+	});
+
+	describe("r2_path named projection (#1382)", () => {
+		it("writes the same bytes under files/<r2_path>, alongside (not instead of) the canonical CAS object", async () => {
+			const env = mkEnv();
+			const put = j(await store.run(env, { data: "hello world", content_type: "text/plain", r2_path: "library/notes.txt", force: true }));
+			expect(put.r2_path).toBe("files/library/notes.txt");
+			const proj = env.R2._m.get("files/library/notes.txt")!;
+			expect(new TextDecoder().decode(proj.bytes)).toBe("hello world");
+			expect(proj.ct).toBe("text/plain");
+			// The canonical cas/ object is untouched — the named path is a projection, not a move.
+			expect(env.R2._m.get(put.key)).toBeTruthy();
+			expect(env.R2._m.size).toBe(2);
+		});
+
+		it("suffixes a collision (-2) rather than overwriting the existing object at that path", async () => {
+			const env = mkEnv();
+			env.R2._m.set("files/library/notes.txt", { bytes: new TextEncoder().encode("existing"), ct: "text/plain" });
+			const put = j(await store.run(env, { data: "new content", content_type: "text/plain", r2_path: "library/notes.txt", force: true }));
+			expect(put.r2_path).toBe("files/library/notes-2.txt");
+			expect(new TextDecoder().decode(env.R2._m.get("files/library/notes.txt")!.bytes)).toBe("existing");
+			expect(new TextDecoder().decode(env.R2._m.get("files/library/notes-2.txt")!.bytes)).toBe("new content");
+		});
+
+		it("r2_path unset behaves exactly as before — no files/ projection attempted", async () => {
+			const env = mkEnv();
+			const put = j(await store.run(env, { data: "plain put", force: true }));
+			expect(put.r2_path).toBeUndefined();
+			expect([...env.R2._m.keys()].some((k) => k.startsWith("files/"))).toBe(false);
+			expect(env.R2._m.size).toBe(1);
+		});
+
+		it("a failed projection logs and falls back to the canonical result — never fails the put", async () => {
+			const env = mkEnv();
+			const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+			env.R2.head = async () => {
+				throw new Error("boom");
+			};
+			const put = j(await store.run(env, { data: "resilient", r2_path: "library/x.txt", force: true }));
+			expect(put.uuid).toMatch(UUID);
+			expect(put.r2_path).toBeUndefined();
+			expect(warn).toHaveBeenCalledWith(expect.stringMatching(/r2_path projection failed/));
+			warn.mockRestore();
+		});
 	});
 });

@@ -1,4 +1,4 @@
-import { type Fn, failWith, type RtEnv } from "../registry";
+import { type Fn, failWith, invokeFn, type RtEnv } from "../registry";
 
 // shop is a thin DISPATCHER over the dedicated retail fns — it does NOT scrape.
 // The old SerpAPI / Google Shopping path is dead (SerpAPI's product engine went
@@ -71,7 +71,7 @@ export const shop: Fn = {
 		if (!target) return failWith("upstream_error", `shop: dispatch target '${route.fn}' is not registered.`);
 
 		try {
-			return await target.run(env, route.args({ term: query, limit, zip }));
+			return await invokeFn(target, env, route.args({ term: query, limit, zip }));
 		} catch (e) {
 			return failWith("upstream_error", `shop → ${route.fn} failed: ${String((e as Error)?.message ?? e)}`);
 		}

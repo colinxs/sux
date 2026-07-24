@@ -1,10 +1,11 @@
 import { defuseCitationTag, llm } from "../ai";
 import type { RtEnv } from "../registry";
+import { BACKFILL_DOMAINS, type BackfillDomain, hasBackfill, readCursor as readBackfillCursor } from "./_backfill";
 import { cappedKvLog } from "./_capped_kv_log";
 import { contactSemanticIndex, topKContactByCosine } from "./_contact_semantic";
 import { hasDropboxFull } from "./_dropbox-full";
 import { cosine, embed, embedOne } from "./_embed";
-import { filesSemanticIndexCached, topKFilesByCosine } from "./_files_semantic";
+import { filesSemanticIndexCached, isExcludedFilesPath, topKFilesByCosine } from "./_files_semantic";
 import { maybeDecompressString } from "./_gzip";
 import { mailSemanticIndexCached, topKMailByCosine } from "./_mail_semantic";
 import { chunkText, listChunks, newId } from "./_source";
@@ -85,7 +86,10 @@ export type AskDomainReport = {
 };
 
 type AskPassage = { pointer: string; text: string; score: number; whitelisted?: boolean };
-type DomainGather = { passages: AskPassage[]; indexed_at: number | null; skipped?: string };
+// `degraded` (#1406): set when a domain answered from a Vectorize namespace not yet PROVEN
+// complete for this domain (mid-backfill) — the passages are still returned (unioned with the
+// cosine fallback), but the caller must know this leg is not the clean Vectorize-only read.
+type DomainGather = { passages: AskPassage[]; indexed_at: number | null; skipped?: string; degraded?: string };
 
 export type AskOutcome = {
 	answer_id: string;
@@ -303,19 +307,57 @@ async function fromAssimChunks(env: RtEnv, vec: number[]): Promise<DomainGather>
 	return { passages: passages.slice(0, PER_DOMAIN_K), indexed_at };
 }
 
+/** Whether `domain`'s Vectorize namespace is PROVEN complete — i.e. safe to trust alone,
+ *  never merely "this query returned a hit" (#1406). A domain outside the durable backfill's
+ *  own set (e.g. "assim", written live at index time by the assimilation spine, not batch-
+ *  backfilled) has no cursor concept and is trusted unconditionally; likewise when the durable
+ *  backfill cron isn't armed at all (`hasBackfill` false) there is no cursor tracking a
+ *  mid-backfill state to distrust, so a non-empty Vectorize result is trusted as before. Only
+ *  when the durable backfill IS armed and this domain's own cursor isn't `done` yet do we treat
+ *  the namespace as not-yet-proven — a partially-backfilled namespace is non-empty and returns
+ *  plausible-but-mediocre hits for most queries, which must not silently outrank the complete
+ *  KV cosine core. */
+async function isVectorizeCompleteFor(env: RtEnv, domain: VecDomain): Promise<boolean> {
+	if (!(BACKFILL_DOMAINS as readonly string[]).includes(domain)) return true;
+	if (!hasBackfill(env)) return true;
+	const cursor = await readBackfillCursor(env, domain as BackfillDomain);
+	return cursor.done;
+}
+
 /** The unified-index cutover (#1290): a domain leg queries `sux-corpus`'s per-domain namespace
  *  FIRST (an out-of-band-built ANN index — no query-path rebuild, the #1298 fix), and only if
  *  Vectorize is unbound, errors, or its namespace is empty (not yet backfilled) does it fall
  *  back to the retained KV cosine core. This is the measured, parity-first cutover: Vectorize
  *  is the PRIMARY read path, the cosine cores the fail-open fallback (#1262), stripped only once
  *  prod parity is proven. A Vectorize-served leg reports indexed_at=null (Vectorize has no
- *  per-domain build timestamp); a fallback-served leg keeps the cosine core's indexed_at. */
+ *  per-domain build timestamp); a fallback-served leg keeps the cosine core's indexed_at.
+ *
+ *  #1406 fix: "namespace empty" and "this query returned 0 rows" are not the same — a
+ *  partially-backfilled namespace is non-empty and returns non-empty-but-mediocre hits for
+ *  most queries, which used to pass straight through as a clean "ok" leg. Once
+ *  `isVectorizeCompleteFor` says the namespace isn't proven complete, the Vectorize hits are
+ *  UNIONED with the cosine fallback (never trusted alone) and the leg reports `degraded` so the
+ *  regression is observable instead of silently serving worse answers than the pre-cutover
+ *  baseline. The `files` domain also drops any hit whose path is junk (`isExcludedFilesPath`,
+ *  #1347) — previously only the cosine fallback applied that filter, so a stale pre-#1347
+ *  Vectorize vector could still be cited until a purge pass caught up. */
 function withVectorize(domain: VecDomain, cosineLeg: (env: RtEnv, vec: number[]) => Promise<DomainGather>): (env: RtEnv, vec: number[]) => Promise<DomainGather> {
 	return async (env: RtEnv, vec: number[]): Promise<DomainGather> => {
 		if (hasVectorize(env)) {
 			try {
-				const hits = await queryCorpus(env, domain, vec, PER_DOMAIN_K);
-				if (hits.length) return { passages: hits.map((h) => ({ pointer: h.pointer, text: h.text, score: h.score })), indexed_at: null };
+				let hits = await queryCorpus(env, domain, vec, PER_DOMAIN_K);
+				if (domain === "files") hits = hits.filter((h) => !isExcludedFilesPath(h.pointer.replace(/^files:/, "")));
+				if (hits.length) {
+					const mapped = hits.map((h) => ({ pointer: h.pointer, text: h.text, score: h.score }));
+					if (await isVectorizeCompleteFor(env, domain)) return { passages: mapped, indexed_at: null };
+					const cosineResult = await cosineLeg(env, vec);
+					const seen = new Set(mapped.map((p) => p.pointer));
+					return {
+						passages: [...mapped, ...cosineResult.passages.filter((p) => !seen.has(p.pointer))],
+						indexed_at: cosineResult.indexed_at,
+						degraded: `${domain}: vectorize backfill in progress for this domain — unioned with the cosine fallback`,
+					};
+				}
 			} catch (e) {
 				console.log(`oracle ask: vectorize ${domain} leg failed → cosine fallback: ${errMsg(e)}`);
 			}
@@ -375,11 +417,12 @@ export async function runAsk(env: RtEnv, question: string): Promise<AskOutcome> 
 		}
 		const keptHere = g.passages.filter((p) => p.score >= ASK_FLOOR);
 		domains[n] = {
-			status: "ok",
+			status: g.degraded ? "degraded" : "ok",
 			hits: g.passages.length,
 			kept: keptHere.length,
 			top_score: g.passages.length ? round3(Math.max(...g.passages.map((p) => p.score))) : null,
 			indexed_at: g.indexed_at,
+			...(g.degraded ? { detail: g.degraded } : {}),
 		};
 		kept.push(...keptHere);
 	});
