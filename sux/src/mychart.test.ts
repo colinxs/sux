@@ -170,6 +170,31 @@ describe("connectedOrgs", () => {
 	});
 });
 
+describe("OAUTH_KV durability invariant (#1460)", () => {
+	it("never writes the grant key with an expirationTtl — every other mychart KV key does", async () => {
+		const env = baseEnv();
+		await env.OAUTH_KV.put("sux:mychart:pkce:STATE9", JSON.stringify({ verifier: "V", org: ORG, created: Date.now() }), { expirationTtl: 600 });
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (u: any) => {
+				if (String(u).includes(".well-known/smart-configuration")) return smartCfgResponse();
+				return new Response(JSON.stringify({ access_token: "AT1", refresh_token: "RT1", patient: "P", scope: "s", expires_in: 3600 }), { status: 200 });
+			}),
+		);
+		await handleMychartRoutes(new URL("https://suxos.net/mychart/callback?code=C&state=STATE9"), new Request("https://suxos.net/mychart/callback?code=C&state=STATE9"), env);
+
+		const putCalls = env.OAUTH_KV.put.mock.calls as Array<[string, string, any?]>;
+		const grantCalls = putCalls.filter(([k]) => k === `sux:mychart:grant:${ORG}`);
+		const otherCalls = putCalls.filter(([k]) => k !== `sux:mychart:grant:${ORG}`);
+		expect(grantCalls.length).toBeGreaterThan(0);
+		// the irreplaceable row: no TTL, ever.
+		for (const [, , opts] of grantCalls) expect(opts?.expirationTtl).toBeUndefined();
+		// every disposable sibling key written in the same flow DOES carry one.
+		expect(otherCalls.length).toBeGreaterThan(0);
+		for (const [, , opts] of otherCalls) expect(opts?.expirationTtl).toBeGreaterThan(0);
+	});
+});
+
 describe("mychart OAuth callback (PKCE round-trip)", () => {
 	it("exchanges code+verifier, persists the grant under the org from the PKCE state, caches the access token", async () => {
 		const env = baseEnv();
@@ -199,6 +224,11 @@ describe("mychart OAuth callback (PKCE round-trip)", () => {
 		expect(env.OAUTH_KV.map.get(`sux:mychart:token:${ORG}`)).toBe("AT1");
 		// one-time state consumed
 		expect(env.OAUTH_KV.map.has("sux:mychart:pkce:STATE1")).toBe(false);
+		// #1460: the irreplaceable grant is mirrored to R2 the moment it's minted, so a
+		// KV-level loss of this org's grant is recoverable rather than merely unlikely.
+		const backupKey = [...env.R2.map.keys()].find((k: string) => k.startsWith(`grants-backup/mychart/${ORG}/`));
+		expect(backupKey).toBeDefined();
+		expect(JSON.parse(env.R2.map.get(backupKey!).body)).toMatchObject({ refresh_token: "RT1", patient: "PatientA" });
 	});
 
 	it("serves the reflected `error` param as text/plain (no HTML execution)", async () => {
@@ -289,6 +319,9 @@ describe("mychart token lifecycle (mint / rotate / 401 self-heal), per org", () 
 		expect(tok).toBe("AT2");
 		expect(env.OAUTH_KV.map.get(`sux:mychart:token:${ORG}`)).toBe("AT2");
 		expect(JSON.parse(env.OAUTH_KV.map.get(`sux:mychart:grant:${ORG}`)!).refresh_token).toBe("NEW_RT");
+		// #1460: a rotated refresh token is also mirrored to R2, not just KV.
+		const backupKey = [...env.R2.map.keys()].find((k: string) => k.startsWith(`grants-backup/mychart/${ORG}/`));
+		expect(JSON.parse(env.R2.map.get(backupKey!).body).refresh_token).toBe("NEW_RT");
 	});
 
 	it("uses a per-org EPIC_CLIENT_SECRET_<ORG> for the token endpoint's Basic auth header when one is set", async () => {
@@ -343,6 +376,8 @@ describe("mychart token lifecycle (mint / rotate / 401 self-heal), per org", () 
 		);
 		await mintAccessToken(env, ORG);
 		expect(JSON.parse(env.OAUTH_KV.map.get(`sux:mychart:grant:${ORG}`)!).refresh_token).toBe("KEEP_RT");
+		// no rotation ⇒ no grant write ⇒ nothing new to mirror.
+		expect([...env.R2.map.keys()].some((k: string) => k.startsWith(`grants-backup/mychart/${ORG}/`))).toBe(false);
 	});
 
 	it("mychartFetch drops the cached token and re-mints once on a 401", async () => {

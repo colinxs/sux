@@ -13,9 +13,18 @@
 // PHI invariants (§5): raw FHIR/HealthKit blobs land under the private R2 `phi/`
 // prefix which the /s/<uuid> handler refuses to serve, never route through dropbox,
 // and never enter the generic KV result cache (the mychart fn is cacheable:false).
+//
+// OAUTH_KV durability (#1460): the refresh grant (`sux:mychart:grant:<org>`) is the one
+// row in that shared namespace with no TTL and no re-derivation path — every sibling key
+// here (access token cache, SMART discovery cache, PKCE state) is disposable and
+// expirationTtl'd. A dedicated KV namespace is the real structural fix but needs a fresh
+// `wrangler kv namespace create` this repo's automated build sessions can't provision;
+// `backupGrant` mirrors every grant write to R2 (already bound) instead, so a KV-level
+// loss is recoverable rather than merely unlikely.
 
 import { timingSafeEqual } from "./crypto-util";
 import type { MedicalEventInput } from "./op-engine/_medical_timeline_plan";
+import { errMsg } from "./prim";
 import type { RtEnv } from "./registry";
 import { safeParseJson } from "./fns/_util";
 
@@ -234,6 +243,7 @@ export async function mintAccessToken(env: RtEnv, org: string): Promise<string> 
 	if (typeof json.refresh_token === "string" && json.refresh_token && json.refresh_token !== grant.refresh_token) {
 		const updated: MychartGrant = { ...grant, refresh_token: json.refresh_token, issued_at: Date.now(), patient: json.patient ?? grant.patient, scope: json.scope ?? grant.scope };
 		await env.OAUTH_KV?.put(grantKey(org), JSON.stringify(updated));
+		await backupGrant(env, org, updated);
 	}
 	await cacheAccessToken(env, org, String(json.access_token), json.expires_in);
 	return String(json.access_token);
@@ -313,6 +323,33 @@ export async function putPhi(env: RtEnv, key: string, body: string | Uint8Array,
 	const fullKey = key.startsWith(PHI_PREFIX) ? key : `${PHI_PREFIX}${key}`;
 	await env.R2.put(fullKey, body, { httpMetadata: { contentType } });
 	return fullKey;
+}
+
+// ---------------- grant durability backup (#1460) ----------------
+
+/** `sux:mychart:grant:<org>` is the one row in OAUTH_KV with no TTL and no re-derivation
+ *  path — losing it means re-running the OAuth flow by hand at that org, which is exactly
+ *  the mechanism the ~Aug-15 UW Med record recovery depends on (#1360/#1365). Everything
+ *  else sharing that namespace (access tokens, SMART discovery cache, PKCE state,
+ *  proposals/stage entries) is TTL'd and disposable, so a namespace-level "clear the
+ *  cache" operation (a bulk KV wipe, a namespace recreated during an incident) can't tell
+ *  the one durable row apart from six throwaway ones. The structural fix — a dedicated KV
+ *  namespace so a wipe can't reach the grant at all — needs a fresh `wrangler kv
+ *  namespace create` against the account, which an automated build session has no
+ *  credentials to run; this mirrors the grant to R2 (already bound, no new resource)
+ *  every time it's written, so a KV-level loss is recoverable rather than merely
+ *  unlikely. Private key, same "never a public /s/ handle" discipline as `putPhi` — a
+ *  refresh grant is a live credential, arguably MORE sensitive than PHI, not less.
+ *  Versioned by write time (never overwritten) so a bad write can't clobber the
+ *  last-known-good backup. Best-effort: never throws, never blocks the KV write that
+ *  actually matters. */
+async function backupGrant(env: RtEnv, org: string, grant: MychartGrant): Promise<void> {
+	if (!env.R2) return;
+	try {
+		await env.R2.put(`grants-backup/mychart/${org}/${Date.now()}.json`, JSON.stringify(grant), { httpMetadata: { contentType: "application/json" } });
+	} catch (e) {
+		console.log(`mychart: grant backup to R2 failed for org=${org}: ${errMsg(e)}`);
+	}
 }
 
 // ---------------- pull: the USCDI resource plan ----------------
@@ -1494,6 +1531,7 @@ export async function handleMychartRoutes(url: URL, request: Request, env: RtEnv
 			if (typeof json.refresh_token === "string" && json.refresh_token) {
 				const grant: MychartGrant = { refresh_token: json.refresh_token, patient: json.patient, scope: json.scope, issued_at: Date.now() };
 				await env.OAUTH_KV?.put(grantKey(org), JSON.stringify(grant));
+				await backupGrant(env, org, grant);
 			}
 			await cacheAccessToken(env, org, String(json.access_token), json.expires_in);
 			const hasRefresh = Boolean(json.refresh_token);

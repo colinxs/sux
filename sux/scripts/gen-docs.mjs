@@ -32,7 +32,7 @@ const CATEGORIES = [
 	["Agent / autonomy", ["proposals", "webpush"]],
 	["Personal finance", ["lunchmoney"]],
 	["Personal health", ["mychart", "mychart_reconcile_plan", "medical_timeline_plan"]],
-	["Feedback / meta", ["issue", "suggest"]],
+	["Feedback / meta", ["issue", "suggest", "feedback_resolve"]],
 	["Infra / meta", ["selftest", "autonomy_status", "controld", "tailscale", "sux", "fn", "todoist", "audit_log"]],
 ];
 

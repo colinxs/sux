@@ -143,4 +143,5 @@ call `json` with CSV or YAML in, `csv` with JSON in.
 | Read your Tailscale tailnet control plane | `tailscale` |
 | Report a bug / wrong output from a sux tool | `issue { tool, text }` (lands in the server-side feedback log) |
 | Request a new sux capability / feature | `suggest { text }` (logs a feature request to the same server-side feedback log) |
+| Mark a GET /feedback log entry resolved (e.g. once tracked by a GitHub issue) | `feedback_resolve { kind, at, tracked_by? }` |
 | Which act-on-your-behalf surfaces are ARMED right now | `autonomy_status` (read-only booleans — mail-triage / Mode-B Dropbox writes / self-improve loop / cron trigger, each with its consequence + reversibility; never secret VALUES, never cached) |

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appendFeedback } from "./fns/_feedback";
+import { appendFeedback, readFeedback, resolveFeedback } from "./fns/_feedback";
 import { applyEvent, emptyMetrics } from "./metrics";
 import { handleObservability } from "./observability";
 
@@ -148,8 +148,25 @@ describe("observability", () => {
 		env.store.set("sux:feedback", JSON.stringify(raw));
 		const body = await getJson(env, "/feedback");
 		expect(body.items).toHaveLength(1);
-		const allowed = ["kind", "text", "at", "tool"];
+		const allowed = ["kind", "text", "at", "tool", "resolved", "tracked_by"];
 		expect(Object.keys(body.items[0]).every((k) => allowed.includes(k))).toBe(true);
 		expect(JSON.stringify(body)).not.toContain("should-never-leak");
+	});
+
+	it("/feedback defaults to unresolved entries; ?resolved=all surfaces resolved ones with their tracked_by", async () => {
+		const env = fakeEnv();
+		await appendFeedback(env, "issue", "dns broke", "dns");
+		await appendFeedback(env, "issue", "general gripe");
+		const [newer] = await readFeedback(env, "issue", 10);
+		await resolveFeedback(env, "issue", newer.at, "https://github.com/x/y/issues/1");
+
+		const def = await getJson(env, "/feedback");
+		expect(def.count).toBe(1);
+		expect(def.items[0].resolved).toBeUndefined();
+
+		const all = await getJson(env, "/feedback?resolved=all");
+		expect(all.count).toBe(2);
+		const resolved = all.items.find((i: any) => i.at === new Date(newer.at).toISOString());
+		expect(resolved).toMatchObject({ resolved: true, tracked_by: "https://github.com/x/y/issues/1" });
 	});
 });
