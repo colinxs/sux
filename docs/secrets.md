@@ -67,6 +67,7 @@ Rule of thumb: **secret it if leaking it is bad; `[vars]` it if you'd want it in
 **Bot arming flags** (Worker secrets, non-sensitive, fail-closed — unset ⇒ dormant):
 - `MAIL_TRIAGE_ENABLED` → classify + suggest + digest; `MAIL_TRIAGE_ACT` → also do reversible moves (never delete/send).
 - `SELF_IMPROVE_ENABLE` → loop runs; `SELF_IMPROVE_PR` → may open PRs (needs `GITHUB_TOKEN`); `SELF_IMPROVE_REPO` → target; `SELF_IMPROVE_ARM` → its own auto-merge (**leave OFF** — the GitHub `automerge.yml` pipeline does merging); `SELF_IMPROVE_KILL` → hard stop.
+- `VECTORIZE_BACKFILL_ENABLED` → arms the durable, ~5min-cron-driven `sux-corpus` Vectorize backfill (`fns/_backfill.ts`); dormant (cursors stay virgin) until this is set AND the `VECTORIZE` binding is bound — the manual `oracle {action:"reindex"}` admin nudge is NOT gated by this flag.
 
 ## Headless reads — service accounts (Teams)
 

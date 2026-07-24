@@ -410,6 +410,29 @@ describe("oracle — get / list / forget", () => {
 		expect(j.topics[1]).toMatchObject({ topic: "beta", chunk_count: 2, updated_at: 42, whitelisted: false, kb_bytes: 100, near_cap: false });
 	});
 
+	// #1364: sux-corpus's backfill cursors sat virgin in prod with nothing to surface that they'd
+	// never started — status now flags a not-done cursor untouched past the stale window, but only
+	// once the backfill is actually armed (an unarmed env's permanently-virgin cursors aren't a fault).
+	it("status flags a stale, not-done backfill cursor in retrieval.alerts while the backfill is armed (#1364)", async () => {
+		const kv = makeKv();
+		kv.store.set("sux:corpus:backfill:vault", JSON.stringify({ offset: 0, processed: 0, total: null, done: false, updatedAt: Date.now() - 60 * 60 * 1000 }));
+		const env = { OAUTH_KV: kv, VECTORIZE_BACKFILL_ENABLED: "1", VECTORIZE: {} } as any;
+
+		const r = await oracle.run(env, { action: "status" });
+		const j = JSON.parse(r.content[0].text);
+		expect(j.retrieval.alerts).toContain("backfill:vault");
+	});
+
+	it("does not flag a virgin backfill cursor when the backfill isn't armed", async () => {
+		const kv = makeKv();
+		kv.store.set("sux:corpus:backfill:vault", JSON.stringify({ offset: 0, processed: 0, total: null, done: false, updatedAt: 0 }));
+		const env = { OAUTH_KV: kv } as any; // no VECTORIZE_BACKFILL_ENABLED, no VECTORIZE binding
+
+		const r = await oracle.run(env, { action: "status" });
+		const j = JSON.parse(r.content[0].text);
+		expect(j.retrieval.alerts).not.toContain("backfill:vault");
+	});
+
 	it("forget deletes the topic; forgetting a missing topic reports nothing deleted", async () => {
 		const { env, kv } = makeEnv();
 		await oracle.run(env, { knowledge: "a", topic: "bio" });
